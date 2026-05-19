@@ -21,10 +21,7 @@ func main() {
 	containerdSocket := flag.String("containerd-socket", defaultContainerdSocket, "Unix socket path for containerd")
 	flag.Parse()
 
-	containerEng, err := engine.NewContainerEngine(*containerdSocket)
-	if err != nil {
-		log.Fatalf("failed to create ContainerEngine: %v", err)
-	}
+	containerEng := engine.NewContainerEngine(*containerdSocket)
 	defer containerEng.Close()
 
 	e2bEng := engine.NewE2BEngine()
@@ -39,6 +36,7 @@ func main() {
 		mux.Stop()
 	}()
 
+	log.Printf("starting cri-multiplex on %s (containerd: %s)", *socketPath, *containerdSocket)
 	if err := mux.Start(*socketPath); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}

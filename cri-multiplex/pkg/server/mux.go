@@ -16,7 +16,6 @@ import (
 
 type MuxServer struct {
 	runtime.UnimplementedRuntimeServiceServer
-	runtime.UnimplementedImageServiceServer
 
 	containerEngine engine.RuntimeEngine
 	e2bEngine       engine.RuntimeEngine
@@ -47,7 +46,6 @@ func (s *MuxServer) Start(socketPath string) error {
 	s.grpcServer = grpc.NewServer()
 	runtime.RegisterRuntimeServiceServer(s.grpcServer, s)
 
-	log.Printf("cri-multiplex listening on %s", socketPath)
 	return s.grpcServer.Serve(listener)
 }
 
