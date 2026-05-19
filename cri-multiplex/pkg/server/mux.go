@@ -358,30 +358,66 @@ func (s *MuxServer) GetContainerEvents(req *runtime.GetEventsRequest, srv runtim
 }
 
 // ========== ImageService ==========
-// ImageService is fully delegated to ContainerEngine.
-// E2B VMs use pre-built images and do not participate in CRI image lifecycle.
 
 func (s *MuxServer) ListImages(ctx context.Context, req *runtime.ListImagesRequest) (*runtime.ListImagesResponse, error) {
-	log.Printf("[MuxServer] ImageService.ListImages: filter=%v", req.GetFilter())
-	return s.containerEngine.ListImages(ctx, req)
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		allImages []*runtime.Image
+		errs     []error
+	)
+
+	engines := []engine.RuntimeEngine{s.containerEngine, s.e2bEngine}
+	for _, eng := range engines {
+		wg.Add(1)
+		go func(e engine.RuntimeEngine) {
+			defer wg.Done()
+			resp, err := e.ListImages(ctx, req)
+			mu.Lock()
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s.ListImages: %w", e.Type(), err))
+			} else {
+				allImages = append(allImages, resp.Images...)
+			}
+			mu.Unlock()
+		}(eng)
+	}
+
+	wg.Wait()
+	if len(errs) > 0 && len(allImages) == 0 {
+		return nil, fmt.Errorf("all engines failed: %v", errs)
+	}
+	return &runtime.ListImagesResponse{Images: allImages}, nil
 }
 
 func (s *MuxServer) ImageStatus(ctx context.Context, req *runtime.ImageStatusRequest) (*runtime.ImageStatusResponse, error) {
-	log.Printf("[MuxServer] ImageService.ImageStatus: image=%v", req.GetImage())
-	return s.containerEngine.ImageStatus(ctx, req)
+	resp, err := s.containerEngine.ImageStatus(ctx, req)
+	if err != nil {
+		return s.e2bEngine.ImageStatus(ctx, req)
+	}
+	return resp, nil
 }
 
 func (s *MuxServer) PullImage(ctx context.Context, req *runtime.PullImageRequest) (*runtime.PullImageResponse, error) {
-	log.Printf("[MuxServer] ImageService.PullImage: image=%v", req.GetImage())
-	return s.containerEngine.PullImage(ctx, req)
+	resp, err := s.containerEngine.PullImage(ctx, req)
+	if err != nil {
+		return s.e2bEngine.PullImage(ctx, req)
+	}
+	return resp, nil
 }
 
 func (s *MuxServer) RemoveImage(ctx context.Context, req *runtime.RemoveImageRequest) (*runtime.RemoveImageResponse, error) {
-	log.Printf("[MuxServer] ImageService.RemoveImage: image=%v", req.GetImage())
-	return s.containerEngine.RemoveImage(ctx, req)
+	resp, err := s.containerEngine.RemoveImage(ctx, req)
+	if err != nil {
+		return s.e2bEngine.RemoveImage(ctx, req)
+	}
+	return resp, nil
 }
 
 func (s *MuxServer) ImageFsInfo(ctx context.Context, req *runtime.ImageFsInfoRequest) (*runtime.ImageFsInfoResponse, error) {
-	log.Printf("[MuxServer] ImageService.ImageFsInfo")
-	return s.containerEngine.ImageFsInfo(ctx, req)
+	resp, err := s.containerEngine.ImageFsInfo(ctx, req)
+	if err != nil {
+		return s.e2bEngine.ImageFsInfo(ctx, req)
+	}
+	return resp, nil
 }

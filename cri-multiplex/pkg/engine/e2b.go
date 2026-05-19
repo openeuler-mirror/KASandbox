@@ -167,28 +167,28 @@ func (e *E2BEngine) GetContainerEvents(ctx context.Context, req *runtime.GetEven
 }
 
 func (e *E2BEngine) ListImages(ctx context.Context, req *runtime.ListImagesRequest) (*runtime.ListImagesResponse, error) {
-	log.Println("[E2BEngine] ListImages (not supported)")
+	log.Println("[E2BEngine] ListImages")
 	return &runtime.ListImagesResponse{Images: []*runtime.Image{}}, nil
 }
 
 func (e *E2BEngine) ImageStatus(ctx context.Context, req *runtime.ImageStatusRequest) (*runtime.ImageStatusResponse, error) {
-	log.Println("[E2BEngine] ImageStatus (not supported)")
+	log.Println("[E2BEngine] ImageStatus")
 	return &runtime.ImageStatusResponse{}, nil
 }
 
 func (e *E2BEngine) PullImage(ctx context.Context, req *runtime.PullImageRequest) (*runtime.PullImageResponse, error) {
-	log.Println("[E2BEngine] PullImage (not supported)")
-	return nil, fmt.Errorf("PullImage not supported for E2BEngine")
+	log.Println("[E2BEngine] PullImage")
+	return &runtime.PullImageResponse{}, nil
 }
 
 func (e *E2BEngine) RemoveImage(ctx context.Context, req *runtime.RemoveImageRequest) (*runtime.RemoveImageResponse, error) {
-	log.Println("[E2BEngine] RemoveImage (not supported)")
-	return nil, fmt.Errorf("RemoveImage not supported for E2BEngine")
+	log.Println("[E2BEngine] RemoveImage")
+	return &runtime.RemoveImageResponse{}, nil
 }
 
 func (e *E2BEngine) ImageFsInfo(ctx context.Context, req *runtime.ImageFsInfoRequest) (*runtime.ImageFsInfoResponse, error) {
-	log.Println("[E2BEngine] ImageFsInfo (not supported)")
-	return nil, fmt.Errorf("ImageFsInfo not supported for E2BEngine")
+	log.Println("[E2BEngine] ImageFsInfo")
+	return &runtime.ImageFsInfoResponse{}, nil
 }
 
 func (e *E2BEngine) Close() error { return nil }
