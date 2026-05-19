@@ -46,5 +46,11 @@ type RuntimeEngine interface {
 
 	GetContainerEvents(ctx context.Context, req *runtime.GetEventsRequest, opts ...grpc.CallOption) (runtime.RuntimeService_GetContainerEventsClient, error)
 
+	ListImages(ctx context.Context, req *runtime.ListImagesRequest) (*runtime.ListImagesResponse, error)
+	ImageStatus(ctx context.Context, req *runtime.ImageStatusRequest) (*runtime.ImageStatusResponse, error)
+	PullImage(ctx context.Context, req *runtime.PullImageRequest) (*runtime.PullImageResponse, error)
+	RemoveImage(ctx context.Context, req *runtime.RemoveImageRequest) (*runtime.RemoveImageResponse, error)
+	ImageFsInfo(ctx context.Context, req *runtime.ImageFsInfoRequest) (*runtime.ImageFsInfoResponse, error)
+
 	Close() error
 }

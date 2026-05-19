@@ -16,6 +16,7 @@ type ContainerEngine struct {
 	mu         sync.Once
 	conn       *grpc.ClientConn
 	client     runtime.RuntimeServiceClient
+	imgClient  runtime.ImageServiceClient
 	initErr    error
 }
 
@@ -32,6 +33,7 @@ func (e *ContainerEngine) ensureConn() error {
 		)
 		if e.initErr == nil {
 			e.client = runtime.NewRuntimeServiceClient(e.conn)
+			e.imgClient = runtime.NewImageServiceClient(e.conn)
 		}
 	})
 	return e.initErr
@@ -200,6 +202,41 @@ func (e *ContainerEngine) GetContainerEvents(ctx context.Context, req *runtime.G
 		return nil, fmt.Errorf("containerd not available: %w", err)
 	}
 	return e.client.GetContainerEvents(ctx, req, opts...)
+}
+
+func (e *ContainerEngine) ListImages(ctx context.Context, req *runtime.ListImagesRequest) (*runtime.ListImagesResponse, error) {
+	if err := e.ensureConn(); err != nil {
+		return nil, fmt.Errorf("containerd not available: %w", err)
+	}
+	return e.imgClient.ListImages(ctx, req)
+}
+
+func (e *ContainerEngine) ImageStatus(ctx context.Context, req *runtime.ImageStatusRequest) (*runtime.ImageStatusResponse, error) {
+	if err := e.ensureConn(); err != nil {
+		return nil, fmt.Errorf("containerd not available: %w", err)
+	}
+	return e.imgClient.ImageStatus(ctx, req)
+}
+
+func (e *ContainerEngine) PullImage(ctx context.Context, req *runtime.PullImageRequest) (*runtime.PullImageResponse, error) {
+	if err := e.ensureConn(); err != nil {
+		return nil, fmt.Errorf("containerd not available: %w", err)
+	}
+	return e.imgClient.PullImage(ctx, req)
+}
+
+func (e *ContainerEngine) RemoveImage(ctx context.Context, req *runtime.RemoveImageRequest) (*runtime.RemoveImageResponse, error) {
+	if err := e.ensureConn(); err != nil {
+		return nil, fmt.Errorf("containerd not available: %w", err)
+	}
+	return e.imgClient.RemoveImage(ctx, req)
+}
+
+func (e *ContainerEngine) ImageFsInfo(ctx context.Context, req *runtime.ImageFsInfoRequest) (*runtime.ImageFsInfoResponse, error) {
+	if err := e.ensureConn(); err != nil {
+		return nil, fmt.Errorf("containerd not available: %w", err)
+	}
+	return e.imgClient.ImageFsInfo(ctx, req)
 }
 
 func (e *ContainerEngine) Close() error {
