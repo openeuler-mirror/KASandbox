@@ -29,3 +29,17 @@ func (t *podTracker) Delete(sandboxID string) {
 	delete(t.pods, sandboxID)
 	t.mu.Unlock()
 }
+
+// List 返回所有非 Removed 的 pod（用于 ListPodSandbox / ListContainers）
+func (t *podTracker) List() []*podInfo {
+	t.mu.Lock()
+	out := make([]*podInfo, 0, len(t.pods))
+	for _, v := range t.pods {
+		if v.state != stateRemoved {
+			out = append(out, v)
+		}
+	}
+	t.mu.Unlock()
+	return out
+}
+

@@ -16,6 +16,7 @@ type E2BConfig struct {
 	OrchestratorAddr string
 	APIBaseURL       string
 	APIKey           string
+	NodeIP           string // 用于 PodSandboxStatus 网络状态报告
 }
 
 type E2BEngine interface {
@@ -27,9 +28,18 @@ func NewE2BEngine(cfg *E2BConfig) E2BEngine {
 	case BackendREST:
 		return newRestE2BEngine(cfg.APIBaseURL, cfg.APIKey)
 	default:
-		return newGRPCE2BEngine(cfg.OrchestratorAddr)
+		return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.NodeIP)
 	}
 }
+
+// e2bState 定义在 e2b.go 以便被 pod_tracker.go 和 grpc_e2b.go 共用
+type e2bState int
+
+const (
+	stateRunning e2bState = iota
+	statePaused
+	stateRemoved
+)
 
 type podInfo struct {
 	sandboxID   string
@@ -40,6 +50,8 @@ type podInfo struct {
 	annotations map[string]string
 	createdAt   time.Time
 	endedAt     *time.Time
+	state       e2bState // 新增：本地状态机
+	templateID  string   // 新增：用于 Pause 请求
+	buildID     string   // 新增：用于 Pause 请求
 }
-
 

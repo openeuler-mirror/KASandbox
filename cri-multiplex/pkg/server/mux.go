@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -341,30 +342,42 @@ func (s *MuxServer) PortForward(ctx context.Context, req *runtime.PortForwardReq
 	return eng.PortForward(ctx, req)
 }
 
-func (s *MuxServer) Status(ctx context.Context, req *runtime.StatusRequest) (*runtime.StatusResponse, error) {
-	return s.containerEngine.Status(ctx, req)
+func (s *MuxServer) Version(ctx context.Context, req *runtime.VersionRequest) (*runtime.VersionResponse, error) {
+	return &runtime.VersionResponse{
+		Version:           "0.1.0",
+		RuntimeName:       "e2b-cri-shim",
+		RuntimeVersion:    "0.1.0",
+		RuntimeApiVersion: "v1",
+	}, nil
 }
 
-func (s *MuxServer) Version(ctx context.Context, req *runtime.VersionRequest) (*runtime.VersionResponse, error) {
-	return s.containerEngine.Version(ctx, req)
+func (s *MuxServer) Status(ctx context.Context, req *runtime.StatusRequest) (*runtime.StatusResponse, error) {
+	return &runtime.StatusResponse{
+		Status: &runtime.RuntimeStatus{
+			Conditions: []*runtime.RuntimeCondition{
+				{Type: runtime.RuntimeReady, Status: true},
+				{Type: runtime.NetworkReady, Status: true},
+			},
+		},
+	}, nil
 }
 
 func (s *MuxServer) UpdateRuntimeConfig(ctx context.Context, req *runtime.UpdateRuntimeConfigRequest) (*runtime.UpdateRuntimeConfigResponse, error) {
-	return s.containerEngine.UpdateRuntimeConfig(ctx, req)
+	return &runtime.UpdateRuntimeConfigResponse{}, nil
 }
 
 func (s *MuxServer) GetContainerEvents(req *runtime.GetEventsRequest, srv runtime.RuntimeService_GetContainerEventsServer) error {
 	return fmt.Errorf("GetContainerEvents not supported by multiplexer")
 }
 
-// ========== ImageService ==========
+// ========== ImageService：按前缀路由 ==========
 
 func (s *MuxServer) ListImages(ctx context.Context, req *runtime.ListImagesRequest) (*runtime.ListImagesResponse, error) {
 	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex
+		wg        sync.WaitGroup
+		mu        sync.Mutex
 		allImages []*runtime.Image
-		errs     []error
+		errs      []error
 	)
 
 	engines := []engine.RuntimeEngine{s.containerEngine, s.e2bEngine}
@@ -391,27 +404,24 @@ func (s *MuxServer) ListImages(ctx context.Context, req *runtime.ListImagesReque
 }
 
 func (s *MuxServer) ImageStatus(ctx context.Context, req *runtime.ImageStatusRequest) (*runtime.ImageStatusResponse, error) {
-	resp, err := s.containerEngine.ImageStatus(ctx, req)
-	if err != nil {
+	if strings.HasPrefix(req.Image.Image, "e2b.dev/") {
 		return s.e2bEngine.ImageStatus(ctx, req)
 	}
-	return resp, nil
+	return s.containerEngine.ImageStatus(ctx, req)
 }
 
 func (s *MuxServer) PullImage(ctx context.Context, req *runtime.PullImageRequest) (*runtime.PullImageResponse, error) {
-	resp, err := s.containerEngine.PullImage(ctx, req)
-	if err != nil {
+	if strings.HasPrefix(req.Image.Image, "e2b.dev/") {
 		return s.e2bEngine.PullImage(ctx, req)
 	}
-	return resp, nil
+	return s.containerEngine.PullImage(ctx, req)
 }
 
 func (s *MuxServer) RemoveImage(ctx context.Context, req *runtime.RemoveImageRequest) (*runtime.RemoveImageResponse, error) {
-	resp, err := s.containerEngine.RemoveImage(ctx, req)
-	if err != nil {
+	if strings.HasPrefix(req.Image.Image, "e2b.dev/") {
 		return s.e2bEngine.RemoveImage(ctx, req)
 	}
-	return resp, nil
+	return s.containerEngine.RemoveImage(ctx, req)
 }
 
 func (s *MuxServer) ImageFsInfo(ctx context.Context, req *runtime.ImageFsInfoRequest) (*runtime.ImageFsInfoResponse, error) {
@@ -421,3 +431,4 @@ func (s *MuxServer) ImageFsInfo(ctx context.Context, req *runtime.ImageFsInfoReq
 	}
 	return resp, nil
 }
+
