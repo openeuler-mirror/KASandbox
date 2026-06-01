@@ -1,10 +1,15 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,10 +18,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/cri-multiplex/pkg/envd/process"
 	"github.com/cri-multiplex/pkg/orchestrator"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
@@ -36,13 +44,12 @@ const (
 	annAutoPause          = "e2b.dev/auto-pause"
 	annSnapshot           = "e2b.dev/snapshot"
 	annBaseTemplateID     = "e2b.dev/base-template-id"
-	// 新增：补齐日志中缺失的 SandboxConfig 属性
-	annExecutionID     = "e2b.dev/execution-id"
-	annEnvdAccessToken = "e2b.dev/envd-access-token"
-	annEnvVars         = "e2b.dev/env-vars"
-	annNetwork         = "e2b.dev/network"
-	annVolumeMounts    = "e2b.dev/volume-mounts"
-	annAutoResume      = "e2b.dev/auto-resume"
+	annExecutionID        = "e2b.dev/execution-id"
+	annEnvdAccessToken    = "e2b.dev/envd-access-token"
+	annEnvVars            = "e2b.dev/env-vars"
+	annNetwork            = "e2b.dev/network"
+	annVolumeMounts       = "e2b.dev/volume-mounts"
+	annAutoResume         = "e2b.dev/auto-resume"
 )
 
 var defaultSandboxConfig = struct {
@@ -61,7 +68,7 @@ var defaultSandboxConfig = struct {
 	VCPU:             1,
 	RAMMB:            2048,
 	EnvdVersion:      "latest",
-	MaxSandboxLength: 24, // hours
+	MaxSandboxLength: 24,
 	AllowInternet:    false,
 }
 
@@ -72,14 +79,16 @@ type e2bImageMeta struct {
 }
 
 type grpcE2BEngine struct {
-	orchestratorAddr string
-	nodeIP           string
-	mu               sync.Mutex
-	conn             *grpc.ClientConn
-	client           orchestrator.SandboxServiceClient
-	tracker          *podTracker
-	imageCache       map[string]*e2bImageMeta
-	imageMu          sync.RWMutex
+	orchestratorAddr      string
+	orchestratorProxyAddr string
+	nodeIP                string
+	mu                    sync.Mutex
+	conn                  *grpc.ClientConn
+	client                orchestrator.SandboxServiceClient
+	tracker               *podTracker
+	imageCache            map[string]*e2bImageMeta
+	imageMu               sync.RWMutex
+	envdHTTPClient        *http.Client
 }
 
 func newGRPCE2BEngine(orchestratorAddr, nodeIP string) *grpcE2BEngine {
@@ -113,8 +122,6 @@ func (e *grpcE2BEngine) ensureConn() error {
 }
 
 func (e *grpcE2BEngine) Type() EngineType { return EngineTypeE2B }
-
-// ========== 错误映射 ==========
 
 func mapE2BError(err error) error {
 	if err == nil {
@@ -168,8 +175,6 @@ func isNotFound(err error) bool {
 	return strings.Contains(msg, "not found") || strings.Contains(msg, "does not exist")
 }
 
-// ========== 必填校验 ==========
-
 func (e *grpcE2BEngine) validateAnnotations(anns map[string]string) (templateID, buildID, teamID string, err error) {
 	templateID = anns[annTemplateID]
 	buildID = anns[annBuildID]
@@ -181,67 +186,58 @@ func (e *grpcE2BEngine) validateAnnotations(anns map[string]string) (templateID,
 	return templateID, buildID, teamID, nil
 }
 
-// ========== PodSandbox 生命周期 ==========
-
 func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRequest) (*runtime.RunPodSandboxResponse, error) {
 	log.Printf("[GrpcE2BEngine] RunPodSandbox: name=%s, handler=%s", req.Config.Metadata.Name, req.RuntimeHandler)
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
-
-	// 幂等：已存在且未删除则直接返回
 	if existing, ok := e.tracker.Get(req.Config.Metadata.Uid); ok && existing.state != stateRemoved {
 		log.Printf("[GrpcE2BEngine] RunPodSandbox: sandbox %s already exists, returning idempotently", req.Config.Metadata.Uid)
 		return &runtime.RunPodSandboxResponse{PodSandboxId: req.Config.Metadata.Uid}, nil
 	}
-
-	// 必填校验
 	templateID, buildID, teamID, err := e.validateAnnotations(req.Config.Annotations)
 	if err != nil {
 		return nil, err
 	}
-
 	sandboxID := req.Config.Metadata.Uid
 	alias := req.Config.Metadata.Name
 	now := time.Now()
-
 	cfg := e.annotationsToSandboxConfig(req.Config.Annotations, sandboxID, alias, req.Config.Labels)
 	cfg.TemplateId = templateID
 	cfg.BuildId = buildID
 	cfg.TeamId = teamID
-
-	// 计算 end_time（默认 MaxSandboxLength 小时）
 	maxLen := cfg.MaxSandboxLength
 	if maxLen <= 0 {
 		maxLen = 1
 	}
 	endTime := now.Add(time.Duration(maxLen) * time.Hour)
-
 	e2bReq := &orchestrator.SandboxCreateRequest{
 		Sandbox:   cfg,
 		StartTime: timestamppb.New(now),
 		EndTime:   timestamppb.New(endTime),
 	}
-
 	resp, err := e.client.Create(ctx, e2bReq)
 	if err != nil {
 		return nil, mapE2BError(err)
 	}
-
+	envdToken := ""
+	if t, ok := req.Config.Annotations[annEnvdAccessToken]; ok && t != "" {
+		envdToken = t
+	}
 	e.tracker.Add(sandboxID, &podInfo{
-		sandboxID:   sandboxID,
-		podUID:      req.Config.Metadata.Uid,
-		name:        req.Config.Metadata.Name,
-		namespace:   req.Config.Metadata.Namespace,
-		labels:      req.Config.Labels,
-		annotations: req.Config.Annotations,
-		createdAt:   now,
-		state:       stateRunning,
-		templateID:  templateID,
-		buildID:     buildID,
+		sandboxID:       sandboxID,
+		podUID:          req.Config.Metadata.Uid,
+		name:            req.Config.Metadata.Name,
+		namespace:       req.Config.Metadata.Namespace,
+		labels:          req.Config.Labels,
+		annotations:     req.Config.Annotations,
+		createdAt:       now,
+		state:           stateRunning,
+		templateID:      templateID,
+		buildID:         buildID,
+		envdAccessToken: envdToken,
 	})
-
-	log.Printf("[GrpcE2BEngine] sandbox created: %s (client_id=%s)", sandboxID, resp.ClientId)
+	log.Printf("[GrpcE2BEngine] sandbox created: %s (client_id=%s, envd_token_set=%v)", sandboxID, resp.ClientId, envdToken != "")
 	return &runtime.RunPodSandboxResponse{PodSandboxId: sandboxID}, nil
 }
 
@@ -250,13 +246,11 @@ func (e *grpcE2BEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
-
 	pod, ok := e.tracker.Get(req.PodSandboxId)
 	if !ok {
 		log.Printf("[GrpcE2BEngine] StopPodSandbox: sandbox %s not in tracker, treating as success", req.PodSandboxId)
 		return &runtime.StopPodSandboxResponse{}, nil
 	}
-
 	_, err := e.client.Pause(ctx, &orchestrator.SandboxPauseRequest{
 		SandboxId:  pod.sandboxID,
 		TemplateId: pod.templateID,
@@ -265,11 +259,9 @@ func (e *grpcE2BEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 	if err != nil && !isNotFound(err) {
 		return nil, mapE2BError(err)
 	}
-
 	pod.state = statePaused
 	now := time.Now()
 	pod.endedAt = &now
-
 	return &runtime.StopPodSandboxResponse{}, nil
 }
 
@@ -278,28 +270,21 @@ func (e *grpcE2BEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
-
-	_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{
-		SandboxId: req.PodSandboxId,
-	})
+	_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: req.PodSandboxId})
 	if err != nil && !isNotFound(err) {
 		return nil, mapE2BError(err)
 	}
-
 	e.tracker.Delete(req.PodSandboxId)
 	return &runtime.RemovePodSandboxResponse{}, nil
 }
 
 func (e *grpcE2BEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSandboxStatusRequest) (*runtime.PodSandboxStatusResponse, error) {
 	log.Printf("[GrpcE2BEngine] PodSandboxStatus: id=%s", req.PodSandboxId)
-
 	pod, ok := e.tracker.Get(req.PodSandboxId)
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "sandbox %s not found", req.PodSandboxId)
 	}
-
 	state := inferPodSandboxState(pod.state)
-
 	status := &runtime.PodSandboxStatus{
 		Id:        pod.sandboxID,
 		State:     state,
@@ -314,7 +299,6 @@ func (e *grpcE2BEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSa
 	}
 	status.Labels = pod.labels
 	status.Annotations = pod.annotations
-
 	return &runtime.PodSandboxStatusResponse{Status: status}, nil
 }
 
@@ -323,26 +307,20 @@ func (e *grpcE2BEngine) ListPodSandbox(ctx context.Context, req *runtime.ListPod
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
-
-	// 与 E2B 同步，确认哪些 sandbox 仍存活
 	list, err := e.client.List(ctx, &emptypb.Empty{})
 	if err != nil {
 		return nil, mapE2BError(err)
 	}
-
 	active := make(map[string]bool)
 	for _, sbx := range list.Sandboxes {
 		active[sbx.Config.SandboxId] = true
 	}
-
 	var items []*runtime.PodSandbox
 	for _, pod := range e.tracker.List() {
 		state := inferPodSandboxState(pod.state)
-		// 若 E2B 侧已不存在但本地仍为 Running，降级为 NOTREADY
 		if !active[pod.sandboxID] && pod.state == stateRunning {
 			state = runtime.PodSandboxState_SANDBOX_NOTREADY
 		}
-
 		items = append(items, &runtime.PodSandbox{
 			Id: pod.sandboxID,
 			Metadata: &runtime.PodSandboxMetadata{
@@ -356,12 +334,9 @@ func (e *grpcE2BEngine) ListPodSandbox(ctx context.Context, req *runtime.ListPod
 			Annotations: pod.annotations,
 		})
 	}
-
 	items = filterPodSandbox(items, req.Filter)
 	return &runtime.ListPodSandboxResponse{Items: items}, nil
 }
-
-// ========== Container 生命周期（1 Sandbox = 1 Container） ==========
 
 func (e *grpcE2BEngine) CreateContainer(ctx context.Context, req *runtime.CreateContainerRequest) (*runtime.CreateContainerResponse, error) {
 	log.Printf("[GrpcE2BEngine] CreateContainer: pod=%s, name=%s", req.PodSandboxId, req.Config.Metadata.Name)
@@ -379,13 +354,11 @@ func (e *grpcE2BEngine) StopContainer(ctx context.Context, req *runtime.StopCont
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
-
 	sandboxID := stripContainerSuffix(req.ContainerId)
 	pod, ok := e.tracker.Get(sandboxID)
 	if !ok {
 		return &runtime.StopContainerResponse{}, nil
 	}
-
 	_, err := e.client.Pause(ctx, &orchestrator.SandboxPauseRequest{
 		SandboxId:  pod.sandboxID,
 		TemplateId: pod.templateID,
@@ -394,7 +367,6 @@ func (e *grpcE2BEngine) StopContainer(ctx context.Context, req *runtime.StopCont
 	if err != nil && !isNotFound(err) {
 		return nil, mapE2BError(err)
 	}
-
 	pod.state = statePaused
 	return &runtime.StopContainerResponse{}, nil
 }
@@ -404,28 +376,23 @@ func (e *grpcE2BEngine) RemoveContainer(ctx context.Context, req *runtime.Remove
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
-
 	sandboxID := stripContainerSuffix(req.ContainerId)
-	_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{
-		SandboxId: sandboxID,
-	})
+	_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: sandboxID})
 	if err != nil && !isNotFound(err) {
 		return nil, mapE2BError(err)
 	}
-
 	e.tracker.Delete(sandboxID)
 	return &runtime.RemoveContainerResponse{}, nil
 }
 
 func (e *grpcE2BEngine) ListContainers(ctx context.Context, req *runtime.ListContainersRequest) (*runtime.ListContainersResponse, error) {
 	log.Println("[GrpcE2BEngine] ListContainers")
-
 	var items []*runtime.Container
 	for _, pod := range e.tracker.List() {
 		items = append(items, &runtime.Container{
 			Id:           pod.sandboxID + "-c",
 			PodSandboxId: pod.sandboxID,
-			Metadata: &runtime.ContainerMetadata{ // ← 新增
+			Metadata: &runtime.ContainerMetadata{
 				Name: pod.name,
 			},
 			State: inferContainerState(pod.state),
@@ -437,24 +404,21 @@ func (e *grpcE2BEngine) ListContainers(ctx context.Context, req *runtime.ListCon
 			Annotations: pod.annotations,
 		})
 	}
-
 	items = filterContainers(items, req.Filter)
 	return &runtime.ListContainersResponse{Containers: items}, nil
 }
 
 func (e *grpcE2BEngine) ContainerStatus(ctx context.Context, req *runtime.ContainerStatusRequest) (*runtime.ContainerStatusResponse, error) {
 	log.Printf("[GrpcE2BEngine] ContainerStatus: id=%s", req.ContainerId)
-
 	sandboxID := stripContainerSuffix(req.ContainerId)
 	pod, ok := e.tracker.Get(sandboxID)
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "container %s not found", req.ContainerId)
 	}
-
 	return &runtime.ContainerStatusResponse{
 		Status: &runtime.ContainerStatus{
 			Id: req.ContainerId,
-			Metadata: &runtime.ContainerMetadata{ // ← 新增
+			Metadata: &runtime.ContainerMetadata{
 				Name: pod.name,
 			},
 			State:     inferContainerState(pod.state),
@@ -470,30 +434,23 @@ func (e *grpcE2BEngine) ContainerStatus(ctx context.Context, req *runtime.Contai
 	}, nil
 }
 
-// ========== ImageService ==========
-
 func (e *grpcE2BEngine) PullImage(ctx context.Context, req *runtime.PullImageRequest) (*runtime.PullImageResponse, error) {
 	log.Printf("[GrpcE2BEngine] PullImage: %s", req.Image.Image)
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
-
 	imageRef := req.Image.Image
 	if !strings.HasPrefix(imageRef, "e2b.dev/") {
 		return nil, status.Error(codes.InvalidArgument, "not an e2b image")
 	}
-
 	templateID, buildID, err := parseE2BImageRef(imageRef)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-
-	// 验证 build_id 存在于缓存
 	resp, err := e.client.ListCachedBuilds(ctx, &emptypb.Empty{})
 	if err != nil {
 		return nil, mapE2BError(err)
 	}
-
 	found := false
 	for _, build := range resp.Builds {
 		if build.BuildId == buildID {
@@ -504,7 +461,6 @@ func (e *grpcE2BEngine) PullImage(ctx context.Context, req *runtime.PullImageReq
 	if !found {
 		return nil, status.Errorf(codes.NotFound, "build %s not found in cached builds", buildID)
 	}
-
 	e.imageMu.Lock()
 	e.imageCache[imageRef] = &e2bImageMeta{
 		templateID: templateID,
@@ -512,7 +468,6 @@ func (e *grpcE2BEngine) PullImage(ctx context.Context, req *runtime.PullImageReq
 		pulledAt:   time.Now(),
 	}
 	e.imageMu.Unlock()
-
 	return &runtime.PullImageResponse{ImageRef: imageRef}, nil
 }
 
@@ -521,12 +476,10 @@ func (e *grpcE2BEngine) ListImages(ctx context.Context, req *runtime.ListImagesR
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
-
 	resp, err := e.client.ListCachedBuilds(ctx, &emptypb.Empty{})
 	if err != nil {
 		return nil, mapE2BError(err)
 	}
-
 	var images []*runtime.Image
 	for _, build := range resp.Builds {
 		ref := fmt.Sprintf("e2b.dev/template:%s", build.BuildId)
@@ -536,8 +489,6 @@ func (e *grpcE2BEngine) ListImages(ctx context.Context, req *runtime.ListImagesR
 			Size_:    0,
 		})
 	}
-
-	// 合并本地已 pull 的镜像（去重）
 	e.imageMu.RLock()
 	for ref, meta := range e.imageCache {
 		_ = meta
@@ -548,25 +499,21 @@ func (e *grpcE2BEngine) ListImages(ctx context.Context, req *runtime.ListImagesR
 		})
 	}
 	e.imageMu.RUnlock()
-
 	return &runtime.ListImagesResponse{Images: images}, nil
 }
 
 func (e *grpcE2BEngine) ImageStatus(ctx context.Context, req *runtime.ImageStatusRequest) (*runtime.ImageStatusResponse, error) {
 	log.Printf("[GrpcE2BEngine] ImageStatus: %s", req.Image.Image)
-
 	imageRef := req.Image.Image
 	if !strings.HasPrefix(imageRef, "e2b.dev/") {
 		return &runtime.ImageStatusResponse{Image: nil}, nil
 	}
-
 	e.imageMu.RLock()
 	_, ok := e.imageCache[imageRef]
 	e.imageMu.RUnlock()
 	if !ok {
 		return &runtime.ImageStatusResponse{Image: nil}, nil
 	}
-
 	return &runtime.ImageStatusResponse{
 		Image: &runtime.Image{
 			Id:       imageRef,
@@ -578,16 +525,13 @@ func (e *grpcE2BEngine) ImageStatus(ctx context.Context, req *runtime.ImageStatu
 
 func (e *grpcE2BEngine) RemoveImage(ctx context.Context, req *runtime.RemoveImageRequest) (*runtime.RemoveImageResponse, error) {
 	log.Printf("[GrpcE2BEngine] RemoveImage: %s", req.Image.Image)
-
 	imageRef := req.Image.Image
 	if !strings.HasPrefix(imageRef, "e2b.dev/") {
 		return &runtime.RemoveImageResponse{}, nil
 	}
-
 	e.imageMu.Lock()
 	delete(e.imageCache, imageRef)
 	e.imageMu.Unlock()
-
 	return &runtime.RemoveImageResponse{}, nil
 }
 
@@ -596,11 +540,380 @@ func (e *grpcE2BEngine) ImageFsInfo(ctx context.Context, req *runtime.ImageFsInf
 	return &runtime.ImageFsInfoResponse{}, nil
 }
 
-// ========== 降级 / 未实现接口 ==========
+// ========== Connect Binary Envelope 工具 ==========
+
+func writeConnectBinaryEnvelope(w io.Writer, flags uint8, payload []byte) error {
+	value := uint64(len(payload))<<2 | uint64(flags&0x03)
+	var buf [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(buf[:], value)
+	if _, err := w.Write(buf[:n]); err != nil {
+		return err
+	}
+	if len(payload) > 0 {
+		if _, err := w.Write(payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func readConnectBinaryEnvelope(r io.Reader) (flags uint8, payload []byte, err error) {
+	var value uint64
+	var shift uint
+	for {
+		b := make([]byte, 1)
+		if _, err := io.ReadFull(r, b); err != nil {
+			return 0, nil, err
+		}
+		value |= uint64(b[0]&0x7f) << shift
+		if b[0]&0x80 == 0 {
+			break
+		}
+		shift += 7
+		if shift >= 64 {
+			return 0, nil, fmt.Errorf("varint overflow")
+		}
+	}
+	flags = uint8(value & 0x03)
+	length := int(value >> 2)
+	if length > 0 {
+		const maxMessageSize = 16 * 1024 * 1024
+		if length > maxMessageSize {
+			return 0, nil, fmt.Errorf("message too large: %d bytes", length)
+		}
+		payload = make([]byte, length)
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return 0, nil, err
+		}
+	}
+	return flags, payload, nil
+}
+
+// readGRPCMessage 尝试以 gRPC 格式读取消息（5字节前缀：1字节压缩标志 + 4字节大端长度）
+func readGRPCMessage(r io.Reader) (compressed bool, payload []byte, err error) {
+	prefix := make([]byte, 5)
+	if _, err := io.ReadFull(r, prefix); err != nil {
+		return false, nil, err
+	}
+	compressed = prefix[0] != 0
+	length := int(binary.BigEndian.Uint32(prefix[1:5]))
+	if length > 0 {
+		const maxMessageSize = 16 * 1024 * 1024
+		if length > maxMessageSize {
+			return false, nil, fmt.Errorf("gRPC message too large: %d bytes", length)
+		}
+		payload = make([]byte, length)
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return false, nil, err
+		}
+	}
+	return compressed, payload, nil
+}
+
+const (
+	envdExecRetryDelay     = 5 * time.Millisecond
+	envdExecRequestTimeout = 5 * time.Second
+	envdExecMaxMessageSize = 16 * 1024 * 1024
+)
+
+func (e *grpcE2BEngine) getOrchestratorProxyAddr() string {
+	if e.orchestratorProxyAddr != "" {
+		return e.orchestratorProxyAddr
+	}
+	host, _, err := net.SplitHostPort(e.orchestratorAddr)
+	if err != nil {
+		return e.orchestratorAddr + ":5007"
+	}
+	return net.JoinHostPort(host, "5007")
+}
+
+func (e *grpcE2BEngine) getEnvdHTTPClient() *http.Client {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.envdHTTPClient != nil {
+		return e.envdHTTPClient
+	}
+	proxyAddr := e.getOrchestratorProxyAddr()
+	e.envdHTTPClient = &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, proxyAddr)
+			},
+		},
+	}
+	return e.envdHTTPClient
+}
+
+func getAccessTokenFromMetadata(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	vals := md.Get("x-access-token")
+	if len(vals) > 0 && vals[0] != "" {
+		return vals[0]
+	}
+	vals = md.Get("X-Access-Token")
+	if len(vals) > 0 && vals[0] != "" {
+		return vals[0]
+	}
+	return ""
+}
+
+// writeGRPCFrame 写入 gRPC length-prefixed message
+// 格式: 1字节压缩标志(0=不压缩) + 4字节大端长度 + protobuf payload
+func writeGRPCFrame(w io.Writer, payload []byte) error {
+	if len(payload) > 0xffffffff {
+		return fmt.Errorf("payload too large: %d bytes", len(payload))
+	}
+	prefix := make([]byte, 5)
+	prefix[0] = 0 // 不压缩
+	binary.BigEndian.PutUint32(prefix[1:5], uint32(len(payload)))
+	if _, err := w.Write(prefix); err != nil {
+		return err
+	}
+	_, err := w.Write(payload)
+	return err
+}
+
+// readGRPCFrame 读取 gRPC length-prefixed message
+func readGRPCFrame(r io.Reader) (isCompressed bool, payload []byte, err error) {
+	prefix := make([]byte, 5)
+	if _, err := io.ReadFull(r, prefix); err != nil {
+		if err == io.EOF {
+			return false, nil, io.EOF
+		}
+		return false, nil, fmt.Errorf("read gRPC prefix: %w", err)
+	}
+	isCompressed = prefix[0] != 0
+	length := int(binary.BigEndian.Uint32(prefix[1:5]))
+	if length == 0 {
+		return isCompressed, nil, nil
+	}
+	const maxMessageSize = 16 * 1024 * 1024
+	if length > maxMessageSize {
+		return false, nil, fmt.Errorf("gRPC message too large: %d bytes", length)
+	}
+	payload = make([]byte, length)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return false, nil, fmt.Errorf("read gRPC payload: %w", err)
+	}
+	return isCompressed, payload, nil
+}
+
+func (e *grpcE2BEngine) doExecSyncRequest(
+	ctx context.Context,
+	sandboxID string,
+	accessToken string,
+	body []byte,
+) (*http.Response, int64, error) {
+	requestCount := int64(0)
+	host := fmt.Sprintf("49983-%s.e2b.app", sandboxID)
+	url := fmt.Sprintf("http://%s/process.Process/Start", host)
+	for {
+		requestCount++
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, requestCount, fmt.Errorf("create request: %w", err)
+		}
+		request.Host = host
+		// envd 实际按 gRPC 帧解析，Content-Type 保持 application/connect+proto 即可（envd/orchestrator 兼容）
+		request.Header.Set("Content-Type", "application/connect+proto")
+		request.Header.Set("Accept", "application/connect+proto")
+		request.Header.Set("Connect-Protocol-Version", "1")
+		if accessToken != "" {
+			request.Header.Set("X-Access-Token", accessToken)
+		}
+
+		log.Printf("[GrpcE2BEngine] >>> HTTP Request: POST %s", url)
+		log.Printf("[GrpcE2BEngine] >>> Host: %s", host)
+		for k, v := range request.Header {
+			log.Printf("[GrpcE2BEngine] >>> Header %s: %v", k, v)
+		}
+		log.Printf("[GrpcE2BEngine] >>> Body hex (%d bytes): %x", len(body), body)
+
+		response, err := e.getEnvdHTTPClient().Do(request)
+		if err == nil {
+			log.Printf("[GrpcE2BEngine] <<< HTTP Response: %d, Content-Type: %s", response.StatusCode, response.Header.Get("Content-Type"))
+			// 预读前 256 字节用于调试，然后拼回流中继续解析
+			respPeek := make([]byte, 256)
+			n, _ := io.ReadFull(response.Body, respPeek)
+			log.Printf("[GrpcE2BEngine] <<< Response body first %d bytes hex: %x", n, respPeek[:n])
+			response.Body = io.NopCloser(io.MultiReader(bytes.NewReader(respPeek[:n]), response.Body))
+			return response, requestCount, nil
+		}
+		log.Printf("[GrpcE2BEngine] exec sync request failed, retrying: %v", err)
+		select {
+		case <-ctx.Done():
+			return nil, requestCount, fmt.Errorf("%w with cause: %w", ctx.Err(), context.Cause(ctx))
+		case <-time.After(envdExecRetryDelay):
+		}
+	}
+}
 
 func (e *grpcE2BEngine) ExecSync(ctx context.Context, req *runtime.ExecSyncRequest) (*runtime.ExecSyncResponse, error) {
-	log.Printf("[GrpcE2BEngine] ExecSync: id=%s (unimplemented)", req.ContainerId)
-	return nil, status.Error(codes.Unimplemented, "ExecSync not supported in MVP, use httpGet probe")
+	log.Printf("[GrpcE2BEngine] ExecSync: id=%s, cmd=%v, timeout=%d", req.ContainerId, req.Cmd, req.Timeout)
+	sandboxID := stripContainerSuffix(req.ContainerId)
+	pod, ok := e.tracker.Get(sandboxID)
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "sandbox %s not found", sandboxID)
+	}
+	if pod.state != stateRunning {
+		return nil, status.Errorf(codes.FailedPrecondition, "sandbox %s is not running (state=%d)", sandboxID, pod.state)
+	}
+
+	accessToken := getAccessTokenFromMetadata(ctx)
+	if accessToken == "" {
+		accessToken = pod.envdAccessToken
+	}
+	if accessToken == "" {
+		log.Printf("[GrpcE2BEngine] ExecSync: warning: no access token available for sandbox %s, envd may return 401", sandboxID)
+	}
+
+	timeout := time.Duration(req.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	bashCmd := strings.Join(req.Cmd, " ")
+	cwd := "/"
+	stdin := false
+	startReq := &process.StartRequest{
+		Process: &process.ProcessConfig{
+			Cmd:  "/bin/bash",
+			Args: []string{"-l", "-c", bashCmd},
+			Envs: map[string]string{},
+			Cwd:  &cwd,
+		},
+		Stdin: &stdin,
+	}
+
+	payload, err := proto.Marshal(startReq)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "marshal start request: %v", err)
+	}
+
+	// === 关键修正：使用 gRPC length-prefixed 帧格式包装 protobuf payload ===
+	var bodyBuf bytes.Buffer
+	if err := writeGRPCFrame(&bodyBuf, payload); err != nil {
+		return nil, status.Errorf(codes.Internal, "write gRPC frame: %v", err)
+	}
+
+	resp, requestCount, err := e.doExecSyncRequest(ctx, sandboxID, accessToken, bodyBuf.Bytes())
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, status.Errorf(codes.DeadlineExceeded, "exec sync timeout after %d retries", requestCount)
+		}
+		return nil, status.Errorf(codes.Unavailable, "envd request failed after %d retries: %v", requestCount, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, status.Errorf(codes.Internal, "envd returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	log.Printf("[GrpcE2BEngine] envd returned HTTP 200, content-type=%s", resp.Header.Get("Content-Type"))
+
+	var stdout, stderr bytes.Buffer
+	var exitCode int32 = -1
+	eventCount := 0
+
+	// === 关键修正：使用 gRPC length-prefixed 帧格式解析响应（server-side streaming） ===
+	for {
+		compressed, framePayload, err := readGRPCFrame(resp.Body)
+		if err == io.EOF {
+			log.Printf("[GrpcE2BEngine] gRPC stream reached EOF after %d events", eventCount)
+			break
+		}
+		if err != nil {
+			log.Printf("[GrpcE2BEngine] gRPC frame read failed: %v", err)
+			break
+		}
+
+		log.Printf("[GrpcE2BEngine] read gRPC frame: compressed=%v, payload_len=%d, payload_hex=%x",
+			compressed, len(framePayload), framePayload[:min(50, len(framePayload))])
+
+		if len(framePayload) == 0 {
+			continue
+		}
+
+		// 先尝试解析为 protobuf StartResponse
+		var msg process.StartResponse
+		if err := proto.Unmarshal(framePayload, &msg); err != nil {
+			log.Printf("[GrpcE2BEngine] failed to unmarshal StartResponse from gRPC frame: %v", err)
+
+			// 尝试解析为 JSON error（envd 可能以 gRPC 帧返回 JSON 错误）
+			var jsonErr struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(framePayload, &jsonErr); err == nil && jsonErr.Error.Code != "" {
+				return nil, status.Errorf(codes.Internal, "envd error: [%s] %s", jsonErr.Error.Code, jsonErr.Error.Message)
+			}
+
+			// 尝试裸 ProcessEvent（兼容 envd 直接发送事件的情况）
+			var evt process.ProcessEvent
+			if err2 := proto.Unmarshal(framePayload, &evt); err2 == nil {
+				log.Printf("[GrpcE2BEngine] gRPC frame parsed as raw ProcessEvent")
+				msg.Event = &evt
+			} else {
+				log.Printf("[GrpcE2BEngine] gRPC frame also not a ProcessEvent: %v", err2)
+				continue
+			}
+		}
+
+		if msg.Event == nil {
+			log.Printf("[GrpcE2BEngine] StartResponse has no Event")
+			continue
+		}
+
+		if start := msg.Event.GetStart(); start != nil {
+			eventCount++
+			log.Printf("[GrpcE2BEngine] event #%d: Start, pid=%d", eventCount, start.GetPid())
+		} else if data := msg.Event.GetData(); data != nil {
+			eventCount++
+			stdoutData := data.GetStdout()
+			stderrData := data.GetStderr()
+			log.Printf("[GrpcE2BEngine] event #%d: Data, stdout_len=%d, stderr_len=%d", eventCount, len(stdoutData), len(stderrData))
+			if len(stdoutData) > 0 {
+				stdout.Write(stdoutData)
+			}
+			if len(stderrData) > 0 {
+				stderr.Write(stderrData)
+			}
+		} else if end := msg.Event.GetEnd(); end != nil {
+			eventCount++
+			exitCode = end.GetExitCode()
+			log.Printf("[GrpcE2BEngine] event #%d: End, exit_code=%d, error=%s", eventCount, exitCode, end.GetError())
+			break
+		} else if msg.Event.GetKeepalive() != nil {
+			log.Printf("[GrpcE2BEngine] event: Keepalive")
+		} else {
+			log.Printf("[GrpcE2BEngine] unknown event type in ProcessEvent")
+		}
+	}
+
+	if exitCode == -1 {
+		if stdout.Len() > 0 || stderr.Len() > 0 || eventCount > 0 {
+			log.Printf("[GrpcE2BEngine] no End event received, but got output (%d bytes stdout, %d bytes stderr, %d events), assuming success",
+				stdout.Len(), stderr.Len(), eventCount)
+			exitCode = 0
+		} else {
+			return nil, status.Errorf(codes.Internal, "envd stream closed without end event (events=%d, stdout=%d, stderr=%d)",
+				eventCount, stdout.Len(), stderr.Len())
+		}
+	}
+
+	return &runtime.ExecSyncResponse{
+		Stdout:   stdout.Bytes(),
+		Stderr:   stderr.Bytes(),
+		ExitCode: exitCode,
+	}, nil
 }
 
 func (e *grpcE2BEngine) Exec(ctx context.Context, req *runtime.ExecRequest) (*runtime.ExecResponse, error) {
@@ -648,8 +961,6 @@ func (e *grpcE2BEngine) GetContainerEvents(ctx context.Context, req *runtime.Get
 	return nil, status.Error(codes.Unimplemented, "GetContainerEvents not supported by e2b engine")
 }
 
-// ========== 基础接口 ==========
-
 func (e *grpcE2BEngine) Status(ctx context.Context, req *runtime.StatusRequest) (*runtime.StatusResponse, error) {
 	log.Println("[GrpcE2BEngine] Status")
 	return &runtime.StatusResponse{
@@ -677,8 +988,6 @@ func (e *grpcE2BEngine) UpdateRuntimeConfig(ctx context.Context, req *runtime.Up
 	return &runtime.UpdateRuntimeConfigResponse{}, nil
 }
 
-// ========== 辅助函数 ==========
-
 func (e *grpcE2BEngine) annotationsToSandboxConfig(annotations map[string]string, sandboxID, alias string, labels map[string]string) *orchestrator.SandboxConfig {
 	cfg := &orchestrator.SandboxConfig{
 		SandboxId:          sandboxID,
@@ -701,7 +1010,6 @@ func (e *grpcE2BEngine) annotationsToSandboxConfig(annotations map[string]string
 	if annotations == nil {
 		return cfg
 	}
-
 	setStr := func(key string, target *string) {
 		if v, ok := annotations[key]; ok {
 			*target = v
@@ -730,8 +1038,6 @@ func (e *grpcE2BEngine) annotationsToSandboxConfig(annotations map[string]string
 			*target = &v
 		}
 	}
-
-	// 基础字段
 	setStr(annTemplateID, &cfg.TemplateId)
 	setStr(annBuildID, &cfg.BuildId)
 	setStr(annTeamID, &cfg.TeamId)
@@ -747,42 +1053,32 @@ func (e *grpcE2BEngine) annotationsToSandboxConfig(annotations map[string]string
 	setBool(annAutoPause, &cfg.AutoPause)
 	setBool(annSnapshot, &cfg.Snapshot)
 	setStr(annBaseTemplateID, &cfg.BaseTemplateId)
-
 	setStr(annExecutionID, &cfg.ExecutionId)
 	setOptionalStr(annEnvdAccessToken, &cfg.EnvdAccessToken)
-
-	// EnvVars: JSON map 解析
 	if v, ok := annotations[annEnvVars]; ok && v != "" && v != "{}" {
 		var envVars map[string]string
 		if err := json.Unmarshal([]byte(v), &envVars); err == nil {
 			cfg.EnvVars = envVars
 		}
 	}
-
-	// Network: JSON 解析为 SandboxNetworkConfig
 	if v, ok := annotations[annNetwork]; ok && v != "" && v != "<nil>" {
 		var network orchestrator.SandboxNetworkConfig
 		if err := json.Unmarshal([]byte(v), &network); err == nil {
 			cfg.Network = &network
 		}
 	}
-
-	// VolumeMounts: JSON 数组解析
 	if v, ok := annotations[annVolumeMounts]; ok && v != "" && v != "[]" && v != "<nil>" {
 		var mounts []*orchestrator.SandboxVolumeMount
 		if err := json.Unmarshal([]byte(v), &mounts); err == nil {
 			cfg.VolumeMounts = mounts
 		}
 	}
-
-	// AutoResume: JSON 解析
 	if v, ok := annotations[annAutoResume]; ok && v != "" && v != "<nil>" {
 		var autoResume orchestrator.SandboxAutoResumeConfig
 		if err := json.Unmarshal([]byte(v), &autoResume); err == nil {
 			cfg.AutoResume = &autoResume
 		}
 	}
-
 	return cfg
 }
 

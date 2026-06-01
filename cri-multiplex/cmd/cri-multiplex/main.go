@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	defaultSocketPath          = "/run/cri-multiplex.sock"
-	defaultContainerdSocket    = "/run/containerd/containerd.sock"
-	defaultOrchestratorAddress = "localhost:5008"
-	defaultE2BBackend          = "grpc"
+	defaultSocketPath            = "/run/cri-multiplex.sock"
+	defaultContainerdSocket      = "/run/containerd/containerd.sock"
+	defaultOrchestratorAddress   = "localhost:5008"
+	defaultOrchestratorProxyAddr = "localhost:5007"
+	defaultE2BBackend            = "grpc"
 )
 
 // autoNodeIP 返回本机第一个非 lo 的 IPv4 地址，用于自动填充 --node-ip
@@ -40,6 +41,7 @@ func main() {
 	containerdSocket := flag.String("containerd-socket", defaultContainerdSocket, "Unix socket path for containerd")
 	e2bBackend := flag.String("e2b-backend", defaultE2BBackend, "E2B backend: grpc or rest")
 	orchestratorAddress := flag.String("orchestrator-address", defaultOrchestratorAddress, "E2B orchestrator gRPC address (for grpc backend)")
+	orchestratorProxyAddr := flag.String("orchestrator-proxy-address", defaultOrchestratorProxyAddr, "E2B orchestrator HTTP proxy address (for envd interaction)")
 	e2bAPIURL := flag.String("e2b-api-url", "", "E2B API base URL (for rest backend)")
 	e2bAPIKey := flag.String("e2b-api-key", "", "E2B API key (for rest backend)")
 	nodeIP := flag.String("node-ip", "", "Node IP for host network mode (auto-detected if empty)")
@@ -57,6 +59,7 @@ func main() {
 	default:
 		cfg.Backend = engine.BackendGRPC
 		cfg.OrchestratorAddr = *orchestratorAddress
+		cfg.OrchestratorProxyAddr = *orchestratorProxyAddr
 		// grpc 后端需要 node-ip 用于 PodSandboxStatus 网络状态报告
 		if *nodeIP == "" {
 			*nodeIP = autoNodeIP()
@@ -81,8 +84,8 @@ func main() {
 		mux.Stop()
 	}()
 
-	log.Printf("starting cri-multiplex on %s (containerd: %s, e2b backend: %s, node-ip: %s)",
-		*socketPath, *containerdSocket, *e2bBackend, cfg.NodeIP)
+	log.Printf("starting cri-multiplex on %s (containerd: %s, e2b backend: %s, node-ip: %s, proxy: %s)",
+		*socketPath, *containerdSocket, *e2bBackend, cfg.NodeIP, cfg.OrchestratorProxyAddr)
 	if err := mux.Start(*socketPath); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}

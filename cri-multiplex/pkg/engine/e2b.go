@@ -12,11 +12,12 @@ const (
 )
 
 type E2BConfig struct {
-	Backend          E2BBackendType
-	OrchestratorAddr string
-	APIBaseURL       string
-	APIKey           string
-	NodeIP           string // 用于 PodSandboxStatus 网络状态报告
+	Backend               E2BBackendType
+	OrchestratorAddr      string
+	OrchestratorProxyAddr string // HTTP proxy :5007 (用于 envd 交互)
+	APIBaseURL            string
+	APIKey                string
+	NodeIP                string // 用于 PodSandboxStatus 网络状态报告
 }
 
 type E2BEngine interface {
@@ -50,8 +51,9 @@ type podInfo struct {
 	annotations map[string]string
 	createdAt   time.Time
 	endedAt     *time.Time
-	state       e2bState // 新增：本地状态机
-	templateID  string   // 新增：用于 Pause 请求
-	buildID     string   // 新增：用于 Pause 请求
+	state       e2bState
+	templateID  string
+	buildID     string
+	envdAccessToken string
 }
 
