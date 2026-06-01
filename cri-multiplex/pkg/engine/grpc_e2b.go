@@ -3,7 +3,9 @@ package engine
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -78,6 +80,16 @@ type e2bImageMeta struct {
 	pulledAt   time.Time
 }
 
+type execStreamRequest struct {
+	sandboxID   string
+	cmd         []string
+	tty         bool
+	stdin       bool
+	stdout      bool
+	stderr      bool
+	accessToken string
+}
+
 type grpcE2BEngine struct {
 	orchestratorAddr      string
 	orchestratorProxyAddr string
@@ -89,6 +101,12 @@ type grpcE2BEngine struct {
 	imageCache            map[string]*e2bImageMeta
 	imageMu               sync.RWMutex
 	envdHTTPClient        *http.Client
+
+	// streaming server for Exec
+	streamingListener net.Listener
+	streamingReqs     map[string]*execStreamRequest
+	streamingMu       sync.RWMutex
+	streamingOnce     sync.Once
 }
 
 func newGRPCE2BEngine(orchestratorAddr, nodeIP string) *grpcE2BEngine {
@@ -98,6 +116,7 @@ func newGRPCE2BEngine(orchestratorAddr, nodeIP string) *grpcE2BEngine {
 		nodeIP:           nodeIP,
 		tracker:          newPodTracker(),
 		imageCache:       make(map[string]*e2bImageMeta),
+		streamingReqs:    make(map[string]*execStreamRequest),
 	}
 }
 
@@ -540,7 +559,7 @@ func (e *grpcE2BEngine) ImageFsInfo(ctx context.Context, req *runtime.ImageFsInf
 	return &runtime.ImageFsInfoResponse{}, nil
 }
 
-// ========== Connect Binary Envelope 工具 ==========
+// ========== Connect Binary Envelope 工具（保留） ==========
 
 func writeConnectBinaryEnvelope(w io.Writer, flags uint8, payload []byte) error {
 	value := uint64(len(payload))<<2 | uint64(flags&0x03)
@@ -589,25 +608,44 @@ func readConnectBinaryEnvelope(r io.Reader) (flags uint8, payload []byte, err er
 	return flags, payload, nil
 }
 
-// readGRPCMessage 尝试以 gRPC 格式读取消息（5字节前缀：1字节压缩标志 + 4字节大端长度）
-func readGRPCMessage(r io.Reader) (compressed bool, payload []byte, err error) {
+// ========== gRPC Length-Prefixed Frame 工具（ExecSync/Exec 使用） ==========
+
+func writeGRPCFrame(w io.Writer, payload []byte) error {
+	if len(payload) > 0xffffffff {
+		return fmt.Errorf("payload too large: %d bytes", len(payload))
+	}
+	prefix := make([]byte, 5)
+	prefix[0] = 0 // 不压缩
+	binary.BigEndian.PutUint32(prefix[1:5], uint32(len(payload)))
+	if _, err := w.Write(prefix); err != nil {
+		return err
+	}
+	_, err := w.Write(payload)
+	return err
+}
+
+func readGRPCFrame(r io.Reader) (isCompressed bool, payload []byte, err error) {
 	prefix := make([]byte, 5)
 	if _, err := io.ReadFull(r, prefix); err != nil {
-		return false, nil, err
+		if err == io.EOF {
+			return false, nil, io.EOF
+		}
+		return false, nil, fmt.Errorf("read gRPC prefix: %w", err)
 	}
-	compressed = prefix[0] != 0
+	isCompressed = prefix[0] != 0
 	length := int(binary.BigEndian.Uint32(prefix[1:5]))
-	if length > 0 {
-		const maxMessageSize = 16 * 1024 * 1024
-		if length > maxMessageSize {
-			return false, nil, fmt.Errorf("gRPC message too large: %d bytes", length)
-		}
-		payload = make([]byte, length)
-		if _, err := io.ReadFull(r, payload); err != nil {
-			return false, nil, err
-		}
+	if length == 0 {
+		return isCompressed, nil, nil
 	}
-	return compressed, payload, nil
+	const maxMessageSize = 16 * 1024 * 1024
+	if length > maxMessageSize {
+		return false, nil, fmt.Errorf("gRPC message too large: %d bytes", length)
+	}
+	payload = make([]byte, length)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return false, nil, fmt.Errorf("read gRPC payload: %w", err)
+	}
+	return isCompressed, payload, nil
 }
 
 const (
@@ -660,47 +698,6 @@ func getAccessTokenFromMetadata(ctx context.Context) string {
 	return ""
 }
 
-// writeGRPCFrame 写入 gRPC length-prefixed message
-// 格式: 1字节压缩标志(0=不压缩) + 4字节大端长度 + protobuf payload
-func writeGRPCFrame(w io.Writer, payload []byte) error {
-	if len(payload) > 0xffffffff {
-		return fmt.Errorf("payload too large: %d bytes", len(payload))
-	}
-	prefix := make([]byte, 5)
-	prefix[0] = 0 // 不压缩
-	binary.BigEndian.PutUint32(prefix[1:5], uint32(len(payload)))
-	if _, err := w.Write(prefix); err != nil {
-		return err
-	}
-	_, err := w.Write(payload)
-	return err
-}
-
-// readGRPCFrame 读取 gRPC length-prefixed message
-func readGRPCFrame(r io.Reader) (isCompressed bool, payload []byte, err error) {
-	prefix := make([]byte, 5)
-	if _, err := io.ReadFull(r, prefix); err != nil {
-		if err == io.EOF {
-			return false, nil, io.EOF
-		}
-		return false, nil, fmt.Errorf("read gRPC prefix: %w", err)
-	}
-	isCompressed = prefix[0] != 0
-	length := int(binary.BigEndian.Uint32(prefix[1:5]))
-	if length == 0 {
-		return isCompressed, nil, nil
-	}
-	const maxMessageSize = 16 * 1024 * 1024
-	if length > maxMessageSize {
-		return false, nil, fmt.Errorf("gRPC message too large: %d bytes", length)
-	}
-	payload = make([]byte, length)
-	if _, err := io.ReadFull(r, payload); err != nil {
-		return false, nil, fmt.Errorf("read gRPC payload: %w", err)
-	}
-	return isCompressed, payload, nil
-}
-
 func (e *grpcE2BEngine) doExecSyncRequest(
 	ctx context.Context,
 	sandboxID string,
@@ -717,7 +714,6 @@ func (e *grpcE2BEngine) doExecSyncRequest(
 			return nil, requestCount, fmt.Errorf("create request: %w", err)
 		}
 		request.Host = host
-		// envd 实际按 gRPC 帧解析，Content-Type 保持 application/connect+proto 即可（envd/orchestrator 兼容）
 		request.Header.Set("Content-Type", "application/connect+proto")
 		request.Header.Set("Accept", "application/connect+proto")
 		request.Header.Set("Connect-Protocol-Version", "1")
@@ -751,6 +747,7 @@ func (e *grpcE2BEngine) doExecSyncRequest(
 	}
 }
 
+// ExecSync 实现 CRI ExecSync 接口（gRPC length-prefixed 帧格式）
 func (e *grpcE2BEngine) ExecSync(ctx context.Context, req *runtime.ExecSyncRequest) (*runtime.ExecSyncResponse, error) {
 	log.Printf("[GrpcE2BEngine] ExecSync: id=%s, cmd=%v, timeout=%d", req.ContainerId, req.Cmd, req.Timeout)
 	sandboxID := stripContainerSuffix(req.ContainerId)
@@ -795,7 +792,6 @@ func (e *grpcE2BEngine) ExecSync(ctx context.Context, req *runtime.ExecSyncReque
 		return nil, status.Errorf(codes.Internal, "marshal start request: %v", err)
 	}
 
-	// === 关键修正：使用 gRPC length-prefixed 帧格式包装 protobuf payload ===
 	var bodyBuf bytes.Buffer
 	if err := writeGRPCFrame(&bodyBuf, payload); err != nil {
 		return nil, status.Errorf(codes.Internal, "write gRPC frame: %v", err)
@@ -821,7 +817,6 @@ func (e *grpcE2BEngine) ExecSync(ctx context.Context, req *runtime.ExecSyncReque
 	var exitCode int32 = -1
 	eventCount := 0
 
-	// === 关键修正：使用 gRPC length-prefixed 帧格式解析响应（server-side streaming） ===
 	for {
 		compressed, framePayload, err := readGRPCFrame(resp.Body)
 		if err == io.EOF {
@@ -840,12 +835,10 @@ func (e *grpcE2BEngine) ExecSync(ctx context.Context, req *runtime.ExecSyncReque
 			continue
 		}
 
-		// 先尝试解析为 protobuf StartResponse
 		var msg process.StartResponse
 		if err := proto.Unmarshal(framePayload, &msg); err != nil {
 			log.Printf("[GrpcE2BEngine] failed to unmarshal StartResponse from gRPC frame: %v", err)
 
-			// 尝试解析为 JSON error（envd 可能以 gRPC 帧返回 JSON 错误）
 			var jsonErr struct {
 				Error struct {
 					Code    string `json:"code"`
@@ -856,7 +849,6 @@ func (e *grpcE2BEngine) ExecSync(ctx context.Context, req *runtime.ExecSyncReque
 				return nil, status.Errorf(codes.Internal, "envd error: [%s] %s", jsonErr.Error.Code, jsonErr.Error.Message)
 			}
 
-			// 尝试裸 ProcessEvent（兼容 envd 直接发送事件的情况）
 			var evt process.ProcessEvent
 			if err2 := proto.Unmarshal(framePayload, &evt); err2 == nil {
 				log.Printf("[GrpcE2BEngine] gRPC frame parsed as raw ProcessEvent")
@@ -916,9 +908,323 @@ func (e *grpcE2BEngine) ExecSync(ctx context.Context, req *runtime.ExecSyncReque
 	}, nil
 }
 
+// ========== Exec Streaming 基础设施 ==========
+
+func (e *grpcE2BEngine) ensureStreamingServer() {
+	e.streamingOnce.Do(func() {
+		e.streamingReqs = make(map[string]*execStreamRequest)
+		lis, err := net.Listen("tcp", e.nodeIP+":0")
+		if err != nil {
+			lis, err = net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				log.Printf("[GrpcE2BEngine] failed to start streaming server: %v", err)
+				return
+			}
+		}
+		e.streamingListener = lis
+		mux := http.NewServeMux()
+		mux.HandleFunc("/exec/", e.handleExecStream)
+		srv := &http.Server{Handler: mux}
+		go func() {
+			log.Printf("[GrpcE2BEngine] streaming server listening on %s", lis.Addr().String())
+			if err := srv.Serve(lis); err != nil && err != http.ErrServerClosed {
+				log.Printf("[GrpcE2BEngine] streaming server exited: %v", err)
+			}
+		}()
+	})
+}
+
+func (e *grpcE2BEngine) streamingAddr() string {
+	if e.streamingListener == nil {
+		return ""
+	}
+	return e.streamingListener.Addr().String()
+}
+
+// Exec 实现 CRI Exec 接口，返回 streaming URL
 func (e *grpcE2BEngine) Exec(ctx context.Context, req *runtime.ExecRequest) (*runtime.ExecResponse, error) {
-	log.Printf("[GrpcE2BEngine] Exec: id=%s (unimplemented)", req.ContainerId)
-	return nil, status.Error(codes.Unimplemented, "Exec not supported in MVP")
+	log.Printf("[GrpcE2BEngine] Exec: id=%s, cmd=%v, tty=%v, stdin=%v, stdout=%v, stderr=%v",
+		req.ContainerId, req.Cmd, req.Tty, req.Stdin, req.Stdout, req.Stderr)
+
+	sandboxID := stripContainerSuffix(req.ContainerId)
+	pod, ok := e.tracker.Get(sandboxID)
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "sandbox %s not found", sandboxID)
+	}
+	if pod.state != stateRunning {
+		return nil, status.Errorf(codes.FailedPrecondition, "sandbox %s is not running", sandboxID)
+	}
+
+	e.ensureStreamingServer()
+	if e.streamingListener == nil {
+		return nil, status.Errorf(codes.Internal, "streaming server not available")
+	}
+
+	token := generateRandomToken()
+	e.streamingMu.Lock()
+	e.streamingReqs[token] = &execStreamRequest{
+		sandboxID:   sandboxID,
+		cmd:         req.Cmd,
+		tty:         req.Tty,
+		stdin:       req.Stdin,
+		stdout:      req.Stdout,
+		stderr:      req.Stderr,
+		accessToken: pod.envdAccessToken,
+	}
+	e.streamingMu.Unlock()
+
+	go func() {
+		time.Sleep(5 * time.Minute)
+		e.streamingMu.Lock()
+		delete(e.streamingReqs, token)
+		e.streamingMu.Unlock()
+	}()
+
+	url := fmt.Sprintf("http://%s/exec/%s", e.streamingAddr(), token)
+	log.Printf("[GrpcE2BEngine] Exec streaming URL: %s", url)
+	return &runtime.ExecResponse{Url: url}, nil
+}
+
+func (e *grpcE2BEngine) handleExecStream(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.URL.Path, "/exec/")
+	if token == "" {
+		http.Error(w, "missing token", http.StatusBadRequest)
+		return
+	}
+
+	e.streamingMu.RLock()
+	sreq, ok := e.streamingReqs[token]
+	e.streamingMu.RUnlock()
+	if !ok {
+		http.Error(w, "invalid or expired exec token", http.StatusForbidden)
+		return
+	}
+
+	pod, ok := e.tracker.Get(sreq.sandboxID)
+	if !ok || pod.state != stateRunning {
+		http.Error(w, "sandbox not running", http.StatusNotFound)
+		return
+	}
+
+	// 1. 与 envd 建立 Start streaming 连接
+	bashCmd := strings.Join(sreq.cmd, " ")
+	cwd := "/"
+	stdinFlag := sreq.stdin
+	startReq := &process.StartRequest{
+		Process: &process.ProcessConfig{
+			Cmd:  "/bin/bash",
+			Args: []string{"-l", "-c", bashCmd},
+			Envs: map[string]string{},
+			Cwd:  &cwd,
+		},
+		Stdin: &stdinFlag,
+	}
+
+	if sreq.tty {
+		startReq.Pty = &process.PTY{
+			Size: &process.PTY_Size{Cols: 80, Rows: 24},
+		}
+	}
+
+	payload, err := proto.Marshal(startReq)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var bodyBuf bytes.Buffer
+	if err := writeGRPCFrame(&bodyBuf, payload); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	host := fmt.Sprintf("49983-%s.e2b.app", sreq.sandboxID)
+	url := fmt.Sprintf("http://%s/process.Process/Start", host)
+
+	envdReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, url, &bodyBuf)
+	envdReq.Host = host
+	envdReq.Header.Set("Content-Type", "application/connect+proto")
+	envdReq.Header.Set("Accept", "application/connect+proto")
+	envdReq.Header.Set("Connect-Protocol-Version", "1")
+	if sreq.accessToken != "" {
+		envdReq.Header.Set("X-Access-Token", sreq.accessToken)
+	}
+
+	envdResp, err := e.getEnvdHTTPClient().Do(envdReq)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("envd start failed: %v", err), http.StatusBadGateway)
+		return
+	}
+	defer envdResp.Body.Close()
+
+	if envdResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(envdResp.Body)
+		http.Error(w, fmt.Sprintf("envd returned %d: %s", envdResp.StatusCode, string(body)), http.StatusBadGateway)
+		return
+	}
+
+	// 2. Hijack 客户端连接
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "hijacking not supported", http.StatusInternalServerError)
+		return
+	}
+	clientConn, bufrw, err := hj.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer clientConn.Close()
+
+	bufrw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n")
+	bufrw.Flush()
+
+	// 3. 读取第一个 gRPC frame 获取 pid（uint32）
+	_, firstFrame, err := readGRPCFrame(envdResp.Body)
+	if err != nil {
+		log.Printf("[GrpcE2BEngine] exec stream read first frame error: %v", err)
+		return
+	}
+	var firstMsg process.StartResponse
+	if err := proto.Unmarshal(firstFrame, &firstMsg); err != nil {
+		log.Printf("[GrpcE2BEngine] exec stream unmarshal first frame error: %v", err)
+		return
+	}
+	var pid uint32
+	if firstMsg.Event != nil && firstMsg.Event.GetStart() != nil {
+		pid = firstMsg.Event.GetStart().GetPid()
+		log.Printf("[GrpcE2BEngine] exec stream start, pid=%d", pid)
+	} else {
+		log.Printf("[GrpcE2BEngine] exec stream first frame is not start event")
+	}
+
+	// handleExecStream 中的输出转发 goroutine
+	go func() {
+		defer clientConn.Close()
+		for {
+			_, framePayload, err := readGRPCFrame(envdResp.Body)
+			if err == io.EOF {
+				log.Printf("[GrpcE2BEngine] exec stream EOF")
+				return
+			}
+			if err != nil {
+				log.Printf("[GrpcE2BEngine] exec stream read error: %v", err)
+				return
+			}
+
+			var msg process.StartResponse
+			if err := proto.Unmarshal(framePayload, &msg); err != nil {
+				log.Printf("[GrpcE2BEngine] exec unmarshal error: %v", err)
+				continue
+			}
+			if msg.Event == nil {
+				continue
+			}
+
+			if data := msg.Event.GetData(); data != nil {
+				// === 关键修正：tty=true 时从 Pty 字段读取输出 ===
+				if sreq.tty {
+					if out := data.GetPty(); len(out) > 0 && sreq.stdout {
+						bufrw.Write(out)
+						bufrw.Flush()
+					}
+				} else {
+					if out := data.GetStdout(); len(out) > 0 && sreq.stdout {
+						bufrw.Write(out)
+						bufrw.Flush()
+					}
+					if out := data.GetStderr(); len(out) > 0 && sreq.stderr {
+						bufrw.Write(out)
+						bufrw.Flush()
+					}
+				}
+			} else if end := msg.Event.GetEnd(); end != nil {
+				log.Printf("[GrpcE2BEngine] exec stream end, exit_code=%d", end.GetExitCode())
+				return
+			}
+		}
+	}()
+
+	// handleExecStream 中的 stdin 转发 goroutine
+	if sreq.stdin && pid > 0 {
+		go func() {
+			defer clientConn.Close()
+			buf := make([]byte, 4096)
+			for {
+				n, err := bufrw.Read(buf)
+				if err != nil {
+					return
+				}
+				if n == 0 {
+					continue
+				}
+				// === 关键修正：传递 tty 标志 ===
+				e.sendInputToEnvd(r.Context(), sreq.sandboxID, pid, sreq.accessToken, buf[:n], sreq.tty)
+			}
+		}()
+	}
+
+	// 阻塞等待连接关闭
+	<-r.Context().Done()
+	log.Printf("[GrpcE2BEngine] exec stream closed for sandbox %s", sreq.sandboxID)
+}
+
+// sendInputToEnvd 通过 process.Process/SendInput unary RPC 发送输入数据
+// 关键：tty=true 时用 ProcessInput_Pty，否则用 ProcessInput_Stdin
+func (e *grpcE2BEngine) sendInputToEnvd(ctx context.Context, sandboxID string, pid uint32, accessToken string, data []byte, tty bool) {
+	host := fmt.Sprintf("49983-%s.e2b.app", sandboxID)
+	url := fmt.Sprintf("http://%s/process.Process/SendInput", host)
+
+	var input *process.ProcessInput
+	if tty {
+		input = &process.ProcessInput{
+			Input: &process.ProcessInput_Pty{Pty: data},
+		}
+	} else {
+		input = &process.ProcessInput{
+			Input: &process.ProcessInput_Stdin{Stdin: data},
+		}
+	}
+
+	inputReq := &process.SendInputRequest{
+		Process: &process.ProcessSelector{
+			Selector: &process.ProcessSelector_Pid{Pid: pid},
+		},
+		Input: input,
+	}
+	payload, err := proto.Marshal(inputReq)
+	if err != nil {
+		log.Printf("[GrpcE2BEngine] sendInput marshal error: %v", err)
+		return
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	req.Host = host
+	req.Header.Set("Content-Type", "application/proto")
+	req.Header.Set("Accept", "application/proto")
+	req.Header.Set("Connect-Protocol-Version", "1")
+	if accessToken != "" {
+		req.Header.Set("X-Access-Token", accessToken)
+	}
+
+	resp, err := e.getEnvdHTTPClient().Do(req)
+	if err != nil {
+		log.Printf("[GrpcE2BEngine] sendInput request error: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[GrpcE2BEngine] sendInput envd error %d: %s", resp.StatusCode, string(body))
+		return
+	}
+}
+
+func generateRandomToken() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func (e *grpcE2BEngine) Attach(ctx context.Context, req *runtime.AttachRequest) (*runtime.AttachResponse, error) {
@@ -1184,6 +1490,13 @@ func filterContainers(items []*runtime.Container, f *runtime.ContainerFilter) []
 		out = append(out, item)
 	}
 	return out
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (e *grpcE2BEngine) Close() error {
