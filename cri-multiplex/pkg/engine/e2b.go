@@ -3,6 +3,7 @@ package engine
 import "time"
 
 const annTemplateID = "e2b.dev/template-id"
+const annExposePorts = "e2b.dev/expose-ports" // 新增
 
 type E2BBackendType string
 
@@ -14,10 +15,10 @@ const (
 type E2BConfig struct {
 	Backend               E2BBackendType
 	OrchestratorAddr      string
-	OrchestratorProxyAddr string // HTTP proxy :5007 (用于 envd 交互)
+	OrchestratorProxyAddr string
 	APIBaseURL            string
 	APIKey                string
-	NodeIP                string // 用于 PodSandboxStatus 网络状态报告
+	NodeIP                string
 }
 
 type E2BEngine interface {
@@ -33,7 +34,6 @@ func NewE2BEngine(cfg *E2BConfig) E2BEngine {
 	}
 }
 
-// e2bState 定义在 e2b.go 以便被 pod_tracker.go 和 grpc_e2b.go 共用
 type e2bState int
 
 const (
@@ -43,17 +43,24 @@ const (
 )
 
 type podInfo struct {
-	sandboxID   string
-	podUID      string
-	name        string
-	namespace   string
-	labels      map[string]string
-	annotations map[string]string
-	createdAt   time.Time
-	endedAt     *time.Time
-	state       e2bState
-	templateID  string
-	buildID     string
+	sandboxID       string
+	podUID          string
+	name            string
+	namespace       string
+	labels          map[string]string
+	annotations     map[string]string
+	createdAt       time.Time
+	endedAt         *time.Time
+	state           e2bState
+	templateID      string
+	buildID         string
 	envdAccessToken string
+
+	// 网络信息
+	hostIP   string
+	hostPort int // 默认端口 49983 的映射
+
+	// 新增：多端口映射
+	portMappings []PortMapping // hostPort -> sandboxPort
 }
 

@@ -116,6 +116,8 @@ type grpcE2BEngine struct {
 	attachReqs        map[string]*attachStreamRequest
 	streamingMu       sync.RWMutex
 	streamingOnce     sync.Once
+
+	hostPortManager *HostPortManager // 新增：宿主机端口管理
 }
 
 func newGRPCE2BEngine(orchestratorAddr, nodeIP string) *grpcE2BEngine {
@@ -127,6 +129,7 @@ func newGRPCE2BEngine(orchestratorAddr, nodeIP string) *grpcE2BEngine {
 		imageCache:       make(map[string]*e2bImageMeta),
 		streamingReqs:    make(map[string]*execStreamRequest),
 		attachReqs:       make(map[string]*attachStreamRequest),
+		hostPortManager:  NewHostPortManager(20000, 29999), // 避开 NodePort 范围
 	}
 }
 
@@ -249,10 +252,60 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 	if err != nil {
 		return nil, mapE2BError(err)
 	}
+
+	hostIP := resp.GetHostIp()
+	if hostIP == "" {
+		log.Printf("[GrpcE2BEngine] WARNING: orchestrator did not return host_ip for %s", sandboxID)
+	}
+
+	// ===== 多端口分配 =====
+	var allMappings []PortMapping
+	if hostIP != "" && e.hostPortManager != nil {
+		// 1. 收集需要暴露的端口（仅来自 annotation）
+		var ports []int
+		if portsStr, ok := req.Config.Annotations[annExposePorts]; ok && portsStr != "" {
+			for _, p := range strings.Split(portsStr, ",") {
+				if port, err := strconv.Atoi(strings.TrimSpace(p)); err == nil && port > 0 && port < 65536 {
+					ports = append(ports, port)
+				}
+			}
+		}
+
+		// 2. 分配所有端口
+		if len(ports) > 0 {
+			mappings, err := e.hostPortManager.AllocatePorts(sandboxID, ports)
+			if err != nil {
+				log.Printf("[GrpcE2BEngine] WARNING: failed to allocate host ports for %s: %v", sandboxID, err)
+			} else {
+				// 3. 为每个端口创建 iptables 规则
+				for _, m := range mappings {
+					if err := SetupHostPortMapping(e.nodeIP, m.HostPort, hostIP, m.SandboxPort); err != nil {
+						log.Printf("[GrpcE2BEngine] WARNING: failed to setup mapping %d->%d for %s: %v", m.HostPort, m.SandboxPort, sandboxID, err)
+					} else {
+						log.Printf("[GrpcE2BEngine] HostPort mapping: %s:%d -> %s:%d", e.nodeIP, m.HostPort, hostIP, m.SandboxPort)
+					}
+				}
+				allMappings = mappings
+			}
+		}
+	}
+	// ===== 多端口分配结束 =====
+
+	// 提取默认端口映射（如果 49983 在声明中，会自然包含在 allMappings 里）
+	defaultHostPort := 0
+	for _, m := range allMappings {
+		if m.SandboxPort == 49983 {
+			defaultHostPort = m.HostPort
+			break
+		}
+	}
+	// ===== 多端口分配结束 =====
+
 	envdToken := ""
 	if t, ok := req.Config.Annotations[annEnvdAccessToken]; ok && t != "" {
 		envdToken = t
 	}
+
 	e.tracker.Add(sandboxID, &podInfo{
 		sandboxID:       sandboxID,
 		podUID:          req.Config.Metadata.Uid,
@@ -265,8 +318,15 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		templateID:      templateID,
 		buildID:         buildID,
 		envdAccessToken: envdToken,
+
+		hostIP:       hostIP,
+		hostPort:     defaultHostPort,
+		portMappings: allMappings,
 	})
-	log.Printf("[GrpcE2BEngine] sandbox created: %s (client_id=%s, envd_token_set=%v)", sandboxID, resp.ClientId, envdToken != "")
+
+	log.Printf("[GrpcE2BEngine] sandbox created: %s (client_id=%s, host_ip=%s, default_port=%d, mappings=%v, envd_token_set=%v)",
+		sandboxID, resp.ClientId, hostIP, defaultHostPort, allMappings, envdToken != "")
+
 	return &runtime.RunPodSandboxResponse{PodSandboxId: sandboxID}, nil
 }
 
@@ -275,11 +335,29 @@ func (e *grpcE2BEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
+
 	pod, ok := e.tracker.Get(req.PodSandboxId)
 	if !ok {
 		log.Printf("[GrpcE2BEngine] StopPodSandbox: sandbox %s not in tracker, treating as success", req.PodSandboxId)
 		return &runtime.StopPodSandboxResponse{}, nil
 	}
+
+	// ===== 清理所有 HostPort 映射 =====
+	if pod.hostIP != "" {
+		for _, m := range pod.portMappings {
+			if err := CleanupHostPortMapping(e.nodeIP, m.HostPort, pod.hostIP, m.SandboxPort); err != nil {
+				log.Printf("[GrpcE2BEngine] WARNING: cleanup mapping %d->%d failed: %v", m.HostPort, m.SandboxPort, err)
+			}
+		}
+		// 释放所有端口
+		ports := make([]int, 0, len(pod.portMappings))
+		for _, m := range pod.portMappings {
+			ports = append(ports, m.SandboxPort)
+		}
+		e.hostPortManager.ReleasePorts(req.PodSandboxId, ports)
+	}
+	// ===== 清理结束 =====
+
 	_, err := e.client.Pause(ctx, &orchestrator.SandboxPauseRequest{
 		SandboxId:  pod.sandboxID,
 		TemplateId: pod.templateID,
@@ -299,6 +377,18 @@ func (e *grpcE2BEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
+
+	// ===== 新增：确保清理 HostPort 映射 =====
+	if pod, ok := e.tracker.Get(req.PodSandboxId); ok {
+		if pod.hostPort > 0 && pod.hostIP != "" {
+			if err := CleanupHostPortMapping(e.nodeIP, pod.hostPort, pod.hostIP, 49983); err != nil {
+				log.Printf("[GrpcE2BEngine] WARNING: cleanup host port mapping failed: %v", err)
+			}
+			e.hostPortManager.Release(req.PodSandboxId)
+		}
+	}
+	// ===== 新增结束 =====
+
 	_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: req.PodSandboxId})
 	if err != nil && !isNotFound(err) {
 		return nil, mapE2BError(err)
@@ -309,15 +399,41 @@ func (e *grpcE2BEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 
 func (e *grpcE2BEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSandboxStatusRequest) (*runtime.PodSandboxStatusResponse, error) {
 	log.Printf("[GrpcE2BEngine] PodSandboxStatus: id=%s", req.PodSandboxId)
+
 	pod, ok := e.tracker.Get(req.PodSandboxId)
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "sandbox %s not found", req.PodSandboxId)
 	}
+
 	state := inferPodSandboxState(pod.state)
+
+	// 组装 annotations
+	anns := make(map[string]string)
+	for k, v := range pod.annotations {
+		anns[k] = v
+	}
+	if pod.hostIP != "" {
+		anns["e2b.dev/host-ip"] = pod.hostIP
+		anns["e2b.dev/node-ip"] = e.nodeIP
+	}
+	if pod.hostPort > 0 {
+		anns["e2b.dev/host-port"] = strconv.Itoa(pod.hostPort)
+		anns["e2b.dev/access-url"] = fmt.Sprintf("http://%s:%d", e.nodeIP, pod.hostPort)
+	}
+	// 新增：返回所有端口映射
+	for _, m := range pod.portMappings {
+		key := fmt.Sprintf("e2b.dev/host-port-%d", m.SandboxPort)
+		anns[key] = strconv.Itoa(m.HostPort)
+		key2 := fmt.Sprintf("e2b.dev/access-url-%d", m.SandboxPort)
+		anns[key2] = fmt.Sprintf("http://%s:%d", e.nodeIP, m.HostPort)
+	}
+
 	status := &runtime.PodSandboxStatus{
-		Id:        pod.sandboxID,
-		State:     state,
-		CreatedAt: pod.createdAt.UnixNano(),
+		Id:          pod.sandboxID,
+		State:       state,
+		CreatedAt:   pod.createdAt.UnixNano(),
+		Labels:      pod.labels,
+		Annotations: anns,
 	}
 	if pod.name != "" {
 		status.Metadata = &runtime.PodSandboxMetadata{
@@ -326,8 +442,13 @@ func (e *grpcE2BEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSa
 			Namespace: pod.namespace,
 		}
 	}
-	status.Labels = pod.labels
-	status.Annotations = pod.annotations
+
+	if pod.hostIP != "" {
+		status.Network = &runtime.PodSandboxNetworkStatus{
+			Ip: pod.hostIP,
+		}
+	}
+
 	return &runtime.PodSandboxStatusResponse{Status: status}, nil
 }
 
@@ -406,6 +527,18 @@ func (e *grpcE2BEngine) RemoveContainer(ctx context.Context, req *runtime.Remove
 		return nil, mapE2BError(err)
 	}
 	sandboxID := stripContainerSuffix(req.ContainerId)
+
+	// ===== 新增：确保清理 HostPort 映射 =====
+	if pod, ok := e.tracker.Get(sandboxID); ok {
+		if pod.hostPort > 0 && pod.hostIP != "" {
+			if err := CleanupHostPortMapping(e.nodeIP, pod.hostPort, pod.hostIP, 49983); err != nil {
+				log.Printf("[GrpcE2BEngine] WARNING: cleanup host port mapping failed: %v", err)
+			}
+			e.hostPortManager.Release(sandboxID)
+		}
+	}
+	// ===== 新增结束 =====
+
 	_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: sandboxID})
 	if err != nil && !isNotFound(err) {
 		return nil, mapE2BError(err)
