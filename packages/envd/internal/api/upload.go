@@ -18,6 +18,7 @@ import (
 	"github.com/e2b-dev/infra/packages/envd/internal/execcontext"
 	"github.com/e2b-dev/infra/packages/envd/internal/logs"
 	"github.com/e2b-dev/infra/packages/envd/internal/permissions"
+	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 	"github.com/e2b-dev/infra/packages/envd/internal/utils"
 )
 
@@ -52,7 +53,7 @@ func processFile(r *http.Request, path string, part io.Reader, uid, gid int, log
 
 	hasBeenChowned := false
 	if canBePreChowned {
-		err = os.Chown(path, uid, gid)
+		err = platform.Chown(path, uid, gid)
 		if err != nil {
 			if !os.IsNotExist(err) {
 				err = fmt.Errorf("error changing file ownership: %w", err)
@@ -80,7 +81,7 @@ func processFile(r *http.Request, path string, part io.Reader, uid, gid int, log
 	defer file.Close()
 
 	if !hasBeenChowned {
-		err = os.Chown(path, uid, gid)
+		err = platform.Chown(path, uid, gid)
 		if err != nil {
 			err := fmt.Errorf("error changing file ownership: %w", err)
 

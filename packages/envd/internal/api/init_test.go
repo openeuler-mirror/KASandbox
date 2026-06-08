@@ -2,9 +2,6 @@ package api
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,44 +14,6 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/keys"
 	utilsShared "github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
-
-func TestSimpleCases(t *testing.T) {
-	t.Parallel()
-	testCases := map[string]func(string) string{
-		"both newlines":               func(s string) string { return s },
-		"no newline prefix":           func(s string) string { return strings.TrimPrefix(s, "\n") },
-		"no newline suffix":           func(s string) string { return strings.TrimSuffix(s, "\n") },
-		"no newline prefix or suffix": strings.TrimSpace,
-	}
-
-	for name, preprocessor := range testCases {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			tempDir := t.TempDir()
-
-			value := `
-# comment
-127.0.0.1        one.host
-127.0.0.2        two.host
-`
-			value = preprocessor(value)
-			inputPath := filepath.Join(tempDir, "hosts")
-			err := os.WriteFile(inputPath, []byte(value), 0o644)
-			require.NoError(t, err)
-
-			err = rewriteHostsFile("127.0.0.3", inputPath)
-			require.NoError(t, err)
-
-			data, err := os.ReadFile(inputPath)
-			require.NoError(t, err)
-
-			assert.Equal(t, `# comment
-127.0.0.1        one.host
-127.0.0.2        two.host
-127.0.0.3        events.e2b.local`, strings.TrimSpace(string(data)))
-		})
-	}
-}
 
 func TestShouldSetSystemTime(t *testing.T) {
 	t.Parallel()

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 	rpc "github.com/e2b-dev/infra/packages/envd/internal/services/spec/filesystem"
 )
 
@@ -20,7 +21,7 @@ func TestIsPathOnNetworkMount(t *testing.T) {
 
 	// Test with a regular directory (should not be on network mount)
 	tempDir := t.TempDir()
-	isNetwork, err := IsPathOnNetworkMount(tempDir)
+	isNetwork, err := platform.IsPathOnNetworkMount(tempDir)
 	require.NoError(t, err)
 	assert.False(t, isNetwork, "temp directory should not be on a network mount")
 }
@@ -51,12 +52,12 @@ func TestIsPathOnNetworkMount_FuseMount(t *testing.T) {
 	})
 
 	// Test that the FUSE mount is detected
-	isNetwork, err := IsPathOnNetworkMount(mountDir)
+	isNetwork, err := platform.IsPathOnNetworkMount(mountDir)
 	require.NoError(t, err)
 	assert.True(t, isNetwork, "FUSE mount should be detected as network filesystem")
 
 	// Test that the source directory is NOT detected as network mount
-	isNetworkSource, err := IsPathOnNetworkMount(sourceDir)
+	isNetworkSource, err := platform.IsPathOnNetworkMount(sourceDir)
 	require.NoError(t, err)
 	assert.False(t, isNetworkSource, "source directory should not be detected as network filesystem")
 }
