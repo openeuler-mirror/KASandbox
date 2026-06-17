@@ -81,7 +81,7 @@ func New(
 		return nil, err
 	}
 
-	cmd := platform.CommandContext(ctx, req.GetProcess())
+	cmd := exec.CommandContext(ctx, req.GetProcess().GetCmd(), req.GetProcess().GetArgs()...)
 
 	if err := platform.ConfigureProcessCredentials(cmd, user, cgroupManager, getProcType(req), logger); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
