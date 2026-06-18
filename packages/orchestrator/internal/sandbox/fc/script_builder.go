@@ -8,6 +8,7 @@ import (
 	txtTemplate "text/template"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 )
 
@@ -84,7 +85,7 @@ func NewStartScriptBuilder(builderConfig cfg.BuilderConfig) *StartScriptBuilder 
 func (sb *StartScriptBuilder) buildArgs(
 	versions Config,
 	files *storage.SandboxFiles,
-	rootfsPaths RootfsPaths,
+	rootfsPaths vmm.RootfsPaths,
 	namespaceID string,
 ) startScriptArgs {
 	args := startScriptArgs{
@@ -133,7 +134,7 @@ func (sb *StartScriptBuilder) firecrackerCommand(args startScriptArgs, rootfsPat
 }
 
 // GenerateScript builds and executes the start script template with the provided arguments
-func (sb *StartScriptBuilder) GenerateScript(args startScriptArgs, rootfsPaths RootfsPaths) (string, error) {
+func (sb *StartScriptBuilder) GenerateScript(args startScriptArgs, rootfsPaths vmm.RootfsPaths) (string, error) {
 	var scriptBuffer bytes.Buffer
 
 	// Choose the appropriate template based on the rootfs version
@@ -156,7 +157,7 @@ func (sb *StartScriptBuilder) GenerateScript(args startScriptArgs, rootfsPaths R
 func (sb *StartScriptBuilder) Build(
 	versions Config,
 	files *storage.SandboxFiles,
-	rootfsPaths RootfsPaths,
+	rootfsPaths vmm.RootfsPaths,
 	namespaceID string,
 ) (*StartScriptResult, error) {
 	args := sb.buildArgs(versions, files, rootfsPaths, namespaceID)
@@ -177,7 +178,7 @@ func (sb *StartScriptBuilder) Build(
 }
 
 // getRootfsPath returns the rootfs path based on the script args, with backward compatibility
-func (sb *StartScriptBuilder) getRootfsPath(args startScriptArgs, rootfsPaths RootfsPaths) string {
+func (sb *StartScriptBuilder) getRootfsPath(args startScriptArgs, rootfsPaths vmm.RootfsPaths) string {
 	rootfsPath := filepath.Join(args.SandboxDir, args.SandboxRootfsFile)
 	if rootfsPaths.TemplateVersion <= 1 {
 		rootfsPath = filepath.Join(args.DeprecatedSandboxRootfsDir, args.SandboxRootfsFile)

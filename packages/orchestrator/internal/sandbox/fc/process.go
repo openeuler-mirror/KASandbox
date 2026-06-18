@@ -25,6 +25,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/rootfs"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/socket"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/shared/pkg/keys"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
@@ -35,29 +36,7 @@ import (
 
 var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc")
 
-type ProcessOptions struct {
-	// IoEngine is the io engine to use for the rootfs drive.
-	IoEngine *string
-
-	// InitScriptPath is the path to the init script that will be executed inside the VM on kernel start.
-	InitScriptPath string
-
-	// KernelLogs is a flag to enable kernel logs output to the process stdout.
-	KernelLogs bool
-
-	// SystemdToKernelLogs is a flag to enable systemd logs output to the console.
-	// It enabled the kernel logs by default too.
-	SystemdToKernelLogs bool
-
-	// KvmClock is a flag to enable kvm-clock as the clocksource for the kernel.
-	KvmClock bool
-
-	// Stdout is the writer to which the process stdout will be written.
-	Stdout io.Writer
-
-	// Stderr is the writer to which the process stderr will be written.
-	Stderr io.Writer
-}
+var _ vmm.Process = (*Process)(nil)
 
 type Process struct {
 	Versions Config
@@ -73,7 +52,7 @@ type Process struct {
 	kernelPath     string
 	files          *storage.SandboxFiles
 
-	Exit *utils.ErrorOnce
+	exitOnce *utils.ErrorOnce
 
 	client *apiClient
 }
@@ -86,7 +65,7 @@ func NewProcess(
 	files *storage.SandboxFiles,
 	versions Config,
 	rootfsProvider rootfs.Provider,
-	rootfsPaths RootfsPaths,
+	rootfsPaths vmm.RootfsPaths,
 ) (*Process, error) {
 	ctx, childSpan := tracer.Start(ctx, "initialize-fc", trace.WithAttributes(
 		attribute.Int("sandbox.slot.index", slot.Idx),
@@ -141,7 +120,7 @@ func NewProcess(
 
 	return &Process{
 		Versions:              versions,
-		Exit:                  utils.NewErrorOnce(),
+		exitOnce:              utils.NewErrorOnce(),
 		cmd:                   cmd,
 		firecrackerSocketPath: files.SandboxFirecrackerSocketPath(),
 		config:                config,
@@ -211,7 +190,7 @@ func (p *Process) configure(
 			if errors.As(waitErr, &exitErr) {
 				// Check if the process was killed by a signal
 				if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() && (status.Signal() == syscall.SIGKILL || status.Signal() == syscall.SIGTERM) {
-					p.Exit.SetError(nil)
+					p.exitOnce.SetError(nil)
 
 					return
 				}
@@ -220,14 +199,14 @@ func (p *Process) configure(
 			logger.L().Error(ctx, "error waiting for fc process", zap.Error(waitErr))
 
 			errMsg := fmt.Errorf("error waiting for fc process: %w", waitErr)
-			p.Exit.SetError(errMsg)
+			p.exitOnce.SetError(errMsg)
 
 			cancelStart(errMsg)
 
 			return
 		}
 
-		p.Exit.SetError(nil)
+		p.exitOnce.SetError(nil)
 	}()
 
 	// Wait for the FC process to start so we can use FC API
@@ -252,7 +231,7 @@ func (p *Process) Create(
 	vCPUCount int64,
 	memoryMB int64,
 	hugePages bool,
-	options ProcessOptions,
+	options vmm.ProcessOptions,
 ) error {
 	ctx, childSpan := tracer.Start(ctx, "create-fc")
 	defer childSpan.End()
@@ -278,7 +257,7 @@ func (p *Process) Create(
 
 	// IPv4 configuration - format: [local_ip]::[gateway_ip]:[netmask]:hostname:iface:dhcp_option:[dns]
 	ipv4 := fmt.Sprintf("%s::%s:%s:instance:%s:off:%s", p.slot.NamespaceIP(), p.slot.TapIPString(), p.slot.TapMaskString(), p.slot.VpeerName(), p.slot.TapName())
-	args := KernelArgs{
+	args := vmm.KernelArgs{
 		// Disable kernel logs for production to speed the FC operations
 		// https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md#logging-and-performance
 		"quiet":    "",
@@ -391,11 +370,19 @@ func (p *Process) Resume(
 	sbxMetadata sbxlogger.SandboxMetadata,
 	uffdSocketPath string,
 	snapfile template.File,
+	memfile template.File,
 	uffdReady chan struct{},
 	accessToken *string,
+	memoryMB int64,
+	vcpuCount int64,
+	hugePages bool,
 	cgroupFD int,
 	traceID string,
 ) error {
+	_ = memfile
+	_ = memoryMB
+	_ = vcpuCount
+	_ = hugePages
 	ctx, span := tracer.Start(ctx, "resume-fc")
 	defer span.End()
 
@@ -564,7 +551,7 @@ func (p *Process) Stop(ctx context.Context) error {
 
 	// Check if process has already exited.
 	select {
-	case <-p.Exit.Done():
+	case <-p.exitOnce.Done():
 		logger.L().Info(ctx, "fc process already exited", logger.WithSandboxID(p.files.SandboxID))
 
 		return nil
@@ -611,7 +598,7 @@ func (p *Process) Stop(ctx context.Context) error {
 			}
 
 		// If the FC process exited, we can return.
-		case <-p.Exit.Done():
+		case <-p.exitOnce.Done():
 			return
 		}
 	}()
@@ -632,4 +619,8 @@ func (p *Process) CreateSnapshot(ctx context.Context, snapfilePath string) error
 	defer childSpan.End()
 
 	return p.client.createSnapshot(ctx, snapfilePath)
+}
+
+func (p *Process) Exit() *utils.ErrorOnce {
+	return p.exitOnce
 }
