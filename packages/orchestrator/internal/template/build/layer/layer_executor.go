@@ -135,8 +135,9 @@ func (lb *LayerExecutor) BuildLayer(
 	// Prepare metadata
 	meta = meta.NewVersionTemplate(metadata.TemplateMetadata{
 		BuildID:            cmd.CurrentLayer.Template.BuildID,
-		KernelVersion:      sbx.Config.FirecrackerConfig.KernelVersion,
-		FirecrackerVersion: sbx.Config.FirecrackerConfig.FirecrackerVersion,
+		KernelVersion:      sbx.Config.VMMConfig.KernelVersion,
+		FirecrackerVersion: sbx.Config.VMMConfig.VMMVersion,
+		VMMType:            string(sbx.Config.VMMConfig.Backend()),
 	})
 	err = lb.PauseAndUpload(
 		ctx,

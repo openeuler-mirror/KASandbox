@@ -12,8 +12,8 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	sbxtemplate "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/buildcontext"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/layer"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/metrics"
@@ -196,9 +196,10 @@ func (pb *OptimizeBuilder) collectMemoryPrefetchMapping(
 			Version: pb.EnvdVersion,
 		},
 
-		FirecrackerConfig: fc.Config{
-			KernelVersion:      pb.Config.KernelVersion,
-			FirecrackerVersion: pb.Config.FirecrackerVersion,
+		VMMConfig: vmm.VMMConfig{
+			Type:          vmm.BackendType(pb.Config.VMMType).OrDefault(),
+			KernelVersion: pb.Config.KernelVersion,
+			VMMVersion:    pb.Config.FirecrackerVersion,
 		},
 	}
 

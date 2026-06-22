@@ -43,7 +43,7 @@ type HostStatsMetadata struct {
 
 func NewHostStatsCollector(
 	metadata HostStatsMetadata,
-	firecrackerPID int32,
+	vmmPID int32,
 	delivery hoststats.Delivery,
 	samplingInterval time.Duration,
 	cgroupStats CgroupStatsFunc,
@@ -53,7 +53,7 @@ func NewHostStatsCollector(
 		samplingInterval = 100 * time.Millisecond
 	}
 
-	proc, err := process.NewProcess(firecrackerPID)
+	proc, err := process.NewProcess(vmmPID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create process handle: %w", err)
 	}
@@ -69,7 +69,7 @@ func NewHostStatsCollector(
 	}, nil
 }
 
-// CollectSample collects a single host statistics sample for the Firecracker process
+// CollectSample collects a single host statistics sample for the VMM process
 func (h *HostStatsCollector) CollectSample(ctx context.Context) error {
 	// Get CPU times (user and system)
 	times, err := h.proc.TimesWithContext(ctx)

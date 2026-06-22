@@ -16,8 +16,8 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	sbxtemplate "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/buildcontext"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/config"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/filesystem"
@@ -211,9 +211,10 @@ func (bb *BaseBuilder) buildLayerFromOCI(
 			Version: bb.EnvdVersion,
 		},
 
-		FirecrackerConfig: fc.Config{
-			KernelVersion:      bb.Config.KernelVersion,
-			FirecrackerVersion: bb.Config.FirecrackerVersion,
+		VMMConfig: vmm.VMMConfig{
+			Type:          vmm.BackendType(bb.Config.VMMType).OrDefault(),
+			KernelVersion: bb.Config.KernelVersion,
+			VMMVersion:    bb.Config.FirecrackerVersion,
 		},
 	}
 	err = bb.provisionSandbox(
@@ -347,6 +348,7 @@ func (bb *BaseBuilder) Layer(
 				BuildID:            uuid.New().String(),
 				KernelVersion:      bb.Config.KernelVersion,
 				FirecrackerVersion: bb.Config.FirecrackerVersion,
+				VMMType:            string(vmm.BackendType(bb.Config.VMMType).OrDefault()),
 			},
 			Context:      cmdMeta,
 			FromImage:    &bb.Config.FromImage,

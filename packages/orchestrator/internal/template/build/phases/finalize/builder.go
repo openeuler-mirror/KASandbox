@@ -15,7 +15,7 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/buildcontext"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/layer"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/metrics"
@@ -111,6 +111,7 @@ func (ppb *PostProcessingBuilder) Layer(
 		BuildID:            ppb.Template.BuildID,
 		KernelVersion:      ppb.Config.KernelVersion,
 		FirecrackerVersion: ppb.Config.FirecrackerVersion,
+		VMMType:            string(vmm.BackendType(ppb.Config.VMMType).OrDefault()),
 	}
 
 	return phases.LayerResult{
@@ -159,9 +160,10 @@ func (ppb *PostProcessingBuilder) Build(
 			DefaultWorkdir: defaultWorkdir,
 		},
 
-		FirecrackerConfig: fc.Config{
-			KernelVersion:      ppb.Config.KernelVersion,
-			FirecrackerVersion: ppb.Config.FirecrackerVersion,
+		VMMConfig: vmm.VMMConfig{
+			Type:          vmm.BackendType(ppb.Config.VMMType).OrDefault(),
+			KernelVersion: ppb.Config.KernelVersion,
+			VMMVersion:    ppb.Config.FirecrackerVersion,
 		},
 	}
 

@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 
@@ -370,7 +369,6 @@ func (p *Process) Resume(
 	sbxMetadata sbxlogger.SandboxMetadata,
 	uffdSocketPath string,
 	snapfile template.File,
-	memfile template.File,
 	uffdReady chan struct{},
 	accessToken *string,
 	memoryMB int64,
@@ -379,7 +377,6 @@ func (p *Process) Resume(
 	cgroupFD int,
 	traceID string,
 ) error {
-	_ = memfile
 	_ = memoryMB
 	_ = vcpuCount
 	_ = hugePages
@@ -531,19 +528,6 @@ func (p *Process) Pid() (int, error) {
 	return p.cmd.Process.Pid, nil
 }
 
-// getProcessState returns the state of the process.
-// It's used to check if the process is in the D state, because gopsutil doesn't show that.
-func getProcessState(ctx context.Context, pid int) (string, error) {
-	output, err := exec.CommandContext(ctx, "ps", "-o", "stat=", "-p", fmt.Sprint(pid)).Output()
-	if err != nil {
-		return "", fmt.Errorf("error getting state of pid=%d: %w", pid, err)
-	}
-
-	state := strings.TrimSpace(string(output))
-
-	return state, nil
-}
-
 func (p *Process) Stop(ctx context.Context) error {
 	if p.cmd.Process == nil {
 		return fmt.Errorf("fc process not started")
@@ -561,7 +545,7 @@ func (p *Process) Stop(ctx context.Context) error {
 	// this function should never fail b/c a previous context was canceled.
 	ctx = context.WithoutCancel(ctx)
 
-	state, err := getProcessState(ctx, p.cmd.Process.Pid)
+	state, err := vmm.ProcessState(ctx, p.cmd.Process.Pid)
 	if err != nil {
 		logger.L().Warn(ctx, "failed to get fc process state", zap.Error(err), logger.WithSandboxID(p.files.SandboxID))
 	} else if state == "D" {
@@ -590,7 +574,7 @@ func (p *Process) Stop(ctx context.Context) error {
 				logger.L().Info(ctx, "sent SIGKILL to fc process because it was not responding to SIGTERM for 10 seconds", logger.WithSandboxID(p.files.SandboxID))
 			}
 
-			state, err := getProcessState(ctx, p.cmd.Process.Pid)
+			state, err := vmm.ProcessState(ctx, p.cmd.Process.Pid)
 			if err != nil {
 				logger.L().Warn(ctx, "failed to get fc process state after sending SIGKILL", zap.Error(err), logger.WithSandboxID(p.files.SandboxID))
 			} else if state == "D" {

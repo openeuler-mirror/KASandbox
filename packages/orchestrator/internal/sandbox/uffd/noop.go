@@ -6,7 +6,7 @@ import (
 	"github.com/bits-and-blooms/bitset"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
@@ -32,8 +32,8 @@ func (m *NoopMemory) Prefault(_ context.Context, _ int64, _ []byte) error {
 	return nil
 }
 
-func (m *NoopMemory) DiffMetadata(ctx context.Context, f *fc.Process) (*header.DiffMetadata, error) {
-	diffInfo, err := f.MemoryInfo(ctx, m.blockSize)
+func (m *NoopMemory) DiffMetadata(ctx context.Context, process vmm.Process) (*header.DiffMetadata, error) {
+	diffInfo, err := process.MemoryInfo(ctx, m.blockSize)
 	if err != nil {
 		return nil, err
 	}
