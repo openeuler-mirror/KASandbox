@@ -59,10 +59,17 @@ func (s *MuxServer) Stop() {
 	}
 }
 
+// resolveEngineByPod 按路由表查找 Pod 所属 engine；
+// 路由表未命中时回退到 containerEngine（containerd）。
+// 原因：E2B Pod 只能通过 cri-multiplex 的 RunPodSandbox(handler=e2b) 创建，
+// 创建时会注册到路由表；未注册的 Pod 一定是 containerd 既有的，
+// 因此回退到 containerEngine 是安全的，避免 kubelet 切换后对既有 Pod 调用
+// PodSandboxStatus/StopPodSandbox 等接口报 "no engine found"。
 func (s *MuxServer) resolveEngineByPod(podSandboxID string) (engine.RuntimeEngine, error) {
 	val, ok := s.podRoutes.Load(podSandboxID)
 	if !ok {
-		return nil, fmt.Errorf("no engine found for pod sandbox %s", podSandboxID)
+		log.Printf("[MuxServer] pod %s not in route table, fallback to container engine", podSandboxID)
+		return s.containerEngine, nil
 	}
 	engineType := val.(engine.EngineType)
 	switch engineType {
@@ -73,10 +80,13 @@ func (s *MuxServer) resolveEngineByPod(podSandboxID string) (engine.RuntimeEngin
 	}
 }
 
+// resolveEngineByContainer 按路由表查找 Container 所属 engine；
+// 路由表未命中时回退到 containerEngine（containerd），原因同上。
 func (s *MuxServer) resolveEngineByContainer(containerID string) (engine.RuntimeEngine, error) {
 	val, ok := s.containerRoutes.Load(containerID)
 	if !ok {
-		return nil, fmt.Errorf("no engine found for container %s", containerID)
+		log.Printf("[MuxServer] container %s not in route table, fallback to container engine", containerID)
+		return s.containerEngine, nil
 	}
 	engineType := val.(engine.EngineType)
 	switch engineType {

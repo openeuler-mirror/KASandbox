@@ -250,6 +250,7 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 	}
 	resp, err := e.client.Create(ctx, e2bReq)
 	if err != nil {
+		log.Printf("[GrpcE2BEngine] RunPodSandbox: orchestrator.Create FAILED: %v", err)
 		return nil, mapE2BError(err)
 	}
 
@@ -447,6 +448,12 @@ func (e *grpcE2BEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSa
 		status.Network = &runtime.PodSandboxNetworkStatus{
 			Ip: pod.hostIP,
 		}
+	} else if e.nodeIP != "" {
+		// hostIP 未获取到时回退到节点 IP，避免 kubelet 因缺少 network 信息
+		// 报 "Pod Sandbox status doesn't have network information" 而卡在 ContainerCreating
+		status.Network = &runtime.PodSandboxNetworkStatus{
+			Ip: e.nodeIP,
+		}
 	}
 
 	return &runtime.PodSandboxStatusResponse{Status: status}, nil
@@ -489,8 +496,27 @@ func (e *grpcE2BEngine) ListPodSandbox(ctx context.Context, req *runtime.ListPod
 }
 
 func (e *grpcE2BEngine) CreateContainer(ctx context.Context, req *runtime.CreateContainerRequest) (*runtime.CreateContainerResponse, error) {
-	log.Printf("[GrpcE2BEngine] CreateContainer: pod=%s, name=%s", req.PodSandboxId, req.Config.Metadata.Name)
+	log.Printf("[GrpcE2BEngine] CreateContainer: pod=%s, name=%s, labels=%v, annotations=%v", req.PodSandboxId, req.Config.Metadata.Name, req.Config.Labels, req.Config.Annotations)
 	containerID := req.PodSandboxId + "-c"
+	if pod, ok := e.tracker.Get(req.PodSandboxId); ok {
+		pod.imageRef = req.Config.Image.Image
+		// kubelet 将 container.hash 和 restartCount 放在 annotations 中，
+		// 但 PLEG 通过 ListContainers 的 labels 提取 hash 判断是否需要重建。
+		// 需将 annotations 中的 hash/restartCount 复制到 labels，否则 kubelet 认为容器 hash 不匹配反复 kill。
+		labels := make(map[string]string)
+		for k, v := range req.Config.Labels {
+			labels[k] = v
+		}
+		if hash, ok := req.Config.Annotations["io.kubernetes.container.hash"]; ok {
+			labels["io.kubernetes.container.hash"] = hash
+		}
+		if rc, ok := req.Config.Annotations["io.kubernetes.container.restartCount"]; ok {
+			labels["io.kubernetes.container.restartCount"] = rc
+		}
+		pod.containerLabels = labels
+		pod.containerName = req.Config.Metadata.Name
+		pod.containerAnnotations = req.Config.Annotations
+	}
 	return &runtime.CreateContainerResponse{ContainerId: containerID}, nil
 }
 
@@ -555,15 +581,17 @@ func (e *grpcE2BEngine) ListContainers(ctx context.Context, req *runtime.ListCon
 			Id:           pod.sandboxID + "-c",
 			PodSandboxId: pod.sandboxID,
 			Metadata: &runtime.ContainerMetadata{
-				Name: pod.name,
+				Name:    pod.containerName,
+				Attempt: 0,
 			},
 			State: inferContainerState(pod.state),
 			Image: &runtime.ImageSpec{
-				Image: fmt.Sprintf("e2b.dev/%s:%s", pod.templateID, pod.buildID),
+				Image: pod.imageRef,
 			},
+			ImageRef:    pod.imageRef,
 			CreatedAt:   pod.createdAt.UnixNano(),
-			Labels:      pod.labels,
-			Annotations: pod.annotations,
+			Labels:      pod.containerLabels,
+			Annotations: pod.containerAnnotations,
 		})
 	}
 	items = filterContainers(items, req.Filter)
@@ -581,16 +609,18 @@ func (e *grpcE2BEngine) ContainerStatus(ctx context.Context, req *runtime.Contai
 		Status: &runtime.ContainerStatus{
 			Id: req.ContainerId,
 			Metadata: &runtime.ContainerMetadata{
-				Name: pod.name,
+				Name:    pod.containerName,
+				Attempt: 0,
 			},
 			State:     inferContainerState(pod.state),
 			CreatedAt: pod.createdAt.UnixNano(),
 			StartedAt: pod.createdAt.UnixNano(),
 			Image: &runtime.ImageSpec{
-				Image: fmt.Sprintf("e2b.dev/%s:%s", pod.templateID, pod.buildID),
+				Image: pod.imageRef,
 			},
-			Labels:      pod.labels,
-			Annotations: pod.annotations,
+			ImageRef:    pod.imageRef,
+			Labels:      pod.containerLabels,
+			Annotations: pod.containerAnnotations,
 			LogPath:     fmt.Sprintf("/var/log/e2b/%s.log", pod.sandboxID),
 		},
 	}, nil
@@ -648,7 +678,7 @@ func (e *grpcE2BEngine) ListImages(ctx context.Context, req *runtime.ListImagesR
 		images = append(images, &runtime.Image{
 			Id:       ref,
 			RepoTags: []string{ref},
-			Size_:    0,
+			Size_:    1,
 		})
 	}
 	e.imageMu.RLock()
@@ -657,7 +687,7 @@ func (e *grpcE2BEngine) ListImages(ctx context.Context, req *runtime.ListImagesR
 		images = append(images, &runtime.Image{
 			Id:       ref,
 			RepoTags: []string{ref},
-			Size_:    0,
+			Size_:    1,
 		})
 	}
 	e.imageMu.RUnlock()
@@ -680,7 +710,7 @@ func (e *grpcE2BEngine) ImageStatus(ctx context.Context, req *runtime.ImageStatu
 		Image: &runtime.Image{
 			Id:       imageRef,
 			RepoTags: []string{imageRef},
-			Size_:    0,
+			Size_:    1,
 		},
 	}, nil
 }

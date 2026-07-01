@@ -54,7 +54,14 @@ type podInfo struct {
 	state           e2bState
 	templateID      string
 	buildID         string
+	imageRef        string
 	envdAccessToken string
+
+	// 容器元数据（由 CreateContainer 记录，用于 ListContainers/ContainerStatus 返回
+	// kubelet PLEG 识别容器所需的 label，如 io.kubernetes.container.name）
+	containerLabels      map[string]string
+	containerAnnotations map[string]string
+	containerName        string
 
 	// 网络信息
 	hostIP   string

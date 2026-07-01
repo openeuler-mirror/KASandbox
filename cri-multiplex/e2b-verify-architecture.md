@@ -19,6 +19,7 @@ e2b-verify/
 ├── 04_exec.sh                # Exec 及附加接口验证
 ├── 05_execsync.sh            # ExecSync 同步执行验证
 ├── 06_attach.sh              # Attach 能力验证
+├── 07_kubelet_pod_running.sh # kubelet 对接：Pod 保持 Running 状态验证
 ├── lib/
 │   └── common.sh             # 公共函数库（日志 / grpc_call / snapshot 修复 / run_pod_sandbox）
 ├── test_stream_client.py     # 流式 URL 连接客户端（Exec/Attach 交互）
@@ -47,7 +48,7 @@ e2b-verify/
 └────────────────────┬────────────────────────────┘
                      │ source
 ┌────────────────────▼────────────────────────────┐
-│        00 ~ 06 验证脚本（用例层）                │
+│        00 ~ 07 验证脚本（用例层）                │
 │  每个脚本独立可运行，依赖 common.sh 提供的能力   │
 └─────────────────────────────────────────────────┘
 ```
@@ -157,6 +158,23 @@ e2b-verify/
 - 5.3.2 调用 Attach — 获取 Attach URL
 - 5.3.3 连接 Attach URL — 用 test_stream_client.py 验证输出
 
+### 07_kubelet_pod_running.sh — kubelet 对接 Pod 保持 Running 验证（8 个用例）
+
+通过 kubelet + RuntimeClass=e2b 端到端验证 Pod 生命周期，重点验证修复 `io.kubernetes.container.hash` 缺失导致 kubelet 反复 StopContainer 的问题。
+
+- 1.1 前置检查 — refresh_build_id.sh / cri-multiplex 进程 / RuntimeClass e2b
+- 1.2 清理旧 Pod — 删除同名 Pod 并清空日志
+- 2.1 刷新 build_id — 执行 `/home/zrj/refresh_build_id.sh` 重建模板并生成 YAML
+- 3.1 通过 kubelet 创建 Pod — kubectl apply
+- 3.2 等待 Pod 进入 Running — 60s 内轮询 phase=Running 且 ready=true
+- 4.1 观察 30s 稳定性 — 持续 Running 且 RESTARTS=0
+- 4.2 验证无 Stop 调用 — 日志中无 StopContainer/StopPodSandbox
+- 4.3 验证 CreateContainer 仅一次 — 无重复创建（hash 匹配）
+- 4.4 验证 sandbox created 仅一次
+- 5.1 删除 Pod 验证沙箱销毁 — RemovePodSandbox 被调用
+
+详细修复背景见 [kubelet-pod-running-fix.md](./kubelet-pod-running-fix.md)。
+
 ---
 
 ## 三、核心机制
@@ -260,8 +278,9 @@ bash ./run_all.sh
 ║ [04]  Exec 能力验证                             PASS(9/0/0)       ║
 ║ [05]  ExecSync 能力验证                         PASS(4/0/0)       ║
 ║ [06]  Attach 能力验证                           PASS(3/0/0)       ║
+║ [07]  kubelet 对接 Pod 保持 Running 验证        PASS(8/0/0)       ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  PASS: 43     FAIL: 0      SKIP: 0      TOTAL: 43               ║
+║  PASS: 51     FAIL: 0      SKIP: 0      TOTAL: 51               ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 ✓ 全部验证通过！
@@ -336,6 +355,18 @@ bash ./run_all.sh --help
 | ImageStatus | 03 | 存在/不存在两种情况 |
 | RemoveImage | 03 | 删除镜像 |
 | ImageFsInfo | 03 | 文件系统信息 |
+
+### kubelet 端到端链路（07 模块）
+
+| 接口 | 验证模块 | 验证内容 |
+|------|----------|----------|
+| RunPodSandbox | 07 | kubelet 经 RuntimeClass=e2b 触发，沙箱创建一次 |
+| CreateContainer | 07 | hash/restartCount 从 annotations 搬运到 labels，仅调用一次 |
+| StartContainer | 07 | kubelet 启动容器 |
+| ListContainers / ListPodSandbox | 07 | PLEG 周期查询，hash 匹配无重建 |
+| ContainerStatus / PodSandboxStatus | 07 | 返回 Running，RESTARTS=0 |
+| StopContainer / StopPodSandbox | 07 | 不被误调用（保持 Running） |
+| RemovePodSandbox | 07 | Pod 删除时触发沙箱销毁 |
 
 ---
 

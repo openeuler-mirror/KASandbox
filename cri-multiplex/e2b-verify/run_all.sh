@@ -53,6 +53,7 @@ SCRIPTS=(
     "04|Exec 能力验证|${SCRIPT_DIR}/04_exec.sh"
     "05|ExecSync 能力验证|${SCRIPT_DIR}/05_execsync.sh"
     "06|Attach 能力验证|${SCRIPT_DIR}/06_attach.sh"
+    "07|kubelet 对接 Pod 保持 Running 验证|${SCRIPT_DIR}/07_kubelet_pod_running.sh"
 )
 
 #==================== 执行 ====================#
