@@ -30,7 +30,7 @@ func NewE2BEngine(cfg *E2BConfig) E2BEngine {
 	case BackendREST:
 		return newRestE2BEngine(cfg.APIBaseURL, cfg.APIKey)
 	default:
-		return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.NodeIP)
+		return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.OrchestratorProxyAddr, cfg.NodeIP)
 	}
 }
 
@@ -44,6 +44,7 @@ const (
 
 type podInfo struct {
 	sandboxID       string
+	e2bSandboxID    string
 	podUID          string
 	name            string
 	namespace       string
@@ -62,6 +63,11 @@ type podInfo struct {
 	containerLabels      map[string]string
 	containerAnnotations map[string]string
 	containerName        string
+	containerCommand     []string
+	containerArgs        []string
+	containerStdin       bool
+	containerTTY         bool
+	mainPID              uint32
 
 	// 网络信息
 	hostIP   string
@@ -71,3 +77,12 @@ type podInfo struct {
 	portMappings []PortMapping // hostPort -> sandboxPort
 }
 
+func (p *podInfo) envdSandboxID() string {
+	if p == nil {
+		return ""
+	}
+	if p.e2bSandboxID != "" {
+		return p.e2bSandboxID
+	}
+	return p.sandboxID
+}

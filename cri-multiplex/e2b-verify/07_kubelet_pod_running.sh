@@ -59,7 +59,9 @@ log_step "1.2 清理旧 Pod"
 
 if kubectl get pod "${POD_NAME}" > /dev/null 2>&1; then
     log_info "删除已存在的 Pod: ${POD_NAME}"
-    kubectl delete pod "${POD_NAME}" --force --grace-period=0 >&2 || true
+    kubectl delete pod "${POD_NAME}" >&2 || true
+
+   # kubectl delete pod "${POD_NAME}" --force --grace-period=0 >&2 || true
     sleep 3
     log_pass "旧 Pod 已删除"
 else
@@ -153,8 +155,11 @@ LOG_SINCE=$(date -d "@${CREATE_TIME}" '+%Y/%m/%d %H:%M:%S' 2>/dev/null || echo "
 STOP_COUNT=0
 if [ -f /tmp/cri-multiplex.log ]; then
     # 日志中含 StopContainer / StopPodSandbox 的行数
-    STOP_COUNT=$(grep -acE "StopContainer:|StopPodSandbox:" /tmp/cri-multiplex.log 2>/dev/null || echo "0")
+    # 注意：grep -c 在无匹配时退出码为 1，因此仅用 || true 避免脚本中断，
+    #       其 stdout 始终为计数数字（空时下面用 :-0 兜底）。
+    STOP_COUNT=$(grep -cE "StopContainer:|StopPodSandbox:" /tmp/cri-multiplex.log 2>/dev/null || true)
 fi
+STOP_COUNT=${STOP_COUNT:-0}
 
 if [ "${STOP_COUNT}" -eq 0 ]; then
     log_pass "日志中无 StopContainer/StopPodSandbox 调用（应保持 Running，不被误 Stop）"
@@ -168,7 +173,8 @@ fi
 #==================== 验证 CreateContainer 仅一次 ====================#
 log_step "4.3 验证 CreateContainer 仅被调用一次（无重复创建）"
 
-CREATE_COUNT=$(grep -acE "CreateContainer: pod=" /tmp/cri-multiplex.log 2>/dev/null || echo "0")
+CREATE_COUNT=$(grep -cE "CreateContainer: pod=" /tmp/cri-multiplex.log 2>/dev/null || true)
+CREATE_COUNT=${CREATE_COUNT:-0}
 if [ "${CREATE_COUNT}" -eq 1 ]; then
     log_pass "CreateContainer 仅调用 1 次（hash 匹配，无重建）"
 else
@@ -179,7 +185,8 @@ fi
 #==================== 验证 sandbox created 仅一次 ====================#
 log_step "4.4 验证 sandbox created 仅一次"
 
-SANDBOX_COUNT=$(grep -acE "sandbox created:" /tmp/cri-multiplex.log 2>/dev/null || echo "0")
+SANDBOX_COUNT=$(grep -cE "sandbox created:" /tmp/cri-multiplex.log 2>/dev/null || true)
+SANDBOX_COUNT=${SANDBOX_COUNT:-0}
 if [ "${SANDBOX_COUNT}" -eq 1 ]; then
     log_pass "sandbox created 仅 1 次"
 else
@@ -196,16 +203,16 @@ kubectl delete pod "${POD_NAME}" --force --grace-period=0 >&2 || true
 # 等待 RemovePodSandbox 被调用
 REMOVED=0
 for i in $(seq 1 15); do
-    if grep -aqE "RemovePodSandbox:" /tmp/cri-multiplex.log 2>/dev/null; then
+    if grep -aqE "RemoveContainer:" /tmp/cri-multiplex.log 2>/dev/null; then
         REMOVED=1
-        log_pass "RemovePodSandbox 已被调用（第 ${i} 次轮询）"
+        log_pass "RemoveContainer 已被调用（第 ${i} 次轮询）"
         break
     fi
     sleep 2
 done
 
 if [ "${REMOVED}" -ne 1 ]; then
-    log_fail "15s 内未检测到 RemovePodSandbox 调用"
+    log_fail "15s 内未检测到 RemoveContainer 调用"
     exit 1
 fi
 

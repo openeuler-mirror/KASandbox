@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -120,16 +121,17 @@ type grpcE2BEngine struct {
 	hostPortManager *HostPortManager // 新增：宿主机端口管理
 }
 
-func newGRPCE2BEngine(orchestratorAddr, nodeIP string) *grpcE2BEngine {
-	log.Printf("[GrpcE2BEngine] orchestrator address: %s, nodeIP: %s", orchestratorAddr, nodeIP)
+func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP string) *grpcE2BEngine {
+	log.Printf("[GrpcE2BEngine] orchestrator address: %s, proxy: %s, nodeIP: %s", orchestratorAddr, orchestratorProxyAddr, nodeIP)
 	return &grpcE2BEngine{
-		orchestratorAddr: orchestratorAddr,
-		nodeIP:           nodeIP,
-		tracker:          newPodTracker(),
-		imageCache:       make(map[string]*e2bImageMeta),
-		streamingReqs:    make(map[string]*execStreamRequest),
-		attachReqs:       make(map[string]*attachStreamRequest),
-		hostPortManager:  NewHostPortManager(20000, 29999), // 避开 NodePort 范围
+		orchestratorAddr:      orchestratorAddr,
+		orchestratorProxyAddr: orchestratorProxyAddr,
+		nodeIP:                nodeIP,
+		tracker:               newPodTracker(),
+		imageCache:            make(map[string]*e2bImageMeta),
+		streamingReqs:         make(map[string]*execStreamRequest),
+		attachReqs:            make(map[string]*attachStreamRequest),
+		hostPortManager:       NewHostPortManager(20000, 29999), // 避开 NodePort 范围
 	}
 }
 
@@ -232,9 +234,10 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		return nil, err
 	}
 	sandboxID := req.Config.Metadata.Uid
+	e2bSandboxID := e2bSandboxIDFromCRI(sandboxID)
 	alias := req.Config.Metadata.Name
 	now := time.Now()
-	cfg := e.annotationsToSandboxConfig(req.Config.Annotations, sandboxID, alias, req.Config.Labels)
+	cfg := e.annotationsToSandboxConfig(req.Config.Annotations, e2bSandboxID, alias, req.Config.Labels)
 	cfg.TemplateId = templateID
 	cfg.BuildId = buildID
 	cfg.TeamId = teamID
@@ -309,6 +312,7 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 
 	e.tracker.Add(sandboxID, &podInfo{
 		sandboxID:       sandboxID,
+		e2bSandboxID:    e2bSandboxID,
 		podUID:          req.Config.Metadata.Uid,
 		name:            req.Config.Metadata.Name,
 		namespace:       req.Config.Metadata.Namespace,
@@ -325,8 +329,8 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		portMappings: allMappings,
 	})
 
-	log.Printf("[GrpcE2BEngine] sandbox created: %s (client_id=%s, host_ip=%s, default_port=%d, mappings=%v, envd_token_set=%v)",
-		sandboxID, resp.ClientId, hostIP, defaultHostPort, allMappings, envdToken != "")
+	log.Printf("[GrpcE2BEngine] sandbox created: cri_id=%s, e2b_id=%s (client_id=%s, host_ip=%s, default_port=%d, mappings=%v, envd_token_set=%v)",
+		sandboxID, e2bSandboxID, resp.ClientId, hostIP, defaultHostPort, allMappings, envdToken != "")
 
 	return &runtime.RunPodSandboxResponse{PodSandboxId: sandboxID}, nil
 }
@@ -360,7 +364,7 @@ func (e *grpcE2BEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 	// ===== 清理结束 =====
 
 	_, err := e.client.Pause(ctx, &orchestrator.SandboxPauseRequest{
-		SandboxId:  pod.sandboxID,
+		SandboxId:  pod.envdSandboxID(),
 		TemplateId: pod.templateID,
 		BuildId:    pod.buildID,
 	})
@@ -390,7 +394,11 @@ func (e *grpcE2BEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 	}
 	// ===== 新增结束 =====
 
-	_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: req.PodSandboxId})
+	deleteID := req.PodSandboxId
+	if pod, ok := e.tracker.Get(req.PodSandboxId); ok {
+		deleteID = pod.envdSandboxID()
+	}
+	_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: deleteID})
 	if err != nil && !isNotFound(err) {
 		return nil, mapE2BError(err)
 	}
@@ -475,7 +483,7 @@ func (e *grpcE2BEngine) ListPodSandbox(ctx context.Context, req *runtime.ListPod
 	var items []*runtime.PodSandbox
 	for _, pod := range e.tracker.List() {
 		state := inferPodSandboxState(pod.state)
-		if !active[pod.sandboxID] && pod.state == stateRunning {
+		if !active[pod.envdSandboxID()] && pod.state == stateRunning {
 			state = runtime.PodSandboxState_SANDBOX_NOTREADY
 		}
 		items = append(items, &runtime.PodSandbox{
@@ -516,13 +524,126 @@ func (e *grpcE2BEngine) CreateContainer(ctx context.Context, req *runtime.Create
 		pod.containerLabels = labels
 		pod.containerName = req.Config.Metadata.Name
 		pod.containerAnnotations = req.Config.Annotations
+		pod.containerCommand = append([]string(nil), req.Config.Command...)
+		pod.containerArgs = append([]string(nil), req.Config.Args...)
+		pod.containerStdin = req.Config.Stdin
+		pod.containerTTY = req.Config.Tty
 	}
 	return &runtime.CreateContainerResponse{ContainerId: containerID}, nil
 }
 
 func (e *grpcE2BEngine) StartContainer(ctx context.Context, req *runtime.StartContainerRequest) (*runtime.StartContainerResponse, error) {
-	log.Printf("[GrpcE2BEngine] StartContainer: id=%s (sandbox already running)", req.ContainerId)
+	log.Printf("[GrpcE2BEngine] StartContainer: id=%s", req.ContainerId)
+	sandboxID := stripContainerSuffix(req.ContainerId)
+	pod, ok := e.tracker.Get(sandboxID)
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "sandbox %s not found", sandboxID)
+	}
+	if pod.mainPID != 0 {
+		log.Printf("[GrpcE2BEngine] StartContainer: main process already started, pid=%d", pod.mainPID)
+		return &runtime.StartContainerResponse{}, nil
+	}
+	if err := e.startContainerProcess(ctx, pod); err != nil {
+		return nil, err
+	}
 	return &runtime.StartContainerResponse{}, nil
+}
+
+func (e *grpcE2BEngine) startContainerProcess(ctx context.Context, pod *podInfo) error {
+	cmdLine := buildShellCommand(pod.containerCommand, pod.containerArgs)
+	cwd := "/"
+	stdin := pod.containerStdin
+	startReq := &process.StartRequest{
+		Process: &process.ProcessConfig{
+			Cmd:  "/bin/bash",
+			Args: []string{"-l", "-c", cmdLine},
+			Envs: map[string]string{},
+			Cwd:  &cwd,
+		},
+		Stdin: &stdin,
+	}
+	if pod.containerTTY {
+		startReq.Pty = &process.PTY{
+			Size: &process.PTY_Size{Cols: 80, Rows: 24},
+		}
+	}
+
+	payload, err := proto.Marshal(startReq)
+	if err != nil {
+		return status.Errorf(codes.Internal, "marshal container start request: %v", err)
+	}
+	body := writeGRPCFrameToBuf(payload)
+	req, err := newEnvdRequest(context.WithoutCancel(ctx), http.MethodPost, pod.envdSandboxID(), "/process.Process/Start", bytes.NewReader(body))
+	if err != nil {
+		return status.Errorf(codes.Internal, "create envd start request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/connect+proto")
+	req.Header.Set("Accept", "application/connect+proto")
+	req.Header.Set("Connect-Protocol-Version", "1")
+	if pod.envdAccessToken != "" {
+		req.Header.Set("X-Access-Token", pod.envdAccessToken)
+	}
+
+	resp, err := e.getEnvdHTTPClient().Do(req)
+	if err != nil {
+		return status.Errorf(codes.Unavailable, "envd container start failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return status.Errorf(codes.Internal, "envd container start returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	firstPayload, err := readEnvdFrame(resp.Body)
+	if err != nil {
+		resp.Body.Close()
+		return status.Errorf(codes.Internal, "read envd container start event: %v", err)
+	}
+	e.consumeContainerProcessStream(pod, firstPayload, resp.Body)
+	log.Printf("[GrpcE2BEngine] container main process started: sandbox=%s, pid=%d, cmd=%q", pod.sandboxID, pod.mainPID, cmdLine)
+	return nil
+}
+
+func (e *grpcE2BEngine) consumeContainerProcessStream(pod *podInfo, firstPayload []byte, body io.ReadCloser) {
+	handle := func(payload []byte) bool {
+		if len(payload) == 0 {
+			return false
+		}
+		var msg process.StartResponse
+		if err := proto.Unmarshal(payload, &msg); err != nil || msg.Event == nil {
+			return false
+		}
+		if start := msg.Event.GetStart(); start != nil {
+			pod.mainPID = start.GetPid()
+			return false
+		}
+		if end := msg.Event.GetEnd(); end != nil {
+			log.Printf("[GrpcE2BEngine] container main process ended: sandbox=%s, exit_code=%d", pod.sandboxID, end.GetExitCode())
+			return true
+		}
+		return false
+	}
+
+	if handle(firstPayload) {
+		body.Close()
+		return
+	}
+	go func() {
+		defer body.Close()
+		for {
+			payload, err := readEnvdFrame(body)
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				log.Printf("[GrpcE2BEngine] container main stream read error: %v", err)
+				return
+			}
+			if handle(payload) {
+				return
+			}
+		}
+	}()
 }
 
 func (e *grpcE2BEngine) StopContainer(ctx context.Context, req *runtime.StopContainerRequest) (*runtime.StopContainerResponse, error) {
@@ -536,7 +657,7 @@ func (e *grpcE2BEngine) StopContainer(ctx context.Context, req *runtime.StopCont
 		return &runtime.StopContainerResponse{}, nil
 	}
 	_, err := e.client.Pause(ctx, &orchestrator.SandboxPauseRequest{
-		SandboxId:  pod.sandboxID,
+		SandboxId:  pod.envdSandboxID(),
 		TemplateId: pod.templateID,
 		BuildId:    pod.buildID,
 	})
@@ -565,7 +686,11 @@ func (e *grpcE2BEngine) RemoveContainer(ctx context.Context, req *runtime.Remove
 	}
 	// ===== 新增结束 =====
 
-	_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: sandboxID})
+	deleteID := sandboxID
+	if pod, ok := e.tracker.Get(sandboxID); ok {
+		deleteID = pod.envdSandboxID()
+	}
+	_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: deleteID})
 	if err != nil && !isNotFound(err) {
 		return nil, mapE2BError(err)
 	}
@@ -823,6 +948,10 @@ const (
 	envdExecRetryDelay     = 5 * time.Millisecond
 	envdExecRequestTimeout = 5 * time.Second
 	envdExecMaxMessageSize = 16 * 1024 * 1024
+	envdSandboxPort        = 49983
+	envdProxyDomain        = "e2b.app"
+	envdHeaderSandboxID    = "E2b-Sandbox-Id"
+	envdHeaderSandboxPort  = "E2b-Sandbox-Port"
 )
 
 func (e *grpcE2BEngine) getOrchestratorProxyAddr() string {
@@ -853,6 +982,22 @@ func (e *grpcE2BEngine) getEnvdHTTPClient() *http.Client {
 	return e.envdHTTPClient
 }
 
+func envdHost(sandboxID string) string {
+	return fmt.Sprintf("%d-%s-00000000.%s", envdSandboxPort, sandboxID, envdProxyDomain)
+}
+
+func newEnvdRequest(ctx context.Context, method, sandboxID, path string, body io.Reader) (*http.Request, error) {
+	host := envdHost(sandboxID)
+	req, err := http.NewRequestWithContext(ctx, method, "http://"+host+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Host = host
+	req.Header.Set(envdHeaderSandboxID, sandboxID)
+	req.Header.Set(envdHeaderSandboxPort, strconv.Itoa(envdSandboxPort))
+	return req, nil
+}
+
 func getAccessTokenFromMetadata(ctx context.Context) string {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
@@ -876,15 +1021,12 @@ func (e *grpcE2BEngine) doExecSyncRequest(
 	body []byte,
 ) (*http.Response, int64, error) {
 	requestCount := int64(0)
-	host := fmt.Sprintf("49983-%s.e2b.app", sandboxID)
-	url := fmt.Sprintf("http://%s/process.Process/Start", host)
 	for {
 		requestCount++
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		request, err := newEnvdRequest(ctx, http.MethodPost, sandboxID, "/process.Process/Start", bytes.NewReader(body))
 		if err != nil {
 			return nil, requestCount, fmt.Errorf("create request: %w", err)
 		}
-		request.Host = host
 		request.Header.Set("Content-Type", "application/connect+proto")
 		request.Header.Set("Accept", "application/connect+proto")
 		request.Header.Set("Connect-Protocol-Version", "1")
@@ -892,8 +1034,8 @@ func (e *grpcE2BEngine) doExecSyncRequest(
 			request.Header.Set("X-Access-Token", accessToken)
 		}
 
-		log.Printf("[GrpcE2BEngine] >>> HTTP Request: POST %s", url)
-		log.Printf("[GrpcE2BEngine] >>> Host: %s", host)
+		log.Printf("[GrpcE2BEngine] >>> HTTP Request: POST %s", request.URL.String())
+		log.Printf("[GrpcE2BEngine] >>> Host: %s", request.Host)
 		for k, v := range request.Header {
 			log.Printf("[GrpcE2BEngine] >>> Header %s: %v", k, v)
 		}
@@ -943,17 +1085,10 @@ func (e *grpcE2BEngine) ExecSync(ctx context.Context, req *runtime.ExecSyncReque
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	bashCmd := strings.Join(req.Cmd, " ")
-	cwd := "/"
 	stdin := false
 	startReq := &process.StartRequest{
-		Process: &process.ProcessConfig{
-			Cmd:  "/bin/bash",
-			Args: []string{"-l", "-c", bashCmd},
-			Envs: map[string]string{},
-			Cwd:  &cwd,
-		},
-		Stdin: &stdin,
+		Process: processConfigFromCommand(req.Cmd),
+		Stdin:   &stdin,
 	}
 
 	payload, err := proto.Marshal(startReq)
@@ -966,7 +1101,7 @@ func (e *grpcE2BEngine) ExecSync(ctx context.Context, req *runtime.ExecSyncReque
 		return nil, status.Errorf(codes.Internal, "write gRPC frame: %v", err)
 	}
 
-	resp, requestCount, err := e.doExecSyncRequest(ctx, sandboxID, accessToken, bodyBuf.Bytes())
+	resp, requestCount, err := e.doExecSyncRequest(ctx, pod.envdSandboxID(), accessToken, bodyBuf.Bytes())
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, status.Errorf(codes.DeadlineExceeded, "exec sync timeout after %d retries", requestCount)
@@ -1156,182 +1291,6 @@ func (e *grpcE2BEngine) Exec(ctx context.Context, req *runtime.ExecRequest) (*ru
 	return &runtime.ExecResponse{Url: url}, nil
 }
 
-func (e *grpcE2BEngine) handleExecStream(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimPrefix(r.URL.Path, "/exec/")
-	if token == "" {
-		http.Error(w, "missing token", http.StatusBadRequest)
-		return
-	}
-
-	e.streamingMu.RLock()
-	sreq, ok := e.streamingReqs[token]
-	e.streamingMu.RUnlock()
-	if !ok {
-		http.Error(w, "invalid or expired exec token", http.StatusForbidden)
-		return
-	}
-
-	pod, ok := e.tracker.Get(sreq.sandboxID)
-	if !ok || pod.state != stateRunning {
-		http.Error(w, "sandbox not running", http.StatusNotFound)
-		return
-	}
-
-	bashCmd := strings.Join(sreq.cmd, " ")
-	cwd := "/"
-	stdinFlag := sreq.stdin
-	startReq := &process.StartRequest{
-		Process: &process.ProcessConfig{
-			Cmd:  "/bin/bash",
-			Args: []string{"-l", "-c", bashCmd},
-			Envs: map[string]string{},
-			Cwd:  &cwd,
-		},
-		Stdin: &stdinFlag,
-	}
-
-	if sreq.tty {
-		startReq.Pty = &process.PTY{
-			Size: &process.PTY_Size{Cols: 80, Rows: 24},
-		}
-	}
-
-	payload, err := proto.Marshal(startReq)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	var bodyBuf bytes.Buffer
-	if err := writeGRPCFrame(&bodyBuf, payload); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	host := fmt.Sprintf("49983-%s.e2b.app", sreq.sandboxID)
-	url := fmt.Sprintf("http://%s/process.Process/Start", host)
-
-	envdReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, url, &bodyBuf)
-	envdReq.Host = host
-	envdReq.Header.Set("Content-Type", "application/connect+proto")
-	envdReq.Header.Set("Accept", "application/connect+proto")
-	envdReq.Header.Set("Connect-Protocol-Version", "1")
-	if sreq.accessToken != "" {
-		envdReq.Header.Set("X-Access-Token", sreq.accessToken)
-	}
-
-	envdResp, err := e.getEnvdHTTPClient().Do(envdReq)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("envd start failed: %v", err), http.StatusBadGateway)
-		return
-	}
-	defer envdResp.Body.Close()
-
-	if envdResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(envdResp.Body)
-		http.Error(w, fmt.Sprintf("envd returned %d: %s", envdResp.StatusCode, string(body)), http.StatusBadGateway)
-		return
-	}
-
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "hijacking not supported", http.StatusInternalServerError)
-		return
-	}
-	clientConn, bufrw, err := hj.Hijack()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer clientConn.Close()
-
-	bufrw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n")
-	bufrw.Flush()
-
-	_, firstFrame, err := readGRPCFrame(envdResp.Body)
-	if err != nil {
-		log.Printf("[GrpcE2BEngine] exec stream read first frame error: %v", err)
-		return
-	}
-	var firstMsg process.StartResponse
-	if err := proto.Unmarshal(firstFrame, &firstMsg); err != nil {
-		log.Printf("[GrpcE2BEngine] exec stream unmarshal first frame error: %v", err)
-		return
-	}
-	var pid uint32
-	if firstMsg.Event != nil && firstMsg.Event.GetStart() != nil {
-		pid = firstMsg.Event.GetStart().GetPid()
-		log.Printf("[GrpcE2BEngine] exec stream start, pid=%d", pid)
-	} else {
-		log.Printf("[GrpcE2BEngine] exec stream first frame is not start event")
-	}
-
-	go func() {
-		defer clientConn.Close()
-		for {
-			_, framePayload, err := readGRPCFrame(envdResp.Body)
-			if err == io.EOF {
-				log.Printf("[GrpcE2BEngine] exec stream EOF")
-				return
-			}
-			if err != nil {
-				log.Printf("[GrpcE2BEngine] exec stream read error: %v", err)
-				return
-			}
-
-			var msg process.StartResponse
-			if err := proto.Unmarshal(framePayload, &msg); err != nil {
-				log.Printf("[GrpcE2BEngine] exec unmarshal error: %v", err)
-				continue
-			}
-			if msg.Event == nil {
-				continue
-			}
-
-			if data := msg.Event.GetData(); data != nil {
-				if sreq.tty {
-					if out := data.GetPty(); len(out) > 0 && sreq.stdout {
-						bufrw.Write(out)
-						bufrw.Flush()
-					}
-				} else {
-					if out := data.GetStdout(); len(out) > 0 && sreq.stdout {
-						bufrw.Write(out)
-						bufrw.Flush()
-					}
-					if out := data.GetStderr(); len(out) > 0 && sreq.stderr {
-						bufrw.Write(out)
-						bufrw.Flush()
-					}
-				}
-			} else if end := msg.Event.GetEnd(); end != nil {
-				log.Printf("[GrpcE2BEngine] exec stream end, exit_code=%d", end.GetExitCode())
-				return
-			}
-		}
-	}()
-
-	if sreq.stdin && pid > 0 {
-		go func() {
-			defer clientConn.Close()
-			buf := make([]byte, 4096)
-			for {
-				n, err := bufrw.Read(buf)
-				if err != nil {
-					return
-				}
-				if n == 0 {
-					continue
-				}
-				e.sendInputToEnvd(r.Context(), sreq.sandboxID, pid, sreq.accessToken, buf[:n], sreq.tty)
-			}
-		}()
-	}
-
-	<-r.Context().Done()
-	log.Printf("[GrpcE2BEngine] exec stream closed for sandbox %s", sreq.sandboxID)
-}
-
 // Attach 实现 CRI Attach 接口
 func (e *grpcE2BEngine) Attach(ctx context.Context, req *runtime.AttachRequest) (*runtime.AttachResponse, error) {
 	log.Printf("[GrpcE2BEngine] Attach: id=%s, tty=%v, stdin=%v, stdout=%v, stderr=%v",
@@ -1375,198 +1334,18 @@ func (e *grpcE2BEngine) Attach(ctx context.Context, req *runtime.AttachRequest) 
 	return &runtime.AttachResponse{Url: url}, nil
 }
 
-func (e *grpcE2BEngine) handleAttachStream(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimPrefix(r.URL.Path, "/attach/")
-	if token == "" {
-		http.Error(w, "missing token", http.StatusBadRequest)
-		return
-	}
-
-	e.streamingMu.RLock()
-	areq, ok := e.attachReqs[token]
-	e.streamingMu.RUnlock()
-	if !ok {
-		http.Error(w, "invalid or expired attach token", http.StatusForbidden)
-		return
-	}
-
-	pod, ok := e.tracker.Get(areq.sandboxID)
-	if !ok || pod.state != stateRunning {
-		http.Error(w, "sandbox not running", http.StatusNotFound)
-		return
-	}
-
-	// 1. 查询 envd 进程列表，获取目标 PID
-	listResp, err := e.doListRequest(r.Context(), areq.sandboxID, areq.accessToken)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("list processes failed: %v", err), http.StatusBadGateway)
-		return
-	}
-	if len(listResp.Processes) == 0 {
-		http.Error(w, "no running processes in sandbox", http.StatusNotFound)
-		return
-	}
-	pid := listResp.Processes[0].GetPid()
-	log.Printf("[GrpcE2BEngine] attach to sandbox %s, selected pid=%d (total processes: %d)", areq.sandboxID, pid, len(listResp.Processes))
-
-	// 2. 建立 Connect streaming
-	connectReq := &process.ConnectRequest{
-		Process: &process.ProcessSelector{
-			Selector: &process.ProcessSelector_Pid{Pid: pid},
-		},
-	}
-	payload, err := proto.Marshal(connectReq)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	var bodyBuf bytes.Buffer
-	if err := writeGRPCFrame(&bodyBuf, payload); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	host := fmt.Sprintf("49983-%s.e2b.app", areq.sandboxID)
-	url := fmt.Sprintf("http://%s/process.Process/Connect", host)
-
-	envdReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, url, &bodyBuf)
-	envdReq.Host = host
-	envdReq.Header.Set("Content-Type", "application/connect+proto")
-	envdReq.Header.Set("Accept", "application/connect+proto")
-	envdReq.Header.Set("Connect-Protocol-Version", "1")
-	if areq.accessToken != "" {
-		envdReq.Header.Set("X-Access-Token", areq.accessToken)
-	}
-
-	envdResp, err := e.getEnvdHTTPClient().Do(envdReq)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("envd connect failed: %v", err), http.StatusBadGateway)
-		return
-	}
-	defer envdResp.Body.Close()
-
-	if envdResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(envdResp.Body)
-		http.Error(w, fmt.Sprintf("envd returned %d: %s", envdResp.StatusCode, string(body)), http.StatusBadGateway)
-		return
-	}
-
-	// 3. Hijack 客户端连接
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "hijacking not supported", http.StatusInternalServerError)
-		return
-	}
-	clientConn, bufrw, err := hj.Hijack()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer clientConn.Close()
-
-	bufrw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n")
-	bufrw.Flush()
-
-	// 4. 读取第一个 ConnectResponse frame 确认连接
-	_, firstFrame, err := readGRPCFrame(envdResp.Body)
-	if err != nil {
-		log.Printf("[GrpcE2BEngine] attach stream read first frame error: %v", err)
-		return
-	}
-	var firstMsg process.ConnectResponse
-	if err := proto.Unmarshal(firstFrame, &firstMsg); err != nil {
-		log.Printf("[GrpcE2BEngine] attach stream unmarshal first frame error: %v", err)
-		return
-	}
-	if firstMsg.Event != nil && firstMsg.Event.GetStart() != nil {
-		pid = firstMsg.Event.GetStart().GetPid()
-		log.Printf("[GrpcE2BEngine] attach connect confirmed, pid=%d", pid)
-	} else {
-		log.Printf("[GrpcE2BEngine] attach stream first frame is not start event")
-	}
-
-	// 5. envd → 客户端 输出转发（ConnectResponse 帧格式与 StartResponse 相同）
-	go func() {
-		defer clientConn.Close()
-		for {
-			_, framePayload, err := readGRPCFrame(envdResp.Body)
-			if err == io.EOF {
-				log.Printf("[GrpcE2BEngine] attach stream EOF")
-				return
-			}
-			if err != nil {
-				log.Printf("[GrpcE2BEngine] attach stream read error: %v", err)
-				return
-			}
-
-			var msg process.ConnectResponse
-			if err := proto.Unmarshal(framePayload, &msg); err != nil {
-				log.Printf("[GrpcE2BEngine] attach unmarshal error: %v", err)
-				continue
-			}
-			if msg.Event == nil {
-				continue
-			}
-
-			if data := msg.Event.GetData(); data != nil {
-				if areq.tty {
-					if out := data.GetPty(); len(out) > 0 && areq.stdout {
-						bufrw.Write(out)
-						bufrw.Flush()
-					}
-				} else {
-					if out := data.GetStdout(); len(out) > 0 && areq.stdout {
-						bufrw.Write(out)
-						bufrw.Flush()
-					}
-					if out := data.GetStderr(); len(out) > 0 && areq.stderr {
-						bufrw.Write(out)
-						bufrw.Flush()
-					}
-				}
-			} else if end := msg.Event.GetEnd(); end != nil {
-				log.Printf("[GrpcE2BEngine] attach stream end, exit_code=%d", end.GetExitCode())
-				return
-			}
-		}
-	}()
-
-	// 6. 客户端 → envd stdin 转发
-	if areq.stdin && pid > 0 {
-		go func() {
-			defer clientConn.Close()
-			buf := make([]byte, 4096)
-			for {
-				n, err := bufrw.Read(buf)
-				if err != nil {
-					return
-				}
-				if n == 0 {
-					continue
-				}
-				e.sendInputToEnvd(r.Context(), areq.sandboxID, pid, areq.accessToken, buf[:n], areq.tty)
-			}
-		}()
-	}
-
-	<-r.Context().Done()
-	log.Printf("[GrpcE2BEngine] attach stream closed for sandbox %s", areq.sandboxID)
-}
-
 // doListRequest 调用 envd process.Process/List unary RPC 获取进程列表
 func (e *grpcE2BEngine) doListRequest(ctx context.Context, sandboxID, accessToken string) (*process.ListResponse, error) {
-	host := fmt.Sprintf("49983-%s.e2b.app", sandboxID)
-	url := fmt.Sprintf("http://%s/process.Process/List", host)
-
 	reqPayload := &process.ListRequest{}
 	payload, err := proto.Marshal(reqPayload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal ListRequest: %w", err)
 	}
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	req.Host = host
+	req, err := newEnvdRequest(ctx, http.MethodPost, sandboxID, "/process.Process/List", bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("create List request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/proto")
 	req.Header.Set("Accept", "application/proto")
 	req.Header.Set("Connect-Protocol-Version", "1")
@@ -1605,9 +1384,6 @@ func (e *grpcE2BEngine) doListRequest(ctx context.Context, sandboxID, accessToke
 }
 
 func (e *grpcE2BEngine) sendInputToEnvd(ctx context.Context, sandboxID string, pid uint32, accessToken string, data []byte, tty bool) {
-	host := fmt.Sprintf("49983-%s.e2b.app", sandboxID)
-	url := fmt.Sprintf("http://%s/process.Process/SendInput", host)
-
 	var input *process.ProcessInput
 	if tty {
 		input = &process.ProcessInput{
@@ -1631,8 +1407,11 @@ func (e *grpcE2BEngine) sendInputToEnvd(ctx context.Context, sandboxID string, p
 		return
 	}
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	req.Host = host
+	req, err := newEnvdRequest(ctx, http.MethodPost, sandboxID, "/process.Process/SendInput", bytes.NewReader(payload))
+	if err != nil {
+		log.Printf("[GrpcE2BEngine] sendInput create request error: %v", err)
+		return
+	}
 	req.Header.Set("Content-Type", "application/proto")
 	req.Header.Set("Accept", "application/proto")
 	req.Header.Set("Connect-Protocol-Version", "1")
@@ -1830,6 +1609,23 @@ func stripContainerSuffix(containerID string) string {
 	return containerID
 }
 
+func e2bSandboxIDFromCRI(criID string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(criID) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	id := b.String()
+	// The proxy host is "<port>-<sandboxID>-00000000.<domain>"; keep the
+	// left-most DNS label within 63 bytes.
+	if len(id) >= 8 && len(id) <= 48 {
+		return id
+	}
+	sum := sha256.Sum256([]byte(criID))
+	return hex.EncodeToString(sum[:])[:32]
+}
+
 func inferPodSandboxState(s e2bState) runtime.PodSandboxState {
 	switch s {
 	case stateRunning:
@@ -1935,4 +1731,3 @@ func (e *grpcE2BEngine) Close() error {
 	}
 	return nil
 }
-
