@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"strings"
 
 	"github.com/cri-multiplex/pkg/engine"
 	"github.com/cri-multiplex/pkg/server"
@@ -22,14 +23,42 @@ const (
 
 // autoNodeIP 返回本机第一个非 lo 的 IPv4 地址，用于自动填充 --node-ip
 func autoNodeIP() string {
-	addrs, err := net.InterfaceAddrs()
+	// 虚拟网卡前缀黑名单
+	virtualPrefixes := []string{"veth", "docker", "br-", "tun", "virbr", "vnet", "flannel", "cali", "cni", "kube"}
+
+	interfaces, err := net.Interfaces()
 	if err != nil {
 		return ""
 	}
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
+
+	for _, iface := range interfaces {
+		// 跳过 down 状态和回环
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		// 跳过虚拟网卡
+		skip := false
+		for _, prefix := range virtualPrefixes {
+			if strings.HasPrefix(iface.Name, prefix) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok {
+				if ip := ipnet.IP.To4(); ip != nil {
+					return ip.String()
+				}
 			}
 		}
 	}
