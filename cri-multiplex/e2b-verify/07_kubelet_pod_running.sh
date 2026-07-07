@@ -5,8 +5,8 @@
 # 验证目标：
 #   1. 通过 kubelet + RuntimeClass=e2b 创建的 Pod 能进入 Running 状态
 #   2. Pod 启动后保持 Running，RESTARTS=0，不被 kubelet 误调 StopContainer
-#   3. StopContainer/StopPodSandbox 能力保留用于暂停沙箱（不在此用例主动触发）
-#   4. Pod 删除后沙箱被销毁（RemovePodSandbox 触发）
+#   3. 本次 Pod 运行期间不被 kubelet 误调 StopContainer/StopPodSandbox
+#   4. Pod 删除后 logical container 被移除（RemoveContainer 触发）
 #
 # 前置条件：
 #   - kubelet 已配置容器运行时端点指向 cri-multiplex
@@ -102,6 +102,14 @@ if ! kubectl apply -f "${POD_YAML}" >&2 2>&1; then
 fi
 log_pass "Pod YAML 已提交: ${POD_NAME}"
 
+POD_UID=$(kubectl get pod "${POD_NAME}" -o jsonpath='{.metadata.uid}' 2>/dev/null || echo "")
+if [ -z "${POD_UID}" ]; then
+    log_fail "无法读取 Pod UID"
+    exit 1
+fi
+CONTAINER_ID="${POD_UID}-c"
+log_info "本次 Pod UID: ${POD_UID}"
+
 #==================== 等待进入 Running ====================#
 log_step "3.2 等待 Pod 进入 Running 状态"
 
@@ -157,7 +165,7 @@ if [ -f /tmp/cri-multiplex.log ]; then
     # 日志中含 StopContainer / StopPodSandbox 的行数
     # 注意：grep -c 在无匹配时退出码为 1，因此仅用 || true 避免脚本中断，
     #       其 stdout 始终为计数数字（空时下面用 :-0 兜底）。
-    STOP_COUNT=$(grep -cE "StopContainer:|StopPodSandbox:" /tmp/cri-multiplex.log 2>/dev/null || true)
+    STOP_COUNT=$(grep -aE "StopContainer: id=${CONTAINER_ID}|StopPodSandbox: id=${POD_UID}" /tmp/cri-multiplex.log 2>/dev/null | wc -l || true)
 fi
 STOP_COUNT=${STOP_COUNT:-0}
 
@@ -166,14 +174,14 @@ if [ "${STOP_COUNT}" -eq 0 ]; then
 else
     log_fail "检测到 ${STOP_COUNT} 次 Stop 调用，kubelet 可能误判容器需重建"
     log_info "相关日志（最多 10 行）:"
-    grep -aE "StopContainer:|StopPodSandbox:" /tmp/cri-multiplex.log 2>/dev/null | tail -10 >&2 || true
+    grep -aE "StopContainer: id=${CONTAINER_ID}|StopPodSandbox: id=${POD_UID}" /tmp/cri-multiplex.log 2>/dev/null | tail -10 >&2 || true
     exit 1
 fi
 
 #==================== 验证 CreateContainer 仅一次 ====================#
 log_step "4.3 验证 CreateContainer 仅被调用一次（无重复创建）"
 
-CREATE_COUNT=$(grep -cE "CreateContainer: pod=" /tmp/cri-multiplex.log 2>/dev/null || true)
+CREATE_COUNT=$(grep -aE "CreateContainer: pod=${POD_UID}" /tmp/cri-multiplex.log 2>/dev/null | wc -l || true)
 CREATE_COUNT=${CREATE_COUNT:-0}
 if [ "${CREATE_COUNT}" -eq 1 ]; then
     log_pass "CreateContainer 仅调用 1 次（hash 匹配，无重建）"
@@ -185,7 +193,7 @@ fi
 #==================== 验证 sandbox created 仅一次 ====================#
 log_step "4.4 验证 sandbox created 仅一次"
 
-SANDBOX_COUNT=$(grep -cE "sandbox created:" /tmp/cri-multiplex.log 2>/dev/null || true)
+SANDBOX_COUNT=$(grep -aE "sandbox created: cri_id=${POD_UID}" /tmp/cri-multiplex.log 2>/dev/null | wc -l || true)
 SANDBOX_COUNT=${SANDBOX_COUNT:-0}
 if [ "${SANDBOX_COUNT}" -eq 1 ]; then
     log_pass "sandbox created 仅 1 次"
@@ -203,7 +211,7 @@ kubectl delete pod "${POD_NAME}" --force --grace-period=0 >&2 || true
 # 等待 RemovePodSandbox 被调用
 REMOVED=0
 for i in $(seq 1 15); do
-    if grep -aqE "RemoveContainer:" /tmp/cri-multiplex.log 2>/dev/null; then
+    if grep -aqE "RemoveContainer: id=${CONTAINER_ID}" /tmp/cri-multiplex.log 2>/dev/null; then
         REMOVED=1
         log_pass "RemoveContainer 已被调用（第 ${i} 次轮询）"
         break

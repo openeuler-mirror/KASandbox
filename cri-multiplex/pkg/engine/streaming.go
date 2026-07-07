@@ -294,6 +294,16 @@ func processConfigFromCommand(cmd []string) *process.ProcessConfig {
 	}
 }
 
+func processConfigForInteractiveShell() *process.ProcessConfig {
+	cwd := "/"
+	return &process.ProcessConfig{
+		Cmd:  "/bin/bash",
+		Args: []string{"-l"},
+		Envs: map[string]string{},
+		Cwd:  &cwd,
+	}
+}
+
 func buildShellCommand(command, args []string) string {
 	argv := make([]string, 0, len(command)+len(args))
 	argv = append(argv, command...)
@@ -366,6 +376,43 @@ func (s *streamingSession) startEnvdExec(ctx context.Context) (*http.Response, e
 	resp, err := s.e.getEnvdHTTPClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("envd start failed: %w", err)
+	}
+	return resp, nil
+}
+
+// startEnvdAttachShell 启动一个交互 shell 作为 v2 attach-shell 过渡语义。
+func (s *streamingSession) startEnvdAttachShell(ctx context.Context) (*http.Response, error) {
+	stdin := s.stdin
+	startReq := &process.StartRequest{
+		Process: processConfigForInteractiveShell(),
+		Stdin:   &stdin,
+	}
+	if s.tty {
+		startReq.Pty = &process.PTY{
+			Size: &process.PTY_Size{Cols: 80, Rows: 24},
+		}
+	}
+
+	payload, err := proto.Marshal(startReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal attach shell StartRequest: %w", err)
+	}
+	body := writeGRPCFrameToBuf(payload)
+
+	req, err := newEnvdRequest(ctx, http.MethodPost, s.pod.envdSandboxID(), "/process.Process/Start", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create attach shell start request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/connect+proto")
+	req.Header.Set("Accept", "application/connect+proto")
+	req.Header.Set("Connect-Protocol-Version", "1")
+	if token := s.accessToken(); token != "" {
+		req.Header.Set("X-Access-Token", token)
+	}
+
+	resp, err := s.e.getEnvdHTTPClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("attach shell start failed: %w", err)
 	}
 	return resp, nil
 }
@@ -776,20 +823,18 @@ func (s *streamingSession) forwardWebSocketToEnvd(ctx context.Context) {
 	}
 }
 
-func (s *streamingSession) resolveAttachPID(ctx context.Context) (uint32, bool) {
-	pid := s.pod.mainPID
-	if pid == 0 {
-		listResp, err := s.e.doListRequest(ctx, s.pod.envdSandboxID(), s.accessToken())
-		if err != nil {
-			s.sendError(fmt.Sprintf("list processes failed: %v", err))
-			return 0, false
-		}
-		if len(listResp.Processes) == 0 {
-			s.sendError("no running processes in sandbox")
-			return 0, false
-		}
-		pid = listResp.Processes[0].GetPid()
+func (s *streamingSession) resolveAttachPID(ctx context.Context) (uint32, bool, bool) {
+	listResp, err := s.e.doListRequest(ctx, s.pod.envdSandboxID(), s.accessToken())
+	if err != nil {
+		s.sendError(fmt.Sprintf("list processes failed: %v", err))
+		return 0, false, false
 	}
+	if len(listResp.Processes) == 0 {
+		log.Printf("[streaming] attach-existing found no process for sandbox cri_id=%s, e2b_id=%s; using attach-shell",
+			s.pod.sandboxID, s.pod.envdSandboxID())
+		return 0, false, true
+	}
+	pid := listResp.Processes[0].GetPid()
 	s.mu.Lock()
 	s.pid = pid
 	s.mu.Unlock()
@@ -799,7 +844,20 @@ func (s *streamingSession) resolveAttachPID(ctx context.Context) (uint32, bool) 
 		sandboxID = s.attachReq.sandboxID
 	}
 	log.Printf("[streaming] attach to sandbox cri_id=%s, e2b_id=%s, pid=%d", sandboxID, s.pod.envdSandboxID(), pid)
-	return pid, true
+	return pid, true, true
+}
+
+func (s *streamingSession) openEnvdAttachStream(ctx context.Context) (*http.Response, bool, error) {
+	pid, found, ok := s.resolveAttachPID(ctx)
+	if !ok {
+		return nil, false, fmt.Errorf("resolve attach process failed")
+	}
+	if found {
+		resp, err := s.connectEnvdAttach(ctx, pid)
+		return resp, false, err
+	}
+	resp, err := s.startEnvdAttachShell(ctx)
+	return resp, true, err
 }
 
 // handleExecStream 处理 CRI Exec streaming 请求（支持 WebSocket v5）。
@@ -942,18 +1000,13 @@ func (e *grpcE2BEngine) handleAttachStream(w http.ResponseWriter, r *http.Reques
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 
-		pid, ok := session.resolveAttachPID(ctx)
-		if !ok {
-			return
-		}
-
-		resp, err := session.connectEnvdAttach(ctx, pid)
+		resp, isStart, err := session.openEnvdAttachStream(ctx)
 		if err != nil {
 			session.sendError(err.Error())
 			return
 		}
 
-		go session.forwardEnvdToChannels(resp, false)
+		go session.forwardEnvdToChannels(resp, isStart)
 		session.forwardWebSocketToEnvd(ctx)
 		return
 	}
@@ -978,12 +1031,7 @@ func (e *grpcE2BEngine) handleAttachStream(w http.ResponseWriter, r *http.Reques
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 
-		pid, ok := session.resolveAttachPID(ctx)
-		if !ok {
-			return
-		}
-
-		resp, err := session.connectEnvdAttach(ctx, pid)
+		resp, isStart, err := session.openEnvdAttachStream(ctx)
 		if err != nil {
 			session.sendError(err.Error())
 			return
@@ -994,7 +1042,7 @@ func (e *grpcE2BEngine) handleAttachStream(w http.ResponseWriter, r *http.Reques
 		if transport.resize != nil {
 			go session.forwardSPDYResize(ctx, transport.resize)
 		}
-		go session.forwardEnvdToChannels(resp, false)
+		go session.forwardEnvdToChannels(resp, isStart)
 		<-transport.conn.CloseChan()
 		return
 	}

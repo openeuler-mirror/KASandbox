@@ -226,6 +226,12 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		return nil, mapE2BError(err)
 	}
 	if existing, ok := e.tracker.Get(req.Config.Metadata.Uid); ok && existing.state != stateRemoved {
+		if existing.state == stateStopped || existing.state == statePaused {
+			existing.state = stateRunning
+			existing.endedAt = nil
+			log.Printf("[GrpcE2BEngine] RunPodSandbox: sandbox %s exists in stopped state, marking running without orchestrator checkpoint", req.Config.Metadata.Uid)
+			return &runtime.RunPodSandboxResponse{PodSandboxId: req.Config.Metadata.Uid}, nil
+		}
 		log.Printf("[GrpcE2BEngine] RunPodSandbox: sandbox %s already exists, returning idempotently", req.Config.Metadata.Uid)
 		return &runtime.RunPodSandboxResponse{PodSandboxId: req.Config.Metadata.Uid}, nil
 	}
@@ -337,9 +343,6 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 
 func (e *grpcE2BEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPodSandboxRequest) (*runtime.StopPodSandboxResponse, error) {
 	log.Printf("[GrpcE2BEngine] StopPodSandbox: id=%s", req.PodSandboxId)
-	if err := e.ensureConn(); err != nil {
-		return nil, mapE2BError(err)
-	}
 
 	pod, ok := e.tracker.Get(req.PodSandboxId)
 	if !ok {
@@ -360,18 +363,17 @@ func (e *grpcE2BEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 			ports = append(ports, m.SandboxPort)
 		}
 		e.hostPortManager.ReleasePorts(req.PodSandboxId, ports)
+		pod.portMappings = nil
+		pod.hostPort = 0
 	}
 	// ===== 清理结束 =====
 
-	_, err := e.client.Pause(ctx, &orchestrator.SandboxPauseRequest{
-		SandboxId:  pod.envdSandboxID(),
-		TemplateId: pod.templateID,
-		BuildId:    pod.buildID,
-	})
-	if err != nil && !isNotFound(err) {
-		return nil, mapE2BError(err)
+	pod.state = stateStopped
+	if pod.containerState == containerStateRunning || pod.containerState == containerStateCreated {
+		pod.containerState = containerStateExited
+		pod.containerExitCode = 0
+		pod.containerFinishedAt = time.Now()
 	}
-	pod.state = statePaused
 	now := time.Now()
 	pod.endedAt = &now
 	return &runtime.StopPodSandboxResponse{}, nil
@@ -383,16 +385,24 @@ func (e *grpcE2BEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 		return nil, mapE2BError(err)
 	}
 
-	// ===== 新增：确保清理 HostPort 映射 =====
+	// ===== 确保清理所有 HostPort 映射 =====
 	if pod, ok := e.tracker.Get(req.PodSandboxId); ok {
-		if pod.hostPort > 0 && pod.hostIP != "" {
-			if err := CleanupHostPortMapping(e.nodeIP, pod.hostPort, pod.hostIP, 49983); err != nil {
-				log.Printf("[GrpcE2BEngine] WARNING: cleanup host port mapping failed: %v", err)
+		if pod.hostIP != "" {
+			for _, m := range pod.portMappings {
+				if err := CleanupHostPortMapping(e.nodeIP, m.HostPort, pod.hostIP, m.SandboxPort); err != nil {
+					log.Printf("[GrpcE2BEngine] WARNING: cleanup mapping %d->%d failed: %v", m.HostPort, m.SandboxPort, err)
+				}
 			}
-			e.hostPortManager.Release(req.PodSandboxId)
+			ports := make([]int, 0, len(pod.portMappings))
+			for _, m := range pod.portMappings {
+				ports = append(ports, m.SandboxPort)
+			}
+			e.hostPortManager.ReleasePorts(req.PodSandboxId, ports)
+			pod.portMappings = nil
+			pod.hostPort = 0
 		}
 	}
-	// ===== 新增结束 =====
+	// ===== 清理结束 =====
 
 	deleteID := req.PodSandboxId
 	if pod, ok := e.tracker.Get(req.PodSandboxId); ok {
@@ -528,6 +538,11 @@ func (e *grpcE2BEngine) CreateContainer(ctx context.Context, req *runtime.Create
 		pod.containerArgs = append([]string(nil), req.Config.Args...)
 		pod.containerStdin = req.Config.Stdin
 		pod.containerTTY = req.Config.Tty
+		pod.containerState = containerStateCreated
+		pod.containerCreatedAt = time.Now()
+		pod.containerStartedAt = time.Time{}
+		pod.containerFinishedAt = time.Time{}
+		pod.containerExitCode = 0
 	}
 	return &runtime.CreateContainerResponse{ContainerId: containerID}, nil
 }
@@ -539,162 +554,43 @@ func (e *grpcE2BEngine) StartContainer(ctx context.Context, req *runtime.StartCo
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "sandbox %s not found", sandboxID)
 	}
-	if pod.mainPID != 0 {
-		log.Printf("[GrpcE2BEngine] StartContainer: main process already started, pid=%d", pod.mainPID)
+	if pod.state != stateRunning {
+		return nil, status.Errorf(codes.FailedPrecondition, "sandbox %s is not running", sandboxID)
+	}
+	if pod.containerState == containerStateRunning {
+		log.Printf("[GrpcE2BEngine] StartContainer: logical container already running for sandbox=%s", sandboxID)
 		return &runtime.StartContainerResponse{}, nil
 	}
-	if err := e.startContainerProcess(ctx, pod); err != nil {
-		return nil, err
-	}
+	pod.containerState = containerStateRunning
+	pod.containerStartedAt = time.Now()
+	pod.containerFinishedAt = time.Time{}
+	pod.containerExitCode = 0
+	log.Printf("[GrpcE2BEngine] StartContainer: logical no-op, sandbox envd already ready: sandbox=%s", sandboxID)
 	return &runtime.StartContainerResponse{}, nil
-}
-
-func (e *grpcE2BEngine) startContainerProcess(ctx context.Context, pod *podInfo) error {
-	cmdLine := buildShellCommand(pod.containerCommand, pod.containerArgs)
-	cwd := "/"
-	stdin := pod.containerStdin
-	startReq := &process.StartRequest{
-		Process: &process.ProcessConfig{
-			Cmd:  "/bin/bash",
-			Args: []string{"-l", "-c", cmdLine},
-			Envs: map[string]string{},
-			Cwd:  &cwd,
-		},
-		Stdin: &stdin,
-	}
-	if pod.containerTTY {
-		startReq.Pty = &process.PTY{
-			Size: &process.PTY_Size{Cols: 80, Rows: 24},
-		}
-	}
-
-	payload, err := proto.Marshal(startReq)
-	if err != nil {
-		return status.Errorf(codes.Internal, "marshal container start request: %v", err)
-	}
-	body := writeGRPCFrameToBuf(payload)
-	req, err := newEnvdRequest(context.WithoutCancel(ctx), http.MethodPost, pod.envdSandboxID(), "/process.Process/Start", bytes.NewReader(body))
-	if err != nil {
-		return status.Errorf(codes.Internal, "create envd start request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/connect+proto")
-	req.Header.Set("Accept", "application/connect+proto")
-	req.Header.Set("Connect-Protocol-Version", "1")
-	if pod.envdAccessToken != "" {
-		req.Header.Set("X-Access-Token", pod.envdAccessToken)
-	}
-
-	resp, err := e.getEnvdHTTPClient().Do(req)
-	if err != nil {
-		return status.Errorf(codes.Unavailable, "envd container start failed: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		return status.Errorf(codes.Internal, "envd container start returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	firstPayload, err := readEnvdFrame(resp.Body)
-	if err != nil {
-		resp.Body.Close()
-		return status.Errorf(codes.Internal, "read envd container start event: %v", err)
-	}
-	e.consumeContainerProcessStream(pod, firstPayload, resp.Body)
-	log.Printf("[GrpcE2BEngine] container main process started: sandbox=%s, pid=%d, cmd=%q", pod.sandboxID, pod.mainPID, cmdLine)
-	return nil
-}
-
-func (e *grpcE2BEngine) consumeContainerProcessStream(pod *podInfo, firstPayload []byte, body io.ReadCloser) {
-	handle := func(payload []byte) bool {
-		if len(payload) == 0 {
-			return false
-		}
-		var msg process.StartResponse
-		if err := proto.Unmarshal(payload, &msg); err != nil || msg.Event == nil {
-			return false
-		}
-		if start := msg.Event.GetStart(); start != nil {
-			pod.mainPID = start.GetPid()
-			return false
-		}
-		if end := msg.Event.GetEnd(); end != nil {
-			log.Printf("[GrpcE2BEngine] container main process ended: sandbox=%s, exit_code=%d", pod.sandboxID, end.GetExitCode())
-			return true
-		}
-		return false
-	}
-
-	if handle(firstPayload) {
-		body.Close()
-		return
-	}
-	go func() {
-		defer body.Close()
-		for {
-			payload, err := readEnvdFrame(body)
-			if err == io.EOF {
-				return
-			}
-			if err != nil {
-				log.Printf("[GrpcE2BEngine] container main stream read error: %v", err)
-				return
-			}
-			if handle(payload) {
-				return
-			}
-		}
-	}()
 }
 
 func (e *grpcE2BEngine) StopContainer(ctx context.Context, req *runtime.StopContainerRequest) (*runtime.StopContainerResponse, error) {
 	log.Printf("[GrpcE2BEngine] StopContainer: id=%s", req.ContainerId)
-	if err := e.ensureConn(); err != nil {
-		return nil, mapE2BError(err)
-	}
 	sandboxID := stripContainerSuffix(req.ContainerId)
 	pod, ok := e.tracker.Get(sandboxID)
 	if !ok {
 		return &runtime.StopContainerResponse{}, nil
 	}
-	_, err := e.client.Pause(ctx, &orchestrator.SandboxPauseRequest{
-		SandboxId:  pod.envdSandboxID(),
-		TemplateId: pod.templateID,
-		BuildId:    pod.buildID,
-	})
-	if err != nil && !isNotFound(err) {
-		return nil, mapE2BError(err)
+	if pod.containerState != containerStateExited && pod.containerState != containerStateRemoved {
+		pod.containerState = containerStateExited
+		pod.containerExitCode = 0
+		pod.containerFinishedAt = time.Now()
 	}
-	pod.state = statePaused
 	return &runtime.StopContainerResponse{}, nil
 }
 
 func (e *grpcE2BEngine) RemoveContainer(ctx context.Context, req *runtime.RemoveContainerRequest) (*runtime.RemoveContainerResponse, error) {
 	log.Printf("[GrpcE2BEngine] RemoveContainer: id=%s", req.ContainerId)
-	if err := e.ensureConn(); err != nil {
-		return nil, mapE2BError(err)
-	}
 	sandboxID := stripContainerSuffix(req.ContainerId)
-
-	// ===== 新增：确保清理 HostPort 映射 =====
 	if pod, ok := e.tracker.Get(sandboxID); ok {
-		if pod.hostPort > 0 && pod.hostIP != "" {
-			if err := CleanupHostPortMapping(e.nodeIP, pod.hostPort, pod.hostIP, 49983); err != nil {
-				log.Printf("[GrpcE2BEngine] WARNING: cleanup host port mapping failed: %v", err)
-			}
-			e.hostPortManager.Release(sandboxID)
-		}
+		pod.containerState = containerStateRemoved
+		pod.containerFinishedAt = time.Now()
 	}
-	// ===== 新增结束 =====
-
-	deleteID := sandboxID
-	if pod, ok := e.tracker.Get(sandboxID); ok {
-		deleteID = pod.envdSandboxID()
-	}
-	_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: deleteID})
-	if err != nil && !isNotFound(err) {
-		return nil, mapE2BError(err)
-	}
-	e.tracker.Delete(sandboxID)
 	return &runtime.RemoveContainerResponse{}, nil
 }
 
@@ -702,6 +598,9 @@ func (e *grpcE2BEngine) ListContainers(ctx context.Context, req *runtime.ListCon
 	log.Println("[GrpcE2BEngine] ListContainers")
 	var items []*runtime.Container
 	for _, pod := range e.tracker.List() {
+		if pod.containerState == containerStateRemoved || pod.containerName == "" {
+			continue
+		}
 		items = append(items, &runtime.Container{
 			Id:           pod.sandboxID + "-c",
 			PodSandboxId: pod.sandboxID,
@@ -709,12 +608,12 @@ func (e *grpcE2BEngine) ListContainers(ctx context.Context, req *runtime.ListCon
 				Name:    pod.containerName,
 				Attempt: 0,
 			},
-			State: inferContainerState(pod.state),
+			State: inferContainerState(pod.containerState),
 			Image: &runtime.ImageSpec{
 				Image: pod.imageRef,
 			},
 			ImageRef:    pod.imageRef,
-			CreatedAt:   pod.createdAt.UnixNano(),
+			CreatedAt:   containerCreatedAt(pod),
 			Labels:      pod.containerLabels,
 			Annotations: pod.containerAnnotations,
 		})
@@ -730,6 +629,9 @@ func (e *grpcE2BEngine) ContainerStatus(ctx context.Context, req *runtime.Contai
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "container %s not found", req.ContainerId)
 	}
+	if pod.containerState == containerStateRemoved || pod.containerName == "" {
+		return nil, status.Errorf(codes.NotFound, "container %s not found", req.ContainerId)
+	}
 	return &runtime.ContainerStatusResponse{
 		Status: &runtime.ContainerStatus{
 			Id: req.ContainerId,
@@ -737,9 +639,11 @@ func (e *grpcE2BEngine) ContainerStatus(ctx context.Context, req *runtime.Contai
 				Name:    pod.containerName,
 				Attempt: 0,
 			},
-			State:     inferContainerState(pod.state),
-			CreatedAt: pod.createdAt.UnixNano(),
-			StartedAt: pod.createdAt.UnixNano(),
+			State:      inferContainerState(pod.containerState),
+			CreatedAt:  containerCreatedAt(pod),
+			StartedAt:  containerStartedAt(pod),
+			FinishedAt: containerFinishedAt(pod),
+			ExitCode:   pod.containerExitCode,
 			Image: &runtime.ImageSpec{
 				Image: pod.imageRef,
 			},
@@ -1635,13 +1539,39 @@ func inferPodSandboxState(s e2bState) runtime.PodSandboxState {
 	}
 }
 
-func inferContainerState(s e2bState) runtime.ContainerState {
+func inferContainerState(s e2bContainerState) runtime.ContainerState {
 	switch s {
-	case stateRunning:
+	case containerStateCreated:
+		return runtime.ContainerState_CONTAINER_CREATED
+	case containerStateRunning:
 		return runtime.ContainerState_CONTAINER_RUNNING
 	default:
 		return runtime.ContainerState_CONTAINER_EXITED
 	}
+}
+
+func containerCreatedAt(pod *podInfo) int64 {
+	if pod != nil && !pod.containerCreatedAt.IsZero() {
+		return pod.containerCreatedAt.UnixNano()
+	}
+	if pod != nil {
+		return pod.createdAt.UnixNano()
+	}
+	return 0
+}
+
+func containerStartedAt(pod *podInfo) int64 {
+	if pod != nil && !pod.containerStartedAt.IsZero() {
+		return pod.containerStartedAt.UnixNano()
+	}
+	return 0
+}
+
+func containerFinishedAt(pod *podInfo) int64 {
+	if pod != nil && !pod.containerFinishedAt.IsZero() {
+		return pod.containerFinishedAt.UnixNano()
+	}
+	return 0
 }
 
 func parseE2BImageRef(imageRef string) (templateID, buildID string, err error) {

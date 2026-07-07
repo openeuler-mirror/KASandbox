@@ -38,8 +38,18 @@ type e2bState int
 
 const (
 	stateRunning e2bState = iota
+	stateStopped
 	statePaused
 	stateRemoved
+)
+
+type e2bContainerState int
+
+const (
+	containerStateCreated e2bContainerState = iota
+	containerStateRunning
+	containerStateExited
+	containerStateRemoved
 )
 
 type podInfo struct {
@@ -67,7 +77,11 @@ type podInfo struct {
 	containerArgs        []string
 	containerStdin       bool
 	containerTTY         bool
-	mainPID              uint32
+	containerState       e2bContainerState
+	containerCreatedAt   time.Time
+	containerStartedAt   time.Time
+	containerFinishedAt  time.Time
+	containerExitCode    int32
 
 	// 网络信息
 	hostIP   string
