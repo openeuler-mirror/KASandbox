@@ -119,20 +119,32 @@ type grpcE2BEngine struct {
 	streamingOnce     sync.Once
 
 	hostPortManager *HostPortManager // 新增：宿主机端口管理
+	cniConfig       CNIConfig
+	cniManager      *CNIManager
 }
 
-func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP string) *grpcE2BEngine {
-	log.Printf("[GrpcE2BEngine] orchestrator address: %s, proxy: %s, nodeIP: %s", orchestratorAddr, orchestratorProxyAddr, nodeIP)
-	return &grpcE2BEngine{
+func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP string, cniConfig CNIConfig) *grpcE2BEngine {
+	log.Printf("[GrpcE2BEngine] orchestrator address: %s, proxy: %s, nodeIP: %s, cni_enabled: %v", orchestratorAddr, orchestratorProxyAddr, nodeIP, cniConfig.Enabled)
+	e := &grpcE2BEngine{
 		orchestratorAddr:      orchestratorAddr,
 		orchestratorProxyAddr: orchestratorProxyAddr,
 		nodeIP:                nodeIP,
+		cniConfig:             cniConfig,
 		tracker:               newPodTracker(),
 		imageCache:            make(map[string]*e2bImageMeta),
 		streamingReqs:         make(map[string]*execStreamRequest),
 		attachReqs:            make(map[string]*attachStreamRequest),
 		hostPortManager:       NewHostPortManager(20000, 29999), // 避开 NodePort 范围
 	}
+	if cniConfig.Enabled {
+		cniManager, err := NewCNIManager(cniConfig)
+		if err != nil {
+			log.Printf("[GrpcE2BEngine] WARNING: failed to initialize CNI manager: %v", err)
+		} else {
+			e.cniManager = cniManager
+		}
+	}
+	return e
 }
 
 func (e *grpcE2BEngine) ensureConn() error {
@@ -247,6 +259,28 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 	cfg.TemplateId = templateID
 	cfg.BuildId = buildID
 	cfg.TeamId = teamID
+
+	var cniRecord *CNIRecord
+	if e.cniConfig.Enabled {
+		if e.cniManager == nil {
+			return nil, status.Errorf(codes.Unavailable, "e2b cni is enabled but cni manager is not initialized")
+		}
+		cniRecord, err = e.cniManager.Add(ctx, sandboxID, req.Config)
+		if err != nil {
+			log.Printf("[GrpcE2BEngine] RunPodSandbox: CNI ADD failed for %s: %v", sandboxID, err)
+			return nil, status.Errorf(codes.Unavailable, "cni add failed: %v", err)
+		}
+		cfg.RuntimeNetwork = &orchestrator.SandboxRuntimeNetworkConfig{
+			Mode:       orchestrator.SandboxRuntimeNetworkConfig_CNI_EXTERNAL_NETNS,
+			NetnsPath:  cniRecord.NetNSPath,
+			IfName:     cniRecord.IfName,
+			PodIp:      cniRecord.PodIP,
+			Gateway:    cniRecord.Gateway,
+			DnsServers: cniRecord.DNS,
+		}
+		log.Printf("[GrpcE2BEngine] CNI ADD: sandbox=%s network=%s netns=%s podIP=%s", sandboxID, cniRecord.Network, cniRecord.NetNSPath, cniRecord.PodIP)
+	}
+
 	maxLen := cfg.MaxSandboxLength
 	if maxLen <= 0 {
 		maxLen = 1
@@ -260,6 +294,11 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 	resp, err := e.client.Create(ctx, e2bReq)
 	if err != nil {
 		log.Printf("[GrpcE2BEngine] RunPodSandbox: orchestrator.Create FAILED: %v", err)
+		if cniRecord != nil {
+			if delErr := e.cniManager.Del(context.Background(), cniRecord, req.Config); delErr != nil {
+				log.Printf("[GrpcE2BEngine] WARNING: CNI DEL rollback failed for %s: %v", sandboxID, delErr)
+			}
+		}
 		return nil, mapE2BError(err)
 	}
 
@@ -332,6 +371,9 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 
 		hostIP:       hostIP,
 		hostPort:     defaultHostPort,
+		podIP:        cniPodIP(cniRecord),
+		cniEnabled:   cniRecord != nil,
+		cniRecord:    cniRecord,
 		portMappings: allMappings,
 	})
 
@@ -385,8 +427,9 @@ func (e *grpcE2BEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 		return nil, mapE2BError(err)
 	}
 
+	pod, podOK := e.tracker.Get(req.PodSandboxId)
 	// ===== 确保清理所有 HostPort 映射 =====
-	if pod, ok := e.tracker.Get(req.PodSandboxId); ok {
+	if podOK {
 		if pod.hostIP != "" {
 			for _, m := range pod.portMappings {
 				if err := CleanupHostPortMapping(e.nodeIP, m.HostPort, pod.hostIP, m.SandboxPort); err != nil {
@@ -405,12 +448,17 @@ func (e *grpcE2BEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 	// ===== 清理结束 =====
 
 	deleteID := req.PodSandboxId
-	if pod, ok := e.tracker.Get(req.PodSandboxId); ok {
+	if podOK {
 		deleteID = pod.envdSandboxID()
 	}
 	_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: deleteID})
 	if err != nil && !isNotFound(err) {
 		return nil, mapE2BError(err)
+	}
+	if podOK && pod.cniEnabled && pod.cniRecord != nil && e.cniManager != nil {
+		if delErr := e.cniManager.Del(ctx, pod.cniRecord, pod.toPodSandboxConfig()); delErr != nil {
+			log.Printf("[GrpcE2BEngine] WARNING: CNI DEL failed for %s: %v", req.PodSandboxId, delErr)
+		}
 	}
 	e.tracker.Delete(req.PodSandboxId)
 	return &runtime.RemovePodSandboxResponse{}, nil
@@ -434,6 +482,12 @@ func (e *grpcE2BEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSa
 	if pod.hostIP != "" {
 		anns["e2b.dev/host-ip"] = pod.hostIP
 		anns["e2b.dev/node-ip"] = e.nodeIP
+	}
+	if pod.cniEnabled && pod.cniRecord != nil {
+		anns["e2b.dev/cni-enabled"] = "true"
+		anns["e2b.dev/cni-network"] = pod.cniRecord.Network
+		anns["e2b.dev/cni-netns"] = pod.cniRecord.NetNSPath
+		anns["e2b.dev/pod-ip"] = pod.cniRecord.PodIP
 	}
 	if pod.hostPort > 0 {
 		anns["e2b.dev/host-port"] = strconv.Itoa(pod.hostPort)
@@ -462,7 +516,11 @@ func (e *grpcE2BEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSa
 		}
 	}
 
-	if pod.hostIP != "" {
+	if pod.podIP != "" {
+		status.Network = &runtime.PodSandboxNetworkStatus{
+			Ip: pod.podIP,
+		}
+	} else if pod.hostIP != "" {
 		status.Network = &runtime.PodSandboxNetworkStatus{
 			Ip: pod.hostIP,
 		}
@@ -1651,6 +1709,13 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func cniPodIP(rec *CNIRecord) string {
+	if rec == nil {
+		return ""
+	}
+	return rec.PodIP
 }
 
 func (e *grpcE2BEngine) Close() error {

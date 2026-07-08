@@ -3,8 +3,10 @@ module github.com/cri-multiplex
 go 1.26.3
 
 require (
+	github.com/containernetworking/cni v1.3.0
 	github.com/coreos/go-iptables v0.8.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/vishvananda/netns v0.0.5
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
 	k8s.io/api v0.28.15

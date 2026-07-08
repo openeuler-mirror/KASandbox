@@ -6,8 +6,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"syscall"
 	"strings"
+	"syscall"
 
 	"github.com/cri-multiplex/pkg/engine"
 	"github.com/cri-multiplex/pkg/server"
@@ -74,6 +74,11 @@ func main() {
 	e2bAPIURL := flag.String("e2b-api-url", "", "E2B API base URL (for rest backend)")
 	e2bAPIKey := flag.String("e2b-api-key", "", "E2B API key (for rest backend)")
 	nodeIP := flag.String("node-ip", "", "Node IP for host network mode (auto-detected if empty)")
+	e2bCNIEnabled := flag.Bool("e2b-cni-enabled", false, "Enable CNI networking for E2B pod sandboxes")
+	cniConfDir := flag.String("cni-conf-dir", "/etc/cni/net.d", "CNI configuration directory")
+	cniBinDir := flag.String("cni-bin-dir", "/opt/cni/bin", "CNI plugin binary directory")
+	cniIfName := flag.String("cni-ifname", "eth0", "CNI interface name inside the pod netns")
+	cniNetNSDir := flag.String("cni-netns-dir", "/var/run/netns", "Directory for named CNI network namespaces")
 	flag.Parse()
 
 	containerEng := engine.NewContainerEngine(*containerdSocket)
@@ -99,6 +104,13 @@ func main() {
 			log.Printf("auto-detected node-ip: %s", *nodeIP)
 		}
 		cfg.NodeIP = *nodeIP
+		cfg.CNI = engine.CNIConfig{
+			Enabled:  *e2bCNIEnabled,
+			ConfDir:  *cniConfDir,
+			BinDir:   *cniBinDir,
+			IfName:   *cniIfName,
+			NetNSDir: *cniNetNSDir,
+		}
 	}
 	e2bEng := engine.NewE2BEngine(cfg)
 	defer e2bEng.Close()
@@ -119,4 +131,3 @@ func main() {
 		log.Fatalf("server failed: %v", err)
 	}
 }
-

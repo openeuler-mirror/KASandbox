@@ -1,6 +1,10 @@
 package engine
 
-import "time"
+import (
+	"time"
+
+	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
+)
 
 const annTemplateID = "e2b.dev/template-id"
 const annExposePorts = "e2b.dev/expose-ports" // 新增
@@ -19,6 +23,15 @@ type E2BConfig struct {
 	APIBaseURL            string
 	APIKey                string
 	NodeIP                string
+	CNI                   CNIConfig
+}
+
+type CNIConfig struct {
+	Enabled  bool
+	ConfDir  string
+	BinDir   string
+	IfName   string
+	NetNSDir string
 }
 
 type E2BEngine interface {
@@ -30,7 +43,7 @@ func NewE2BEngine(cfg *E2BConfig) E2BEngine {
 	case BackendREST:
 		return newRestE2BEngine(cfg.APIBaseURL, cfg.APIKey)
 	default:
-		return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.OrchestratorProxyAddr, cfg.NodeIP)
+		return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.OrchestratorProxyAddr, cfg.NodeIP, cfg.CNI)
 	}
 }
 
@@ -84,8 +97,11 @@ type podInfo struct {
 	containerExitCode    int32
 
 	// 网络信息
-	hostIP   string
-	hostPort int // 默认端口 49983 的映射
+	hostIP     string
+	hostPort   int // 默认端口 49983 的映射
+	podIP      string
+	cniEnabled bool
+	cniRecord  *CNIRecord
 
 	// 新增：多端口映射
 	portMappings []PortMapping // hostPort -> sandboxPort
@@ -99,4 +115,19 @@ func (p *podInfo) envdSandboxID() string {
 		return p.e2bSandboxID
 	}
 	return p.sandboxID
+}
+
+func (p *podInfo) toPodSandboxConfig() *runtime.PodSandboxConfig {
+	if p == nil {
+		return nil
+	}
+	return &runtime.PodSandboxConfig{
+		Metadata: &runtime.PodSandboxMetadata{
+			Name:      p.name,
+			Uid:       p.podUID,
+			Namespace: p.namespace,
+		},
+		Labels:      p.labels,
+		Annotations: p.annotations,
+	}
 }

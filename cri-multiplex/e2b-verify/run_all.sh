@@ -57,6 +57,7 @@ SCRIPTS=(
     "08|Exec 能力 kubelet 验证|${SCRIPT_DIR}/08_exec_kubelet.sh"
     "09|ExecSync 能力 kubelet 验证|${SCRIPT_DIR}/09_execsync_kubelet.sh"
     "10|Attach 能力 kubelet 验证|${SCRIPT_DIR}/10_attach_kubelet.sh"
+    "11|Calico CNI PodIP 访问 E2B 沙箱验证|${SCRIPT_DIR}/11_cni_podip_access.sh"
 )
 
 #==================== 执行 ====================#
