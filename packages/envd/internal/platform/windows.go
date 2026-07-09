@@ -24,6 +24,13 @@ import (
 	processRpc "github.com/e2b-dev/infra/packages/envd/internal/services/spec/process"
 )
 
+const (
+	PortForwardPlatformName          = "Windows"
+	PortForwardScannerSubscriberName = "windows-port-forwarder"
+	DefaultPortForwardBindIP         = "169.254.0.21"
+	DefaultPortForwardDisabled       = false
+)
+
 func Chown(_ string, _, _ int) error {
 	// TODO: Implement Windows ACL ownership updates if envd needs chown-equivalent semantics.
 	return nil
@@ -180,6 +187,10 @@ func DefaultUser(fallback string) string {
 	}
 
 	return fallback
+}
+
+func LookupUser(username string) (*user.User, error) {
+	return user.Lookup(username)
 }
 
 func E2BRunDir() string {

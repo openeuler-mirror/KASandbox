@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows || android
 
 package port
 
@@ -16,6 +16,7 @@ import (
 	"github.com/rs/zerolog"
 	gopsnet "github.com/shirou/gopsutil/v4/net"
 
+	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 	"github.com/e2b-dev/infra/packages/envd/internal/services/cgroups"
 )
 
@@ -24,7 +25,6 @@ const (
 	forwardBindIPEnv      = "E2B_FORWARD_BIND_IP"
 	forwardIgnorePortsEnv = "E2B_FORWARD_IGNORE_PORTS"
 
-	defaultForwardBindIP      = "169.254.0.21"
 	defaultForwardIgnorePorts = ""
 )
 
@@ -69,7 +69,7 @@ func NewForwarder(
 	if scanner != nil && !forwarder.disabled {
 		forwarder.scannerSubscriber = scanner.AddSubscriber(
 			logger,
-			"windows-port-forwarder",
+			platform.PortForwardScannerSubscriberName,
 			&ScannerFilter{
 				IPs:   []string{"127.0.0.1", "localhost", "::1"},
 				State: "LISTEN",
@@ -82,7 +82,7 @@ func NewForwarder(
 
 func (f *Forwarder) StartForwarding(ctx context.Context) {
 	if f.disabled {
-		f.logger.Debug().Msg("Port forwarding is disabled on Windows")
+		f.logger.Debug().Msgf("Port forwarding is disabled on %s", platform.PortForwardPlatformName)
 		<-ctx.Done()
 
 		return
@@ -180,7 +180,7 @@ func (f *Forwarder) startPortForwarding(ctx context.Context, forwarded *Forwarde
 	f.logger.Debug().
 		Str("listen_address", listenAddress).
 		Uint32("port", forwarded.port).
-		Msg("Started Windows port forwarding")
+		Msgf("Started %s port forwarding", platform.PortForwardPlatformName)
 
 	go f.acceptConnections(forwardCtx, forwarded)
 
@@ -256,7 +256,7 @@ func (f *Forwarder) stopPortForwarding(forwarded *ForwardedPort) {
 
 	f.logger.Debug().
 		Uint32("port", forwarded.port).
-		Msg("Stopped Windows port forwarding")
+		Msgf("Stopped %s port forwarding", platform.PortForwardPlatformName)
 }
 
 func (f *Forwarder) stopAllForwarding() {
@@ -272,12 +272,12 @@ func (f *Forwarder) stopAllForwarding() {
 func forwardDisabled() bool {
 	value := strings.TrimSpace(os.Getenv(forwardDisabledEnv))
 	if value == "" {
-		return false
+		return platform.DefaultPortForwardDisabled
 	}
 
 	disabled, err := strconv.ParseBool(value)
 	if err != nil {
-		return false
+		return platform.DefaultPortForwardDisabled
 	}
 
 	return disabled
@@ -288,7 +288,7 @@ func forwardBindIP() string {
 		return bindIP
 	}
 
-	return defaultForwardBindIP
+	return platform.DefaultPortForwardBindIP
 }
 
 func forwardIgnoredPorts() map[uint32]struct{} {

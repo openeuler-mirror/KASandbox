@@ -16,7 +16,7 @@ func GetUserIdInts(u *user.User) (uid, gid int, err error) {
 }
 
 func GetUser(username string) (u *user.User, err error) {
-	u, err = user.Lookup(username)
+	u, err = platform.LookupUser(username)
 	if err != nil {
 		return nil, fmt.Errorf("error looking up user '%s': %w", username, err)
 	}

@@ -1,8 +1,12 @@
-//go:build windows
+//go:build windows || android
 
 package port
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/e2b-dev/infra/packages/envd/internal/platform"
+)
 
 func TestForwardDisabled(t *testing.T) {
 	t.Setenv(forwardDisabledEnv, "true")
@@ -23,8 +27,8 @@ func TestForwardBindIP(t *testing.T) {
 func TestForwardBindIPDefault(t *testing.T) {
 	t.Setenv(forwardBindIPEnv, "")
 
-	if got := forwardBindIP(); got != defaultForwardBindIP {
-		t.Fatalf("forwardBindIP() = %q, want %q", got, defaultForwardBindIP)
+	if got := forwardBindIP(); got != platform.DefaultPortForwardBindIP {
+		t.Fatalf("forwardBindIP() = %q, want %q", got, platform.DefaultPortForwardBindIP)
 	}
 }
 
