@@ -11,9 +11,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "05 — ExecSync 能力验证"
+BASE_POD_JSON="${POD_JSON}"
+cleanup_05_tmp() {
+    [ -n "${POD_JSON:-}" ] && [ "${POD_JSON}" != "${BASE_POD_JSON}" ] && rm -f "${POD_JSON}" || true
+}
+trap cleanup_05_tmp EXIT
 
 #==================== 前置：创建 Pod + Container ====================#
 log_step "前置准备：创建 Pod 和 Container"
+prepare_direct_pod_json "execsync" "${BASE_POD_JSON}" || exit 1
 POD_UID=$(run_pod_sandbox) || {
     log_fail "创建 Pod 失败"
     exit 1
@@ -101,4 +107,9 @@ cleanup_pod "${POD_UID}"
 log_info "清理完成"
 
 print_summary
-exit 0
+cleanup_05_tmp
+trap - EXIT
+if [ "${FAIL_COUNT}" -eq 0 ]; then
+    exit 0
+fi
+exit 1

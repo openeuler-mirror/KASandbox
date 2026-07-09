@@ -13,6 +13,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "02 — 生命周期管理验证"
+BASE_POD_JSON="${POD_JSON}"
+cleanup_02_tmp() {
+    [ -n "${POD_JSON:-}" ] && [ "${POD_JSON}" != "${BASE_POD_JSON}" ] && rm -f "${POD_JSON}" || true
+}
+trap cleanup_02_tmp EXIT
 
 #==================== 一、基础接口 ====================#
 
@@ -43,6 +48,7 @@ fi
 #==================== 二、PodSandbox 生命周期 ====================#
 
 log_step "2.2 RunPodSandbox"
+prepare_direct_pod_json "life-a" "${BASE_POD_JSON}" || exit 1
 POD_UID=$(run_pod_sandbox) || {
     log_fail "RunPodSandbox 失败"
     exit 1
@@ -61,7 +67,7 @@ fi
 
 log_step "2.4 PodSandboxStatus"
 output=$(${CRICTL} inspectp "${POD_UID}" 2>&1) || true
-if echo "${output}" | grep -q "SANDBOX_READY" && echo "${output}" | grep -q "test-default-pod"; then
+if echo "${output}" | grep -q "SANDBOX_READY" && echo "${output}" | grep -q "${POD_UID}"; then
     log_pass "PodSandboxStatus 正确，state=SANDBOX_READY"
 else
     log_fail "PodSandboxStatus 异常: ${output}"
@@ -96,6 +102,9 @@ fi
 # 需要重新创建 Pod（因为上面已 Stop）
 
 log_step "3.1 重新创建 Pod（用于容器测试）"
+cleanup_pod "${POD_UID}"
+cleanup_02_tmp
+prepare_direct_pod_json "life-b" "${BASE_POD_JSON}" || exit 1
 POD_UID=$(run_pod_sandbox) || {
     log_fail "重新创建 Pod 失败"
     exit 1
@@ -228,4 +237,9 @@ else
 fi
 
 print_summary
-exit 0
+cleanup_02_tmp
+trap - EXIT
+if [ "${FAIL_COUNT}" -eq 0 ]; then
+    exit 0
+fi
+exit 1

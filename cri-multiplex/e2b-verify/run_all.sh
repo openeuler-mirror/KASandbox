@@ -85,9 +85,61 @@ for entry in "${SCRIPTS[@]}"; do
     echo ""
     log_info "执行 [${num}] ${desc} ..."
 
+    env_args=()
+    if [ -n "${ONLY}" ]; then
+        case "${num}" in
+            02|04|05|06)
+                log_info "切换 cri-multiplex 到非 CNI 模式，用于 crictl 直连用例 ..."
+                set +e
+                switch_output=$(E2B_CNI_ENABLED=0 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" 2>&1)
+                switch_code=$?
+                set -e
+                echo "${switch_output}"
+                if [ ${switch_code} -ne 0 ]; then
+                    RESULTS+=("01-non-cni|切换 cri-multiplex 到非 CNI 模式|FAIL(0/0/0)")
+                    TOTAL_FAIL=$((TOTAL_FAIL+1))
+                    continue
+                fi
+                ;;
+            07|08|09|10|11)
+                log_info "切换 cri-multiplex 到 CNI 模式，用于 kubelet/CNI 用例 ..."
+                set +e
+                switch_output=$(E2B_CNI_ENABLED=1 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" 2>&1)
+                switch_code=$?
+                set -e
+                echo "${switch_output}"
+                if [ ${switch_code} -ne 0 ]; then
+                    RESULTS+=("01-cni|切换 cri-multiplex 到 CNI 模式|FAIL(0/0/0)")
+                    TOTAL_FAIL=$((TOTAL_FAIL+1))
+                    continue
+                fi
+                ;;
+        esac
+    else
+        if [ "${num}" = "01" ]; then
+            env_args=(E2B_CNI_ENABLED=0 E2B_FORCE_RESTART=1)
+        elif [ "${num}" = "07" ]; then
+            log_info "切换 cri-multiplex 到 CNI 模式，用于 kubelet/CNI 用例 ..."
+            set +e
+            switch_output=$(E2B_CNI_ENABLED=1 "${SCRIPT_DIR}/01_start_multiplex.sh" 2>&1)
+            switch_code=$?
+            set -e
+            echo "${switch_output}"
+            if [ ${switch_code} -ne 0 ]; then
+                RESULTS+=("01-cni|切换 cri-multiplex 到 CNI 模式|FAIL(0/0/0)")
+                TOTAL_FAIL=$((TOTAL_FAIL+1))
+                continue
+            fi
+        fi
+    fi
+
     # 执行子脚本，捕获退出码
     set +e
-    script_output=$("${path}" 2>&1)
+    if [ ${#env_args[@]} -gt 0 ]; then
+        script_output=$(env "${env_args[@]}" "${path}" 2>&1)
+    else
+        script_output=$("${path}" 2>&1)
+    fi
     exit_code=$?
     set -e
 
@@ -106,6 +158,10 @@ for entry in "${SCRIPTS[@]}"; do
     if [ ${exit_code} -eq 0 ]; then
         RESULTS+=("${num}|${desc}|PASS(${sub_pass}/${sub_fail}/${sub_skip})")
     else
+        if [ "${sub_fail}" = "0" ]; then
+            TOTAL_FAIL=$((TOTAL_FAIL + 1))
+            sub_fail=1
+        fi
         RESULTS+=("${num}|${desc}|FAIL(${sub_pass}/${sub_fail}/${sub_skip})")
     fi
 done

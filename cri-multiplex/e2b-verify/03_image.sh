@@ -17,7 +17,39 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "03 — 镜像管理验证"
 
-IMAGE_FULL="e2b.dev/dqoim7o51k7e89b2s8bl:d878b117-157b-4d18-bd9b-96f603b51558"
+POD_YAML="/tmp/e2b-kubelet-pod.yaml"
+REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
+
+log_step "0.1 刷新 build_id"
+log_info "执行: bash ${REFRESH_SCRIPT} e2b-image-test"
+if bash "${REFRESH_SCRIPT}" e2b-image-test >&2; then
+    log_pass "build_id 刷新成功"
+else
+    log_info "刷新 build_id 失败，尝试复用已有 ${POD_YAML}"
+    if [ -f "${POD_YAML}" ] && grep -q 'e2b.dev/build-id:' "${POD_YAML}"; then
+        log_pass "复用已有 Pod YAML: ${POD_YAML}"
+    else
+        log_fail "刷新 build_id 失败，且没有可复用的 Pod YAML"
+        print_summary
+        exit 1
+    fi
+fi
+
+TEMPLATE_ID=$(grep -oP 'e2b\.dev/template-id:\s*"\K[^"]+' "${POD_YAML}" | head -1 || true)
+BUILD_ID=$(grep -oP 'e2b\.dev/build-id:\s*"\K[^"]+' "${POD_YAML}" | head -1 || true)
+if [ -z "${TEMPLATE_ID}" ] || [ -z "${BUILD_ID}" ]; then
+    log_fail "无法从 ${POD_YAML} 提取 template_id/build_id"
+    print_summary
+    exit 1
+fi
+
+IMAGE_FULL="e2b.dev/${TEMPLATE_ID}:${BUILD_ID}"
+log_pass "使用镜像: ${IMAGE_FULL}"
+if sync_e2b_pod_json_from_kubelet_yaml "${POD_YAML}" "${POD_JSON}"; then
+    log_pass "已同步 ${POD_JSON} 的 build_id"
+else
+    log_fail "同步 ${POD_JSON} 失败"
+fi
 
 #==================== 4.1 PullImage ====================#
 log_step "4.1 PullImage"

@@ -19,6 +19,13 @@ BUILD_PROD_PY="${BUILD_PROD_PY:-${SCRIPT_DIR_COMMON}/build_prod.py}"
 BUILD_IMAGE_NAME="${BUILD_IMAGE_NAME:-ubuntu:22.04-custom}"
 MULTIPLEX_DIR="${MULTIPLEX_DIR:-/home/zrj/cri-multiplex}"
 CONTAINERD_SOCKET="${CONTAINERD_SOCKET:-/run/containerd/containerd.sock}"
+ORCHESTRATOR_ADDRESS="${ORCHESTRATOR_ADDRESS:-localhost:5008}"
+ORCHESTRATOR_PROXY_ADDRESS="${ORCHESTRATOR_PROXY_ADDRESS:-localhost:5007}"
+CNI_CONF_DIR="${CNI_CONF_DIR:-/etc/cni/net.d}"
+CNI_BIN_DIR="${CNI_BIN_DIR:-/opt/cni/bin}"
+CNI_IFNAME="${CNI_IFNAME:-eth0}"
+CNI_NETNS_DIR="${CNI_NETNS_DIR:-/var/run/netns}"
+E2B_API_NS="${E2B_API_NS:-e2b}"
 
 # 测试用常量（会被各脚本引用和覆盖）
 export POD_UID="${POD_UID:-irlkuj9aask5hmw37uc51}"
@@ -44,6 +51,130 @@ log_fail()  { echo -e "${RED}[FAIL]${NC}  $*" >&2; FAIL_COUNT=$((FAIL_COUNT+1));
 log_skip()  { echo -e "${YELLOW}[SKIP]${NC}  $*" >&2; SKIP_COUNT=$((SKIP_COUNT+1)); export SKIP_COUNT; }
 log_step()  { echo -e "\n${CYAN}========================================${NC}" >&2; echo -e "${CYAN} $* ${NC}" >&2; echo -e "${CYAN}========================================${NC}" >&2; }
 log_section() { echo -e "\n${CYAN}╔══════════════════════════════════════════════════╗${NC}" >&2; echo -e "${CYAN}║  $*${NC}" >&2; echo -e "${CYAN}╚══════════════════════════════════════════════════╝${NC}\n" >&2; }
+
+find_e2b_api_pod() {
+    if [ -n "${E2B_API_POD:-}" ]; then
+        echo "${E2B_API_POD}"
+        return 0
+    fi
+
+    local pod=""
+    local selector
+    for selector in "app=api" "app.kubernetes.io/name=api" "component=api"; do
+        pod=$(kubectl get pods -n "${E2B_API_NS}" -l "${selector}" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+        if [ -n "${pod}" ]; then
+            echo "${pod}"
+            return 0
+        fi
+    done
+
+    pod=$(kubectl get pods -n "${E2B_API_NS}" --field-selector=status.phase=Running -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | awk '/^api(-|$)/ { print; exit }' || true)
+    if [ -n "${pod}" ]; then
+        echo "${pod}"
+        return 0
+    fi
+
+    return 1
+}
+
+cri_multiplex_ready() {
+    [ -S "${SOCKET}" ] && crictl --runtime-endpoint "unix://${SOCKET}" info >/dev/null 2>&1
+}
+
+cri_multiplex_pids() {
+    pgrep -af "[c]ri-multiplex" 2>/dev/null \
+        | awk -v socket="${SOCKET}" '
+            $0 ~ " -socket " socket && $0 !~ /codex|kubelet|grep/ { print $1 }
+        ' || true
+}
+
+cri_multiplex_cmdline() {
+    local pid
+    for pid in $(cri_multiplex_pids); do
+        tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true
+        echo
+    done
+}
+
+cri_multiplex_cni_enabled() {
+    cri_multiplex_cmdline | grep -q -- "-e2b-cni-enabled"
+}
+
+require_cri_multiplex_ready() {
+    if ! cri_multiplex_ready; then
+        log_fail "cri-multiplex 未运行或 socket 不可连通: ${SOCKET}"
+        return 1
+    fi
+    log_pass "cri-multiplex 已运行且 socket 可连通"
+}
+
+require_cri_multiplex_cni_enabled() {
+    require_cri_multiplex_ready || return 1
+    if ! cri_multiplex_cni_enabled; then
+        log_fail "cri-multiplex 未启用 -e2b-cni-enabled，无法验证 CNI 链路"
+        return 1
+    fi
+    log_pass "cri-multiplex 已启用 CNI 模式"
+}
+
+sync_e2b_pod_json_from_kubelet_yaml() {
+    local yaml="${1:-/tmp/e2b-kubelet-pod.yaml}"
+    local json="${2:-${POD_JSON}}"
+
+    if [ ! -f "${yaml}" ] || [ ! -f "${json}" ]; then
+        return 1
+    fi
+
+    local template_id build_id execution_id token image_ref
+    template_id=$(grep -oP 'e2b\.dev/template-id:\s*"\K[^"]+' "${yaml}" | head -1 || true)
+    build_id=$(grep -oP 'e2b\.dev/build-id:\s*"\K[^"]+' "${yaml}" | head -1 || true)
+    execution_id=$(grep -oP 'e2b\.dev/execution-id:\s*"\K[^"]+' "${yaml}" | head -1 || true)
+    token=$(grep -oP 'e2b\.dev/envd-access-token:\s*"\K[^"]+' "${yaml}" | head -1 || true)
+
+    if [ -z "${template_id}" ] || [ -z "${build_id}" ]; then
+        return 1
+    fi
+
+    sed -i \
+        -e "s|\"e2b.dev/template-id\":\\s*\"[^\"]*\"|\"e2b.dev/template-id\": \"${template_id}\"|" \
+        -e "s|\"e2b.dev/build-id\":\\s*\"[^\"]*\"|\"e2b.dev/build-id\": \"${build_id}\"|" \
+        "${json}"
+
+    if [ -n "${execution_id}" ]; then
+        sed -i "s|\"e2b.dev/execution-id\":\\s*\"[^\"]*\"|\"e2b.dev/execution-id\": \"${execution_id}\"|" "${json}"
+    fi
+    if [ -n "${token}" ]; then
+        sed -i "s|\"e2b.dev/envd-access-token\":\\s*\"[^\"]*\"|\"e2b.dev/envd-access-token\": \"${token}\"|" "${json}"
+    fi
+
+    image_ref="e2b.dev/${template_id}:${build_id}"
+    export IMAGE_E2B="${image_ref}"
+    return 0
+}
+
+prepare_direct_pod_json() {
+    local prefix="${1:-direct}"
+    local base_json="${2:-${POD_JSON}}"
+
+    if [ ! -f "${base_json}" ]; then
+        log_fail "基础 Pod JSON 不存在: ${base_json}"
+        return 1
+    fi
+
+    local uid
+    uid="e2b${prefix}$(date +%s)$RANDOM"
+    local tmp_json="/tmp/e2b-pod-${prefix}-${uid}.json"
+    cp "${base_json}" "${tmp_json}"
+    sed -i \
+        -e "s|\"uid\":\\s*\"[^\"]*\"|\"uid\": \"${uid}\"|" \
+        -e "0,/\"name\":\\s*\"[^\"]*\"/s//\"name\": \"test-e2b-${prefix}-${uid}\"/" \
+        "${tmp_json}"
+
+    export POD_UID="${uid}"
+    export CONTAINER_ID="${uid}-c"
+    export POD_JSON="${tmp_json}"
+    log_pass "已生成独立 Pod JSON: ${POD_JSON}"
+}
 
 #==================== grpcurl 统一封装 ====================#
 # 用法: grpc_call <service/method> [json_data]
@@ -84,11 +215,17 @@ handle_snapshot_error() {
     sleep 2
 
     # Step 3: 获取最新日志
+    local api_pod
+    if ! api_pod=$(find_e2b_api_pod); then
+        log_fail "无法找到 e2b namespace 下运行中的 api Pod"
+        return 1
+    fi
+
     local log_line
-    log_line=$(kubectl logs api-8cfbf9cfd-vbfw6 -ne2b 2>/dev/null | grep "base_template_id" | tail -1 || true)
+    log_line=$(kubectl logs "${api_pod}" -n e2b 2>/dev/null | grep "base_template_id" | tail -1 || true)
 
     if [ -z "${log_line}" ]; then
-        log_fail "无法从 kubectl logs 获取 base_template_id 日志"
+        log_fail "无法从 api Pod ${api_pod} 的 kubectl logs 获取 base_template_id 日志"
         return 1
     fi
 
@@ -127,12 +264,14 @@ run_pod_sandbox() {
     local attempt=1
     local snapshot_fixed=0
 
+    sync_e2b_pod_json_from_kubelet_yaml /tmp/e2b-kubelet-pod.yaml "${POD_JSON}" || true
+
     while [ $attempt -le $max_retries ]; do
         log_info "RunPodSandbox 尝试 ${attempt}/${max_retries}..."
         output=$(${CRICTL} runp -r e2b "${POD_JSON}" 2>&1) || true
 
         # 检查是否成功（纯 ID 字符串）
-        if echo "${output}" | grep -qE "^[a-z0-9]+$" && ! echo "${output}" | grep -qi "error\|FATA"; then
+        if echo "${output}" | grep -qE "^[a-z0-9-]+$" && ! echo "${output}" | grep -qi "error\|FATA"; then
             echo "${output}" | head -1 | tr -d '[:space:]'
             return 0
         fi

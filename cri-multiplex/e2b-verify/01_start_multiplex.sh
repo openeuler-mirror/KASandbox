@@ -14,22 +14,50 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "01 — 启动 cri-multiplex"
 
+E2B_CNI_ENABLED="${E2B_CNI_ENABLED:-1}"
+E2B_FORCE_RESTART="${E2B_FORCE_RESTART:-0}"
+if [ "${E2B_CNI_ENABLED}" != "0" ] && [ "${E2B_CNI_ENABLED}" != "1" ]; then
+    log_fail "E2B_CNI_ENABLED 必须是 0 或 1，当前值: ${E2B_CNI_ENABLED}"
+    exit 1
+fi
+if [ "${E2B_FORCE_RESTART}" != "0" ] && [ "${E2B_FORCE_RESTART}" != "1" ]; then
+    log_fail "E2B_FORCE_RESTART 必须是 0 或 1，当前值: ${E2B_FORCE_RESTART}"
+    exit 1
+fi
+MODE_DESC="非 CNI"
+if [ "${E2B_CNI_ENABLED}" = "1" ]; then
+    MODE_DESC="CNI"
+fi
+
 #==================== 1. 检查是否已在运行（含连通性验证） ====================#
-log_step "检查 cri-multiplex 运行状态"
-if pgrep -f "cri-multiplex" > /dev/null 2>&1 && [ -S "${SOCKET}" ]; then
+log_step "检查 cri-multiplex 运行状态（目标模式: ${MODE_DESC}）"
+if cri_multiplex_ready && [ "${E2B_FORCE_RESTART}" != "1" ]; then
     # 验证 socket 实际可连通（不只是文件存在）
-    if crictl --runtime-endpoint "unix://${SOCKET}" info > /dev/null 2>&1; then
-        log_pass "cri-multiplex 已在运行且可连通，socket: ${SOCKET}"
+    current_cni=0
+    if cri_multiplex_cni_enabled; then
+        current_cni=1
+    fi
+    if [ "${current_cni}" = "${E2B_CNI_ENABLED}" ]; then
+        log_pass "cri-multiplex 已在运行且模式匹配，socket: ${SOCKET}, mode=${MODE_DESC}"
         exit 0
     else
-        log_info "进程存在但 socket 不可连通，杀掉旧进程..."
-        # 注意：不能用 pkill -f "cri-multiplex"，会匹配到脚本自身路径
-        # 只匹配实际运行的二进制（带 -socket 参数的进程）
-        pkill -9 -f "cri-multiplex -socket" 2>/dev/null || true
-        rm -f "${SOCKET}"
-        sleep 1
+        log_info "cri-multiplex 已运行但模式不匹配，准备重启为 ${MODE_DESC} 模式"
+    fi
+elif [ "${E2B_FORCE_RESTART}" = "1" ]; then
+    log_info "E2B_FORCE_RESTART=1，准备强制重启 cri-multiplex"
+fi
+
+old_pids=$(cri_multiplex_pids)
+if [ -n "${old_pids}" ]; then
+    log_info "停止旧 cri-multiplex 进程: ${old_pids}"
+    kill ${old_pids} 2>/dev/null || true
+    sleep 1
+    old_pids=$(cri_multiplex_pids)
+    if [ -n "${old_pids}" ]; then
+        kill -9 ${old_pids} 2>/dev/null || true
     fi
 fi
+rm -f "${SOCKET}"
 
 #==================== 2. 构建 ====================#
 log_step "构建 cri-multiplex"
@@ -43,26 +71,37 @@ fi
 log_pass "cri-multiplex 二进制已就绪"
 
 #==================== 3. 启动 ====================#
-log_step "启动 cri-multiplex"
+log_step "启动 cri-multiplex（${MODE_DESC} 模式）"
 rm -f "${SOCKET}"
 
 cd "${MULTIPLEX_DIR}"
+args=(
+    -socket "${SOCKET}"
+    -containerd-socket "${CONTAINERD_SOCKET}"
+    -e2b-backend grpc
+    -orchestrator-address "${ORCHESTRATOR_ADDRESS}"
+    -orchestrator-proxy-address "${ORCHESTRATOR_PROXY_ADDRESS}"
+)
+if [ "${E2B_CNI_ENABLED}" = "1" ]; then
+    args+=(
+        -e2b-cni-enabled
+        -cni-conf-dir "${CNI_CONF_DIR}"
+        -cni-bin-dir "${CNI_BIN_DIR}"
+        -cni-ifname "${CNI_IFNAME}"
+        -cni-netns-dir "${CNI_NETNS_DIR}"
+    )
+fi
+
 # 使用 setsid 完全脱离会话，防止脚本退出时进程被杀
-setsid ./cri-multiplex \
-    -socket "${SOCKET}" \
-    -containerd-socket "${CONTAINERD_SOCKET}" \
-    > /tmp/cri-multiplex.log 2>&1 < /dev/null &
+setsid ./cri-multiplex "${args[@]}" > /tmp/cri-multiplex.log 2>&1 < /dev/null &
 
 # 等待 socket 就绪
 retries=10
 while [ $retries -gt 0 ]; do
-    if [ -S "${SOCKET}" ]; then
-        # 验证进程仍在运行
-        if pgrep -f "cri-multiplex" > /dev/null 2>&1; then
-            log_pass "cri-multiplex 已启动，socket: ${SOCKET}"
-            log_info "日志: /tmp/cri-multiplex.log"
-            exit 0
-        fi
+    if cri_multiplex_ready; then
+        log_pass "cri-multiplex 已启动，socket: ${SOCKET}, mode=${MODE_DESC}"
+        log_info "日志: /tmp/cri-multiplex.log"
+        exit 0
     fi
     sleep 1
     retries=$((retries-1))

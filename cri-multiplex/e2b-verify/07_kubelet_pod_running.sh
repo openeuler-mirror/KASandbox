@@ -27,7 +27,7 @@ log_section "07 — kubelet 对接：Pod 保持 Running 验证"
 #==================== 配置 ====================#
 POD_NAME="${POD_NAME:-e2b-kubelet-test}"
 POD_YAML="/tmp/e2b-kubelet-pod.yaml"
-REFRESH_SCRIPT="${REFRESH_SCRIPT:-/home/zrj/refresh_build_id.sh}"
+REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 OBSERVE_SECONDS="${OBSERVE_SECONDS:-30}"
 
 #==================== 前置检查 ====================#
@@ -41,11 +41,7 @@ fi
 log_pass "刷新脚本存在: ${REFRESH_SCRIPT}"
 
 # 检查 cri-multiplex 是否运行
-if ! pgrep -f "cri-multiplex -socket" > /dev/null 2>&1; then
-    log_fail "cri-multiplex 未运行，请先执行 01_start_multiplex.sh"
-    exit 1
-fi
-log_pass "cri-multiplex 已运行"
+require_cri_multiplex_ready || exit 1
 
 # 检查 kubelet RuntimeClass
 if ! kubectl get runtimeclass e2b > /dev/null 2>&1; then
