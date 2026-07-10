@@ -51,10 +51,10 @@ func TestErrorCollector(t *testing.T) {
 
 		// Block the collector's only slot
 		started := make(chan struct{})
-		ctx, cancel1 := context.WithCancel(t.Context())
-		ec.Go(ctx, func() error {
+		ctx1, cancel1 := context.WithCancel(t.Context())
+		ec.Go(ctx1, func() error {
 			close(started)
-			<-ctx.Done()
+			<-ctx1.Done()
 
 			return nil
 		})
@@ -63,8 +63,8 @@ func TestErrorCollector(t *testing.T) {
 
 		// This Go call should block on the semaphore
 		var wasCalled bool
-		ctx, cancel2 := context.WithCancel(t.Context())
-		ec.Go(ctx, func() error {
+		ctx2, cancel2 := context.WithCancel(t.Context())
+		ec.Go(ctx2, func() error {
 			wasCalled = true
 
 			return nil

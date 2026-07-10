@@ -12,6 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestMain sets gin to test mode once for the whole package, avoiding the data
+// race caused by parallel tests calling gin.SetMode concurrently.
+func TestMain(m *testing.M) {
+	gin.SetMode(gin.TestMode)
+	os.Exit(m.Run())
+}
+
 type testItem struct {
 	ID        string
 	Timestamp time.Time
@@ -379,8 +386,6 @@ func TestPagination_ProcessResultsWithGin(t *testing.T) {
 		return item.Timestamp, item.ID
 	}
 
-	gin.SetMode(gin.TestMode)
-
 	t.Run("sets header when has more results", func(t *testing.T) {
 		t.Parallel()
 		p, err := NewPagination[testItem](PaginationParams{}, config)
@@ -436,8 +441,6 @@ func TestPagination_SetHeader(t *testing.T) {
 		MaxLimit:     100,
 		DefaultID:    "default-id",
 	}
-
-	gin.SetMode(gin.TestMode)
 
 	t.Run("sets header when next token exists", func(t *testing.T) {
 		t.Parallel()
