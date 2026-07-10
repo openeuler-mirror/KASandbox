@@ -1,0 +1,337 @@
+# clickhouse.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+  namespace: e2b
+data:
+  config.xml: |
+    <clickhouse>
+        <!-- this is undocumented but needed to enable waiting for for shutdown for a custom amount of time  -->
+        <!-- see https://github.com/ClickHouse/ClickHouse/pull/77515 for more details  -->
+        <shutdown_wait_unfinished>60</shutdown_wait_unfinished>
+        <shutdown_wait_unfinished_queries>1</shutdown_wait_unfinished_queries>
+
+        <!-- Use up 80% of available RAM to be on the safer side, default is 90% -->
+        <max_server_memory_usage_to_ram_ratio>0.8</max_server_memory_usage_to_ram_ratio>
+
+        <logger>
+            <formatting>
+                <type>json</type>
+                <names>
+                    <date_time>date_time</date_time>
+                    <thread_id>thread_id</thread_id>
+                    <level>level</level>
+                    <query_id>query_id</query_id>
+                    <logger_name>logger_name</logger_name>
+                    <message>message</message>
+                    <source_file>source_file</source_file>
+                    <source_line>source_line</source_line>
+                </names>
+            </formatting>
+            <console>1</console>
+            <level>information</level>
+        </logger>
+
+        <default_replica_path>/var/lib/clickhouse/tables/{shard}/{database}/{table}</default_replica_path>
+        <remote_servers replace="true">
+            <cluster>
+                <secret>{{ .Values.clickhouseServerSecret }}</secret>
+                <shard>
+                    <replica>
+                        <host>clickhouse.e2b.svc.cluster.local</host>
+                        <port>{{ .Values.clickhouseServerPort }}</port>
+                        <user>{{ .Values.clickhouseUsername }}</user>
+                        <password>{{ .Values.clickhousePassword }}</password>
+                    </replica>
+                </shard>
+            </cluster>
+        </remote_servers>
+
+        <listen_host>0.0.0.0</listen_host>
+
+        <asynchronous_metric_log><ttl>event_date + INTERVAL 7 DAY</ttl></asynchronous_metric_log>
+
+        <trace_log><ttl>event_date + INTERVAL 7 DAY</ttl></trace_log>
+
+        <text_log><ttl>event_date + INTERVAL 7 DAY</ttl></text_log>
+
+        <latency_log><ttl>event_date + INTERVAL 7 DAY</ttl></latency_log>
+
+        <query_log><ttl>event_date + INTERVAL 7 DAY</ttl></query_log>
+
+        <metric_log><ttl>event_date + INTERVAL 7 DAY</ttl></metric_log>
+
+        <processors_profile_log><ttl>event_date + INTERVAL 7 DAY</ttl></processors_profile_log>
+
+        <part_log><ttl>event_date + INTERVAL 7 DAY</ttl></part_log>
+
+        <query_metrics_log><ttl>event_date + INTERVAL 7 DAY</ttl></query_metrics_log>
+
+        <error_log><ttl>event_date + INTERVAL 30 DAY</ttl></error_log>
+
+        <prometheus>
+            <port>{{ .Values.clickhouseMetricPort }}</port>
+            <endpoint>/metrics</endpoint>
+            <metrics>true</metrics>
+            <asynchronous_metrics>true</asynchronous_metrics>
+            <events>true</events>
+            <errors>true</errors>
+        </prometheus>
+        <tcp_port>{{ .Values.clickhouseServerPort }}</tcp_port>
+    </clickhouse>
+
+  users.xml: |
+    <clickhouse>
+        <users>
+            <{{ .Values.clickhouseUsername }}>
+                <password>{{ .Values.clickhousePassword }}</password>
+                <networks>
+                    <ip>172.26.64.0/20</ip>
+                    <ip>::1</ip>
+                    <ip>10.0.0.0/8</ip>
+                    <ip>127.0.0.1</ip>
+                </networks>
+                <profile>default</profile>
+                <async_insert>1</async_insert>
+                <wait_for_async_insert>1</wait_for_async_insert>
+                <quota>default</quota>
+                <access_management>1</access_management>
+            </{{ .Values.clickhouseUsername }}>
+        </users>
+    </clickhouse>
+
+  otel.yaml: |
+    receivers:
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: "clickhouse"
+              scrape_interval: 30s
+              metrics_path: /metrics
+              static_configs:
+                - targets: ['localhost:{{ .Values.clickhouseMetricPort }}']
+    exporters:
+      otlp:
+        endpoint: http://localhost:{{ .Values.clickhouseServerPort }}
+        tls:
+          insecure: true
+    processors:
+      batch: {}
+      resourcedetection:
+        detectors: [gcp]
+        override: true
+        gcp:
+          resource_attributes:
+            host.type: { enabled: true }
+            host.id:   { enabled: true }
+            gcp.gce.instance.name: { enabled: true }
+            host.name: { enabled: true }
+      transform/set-name:
+        metric_statements:
+          - set(datapoint.attributes["service.instance.id"], resource.attributes["gcp.gce.instance.name"])
+      filter:
+        metrics:
+          include:
+            match_type: regexp
+            metric_names:
+              - "nomad_client_host_cpu_idle"
+              - "nomad_client_host_disk_available"
+              - "nomad_client_host_disk_size"
+              - "nomad_client_allocs_memory_usage"
+              - "nomad_client_allocs_cpu_usage"
+              - "nomad_client_host_memory_available"
+              - "nomad_client_host_memory_total"
+              - "nomad_client_unallocated_memory"
+              - "nomad_nomad_job_summary_running"
+              - "orchestrator.*"
+              - "api.*"
+              - "client_proxy.*"
+              # ──────  Query load & latency ──────
+              - ClickHouseProfileEvents_SelectQuery
+              - ClickHouseProfileEvents_FailedSelectQuery
+              - ClickHouseProfileEvents_SelectQueryTimeMicroseconds
+              - ClickHouseProfileEvents_InsertQuery
+              - ClickHouseProfileEvents_FailedInsertQuery
+              - ClickHouseProfileEvents_InsertQueryTimeMicroseconds
+              - ClickHouseProfileEvents_QueryTimeMicroseconds
+              - ClickHouseProfileEvents_Query
+              - ClickHouseMetrics_Query
+              - ClickHouseProfileEvents_QueryMemoryLimitExceeded
+
+              # ──────  Table stats ──────
+              - ClickHouseAsyncMetrics_TotalRowsOfMergeTreeTables
+              - ClickHouseAsyncMetrics_TotalPartsOfMergeTreeTables
+              - ClickHouseAsyncMetrics_TotalBytesOfMergeTreeTables
+
+              # ──────  Read / write throughput ──────
+              - ClickHouseProfileEvents_AsyncInsertBytes
+              - ClickHouseProfileEvents_AsyncInsertRows
+              - ClickHouseProfileEvents_InsertedBytes
+              - ClickHouseProfileEvents_InsertedRows
+              - ClickHouseProfileEvents_SelectedBytes
+              - ClickHouseProfileEvents_SelectedRows
+              - ClickHouseProfileEvents_SlowRead
+
+              # ──────  Memory ──────
+              - ClickHouseAsyncMetrics_CGroupMemoryUsed
+              - ClickHouseAsyncMetrics_CGroupMemoryTotal
+              - ClickHouseAsyncMetrics_MemoryResident
+              # ──────  Network ──────
+              - ClickHouseMetrics_NetworkSend
+              - ClickHouseMetrics_NetworkReceive
+
+              # ──────  Disk / S3 traffic ──────
+              - ClickHouseAsyncMetrics_DiskTotal_default
+              - ClickHouseAsyncMetrics_DiskAvailable_default
+              - ClickHouseAsyncMetrics_DiskUsed_default
+              - ClickHouseProfileEvents_S3GetObject
+              - ClickHouseProfileEvents_S3PutObject
+              - ClickHouseProfileEvents_ReadBufferFromS3Bytes
+              - ClickHouseProfileEvents_WriteBufferFromS3Bytes
+
+              # ──────  Connections ──────
+              - ClickHouseMetrics_TCPConnection
+              - ClickHouseMetrics_HTTPConnectionsTotal
+    service:
+      pipelines:
+        metrics:
+          receivers:  [prometheus]
+          processors: [filter, resourcedetection, transform/set-name, batch]
+          exporters:  [otlp]
+      telemetry:
+        metrics:
+          readers:
+            - pull:
+                exporter:
+                  prometheus:
+                    host: 0.0.0.0
+                    port: 9999
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse
+  namespace: e2b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/{{ .Values.api.pool }}
+                operator: Exists
+      initContainers:
+        - name: ulimit
+          image: busybox:latest
+          imagePullPolicy: {{ .Values.pullPolicy }}
+          command: ["sh", "-c", "ulimit -n 262144"]
+          securityContext:
+            privileged: true
+        - name: copy-users
+          image: busybox:latest
+          imagePullPolicy: {{ .Values.pullPolicy }}
+          command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            mkdir -p /etc/clickhouse-server/users.d
+            cp /cm-users/* /etc/clickhouse-server/users.d/
+            chmod 644 /etc/clickhouse-server/users.d/users.xml
+          volumeMounts:
+          - name: users-writable
+            mountPath: /etc/clickhouse-server/users.d
+          - name: users-cm
+            mountPath: /cm-users
+      
+      containers:
+        - name: clickhouse
+          image: {{ .Values.registry }}/clickhouse/clickhouse-server:25.4
+          imagePullPolicy: {{ .Values.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.clickhouseServerPort }}
+              name: tcp
+            - containerPort: 8123
+              name: http
+            - containerPort: {{ .Values.clickhouseMetricPort }}
+              name: metrics
+          env:
+            - name: CLICKHOUSE_USER
+              value: {{ .Values.clickhouseUsername }}
+          resources:
+            requests:
+              cpu: "4"
+              memory: 4Gi
+            limits:
+              memory: 4Gi
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d
+            - name: users-writable
+              mountPath: /etc/clickhouse-server/users.d
+        # =========== OTel Sidecar ===========
+        - name: otel-collector
+          image: {{ .Values.registry }}/otel/opentelemetry-collector-contrib:0.119.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config=/etc/otel/otel.yaml
+            - --feature-gates=pkg.translator.prometheus.NormalizeName
+          resources:
+            requests:
+              cpu: 250m
+              memory: 128Mi
+          volumeMounts:
+            - name: otel-config
+              mountPath: /etc/otel
+      volumes:
+        - name: data
+          hostPath:
+            path: /clickhouse/data
+            type: DirectoryOrCreate
+        - name: config
+          configMap:
+            name: clickhouse-config
+            items:
+              - key: config.xml
+                path: config.xml
+        - name: users-writable
+          emptyDir: {}
+        - name: otel-config
+          configMap:
+            name: clickhouse-config
+            items:
+              - key: otel.yaml
+                path: otel.yaml
+        - name: users-cm
+          configMap:
+            name: clickhouse-config
+            items:
+              - key: users.xml
+                path: users.xml

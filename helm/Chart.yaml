@@ -1,0 +1,6 @@
+apiVersion: v2
+name: e2b
+description: E2B API service (ex-Nomad job)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

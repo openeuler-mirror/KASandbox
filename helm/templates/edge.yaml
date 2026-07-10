@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge
+  namespace: e2b
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: edge }
+  template:
+    metadata:
+      labels: { app: edge }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/{{ .Values.api.pool }}
+                operator: Exists
+      initContainers:
+      - name: wait-redis
+        image: busybox:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until nc -z redis.e2b.svc.cluster.local {{ .Values.redisPort | int }}; do
+            echo waiting for redis...
+            sleep 1
+          done
+      containers:
+      - name: edge
+        image: "{{ .Values.registry }}/{{ .Values.image.edge }}"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: {{ .Values.edgeHealthPort | int }}
+          name: health
+        - containerPort: {{ .Values.edgeProxyPort | int }}
+          name: proxy
+        env:
+        - name: NODE_ID
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+        - name: NODE_IP
+          valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+        - name: EDGE_PORT
+          value: "{{ .Values.edgeApiPort | int }}"
+        - name: HEALTH_PORT
+          value: "{{ .Values.edgeHealthPort | int }}"
+        - name: EDGE_SECRET
+          value: "{{ .Values.edgeApiSecret }}"
+        - name: PROXY_PORT
+          value: "{{ .Values.edgeProxyPort | int }}"
+        - name: DNS_SERVER
+          value: "api.e2b.svc.cluster.local:5353"
+        - name: ORCHESTRATOR_TYPE
+          value: "{{ .Values.orchestratorType }}"
+        - name: ORCHESTRATOR_PORT
+          value: "{{ .Values.orchestratorPort | int }}"
+        - name: SERVICE_DISCOVERY_ORCHESTRATOR_PROVIDER
+          value: DNS
+        - name: SERVICE_DISCOVERY_ORCHESTRATOR_DNS_RESOLVER_ADDRESS
+          value: 10.233.0.3:53
+        - name: SERVICE_DISCOVERY_ORCHESTRATOR_DNS_QUERY
+          value: template-manager.e2b.svc.cluster.local
+        - name: SERVICE_DISCOVERY_EDGE_PROVIDER
+          value: DNS
+        - name: SERVICE_DISCOVERY_EDGE_DNS_RESOLVER_ADDRESS
+          value: 10.233.0.3:53
+        - name: SERVICE_DISCOVERY_EDGE_DNS_QUERY
+          value: edge-api.e2b.svc.cluster.local
+        - name: ENVIRONMENT
+          value: dev
+        - name: USE_PROXY_CATALOG_RESOLUTION
+          value: "false"
+        - name: OTEL_COLLECTOR_GRPC_ENDPOINT
+          value: "{{ .Values.otelCollectorGrpcEndpoint }}"
+        - name: LOGS_COLLECTOR_ADDRESS
+          value: "{{ .Values.logsCollectorAddress }}"
+        - name: REDIS_URL
+          value: "{{ .Values.redisUrl }}:{{ .Values.redisPort | int }}"
+        - name: REDIS_CLUSTER_URL
+          value: ""
+        - name: LOKI_URL
+          value: "{{ .Values.lokiUrl }}"
+        - name: API_GRPC_ADDRESS
+          value: "{{ .Values.apiGrpcAddress }}"
+        resources:
+          requests:
+            cpu: {{ .Values.clientProxyResourcesCpuCount }}m
+            memory: {{ .Values.clientProxyResourcesMemoryMb }}Mi
+          limits:
+            cpu: {{ .Values.clientProxyResourcesCpuCount }}m
+            memory: {{ .Values.clientProxyMaxResourcesMemoryMb }}Mi
+        livenessProbe:
+          httpGet: { path: /health/traffic, port: health }
+          initialDelaySeconds: 30
+          periodSeconds: 3
+          timeoutSeconds: 3
+        readinessProbe:
+          httpGet: { path: /health, port: health }
+          initialDelaySeconds: 30
+          periodSeconds: 3
+          timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: edge-api
+  namespace: e2b
+spec:
+  clusterIP: None
+  ports:
+  - port: {{ .Values.edgeHealthPort | int }}
+    targetPort: health
+    name: health
+  - port: {{ .Values.edgeProxyPort | int }}
+    targetPort: proxy
+    name: proxy
+  selector: { app: edge }

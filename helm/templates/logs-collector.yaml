@@ -1,0 +1,148 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logs-collector
+  namespace: e2b
+data:
+  vector.toml: |
+    data_dir = "/vector-data"
+
+    [api]
+    enabled = true
+    address = "0.0.0.0:{{ .Values.logsHealthProxyPort }}"
+
+    [sources.http_server]
+    type = "http_server"
+    address = "0.0.0.0:{{ .Values.logsProxyPort }}"
+    encoding = "ndjson"
+    path_key = "_path"
+
+    [transforms.add_source_http_server]
+    type = "remap"
+    inputs = ["http_server"]
+    source = """
+    del(."_path")
+    .sandboxID = .instanceID
+    .timestamp = parse_timestamp(.timestamp, format: "%+") ?? now()
+    if exists(.sandbox_id) { .sandboxID = .sandbox_id }
+    if exists(.build_id)   { .buildID   = .build_id   }
+    if exists(.env_id)     { .envID     = .env_id     }
+    if exists(.team_id)    { .teamID    = .team_id    }
+    if exists(."template.id") { .templateID = ."template.id"; del(."template.id") }
+    if exists(."sandbox.id")  { .sandboxID = ."sandbox.id";  del(."sandbox.id")  }
+    if exists(."build.id")    { .buildID   = ."build.id";    del(."build.id")    }
+    if exists(."env.id")      { .envID     = ."env.id";      del(."env.id")      }
+    if exists(."team.id")     { .teamID    = ."team.id";     del(."team.id")     }
+    if !exists(.envID)    { .envID    = "unknown" }
+    if !exists(.category) { .category = "default" }
+    if !exists(.teamID)   { .teamID   = "unknown" }
+    if !exists(.sandboxID){ .sandboxID= "unknown" }
+    if !exists(.buildID)  { .buildID  = "unknown" }
+    if !exists(.service)  { .service  = "envd"    }
+    """
+
+    [transforms.internal_routing]
+    type = "route"
+    inputs = ["add_source_http_server"]
+    [transforms.internal_routing.route]
+    internal = '.internal == true'
+
+    [transforms.remove_internal]
+    type = "remap"
+    inputs = ["internal_routing._unmatched"]
+    source = "del(.internal)"
+
+    [sinks.local_loki_logs]
+    type = "loki"
+    inputs = ["remove_internal"]
+    endpoint = "http://loki.e2b.svc.cluster.local:{{ .Values.lokiServicePort }}"
+    encoding.codec = "json"
+    out_of_order_action = "accept"
+    [sinks.local_loki_logs.labels]
+    source    = "logs-collector"
+    service   = "{{ `{{ service }}` }}"
+    teamID    = "{{ `{{ teamID }}` }}"
+    envID     = "{{ `{{ envID }}` }}"
+    buildID   = "{{ `{{ buildID }}` }}"
+    sandboxID = "{{ `{{ sandboxID }}` }}"
+    category  = "{{ `{{ category }}` }}"
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: logs-collector
+  namespace: e2b
+spec:
+  selector:
+    matchLabels:
+      app: logs-collector
+  template:
+    metadata:
+      labels:
+        app: logs-collector
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      initContainers:
+      - name: wait-loki
+        image: busybox:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until wget -q -O /dev/null http://loki.e2b.svc.cluster.local:{{ .Values.lokiServicePort }}/ready; do
+            echo waiting for loki...
+            sleep 1
+          done
+      containers:
+        - name: vector
+          image: {{ .Values.registry }}/timberio/vector:0.50.0-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: {{ .Values.logsHealthProxyPort }}
+              name: health
+            - containerPort: {{ .Values.logsProxyPort }}
+              name: logs
+          env:
+            - name: VECTOR_CONFIG
+              value: "/etc/vector/vector.toml"
+            - name: VECTOR_REQUIRE_HEALTHY
+              value: "true"
+            - name: VECTOR_LOG
+              value: "warn"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              memory: 4Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vector
+            - name: data
+              mountPath: /vector-data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: logs-collector
+        - name: data
+          emptyDir: {}
+      # 调度到全部节点（等效 Nomad node_pool = all）
+      tolerations:
+        - operator: Exists

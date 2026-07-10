@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: e2b
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/{{ .Values.api.pool }}
+                operator: Exists
+      containers:
+      - name: redis
+        image: {{ .Values.registry }}/redis:7.4.4-alpine
+        imagePullPolicy: IfNotPresent
+        args: ["redis-server", "--port", "{{ .Values.redisPort | int }}"]
+        ports:
+        - containerPort: {{ .Values.redisPort | int }}
+          name: redis
+        resources:
+          requests:
+            cpu: 1
+            memory: 2Gi
+          limits:   { cpu: "1", memory: "4Gi" }
+        livenessProbe:
+          tcpSocket: { port: redis }
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: e2b
+spec:
+  clusterIP: None
+  ports:
+  - port: {{ .Values.redisPort | int }}
+    targetPort: redis
+  selector: { app: redis }
