@@ -16,17 +16,32 @@ log_section "01 — 启动 cri-multiplex"
 
 E2B_CNI_ENABLED="${E2B_CNI_ENABLED:-1}"
 E2B_FORCE_RESTART="${E2B_FORCE_RESTART:-0}"
+ANDROID_ENABLED="${ANDROID_ENABLED:-0}"
+ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}"
+ANDROID_NODE_IP="${ANDROID_NODE_IP:-}"
+ANDROID_ADB_PORT_START="${ANDROID_ADB_PORT_START:-6520}"
+ANDROID_BASE_INSTANCE_NUM_START="${ANDROID_BASE_INSTANCE_NUM_START:-1}"
+ANDROID_LAUNCH_TIMEOUT="${ANDROID_LAUNCH_TIMEOUT:-180s}"
+ANDROID_STATE_DIR="${ANDROID_STATE_DIR:-/var/lib/cri-multiplex/android}"
+ANDROID_CVD_GROUP="${ANDROID_CVD_GROUP:-cvdnetwork}"
 if [ "${E2B_CNI_ENABLED}" != "0" ] && [ "${E2B_CNI_ENABLED}" != "1" ]; then
     log_fail "E2B_CNI_ENABLED 必须是 0 或 1，当前值: ${E2B_CNI_ENABLED}"
     exit 1
 fi
 if [ "${E2B_FORCE_RESTART}" != "0" ] && [ "${E2B_FORCE_RESTART}" != "1" ]; then
-    log_fail "E2B_FORCE_RESTART 必须是 0 或 1，当前值: ${E2B_FORCE_RESTART}"
-    exit 1
+	log_fail "E2B_FORCE_RESTART 必须是 0 或 1，当前值: ${E2B_FORCE_RESTART}"
+	exit 1
+fi
+if [ "${ANDROID_ENABLED}" != "0" ] && [ "${ANDROID_ENABLED}" != "1" ]; then
+	log_fail "ANDROID_ENABLED 必须是 0 或 1，当前值: ${ANDROID_ENABLED}"
+	exit 1
 fi
 MODE_DESC="非 CNI"
 if [ "${E2B_CNI_ENABLED}" = "1" ]; then
-    MODE_DESC="CNI"
+	MODE_DESC="CNI"
+fi
+if [ "${ANDROID_ENABLED}" = "1" ]; then
+	MODE_DESC="${MODE_DESC}+Android"
 fi
 
 #==================== 1. 检查是否已在运行（含连通性验证） ====================#
@@ -38,8 +53,15 @@ if cri_multiplex_ready && [ "${E2B_FORCE_RESTART}" != "1" ]; then
         current_cni=1
     fi
     if [ "${current_cni}" = "${E2B_CNI_ENABLED}" ]; then
-        log_pass "cri-multiplex 已在运行且模式匹配，socket: ${SOCKET}, mode=${MODE_DESC}"
-        exit 0
+        current_android=0
+        if cri_multiplex_cmdline | grep -q -- "-android-enabled"; then
+            current_android=1
+        fi
+        if [ "${current_android}" = "${ANDROID_ENABLED}" ]; then
+            log_pass "cri-multiplex 已在运行且模式匹配，socket: ${SOCKET}, mode=${MODE_DESC}"
+            exit 0
+        fi
+        log_info "cri-multiplex 已运行但 Android 模式不匹配，准备重启为 ${MODE_DESC} 模式"
     else
         log_info "cri-multiplex 已运行但模式不匹配，准备重启为 ${MODE_DESC} 模式"
     fi
@@ -90,6 +112,20 @@ if [ "${E2B_CNI_ENABLED}" = "1" ]; then
         -cni-ifname "${CNI_IFNAME}"
         -cni-netns-dir "${CNI_NETNS_DIR}"
     )
+fi
+if [ "${ANDROID_ENABLED}" = "1" ]; then
+    args+=(
+        -android-enabled
+        -android-artifacts-dir "${ANDROID_ARTIFACTS_DIR}"
+        -android-adb-port-start "${ANDROID_ADB_PORT_START}"
+        -android-base-instance-num-start "${ANDROID_BASE_INSTANCE_NUM_START}"
+        -android-launch-timeout "${ANDROID_LAUNCH_TIMEOUT}"
+        -android-state-dir "${ANDROID_STATE_DIR}"
+        -android-cvd-group "${ANDROID_CVD_GROUP}"
+    )
+    if [ -n "${ANDROID_NODE_IP}" ]; then
+        args+=(-android-node-ip "${ANDROID_NODE_IP}")
+    fi
 fi
 
 # 使用 setsid 完全脱离会话，防止脚本退出时进程被杀

@@ -58,6 +58,8 @@ SCRIPTS=(
     "09|ExecSync 能力 kubelet 验证|${SCRIPT_DIR}/09_execsync_kubelet.sh"
     "10|Attach 能力 kubelet 验证|${SCRIPT_DIR}/10_attach_kubelet.sh"
     "11|Calico CNI PodIP 访问 E2B 沙箱验证|${SCRIPT_DIR}/11_cni_podip_access.sh"
+    "12|Android RuntimeClass kubelet 沙箱创建验证|${SCRIPT_DIR}/12_android_kubelet_sandbox.sh"
+    "13|Android 多实例 kubelet 沙箱创建验证|${SCRIPT_DIR}/13_android_multi_sandbox.sh"
 )
 
 #==================== 执行 ====================#
@@ -114,6 +116,9 @@ for entry in "${SCRIPTS[@]}"; do
                     continue
                 fi
                 ;;
+            12|13)
+                log_info "Android 用例会自行切换 cri-multiplex 到 CNI+Android runtime 模式 ..."
+                ;;
         esac
     else
         if [ "${num}" = "01" ]; then
@@ -130,6 +135,8 @@ for entry in "${SCRIPTS[@]}"; do
                 TOTAL_FAIL=$((TOTAL_FAIL+1))
                 continue
             fi
+        elif [ "${num}" = "12" ] || [ "${num}" = "13" ]; then
+            log_info "Android 用例会自行切换 cri-multiplex 到 CNI+Android runtime 模式 ..."
         fi
     fi
 

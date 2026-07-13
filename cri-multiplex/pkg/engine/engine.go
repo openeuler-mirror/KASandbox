@@ -12,6 +12,7 @@ type EngineType string
 const (
 	EngineTypeContainer EngineType = "container"
 	EngineTypeE2B       EngineType = "e2b"
+	EngineTypeAndroid   EngineType = "android"
 )
 
 type RuntimeEngine interface {

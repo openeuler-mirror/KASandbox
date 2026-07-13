@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/cri-multiplex/pkg/engine"
 	"github.com/cri-multiplex/pkg/server"
@@ -79,6 +80,15 @@ func main() {
 	cniBinDir := flag.String("cni-bin-dir", "/opt/cni/bin", "CNI plugin binary directory")
 	cniIfName := flag.String("cni-ifname", "eth0", "CNI interface name inside the pod netns")
 	cniNetNSDir := flag.String("cni-netns-dir", "/var/run/netns", "Directory for named CNI network namespaces")
+	androidEnabled := flag.Bool("android-enabled", false, "Enable Android Cuttlefish runtime")
+	androidArtifactsDir := flag.String("android-artifacts-dir", "/home/fjq/cf17", "Android Cuttlefish artifacts directory")
+	androidNodeIP := flag.String("android-node-ip", "", "Node IP for Android ADB/WebRTC access (auto-detected if empty)")
+	androidADBPortStart := flag.Int("android-adb-port-start", 6520, "Android ADB host port start")
+	androidBaseInstanceNumStart := flag.Int("android-base-instance-num-start", 1, "Android Cuttlefish base_instance_num start")
+	androidWebRTCPortStart := flag.Int("android-webrtc-port-start", 0, "Android WebRTC host port start (0 disables allocation)")
+	androidLaunchTimeout := flag.Duration("android-launch-timeout", 180*time.Second, "Android launch readiness timeout")
+	androidStateDir := flag.String("android-state-dir", "/var/lib/cri-multiplex/android", "Android runtime state directory")
+	androidCVDGroup := flag.String("android-cvd-group", "cvdnetwork", "Supplementary group for Android Cuttlefish commands")
 	flag.Parse()
 
 	containerEng := engine.NewContainerEngine(*containerdSocket)
@@ -115,7 +125,27 @@ func main() {
 	e2bEng := engine.NewE2BEngine(cfg)
 	defer e2bEng.Close()
 
-	mux := server.NewMuxServer(containerEng, e2bEng)
+	if *androidEnabled && *androidNodeIP == "" {
+		*androidNodeIP = autoNodeIP()
+		if *androidNodeIP == "" {
+			log.Fatal("--android-node-ip is required when --android-enabled is set (auto-detection failed)")
+		}
+		log.Printf("auto-detected android-node-ip: %s", *androidNodeIP)
+	}
+	androidEng := engine.NewAndroidEngine(engine.AndroidConfig{
+		Enabled:              *androidEnabled,
+		ArtifactsDir:         *androidArtifactsDir,
+		NodeIP:               *androidNodeIP,
+		ADBPortStart:         *androidADBPortStart,
+		BaseInstanceNumStart: *androidBaseInstanceNumStart,
+		WebRTCPortStart:      *androidWebRTCPortStart,
+		LaunchTimeout:        *androidLaunchTimeout,
+		StateDir:             *androidStateDir,
+		CVDGroup:             *androidCVDGroup,
+	})
+	defer androidEng.Close()
+
+	mux := server.NewMuxServer(containerEng, e2bEng, androidEng)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -125,8 +155,8 @@ func main() {
 		mux.Stop()
 	}()
 
-	log.Printf("starting cri-multiplex on %s (containerd: %s, e2b backend: %s, node-ip: %s, proxy: %s)",
-		*socketPath, *containerdSocket, *e2bBackend, cfg.NodeIP, cfg.OrchestratorProxyAddr)
+	log.Printf("starting cri-multiplex on %s (containerd: %s, e2b backend: %s, node-ip: %s, proxy: %s, android-enabled: %v, android-node-ip: %s)",
+		*socketPath, *containerdSocket, *e2bBackend, cfg.NodeIP, cfg.OrchestratorProxyAddr, *androidEnabled, *androidNodeIP)
 	if err := mux.Start(*socketPath); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}

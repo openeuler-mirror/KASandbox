@@ -21,6 +21,7 @@ type MuxServer struct {
 
 	containerEngine engine.RuntimeEngine
 	e2bEngine       engine.RuntimeEngine
+	androidEngine   engine.RuntimeEngine
 
 	podRoutes       sync.Map // podSandboxID -> engine.EngineType
 	containerRoutes sync.Map // containerID -> engine.EngineType
@@ -28,10 +29,11 @@ type MuxServer struct {
 	grpcServer *grpc.Server
 }
 
-func NewMuxServer(containerEngine, e2bEngine engine.RuntimeEngine) *MuxServer {
+func NewMuxServer(containerEngine, e2bEngine, androidEngine engine.RuntimeEngine) *MuxServer {
 	return &MuxServer{
 		containerEngine: containerEngine,
 		e2bEngine:       e2bEngine,
+		androidEngine:   androidEngine,
 	}
 }
 
@@ -59,6 +61,14 @@ func (s *MuxServer) Stop() {
 	}
 }
 
+func (s *MuxServer) allEngines() []engine.RuntimeEngine {
+	engines := []engine.RuntimeEngine{s.containerEngine, s.e2bEngine}
+	if s.androidEngine != nil {
+		engines = append(engines, s.androidEngine)
+	}
+	return engines
+}
+
 // resolveEngineByPod 按路由表查找 Pod 所属 engine；
 // 路由表未命中时回退到 containerEngine（containerd）。
 // 原因：E2B Pod 只能通过 cri-multiplex 的 RunPodSandbox(handler=e2b) 创建，
@@ -75,6 +85,8 @@ func (s *MuxServer) resolveEngineByPod(podSandboxID string) (engine.RuntimeEngin
 	switch engineType {
 	case engine.EngineTypeE2B:
 		return s.e2bEngine, nil
+	case engine.EngineTypeAndroid:
+		return s.androidEngine, nil
 	default:
 		return s.containerEngine, nil
 	}
@@ -92,6 +104,8 @@ func (s *MuxServer) resolveEngineByContainer(containerID string) (engine.Runtime
 	switch engineType {
 	case engine.EngineTypeE2B:
 		return s.e2bEngine, nil
+	case engine.EngineTypeAndroid:
+		return s.androidEngine, nil
 	default:
 		return s.containerEngine, nil
 	}
@@ -105,6 +119,8 @@ func (s *MuxServer) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandbo
 
 	if handler == "e2b" {
 		eng = s.e2bEngine
+	} else if handler == "android" {
+		eng = s.androidEngine
 	} else {
 		eng = s.containerEngine
 	}
@@ -211,7 +227,7 @@ func (s *MuxServer) ListPodSandbox(ctx context.Context, req *runtime.ListPodSand
 		errs     []error
 	)
 
-	engines := []engine.RuntimeEngine{s.containerEngine, s.e2bEngine}
+	engines := s.allEngines()
 	for _, eng := range engines {
 		wg.Add(1)
 		go func(e engine.RuntimeEngine) {
@@ -242,7 +258,7 @@ func (s *MuxServer) ListContainers(ctx context.Context, req *runtime.ListContain
 		errs          []error
 	)
 
-	engines := []engine.RuntimeEngine{s.containerEngine, s.e2bEngine}
+	engines := s.allEngines()
 	for _, eng := range engines {
 		wg.Add(1)
 		go func(e engine.RuntimeEngine) {
@@ -281,7 +297,7 @@ func (s *MuxServer) ListContainerStats(ctx context.Context, req *runtime.ListCon
 		errs     []error
 	)
 
-	engines := []engine.RuntimeEngine{s.containerEngine, s.e2bEngine}
+	engines := s.allEngines()
 	for _, eng := range engines {
 		wg.Add(1)
 		go func(e engine.RuntimeEngine) {
@@ -390,7 +406,7 @@ func (s *MuxServer) ListImages(ctx context.Context, req *runtime.ListImagesReque
 		errs      []error
 	)
 
-	engines := []engine.RuntimeEngine{s.containerEngine, s.e2bEngine}
+	engines := s.allEngines()
 	for _, eng := range engines {
 		wg.Add(1)
 		go func(e engine.RuntimeEngine) {
@@ -417,12 +433,18 @@ func (s *MuxServer) ImageStatus(ctx context.Context, req *runtime.ImageStatusReq
 	if strings.HasPrefix(req.Image.Image, "e2b.dev/") {
 		return s.e2bEngine.ImageStatus(ctx, req)
 	}
+	if strings.HasPrefix(req.Image.Image, "android.dev/") {
+		return s.androidEngine.ImageStatus(ctx, req)
+	}
 	return s.containerEngine.ImageStatus(ctx, req)
 }
 
 func (s *MuxServer) PullImage(ctx context.Context, req *runtime.PullImageRequest) (*runtime.PullImageResponse, error) {
 	if strings.HasPrefix(req.Image.Image, "e2b.dev/") {
 		return s.e2bEngine.PullImage(ctx, req)
+	}
+	if strings.HasPrefix(req.Image.Image, "android.dev/") {
+		return s.androidEngine.PullImage(ctx, req)
 	}
 	return s.containerEngine.PullImage(ctx, req)
 }
@@ -431,14 +453,19 @@ func (s *MuxServer) RemoveImage(ctx context.Context, req *runtime.RemoveImageReq
 	if strings.HasPrefix(req.Image.Image, "e2b.dev/") {
 		return s.e2bEngine.RemoveImage(ctx, req)
 	}
+	if strings.HasPrefix(req.Image.Image, "android.dev/") {
+		return s.androidEngine.RemoveImage(ctx, req)
+	}
 	return s.containerEngine.RemoveImage(ctx, req)
 }
 
 func (s *MuxServer) ImageFsInfo(ctx context.Context, req *runtime.ImageFsInfoRequest) (*runtime.ImageFsInfoResponse, error) {
 	resp, err := s.containerEngine.ImageFsInfo(ctx, req)
 	if err != nil {
-		return s.e2bEngine.ImageFsInfo(ctx, req)
+		if e2bResp, e2bErr := s.e2bEngine.ImageFsInfo(ctx, req); e2bErr == nil {
+			return e2bResp, nil
+		}
+		return s.androidEngine.ImageFsInfo(ctx, req)
 	}
 	return resp, nil
 }
-
