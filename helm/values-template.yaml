@@ -1,0 +1,115 @@
+# --- Basic variables ---
+environment: "${ENVIRONMENT}"
+orchestratorType: "k8s"
+# --- Database / Redis / Harbor ---
+registry: "${REGISTRY_URL}"
+image:
+  api: "${API_DOCKER_IMAGE}"
+  edge: "${CLIENT_PROXY_DOCKER_IMAGE}"
+  migrator: "${DB_MIGRATOR_DOCKER_IMAGE}"
+pullPolicy: IfNotPresent
+postgresConnectionString: ${POSTGRES_CONNECTION_STRING}
+sandboxStorageBackend: ${SANDBOX_STORAGE_BACKEND}
+redisUrl: redis.e2b.svc.cluster.local
+redisClusterUrl: 
+minioEndpoint: ${MINIO_ENDPOINT}
+minioAccessKey: ${MINIO_ACCESS_KEY}
+minioSecretKey: ${MINIO_SECRET_KEY}
+
+# --- Other secrets ---
+supabaseJwtSecrets: ${SUPABASE_JWT_SECRETS}
+posthogApiKey: ${POSTHOG_API_KEY}
+analyticsCollectorHost: ${ANALYTICS_COLLECTOR_HOST}
+analyticsCollectorApiToken: ${ANALYTICS_COLLECTOR_API_TOKEN}
+launchDarklyApiKey: ${LAUNCH_DARKLY_API_KEY}
+apiAdminToken: ${API_ADMIN_TOKEN}
+sandboxAccessTokenHashSeed: ${SANDBOX_ACCESS_TOKEN_HASH_SEED}
+logsCollectorAddress: ${LOGS_COLLECTOR_ADDRESS}
+otelCollectorGrpcEndpoint: ${OTEL_COLLECTOR_GRPC_ENDPOINT}
+localClusterEndpoint: ${LOCAL_CLUSTER_ENDPOINT}
+
+# --- ClickHouse (optional) ---
+clickhouseServerCount: ${CLICKHOUSE_SERVER_COUNT}
+clickhouseBackupBucketName: ${CLICKHOUSE_BACKUPS_BUCKET_NAME}
+clickhouseUsername: ${CLICKHOUSE_USERNAME}
+clickhousePassword: ${CLICKHOUSE_PASSWORD}
+clickhouseDatabase: ${CLICKHOUSE_DATABASE}
+clickhouseResourcesCpuCount: ${CLICKHOUSE_RESOURCES_CPU_COUNT}
+clickhouseResourcesMemoryMb: ${CLICKHOUSE_RESOURCES_MEMORY_MB}
+clickhouseServerSecret: ${CLICKHOUSE_SERVER_SECRET}
+clickhouseHost: ${CLICKHOUSE_HOST}
+
+# --- Loki / Logs collector ---
+logsCollectorPublicIp: ${LOGS_COLLECTOR_PUBLIC_IP}
+
+# --- docker-reverse-proxy ---
+dockerReverseProxyCount: ${DOCKER_REVERSE_PROXY_PORT}
+harborHost: ${HARBOR_HOST}
+harborProject: ${HARBOR_PROJECT}
+harborUsername: ${HARBOR_USERNAME}
+harborPassword: ${HARBOR_PASSWORD}
+domainName: ${DOMAIN_NAME}
+
+# --- edge ---
+clientProxyCount: ${CLIENT_PROXY_COUNT}
+clientProxyResourcesCpuCount: ${CLIENT_PROXY_RESOURCES_CPU_COUNT}
+clientProxyResourcesMemoryMb: ${CLIENT_PROXY_RESOURCES_MEMORY_MB}
+clientProxyMaxResourcesMemoryMb: ${CLIENT_PROXY_MAX_RESOURCES_MEMORY_MB}
+edgeApiSecret: ${EDGE_API_SECRET}
+lokiUrl: ${LOKI_URL}
+apiGrpcAddress: ${API_GRPC_ADDRESS}
+
+
+
+# --- loki ---
+lokiBucketName: ${LOKI_BUCKET_NAME}
+lokiResourcesCpuCount: ${LOKI_RESOURCES_CPU_COUNT}
+lokiProxyResourcesMemoryMb: ${LOKI_PROXY_RESOURCES_MEMORY_MB}
+lokiProxyMaxResourcesMemoryMb: ${LOKI_PROXY_MAX_RESOURCES_MEMORY_MB}
+
+# --- orchestrator ---
+otelTracingPrint: ${OTEL_TRACING_PRINT}
+envdTimeout: ${ENVD_TIMEOUT}
+templateBucketName: ${TEMPLATE_BUCKET_NAME}
+allowSandboxInternet: ${ALLOW_SANDBOX_INTERNET}
+sharedChunkCachePath: ${SHARED_CHUNK_CACHE_PATH}
+storageProvider: ${STORAGE_PROVIDER}
+artifactsRegistryProvider: ${ARTIFACTS_REGISTRY_PROVIDER}
+
+# --- otel-collector ---
+otelCollectorResourcesCpuCount: ${OTEL_COLLECTOR_RESOURCES_CPU_COUNT}
+otelCollectorProxyResourcesMemoryMb: ${OTEL_COLLECTOR_PROXY_RESOURCES_MEMORY_MB}
+otelCollectorProxyMaxResourcesMemoryMb: ${OTEL_COLLECTOR_PROXY_MAX_RESOURCES_MEMORY_MB}
+grafanaUsername: "${GRAFANA_USERNAME}"
+grafanaOtelCollectorToken: "${GRAFANA_OTEL_COLLECTOR_TOKEN}"
+grafanaOtlpUrl: "${GRAFANA_OTLP_URL}"
+
+# --- template-manager ---
+buildCacheBucketName: "${BUILD_CACHE_BUCKET_NAME}"
+
+# --- Ports ---
+apiPort: ${API_PORT}
+apiGrpcPort: ${API_GRPC_PORT}
+edgeApiPort: ${EDGE_API_PORT}
+edgeProxyPort: ${EDGE_PROXY_PORT}
+edgeHealthPort: ${EDGE_HEALTH_PORT}
+orchestratorPort: ${ORCHESTRATOR_PORT}
+templateManagerHost: "template-manager.e2b.svc.cluster.local:5008"
+orchestratorProxyPort: ${ORCHESTRATOR_PROXY_PORT}
+templateManagerPort: ${TEMPLATE_MANAGER_PORT}
+redisPort: ${REDIS_PORT}
+dockerReverseProxyPort: ${DOCKER_REVERSE_PROXY_PORT}
+lokiServicePort: ${LOKI_SERVICE_PORT}
+logsProxyPort: ${LOGS_PROXY_PORT}
+logsHealthProxyPort: ${LOGS_HEALTH_PROXY_PORT}
+otelCollectorGrpcPort: ${OTEL_COLLECTOR_GRPC_PORT}
+clickhouseServerPort: ${CLICKHOUSE_SERVER_PORT}
+clickhouseMetricPort: ${CLICKHOUSE_METRICS_PORT}
+dnsPort: ${DNS_PORT}
+
+api:
+  pool: ${API_NODE_POOL}
+build:
+  pool: ${BUILD_NODE_POOL}
+default:
+  pool: default

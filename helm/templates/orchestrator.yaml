@@ -1,0 +1,161 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: orchestrator
+  namespace: e2b
+spec:
+  selector:
+    matchLabels: { app: orchestrator }
+  template:
+    metadata:
+      labels: { app: orchestrator }
+    spec:
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/{{ .Values.default.pool }}
+                operator: Exists
+      containers:
+      - name: orchestrator
+        volumeMounts:
+        - name: hugepages
+          mountPath: /mnt/hugepages
+        - name: snapshot-cache
+          mountPath: /mnt/snapshot-cache
+        - name: host-dev
+          mountPath: /dev
+        - name: build-cache
+          mountPath: /orchestrator
+        - name: dev-net-tun
+          mountPath: /dev/net/tun
+        - name: fc-envd
+          mountPath: /fc-envd
+        - name: fc-kernels
+          mountPath: /fc-kernels
+        - name: fc-versions
+          mountPath: /fc-versions
+        - name: fc-vm
+          mountPath: /fc-vm
+        - name: tmp-templates
+          mountPath: /tmp/templates
+        securityContext:
+          privileged: true
+        image: {{ .Values.registry }}/orchestrator
+        imagePullPolicy: IfNotPresent
+        command: ["/usr/bin/orchestrator"]
+        args: ["--port", "{{ .Values.orchestratorPort | int }}", "--proxy-port", "{{ .Values.orchestratorProxyPort | int }}"]
+        ports:
+        - containerPort: {{ .Values.orchestratorPort | int }}
+          name: grpc
+        env:
+        - name: NODE_ID
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+        - name: OTEL_TRACING_PRINT
+          value: "{{ .Values.otelTracingPrint }}"
+        - name: ENVIRONMENT
+          value: "{{ .Values.environment }}"
+        - name: TEMPLATE_BUCKET_NAME
+          value: "{{ .Values.templateBucketName }}"
+        - name: OTEL_COLLECTOR_GRPC_ENDPOINT
+          value: "{{ .Values.otelCollectorGrpcEndpoint }}"
+        - name: LOGS_COLLECTOR_ADDRESS
+          value: "{{ .Values.logsCollectorAddress }}"
+        - name: ORCHESTRATOR_SERVICES
+          value: "orchestrator"
+        - name: LOGS_COLLECTOR_PUBLIC_IP
+          value: "{{ .Values.logsCollectorPublicIp }}"
+        - name: ALLOW_SANDBOX_INTERNET
+          value: "{{ .Values.allowSandboxInternet }}"
+        - name: SHARED_CHUNK_CACHE_PATH
+          value: "{{ .Values.sharedChunkCachePath }}"
+        - name: CLICKHOUSE_CONNECTION_STRING
+          value: "clickhouse://{{ .Values.clickhouseUsername }}:{{ .Values.clickhousePassword }}@127.0.0.1:{{ .Values.clickhouseServerPort | int }}/{{ .Values.clickhouseDatabase }}"
+        - name: REDIS_URL
+          value: "{{ .Values.redisUrl }}:{{ .Values.redisPort | int }}"
+        - name: REDIS_CLUSTER_URL
+          value: "{{ .Values.redisClusterUrl }}"
+        - name: STORAGE_PROVIDER
+          value: "{{ .Values.storageProvider }}"
+        - name: ARTIFACTS_REGISTRY_PROVIDER
+          value: "{{ .Values.artifactsRegistryProvider }}"
+        - name: MINIO_ENDPOINT
+          value: "{{ .Values.minioEndpoint }}"
+        - name: MINIO_ACCESS_KEY
+          value: "{{ .Values.minioAccessKey }}"
+        - name: GRPC_PORT
+          value: "{{ .Values.orchestratorPort }}"
+        - name: PROXY_PORT
+          value: "{{ .Values.orchestratorProxyPort }}"
+        - name: GIN_MODE
+          value: "release"
+        - name: DOMAIN_NAME
+          value: "{{ .Values.domainName }}"
+        resources:
+          requests:
+            cpu: 2
+            memory: 8Gi
+          limits:   { cpu: "2", memory: "8Gi" }
+        livenessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:{{ .Values.orchestratorPort | int }}"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: hugepages
+        hostPath:
+          path: /mnt/hugepages
+          type: DirectoryOrCreate
+      - name: snapshot-cache
+        hostPath:
+          path: /mnt/snapshot-cache
+          type: DirectoryOrCreate
+      - name: host-dev
+        hostPath:
+          path: /dev
+          type: Directory
+      - name: build-cache
+        hostPath:
+          path: /orchestrator
+          type: DirectoryOrCreate
+      - name: dev-net-tun
+        hostPath:
+          path: /dev/net/tun
+          type: CharDevice
+      - name: fc-envd
+        hostPath:
+          path: /fc-envd
+          type: DirectoryOrCreate
+      - name: fc-kernels
+        hostPath:
+          path: /fc-kernels
+          type: DirectoryOrCreate
+      - name: fc-versions
+        hostPath:
+          path: /fc-versions
+          type: DirectoryOrCreate
+      - name: fc-vm
+        hostPath:
+          path: /fc-vm
+          type: DirectoryOrCreate
+      - name: tmp-templates
+        hostPath:
+          path: /tmp/templates
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator
+  namespace: e2b
+spec:
+  clusterIP: None
+  ports:
+  - port: {{ .Values.orchestratorPort | int }}
+    targetPort: grpc
+    name: grpc
+  selector: { app: orchestrator }

@@ -1,0 +1,244 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-config
+  namespace: e2b
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+            max_recv_msg_size_mib: 100
+            read_buffer_size: 10943040
+            max_concurrent_streams: 200
+            write_buffer_size: 10943040
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: nomad
+              scrape_interval: 15s
+              scrape_timeout: 5s
+              metrics_path: '/v1/metrics'
+              static_configs:
+                - targets: ['localhost:4646']
+              params:
+                format: ['prometheus']
+    processors:
+      batch:
+        timeout: 5s
+      batch/clickhouse:
+        timeout: 5s
+        send_batch_size: 50000
+      filter/otlp:
+        metrics:
+          include:
+            match_type: regexp
+            metric_names:
+              - "orchestrator.*"
+              - "template.*"
+              - "api.*"
+              - "client_proxy.*"
+              - "Click*"
+              - "otelcol.*"
+      filter/prometheus:
+        metrics:
+          include:
+            match_type: strict
+            metric_names:
+              - "nomad_client.host_cpu_total_percent"
+              - "nomad_client_host_cpu_idle"
+              - "nomad_client_host_disk_available"
+              - "nomad_client_host_disk_size"
+              - "nomad_client_host_memory_available"
+              - "nomad_client_host_memory_total"
+              - "nomad_client_allocs_memory_usage"
+              - "nomad_client_allocs_memory_allocated"
+              - "nomad_client_allocs_cpu_total_percent"
+              - "nomad_client_allocs_cpu_allocated"
+      filter/external_metrics:
+        metrics:
+          include:
+            match_type: regexp
+            metric_names:
+              - "e2b.*"
+      metricstransform:
+        transforms:
+          - include: "nomad_client_host_cpu_idle"
+            match_type: strict
+            action: update
+            operations:
+              - action: aggregate_labels
+                aggregation_type: sum
+                label_set: [instance, node_id, node_status, node_pool]
+      resource/local:
+        attributes:
+          - action: upsert
+            key: host.name
+            value: "{{ .Values.nodeName }}"
+          - action: upsert
+            key: service.instance.id
+            value: "{{ .Values.nodeName }}"
+          - action: upsert
+            key: host.type
+            value: "local"
+          - action: upsert
+            key: host.id
+            value: "{{ .Values.nodeId }}"
+          - action: upsert
+            key: deployment.environment
+            value: "{{ .Values.environment }}"
+      transform/set-name:
+        metric_statements:
+          - delete_key(datapoint.attributes, "instance")
+          - delete_key(datapoint.attributes, "node_id")
+          - delete_key(datapoint.attributes, "node_scheduling_eligibility")
+          - delete_key(datapoint.attributes, "node_class")
+          - delete_key(datapoint.attributes, "node_status")
+          - delete_key(datapoint.attributes, "service_name")
+          - set(datapoint.attributes["service.instance.id"], resource.attributes["host.name"])
+      filter/rpc_duration_only:
+        metrics:
+          include:
+            match_type: regexp
+            metric_names:
+              - "rpc.server.duration.*"
+      resource/remove_instance:
+        attributes:
+          - action: delete
+            key: service.instance.id
+    extensions:
+      basicauth/grafana_cloud:
+        client_auth:
+          username: "{{ .Values.grafanaUsername }}"
+          password: "{{ .Values.grafanaOtelCollectorToken }}"
+      health_check:
+        endpoint: 0.0.0.0:13133
+    exporters:
+      debug:
+        verbosity: detailed
+      otlphttp/grafana_cloud:
+        endpoint: "{{ .Values.grafanaOtlpUrl }}/otlp"
+        auth:
+          authenticator: basicauth/grafana_cloud
+      clickhouse:
+        endpoint: tcp://{{ .Values.clickhouseHost }}:{{ .Values.clickhouseServerPort }}
+        database: {{ .Values.clickhouseDatabase }}
+        username: {{ .Values.clickhouseUsername }}
+        password: {{ .Values.clickhousePassword }}
+        async_insert: true
+        create_schema: false
+        metrics_tables:
+          gauge:
+            name: "metrics_gauge"
+          sum:
+            name: "metrics_sum"
+    service:
+      telemetry:
+        logs:
+          level: warn
+        metrics:
+          readers:
+            - periodic:
+                exporter:
+                  otlp:
+                    protocol: grpc
+                    insecure: true
+                    endpoint: localhost:4317
+      extensions:
+        - basicauth/grafana_cloud
+        - health_check
+      pipelines:
+        metrics:
+          receivers: [otlp]
+          processors: [filter/otlp, transform/set-name, batch]
+          exporters: [otlphttp/grafana_cloud]
+        metrics/prometheus:
+          receivers: [prometheus]
+          processors: [filter/prometheus, metricstransform, transform/set-name, batch]
+          exporters: [otlphttp/grafana_cloud]
+        metrics/rpc_only:
+          receivers: [otlp]
+          processors: [filter/rpc_duration_only, resource/remove_instance, transform/set-name, batch]
+          exporters: [otlphttp/grafana_cloud]
+        metrics/external:
+          receivers: [otlp]
+          processors: [filter/external_metrics, batch/clickhouse]
+          exporters: [clickhouse]
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlphttp/grafana_cloud]
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlphttp/grafana_cloud]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-collector
+  namespace: e2b
+spec:
+  selector:
+    matchLabels: { app: otel-collector }
+  template:
+    metadata:
+      labels: { app: otel-collector }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/{{ .Values.api.pool }}
+                operator: Exists
+      containers:
+      - name: otel
+        image: {{ .Values.registry }}/otel/opentelemetry-collector-contrib:0.119.0
+        imagePullPolicy: IfNotPresent
+        args: ["--config=/config/otel-collector-config.yaml", "--feature-gates=pkg.translator.prometheus.NormalizeName"]
+        ports:
+        - containerPort: {{ .Values.otelCollectorGrpcPort | int }}
+          name: grpc
+        - containerPort: 13133
+          name: health
+        env:
+        - name: NODE_ID
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+        - name: NODE_IP
+          valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        resources:
+          requests:
+            cpu: {{ .Values.otelCollectorResourcesCpuCount }}m
+            memory: {{ .Values.otelCollectorProxyResourcesMemoryMb }}Mi
+          limits:
+            cpu: {{ .Values.otelCollectorResourcesCpuCount }}m
+            memory: {{ .Values.otelCollectorProxyMaxResourcesMemoryMb }}Mi
+        livenessProbe:
+          httpGet: { path: /health, port: health }
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: otel-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: e2b
+spec:
+  clusterIP: None
+  ports:
+  - port: {{ .Values.otelCollectorGrpcPort | int }}
+    targetPort: grpc
+    name: grpc
+  selector: { app: otel-collector }
