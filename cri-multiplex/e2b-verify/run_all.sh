@@ -60,6 +60,9 @@ SCRIPTS=(
     "11|Calico CNI PodIP 访问 E2B 沙箱验证|${SCRIPT_DIR}/11_cni_podip_access.sh"
     "12|Android RuntimeClass kubelet 沙箱创建验证|${SCRIPT_DIR}/12_android_kubelet_sandbox.sh"
     "13|Android 多实例 kubelet 沙箱创建验证|${SCRIPT_DIR}/13_android_multi_sandbox.sh"
+    "14|E2B CNI Service/DNS 行为验证|${SCRIPT_DIR}/14_cni_service_dns.sh"
+    "15|E2B CNI NetworkPolicy ingress 验证|${SCRIPT_DIR}/15_cni_networkpolicy_ingress.sh"
+    "16|E2B CNI NetworkPolicy egress 验证|${SCRIPT_DIR}/16_cni_networkpolicy_egress.sh"
 )
 
 #==================== 执行 ====================#
@@ -103,7 +106,7 @@ for entry in "${SCRIPTS[@]}"; do
                     continue
                 fi
                 ;;
-            07|08|09|10|11)
+            07|08|09|10|11|14|15|16)
                 log_info "切换 cri-multiplex 到 CNI 模式，用于 kubelet/CNI 用例 ..."
                 set +e
                 switch_output=$(E2B_CNI_ENABLED=1 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" 2>&1)

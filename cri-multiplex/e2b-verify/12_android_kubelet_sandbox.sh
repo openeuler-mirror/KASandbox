@@ -97,6 +97,8 @@ metadata:
 handler: android
 EOF
 
+cat ${RUNTIMECLASS_YAML}
+
 kubectl apply -f "${RUNTIMECLASS_YAML}" >&2
 log_pass "RuntimeClass android 已创建/更新"
 
@@ -131,6 +133,7 @@ spec:
       imagePullPolicy: IfNotPresent
 EOF
 
+cat ${POD_YAML}
 kubectl apply -f "${POD_YAML}" >&2
 log_pass "Android Pod 已提交: ${POD_NAME}"
 
