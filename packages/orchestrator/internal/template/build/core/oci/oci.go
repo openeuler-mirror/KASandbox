@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/containers/storage/pkg/archive"
@@ -36,9 +37,11 @@ const (
 	tarballExportUpdates = 10
 )
 
-var DefaultPlatform = containerregistry.Platform{
-	OS:           "linux",
-	Architecture: "arm64",
+func getDefaultPlatform() containerregistry.Platform {
+	return containerregistry.Platform{
+		OS:           "linux",
+		Architecture: runtime.GOARCH,
+	}
 }
 
 // wrapImagePullError converts technical Docker registry errors into user-friendly messages.
@@ -76,7 +79,7 @@ func GetPublicImage(ctx context.Context, dockerhubRepository dockerhub.RemoteRep
 		return nil, fmt.Errorf("invalid image reference '%s': %w", tag, err)
 	}
 
-	platform := DefaultPlatform
+	platform := getDefaultPlatform()
 
 	// When no auth provider is provided and the image is from the default registry
 	// use docker remote repository proxy with cached images
@@ -129,7 +132,7 @@ func GetImage(ctx context.Context, artifactRegistry artifactsregistry.ArtifactsR
 	childCtx, childSpan := tracer.Start(ctx, "pull-docker-image")
 	defer childSpan.End()
 
-	platform := DefaultPlatform
+	platform := getDefaultPlatform()
 
 	img, err := artifactRegistry.GetImage(childCtx, templateId, buildId, platform)
 	if err != nil {
