@@ -14,6 +14,10 @@ import (
 func SetupInstance(t *testing.T) redis.UniversalClient {
 	t.Helper()
 
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
 	req := testcontainers.ContainerRequest{
 		Image:        "redis:8-alpine",
 		ExposedPorts: []string{"6379/tcp"},

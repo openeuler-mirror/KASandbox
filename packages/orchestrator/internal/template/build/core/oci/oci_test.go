@@ -147,7 +147,7 @@ func TestGetPublicImageWithGeneralAuth(t *testing.T) {
 	// Set the config to include the proper platform
 	configFile, err := testImage.ConfigFile()
 	require.NoError(t, err)
-	configFile.Architecture = "amd64"
+	configFile.Architecture = "arm64"
 	configFile.OS = "linux"
 	testImage, err = mutate.ConfigFile(testImage, configFile)
 	require.NoError(t, err)
