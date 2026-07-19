@@ -20,6 +20,18 @@ type PortMapping struct {
 	SandboxPort int
 }
 
+type hostPortMappingOps struct {
+	setup   func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error
+	cleanup func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error
+}
+
+func defaultHostPortMappingOps() hostPortMappingOps {
+	return hostPortMappingOps{
+		setup:   SetupHostPortMapping,
+		cleanup: CleanupHostPortMapping,
+	}
+}
+
 func NewHostPortManager(start, end int) *HostPortManager {
 	return &HostPortManager{
 		start:     start,
@@ -177,4 +189,3 @@ func CleanupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandb
 
 	return nil
 }
-

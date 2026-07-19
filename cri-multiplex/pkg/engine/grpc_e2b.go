@@ -104,6 +104,7 @@ type grpcE2BEngine struct {
 	orchestratorAddr      string
 	orchestratorProxyAddr string
 	nodeIP                string
+	hostPortOps           hostPortMappingOps
 	mu                    sync.Mutex
 	conn                  *grpc.ClientConn
 	client                orchestrator.SandboxServiceClient
@@ -120,7 +121,7 @@ type grpcE2BEngine struct {
 
 	hostPortManager *HostPortManager // 新增：宿主机端口管理
 	cniConfig       CNIConfig
-	cniManager      *CNIManager
+	cniManager      cniNetworkManager
 }
 
 func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP string, cniConfig CNIConfig) *grpcE2BEngine {
@@ -129,6 +130,7 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP string, cn
 		orchestratorAddr:      orchestratorAddr,
 		orchestratorProxyAddr: orchestratorProxyAddr,
 		nodeIP:                nodeIP,
+		hostPortOps:           defaultHostPortMappingOps(),
 		cniConfig:             cniConfig,
 		tracker:               newPodTracker(),
 		imageCache:            make(map[string]*e2bImageMeta),
@@ -150,6 +152,9 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP string, cn
 func (e *grpcE2BEngine) ensureConn() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.client != nil {
+		return nil
+	}
 	if e.conn != nil {
 		return nil
 	}
@@ -328,7 +333,7 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 			} else {
 				// 3. 为每个端口创建 iptables 规则
 				for _, m := range mappings {
-					if err := SetupHostPortMapping(e.nodeIP, m.HostPort, hostIP, m.SandboxPort); err != nil {
+					if err := e.hostPortOps.setup(e.nodeIP, m.HostPort, hostIP, m.SandboxPort); err != nil {
 						log.Printf("[GrpcE2BEngine] WARNING: failed to setup mapping %d->%d for %s: %v", m.HostPort, m.SandboxPort, sandboxID, err)
 					} else {
 						log.Printf("[GrpcE2BEngine] HostPort mapping: %s:%d -> %s:%d", e.nodeIP, m.HostPort, hostIP, m.SandboxPort)
@@ -395,7 +400,7 @@ func (e *grpcE2BEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 	// ===== 清理所有 HostPort 映射 =====
 	if pod.hostIP != "" {
 		for _, m := range pod.portMappings {
-			if err := CleanupHostPortMapping(e.nodeIP, m.HostPort, pod.hostIP, m.SandboxPort); err != nil {
+			if err := e.hostPortOps.cleanup(e.nodeIP, m.HostPort, pod.hostIP, m.SandboxPort); err != nil {
 				log.Printf("[GrpcE2BEngine] WARNING: cleanup mapping %d->%d failed: %v", m.HostPort, m.SandboxPort, err)
 			}
 		}
@@ -432,7 +437,7 @@ func (e *grpcE2BEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 	if podOK {
 		if pod.hostIP != "" {
 			for _, m := range pod.portMappings {
-				if err := CleanupHostPortMapping(e.nodeIP, m.HostPort, pod.hostIP, m.SandboxPort); err != nil {
+				if err := e.hostPortOps.cleanup(e.nodeIP, m.HostPort, pod.hostIP, m.SandboxPort); err != nil {
 					log.Printf("[GrpcE2BEngine] WARNING: cleanup mapping %d->%d failed: %v", m.HostPort, m.SandboxPort, err)
 				}
 			}

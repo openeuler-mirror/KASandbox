@@ -114,12 +114,27 @@ type AndroidContainerRecord struct {
 
 type AndroidEngine struct {
 	cfg            AndroidConfig
+	ops            androidRuntimeOps
 	mu             sync.Mutex
 	pods           map[string]*AndroidSandboxRecord
 	containers     map[string]*AndroidContainerRecord
 	portOwners     map[int]string
 	instanceOwners map[int]string
-	cniManager     *CNIManager
+	cniManager     cniNetworkManager
+}
+
+type androidRuntimeOps struct {
+	validateHostPrerequisites func(*AndroidEngine) error
+	startCVD                  func(*AndroidEngine, context.Context, *AndroidSandboxRecord) error
+	stopCVD                   func(*AndroidEngine, context.Context, *AndroidSandboxRecord) error
+}
+
+func defaultAndroidRuntimeOps() androidRuntimeOps {
+	return androidRuntimeOps{
+		validateHostPrerequisites: (*AndroidEngine).validateHostPrerequisites,
+		startCVD:                  (*AndroidEngine).startCVD,
+		stopCVD:                   (*AndroidEngine).stopCVD,
+	}
 }
 
 func NewAndroidEngine(cfg AndroidConfig) *AndroidEngine {
@@ -146,6 +161,7 @@ func NewAndroidEngine(cfg AndroidConfig) *AndroidEngine {
 	}
 	return &AndroidEngine{
 		cfg:            cfg,
+		ops:            defaultAndroidRuntimeOps(),
 		pods:           make(map[string]*AndroidSandboxRecord),
 		containers:     make(map[string]*AndroidContainerRecord),
 		portOwners:     make(map[int]string),
@@ -210,7 +226,7 @@ func (e *AndroidEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 	if req.Config == nil || req.Config.Metadata == nil {
 		return nil, status.Error(codes.InvalidArgument, "missing pod sandbox metadata")
 	}
-	if err := e.validateHostPrerequisites(); err != nil {
+	if err := e.ops.validateHostPrerequisites(e); err != nil {
 		return nil, err
 	}
 	if err := e.ensureCNIManager(); err != nil {
@@ -308,7 +324,7 @@ func (e *AndroidEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 	if !ok {
 		return &runtime.StopPodSandboxResponse{}, nil
 	}
-	if err := e.stopCVD(ctx, rec); err != nil {
+	if err := e.ops.stopCVD(e, ctx, rec); err != nil {
 		log.Printf("[AndroidEngine] StopPodSandbox warning: sandbox=%s stop failed: %v", req.PodSandboxId, err)
 	}
 	e.mu.Lock()
@@ -337,7 +353,7 @@ func (e *AndroidEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 	if !ok {
 		return &runtime.RemovePodSandboxResponse{}, nil
 	}
-	if err := e.stopCVD(ctx, rec); err != nil {
+	if err := e.ops.stopCVD(e, ctx, rec); err != nil {
 		log.Printf("[AndroidEngine] RemovePodSandbox warning: sandbox=%s stop failed: %v", req.PodSandboxId, err)
 	}
 	var cniRecord *CNIRecord
@@ -498,7 +514,7 @@ func (e *AndroidEngine) StartContainer(ctx context.Context, req *runtime.StartCo
 	pod.State = androidSandboxVMStarting
 	e.mu.Unlock()
 
-	if err := e.startCVD(ctx, pod); err != nil {
+	if err := e.ops.startCVD(e, ctx, pod); err != nil {
 		e.mu.Lock()
 		pod.State = androidSandboxUnknown
 		e.mu.Unlock()
@@ -527,7 +543,7 @@ func (e *AndroidEngine) StopContainer(ctx context.Context, req *runtime.StopCont
 	container := e.containers[req.ContainerId]
 	e.mu.Unlock()
 	if pod != nil {
-		if err := e.stopCVD(ctx, pod); err != nil {
+		if err := e.ops.stopCVD(e, ctx, pod); err != nil {
 			log.Printf("[AndroidEngine] StopContainer warning: container=%s stop failed: %v", req.ContainerId, err)
 		}
 	}
@@ -691,7 +707,7 @@ func (e *AndroidEngine) PullImage(ctx context.Context, req *runtime.PullImageReq
 	if err := e.ensureEnabled(); err != nil {
 		return nil, err
 	}
-	if err := e.validateHostPrerequisites(); err != nil {
+	if err := e.ops.validateHostPrerequisites(e); err != nil {
 		return nil, err
 	}
 	return &runtime.PullImageResponse{ImageRef: androidDefaultImage}, nil

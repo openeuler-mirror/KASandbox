@@ -28,6 +28,11 @@ type CNIManager struct {
 	netConfig *libcni.NetworkConfigList
 }
 
+type cniNetworkManager interface {
+	Add(ctx context.Context, sandboxID string, podCfg *runtime.PodSandboxConfig) (*CNIRecord, error)
+	Del(ctx context.Context, rec *CNIRecord, podCfg *runtime.PodSandboxConfig) error
+}
+
 type CNIRecord struct {
 	SandboxID  string
 	Network    string
