@@ -33,12 +33,7 @@ OBSERVE_SECONDS="${OBSERVE_SECONDS:-30}"
 #==================== 前置检查 ====================#
 log_step "1.1 前置检查"
 
-# 检查 refresh_build_id.sh
-if [ ! -f "${REFRESH_SCRIPT}" ]; then
-    log_fail "刷新脚本不存在: ${REFRESH_SCRIPT}"
-    exit 1
-fi
-log_pass "刷新脚本存在: ${REFRESH_SCRIPT}"
+require_refresh_script "${REFRESH_SCRIPT}" || exit 1
 
 # 检查 cri-multiplex 是否运行
 require_cri_multiplex_ready || exit 1
@@ -70,9 +65,7 @@ fi
 #==================== 刷新 build_id ====================#
 log_step "2.1 刷新 build_id（每次创建 Pod 前必须执行）"
 
-log_info "执行: bash ${REFRESH_SCRIPT} ${POD_NAME}"
-if ! bash "${REFRESH_SCRIPT}" "${POD_NAME}" >&2; then
-    log_fail "刷新 build_id 失败"
+if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${POD_NAME}" "${POD_YAML}"; then
     exit 1
 fi
 

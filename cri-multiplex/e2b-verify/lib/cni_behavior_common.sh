@@ -22,11 +22,7 @@ require_cni_behavior_prereqs() {
     fi
     log_pass "RuntimeClass e2b 存在"
 
-    if [ ! -f "${REFRESH_SCRIPT}" ]; then
-        log_fail "刷新脚本不存在: ${REFRESH_SCRIPT}"
-        return 1
-    fi
-    log_pass "刷新脚本存在: ${REFRESH_SCRIPT}"
+    require_refresh_script "${REFRESH_SCRIPT}" || return 1
 }
 
 patch_e2b_yaml_metadata() {
@@ -66,19 +62,8 @@ prepare_e2b_cni_pod_yaml() {
     local extra_label_key="${3:-}"
     local extra_label_value="${4:-}"
 
-    log_info "执行: bash ${REFRESH_SCRIPT} ${pod_name}"
-    if ! bash "${REFRESH_SCRIPT}" "${pod_name}" >&2; then
-        log_info "刷新 build_id 失败，尝试复用已有 ${E2B_CNI_YAML}"
-        if [ -f "${E2B_CNI_YAML}" ] &&
-           grep -q 'e2b.dev/build-id:' "${E2B_CNI_YAML}" &&
-           grep -q 'e2b.dev/execution-id:' "${E2B_CNI_YAML}" &&
-           grep -q 'e2b.dev/envd-access-token:' "${E2B_CNI_YAML}"; then
-            sed -i "0,/^  name: .*/s//  name: ${pod_name}/" "${E2B_CNI_YAML}"
-            log_pass "复用已有 Pod YAML: ${E2B_CNI_YAML}"
-        else
-            log_fail "刷新 build_id 失败，且没有可复用的完整 Pod YAML"
-            return 1
-        fi
+    if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${pod_name}" "${E2B_CNI_YAML}"; then
+        return 1
     fi
 
     if [ ! -f "${E2B_CNI_YAML}" ]; then

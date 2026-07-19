@@ -100,6 +100,10 @@ cri_multiplex_cni_enabled() {
     cri_multiplex_cmdline | grep -q -- "-e2b-cni-enabled"
 }
 
+cri_multiplex_android_cni_enabled() {
+    cri_multiplex_cmdline | grep -q -- "-android-cni-enabled"
+}
+
 require_cri_multiplex_ready() {
     if ! cri_multiplex_ready; then
         log_fail "cri-multiplex 未运行或 socket 不可连通: ${SOCKET}"
@@ -115,6 +119,107 @@ require_cri_multiplex_cni_enabled() {
         return 1
     fi
     log_pass "cri-multiplex 已启用 CNI 模式"
+}
+
+require_cri_multiplex_android_cni_enabled() {
+    require_cri_multiplex_ready || return 1
+    if ! cri_multiplex_android_cni_enabled; then
+        log_fail "cri-multiplex 未启用 -android-cni-enabled，无法验证 Android CNI 链路"
+        return 1
+    fi
+    log_pass "cri-multiplex 已启用 Android CNI 模式"
+}
+
+require_refresh_script() {
+    local refresh_script="$1"
+    if [ ! -f "${refresh_script}" ]; then
+        log_fail "刷新脚本不存在: ${refresh_script}"
+        return 1
+    fi
+    log_pass "刷新脚本存在: ${refresh_script}"
+}
+
+validate_reusable_e2b_yaml() {
+    local yaml="$1"
+
+    if [ ! -f "${yaml}" ]; then
+        log_fail "可复用 Pod YAML 不存在: ${yaml}"
+        return 1
+    fi
+    if ! grep -q 'e2b.dev/build-id:' "${yaml}" ||
+       ! grep -q 'e2b.dev/execution-id:' "${yaml}" ||
+       ! grep -q 'e2b.dev/envd-access-token:' "${yaml}"; then
+        log_fail "${yaml} 缺少 build-id/execution-id/envd-access-token，不能复用"
+        return 1
+    fi
+}
+
+reset_e2b_yaml_metadata() {
+    local pod_name="$1"
+    local yaml="$2"
+    local tmp="${yaml}.tmp"
+
+    awk -v name="${pod_name}" '
+        /^metadata:/ {
+            in_metadata=1
+            print
+            next
+        }
+        in_metadata == 1 && /^  name:/ {
+            print "  name: " name
+            next
+        }
+        in_metadata == 1 && /^  labels:/ {
+            skipping_labels=1
+            next
+        }
+        skipping_labels == 1 && /^  [A-Za-z0-9_.-]+:/ {
+            skipping_labels=0
+        }
+        skipping_labels == 1 {
+            next
+        }
+        in_metadata == 1 && /^spec:/ {
+            in_metadata=0
+        }
+        { print }
+    ' "${yaml}" > "${tmp}"
+    mv "${tmp}" "${yaml}"
+}
+
+refresh_or_reuse_e2b_yaml() {
+    local refresh_script="$1"
+    local pod_name="$2"
+    local yaml="$3"
+
+    log_info "执行: bash ${refresh_script} ${pod_name}"
+    if bash "${refresh_script}" "${pod_name}" >&2; then
+        log_pass "build_id 刷新成功"
+        return 0
+    fi
+
+    log_info "刷新 build_id 失败，尝试复用已有 ${yaml}"
+    validate_reusable_e2b_yaml "${yaml}" || return 1
+    reset_e2b_yaml_metadata "${pod_name}" "${yaml}"
+    log_pass "复用已有 Pod YAML: ${yaml}"
+}
+
+wait_tcp_connect() {
+    local host="$1"
+    local port="$2"
+    local timeout_seconds="${3:-120}"
+    local desc="${4:-TCP ${host}:${port}}"
+
+    for _ in $(seq 1 "${timeout_seconds}"); do
+        if timeout 2 bash -c "cat < /dev/null > /dev/tcp/${host}/${port}" 2>/dev/null; then
+            log_pass "${desc} 可连接"
+            return 0
+        fi
+        sleep 1
+    done
+
+    log_fail "${desc} 在 ${timeout_seconds}s 内不可连接"
+    return 1
 }
 
 sync_e2b_pod_json_from_kubelet_yaml() {

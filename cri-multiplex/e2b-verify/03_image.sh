@@ -21,18 +21,9 @@ POD_YAML="/tmp/e2b-kubelet-pod.yaml"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 
 log_step "0.1 刷新 build_id"
-log_info "执行: bash ${REFRESH_SCRIPT} e2b-image-test"
-if bash "${REFRESH_SCRIPT}" e2b-image-test >&2; then
-    log_pass "build_id 刷新成功"
-else
-    log_info "刷新 build_id 失败，尝试复用已有 ${POD_YAML}"
-    if [ -f "${POD_YAML}" ] && grep -q 'e2b.dev/build-id:' "${POD_YAML}"; then
-        log_pass "复用已有 Pod YAML: ${POD_YAML}"
-    else
-        log_fail "刷新 build_id 失败，且没有可复用的 Pod YAML"
-        print_summary
-        exit 1
-    fi
+if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "e2b-image-test" "${POD_YAML}"; then
+    print_summary
+    exit 1
 fi
 
 TEMPLATE_ID=$(grep -oP 'e2b\.dev/template-id:\s*"\K[^"]+' "${POD_YAML}" | head -1 || true)

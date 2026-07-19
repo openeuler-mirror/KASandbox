@@ -32,11 +32,7 @@ trap cleanup EXIT
 #==================== 前置检查 ====================#
 log_step "1.1 前置检查"
 
-if [ ! -f "${REFRESH_SCRIPT}" ]; then
-    log_fail "刷新脚本不存在: ${REFRESH_SCRIPT}"
-    exit 1
-fi
-log_pass "刷新脚本存在: ${REFRESH_SCRIPT}"
+require_refresh_script "${REFRESH_SCRIPT}" || exit 1
 
 require_cri_multiplex_cni_enabled || exit 1
 
@@ -75,19 +71,8 @@ fi
 #==================== 刷新 build_id ====================#
 log_step "2.1 刷新 build_id（每次创建 Pod 前必须执行）"
 
-log_info "执行: bash ${REFRESH_SCRIPT} ${POD_NAME}"
-if ! bash "${REFRESH_SCRIPT}" "${POD_NAME}" >&2; then
-    log_info "刷新 build_id 失败，尝试复用已有 ${POD_YAML}"
-    if [ -f "${POD_YAML}" ] &&
-       grep -q 'e2b.dev/build-id:' "${POD_YAML}" &&
-       grep -q 'e2b.dev/execution-id:' "${POD_YAML}" &&
-       grep -q 'e2b.dev/envd-access-token:' "${POD_YAML}"; then
-        sed -i "0,/^  name: .*/s//  name: ${POD_NAME}/" "${POD_YAML}"
-        log_pass "复用已有 Pod YAML: ${POD_YAML}"
-    else
-        log_fail "刷新 build_id 失败，且没有可复用的完整 Pod YAML"
-        exit 1
-    fi
+if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${POD_NAME}" "${POD_YAML}"; then
+    exit 1
 fi
 
 if [ ! -f "${POD_YAML}" ]; then

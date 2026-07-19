@@ -109,20 +109,8 @@ mkdir -p "${WORK_DIR}"
 #==================== 准备基础 Pod YAML ====================#
 log_step "2.1 准备基础 Pod YAML"
 
-log_info "尝试执行刷新脚本: bash ${REFRESH_SCRIPT} ${PREFIX}-template"
-if bash "${REFRESH_SCRIPT}" "${PREFIX}-template" >&2; then
-    log_pass "刷新 build_id 成功"
-else
-    log_info "刷新 build_id 失败，尝试复用已有 ${POD_YAML}"
-    if [ -f "${POD_YAML}" ] &&
-       grep -q 'e2b.dev/build-id:' "${POD_YAML}" &&
-       grep -q 'e2b.dev/execution-id:' "${POD_YAML}" &&
-       grep -q 'e2b.dev/envd-access-token:' "${POD_YAML}"; then
-        log_pass "复用已有 Pod YAML: ${POD_YAML}"
-    else
-        log_fail "没有可用 Pod YAML，无法批量创建"
-        exit 1
-    fi
+if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${PREFIX}-template" "${POD_YAML}"; then
+    exit 1
 fi
 
 BUILD_ID=$(grep -oP 'e2b\.dev/build-id:\s*"\K[^"]+' "${POD_YAML}" | head -1 || true)

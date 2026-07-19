@@ -27,11 +27,12 @@ type E2BConfig struct {
 }
 
 type CNIConfig struct {
-	Enabled  bool
-	ConfDir  string
-	BinDir   string
-	IfName   string
-	NetNSDir string
+	Enabled     bool
+	ConfDir     string
+	BinDir      string
+	IfName      string
+	NetNSDir    string
+	NetNSPrefix string
 }
 
 type E2BEngine interface {

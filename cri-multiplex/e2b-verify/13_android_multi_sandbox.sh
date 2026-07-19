@@ -18,6 +18,7 @@ log_section "13 — Android 多实例 kubelet 沙箱创建验证"
 
 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}"
 ANDROID_WAIT_TIMEOUT="${ANDROID_WAIT_TIMEOUT:-360s}"
+ANDROID_ADB_WAIT_TIMEOUT="${ANDROID_ADB_WAIT_TIMEOUT:-30}"
 POD1="${POD1:-android-cvd-multi-1}"
 POD2="${POD2:-android-cvd-multi-2}"
 YAML1="/tmp/${POD1}.yaml"
@@ -78,23 +79,33 @@ verify_android_status() {
     local expected_base="$2"
     local expected_port="$3"
 
-    local uid inspect adb_url adb_host adb_port
+    local uid inspect adb_url adb_host adb_port pod_ip netns_path
     uid=$(kubectl get pod "${pod_name}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+    pod_ip=$(kubectl get pod "${pod_name}" -o jsonpath='{.status.podIP}' 2>/dev/null || true)
     if [ -z "${uid}" ]; then
         log_fail "无法读取 Pod UID: ${pod_name}"
         exit 1
     fi
+    if [ -z "${pod_ip}" ]; then
+        log_fail "无法读取 PodIP: ${pod_name}"
+        exit 1
+    fi
+    netns_path="/var/run/netns/android-${uid:0:12}"
     inspect=$(${CRICTL} inspectp "${uid}" 2>&1) || true
     if grep -q "not found\|NotFound\|level=fatal" <<< "${inspect}"; then
         log_fail "无法 inspect Android PodSandbox: ${pod_name}/${uid}"
         echo "${inspect}" >&2
         exit 1
     fi
-    if grep -q "\"android.dev/base-instance-num\": \"${expected_base}\"" <<< "${inspect}" &&
+    if grep -q "\"ip\": \"${pod_ip}\"" <<< "${inspect}" &&
+       grep -q '"android.dev/cni-enabled": "true"' <<< "${inspect}" &&
+       grep -q "\"android.dev/pod-ip\": \"${pod_ip}\"" <<< "${inspect}" &&
+       grep -q "\"android.dev/cni-netns\": \"${netns_path}\"" <<< "${inspect}" &&
+       grep -q "\"android.dev/base-instance-num\": \"${expected_base}\"" <<< "${inspect}" &&
        grep -q "\"android.dev/adb-port\": \"${expected_port}\"" <<< "${inspect}"; then
-        log_pass "CRI status 匹配 ${pod_name}: base_instance_num=${expected_base}, adb=${expected_port}"
+        log_pass "CRI status 匹配 ${pod_name}: podIP=${pod_ip}, base_instance_num=${expected_base}, adb=${expected_port}"
     else
-        log_fail "CRI status 不匹配 ${pod_name}: 预期 base=${expected_base}, adb=${expected_port}"
+        log_fail "CRI status 不匹配 ${pod_name}: 预期 podIP=${pod_ip}, base=${expected_base}, adb=${expected_port}"
         echo "${inspect}" >&2
         exit 1
     fi
@@ -102,16 +113,11 @@ verify_android_status() {
     adb_url=$(grep -oP '"android.dev/adb-url":\s*"\K[^"]+' <<< "${inspect}" | head -1 || true)
     adb_host="${adb_url%:*}"
     adb_port="${adb_url##*:}"
-    if [ -z "${adb_url}" ] || [ "${adb_port}" != "${expected_port}" ]; then
+    if [ -z "${adb_url}" ] || [ "${adb_host}" != "${pod_ip}" ] || [ "${adb_port}" != "${expected_port}" ]; then
         log_fail "ADB URL 异常: pod=${pod_name}, url=${adb_url}, expected_port=${expected_port}"
         exit 1
     fi
-    if timeout 5 bash -c "cat < /dev/null > /dev/tcp/${adb_host}/${adb_port}" 2>/dev/null; then
-        log_pass "ADB 端口可连接: ${pod_name} ${adb_url}"
-    else
-        log_fail "ADB 端口不可连接: ${pod_name} ${adb_url}"
-        exit 1
-    fi
+    wait_tcp_connect "${adb_host}" "${adb_port}" "${ANDROID_ADB_WAIT_TIMEOUT}" "ADB 端口 ${pod_name} ${adb_url}" || exit 1
 }
 
 log_step "1.1 前置检查"
@@ -123,11 +129,12 @@ else
 fi
 
 log_step "1.2 启动 cri-multiplex CNI+Android runtime 模式"
-if ! ANDROID_ENABLED=1 E2B_CNI_ENABLED=1 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR}" ANDROID_ADB_PORT_START=6520 ANDROID_BASE_INSTANCE_NUM_START=1 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" >&2; then
+if ! ANDROID_ENABLED=1 E2B_CNI_ENABLED=1 ANDROID_CNI_ENABLED=1 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR}" ANDROID_ADB_PORT_START=6520 ANDROID_BASE_INSTANCE_NUM_START=1 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" >&2; then
     log_fail "启动 cri-multiplex CNI+Android runtime 模式失败"
     exit 1
 fi
 require_cri_multiplex_cni_enabled || exit 1
+require_cri_multiplex_android_cni_enabled || exit 1
 if ! cri_multiplex_cmdline | grep -q -- "-android-enabled"; then
     log_fail "cri-multiplex 未启用 -android-enabled"
     exit 1
@@ -177,4 +184,3 @@ if [ "${FAIL_COUNT}" -eq 0 ]; then
 else
     exit 1
 fi
-

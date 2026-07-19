@@ -26,11 +26,7 @@ REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 #==================== 前置检查 ====================#
 log_step "1.1 前置检查"
 
-if [ ! -f "${REFRESH_SCRIPT}" ]; then
-    log_fail "刷新脚本不存在: ${REFRESH_SCRIPT}"
-    exit 1
-fi
-log_pass "刷新脚本存在: ${REFRESH_SCRIPT}"
+require_refresh_script "${REFRESH_SCRIPT}" || exit 1
 
 require_cri_multiplex_ready || exit 1
 
@@ -58,9 +54,7 @@ fi
 #==================== 刷新 build_id ====================#
 log_step "2.1 刷新 build_id（每次创建 Pod 前必须执行）"
 
-log_info "执行: bash ${REFRESH_SCRIPT} ${POD_NAME}"
-if ! bash "${REFRESH_SCRIPT}" "${POD_NAME}" >&2; then
-    log_fail "刷新 build_id 失败"
+if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${POD_NAME}" "${POD_YAML}"; then
     exit 1
 fi
 
@@ -81,13 +75,58 @@ log_step "2.2 修改 Pod YAML 开启 stdin/tty 并运行 sh"
 
 # refresh_build_id.sh 默认生成 command: ["sleep", "3600"]，attach 时无法交互。
 # 将其改为 stdin/tty=true、command=["sh"]，使 kubectl attach 能进入交互式 shell。
-if grep -q 'command: \["sleep", "3600"\]' "${POD_YAML}"; then
-    sed -i 's|    command: \["sleep", "3600"\]|    stdin: true\n    tty: true\n    command: ["sh"]|' "${POD_YAML}"
-    log_pass "Pod YAML 已修改为 attach 模式（stdin/tty=true, command=sh）"
-else
-    log_fail "Pod YAML 格式不符合预期，无法修改"
+tmp_yaml="${POD_YAML}.attach.tmp"
+if ! awk '
+    /^  containers:/ {
+        in_containers=1
+        print
+        next
+    }
+    in_containers == 1 && /^  - name:/ && first_container_seen != 1 {
+        first_container_seen=1
+        in_first_container=1
+        print
+        next
+    }
+    in_first_container == 1 && /^  - name:/ {
+        if (inserted != 1) {
+            print "    stdin: true"
+            print "    tty: true"
+            print "    command: [\"sh\"]"
+            inserted=1
+        }
+        in_first_container=0
+        print
+        next
+    }
+    in_first_container == 1 && /^    (stdin|tty|command):/ {
+        next
+    }
+    in_first_container == 1 && /^    imagePullPolicy:/ {
+        print
+        if (inserted != 1) {
+            print "    stdin: true"
+            print "    tty: true"
+            print "    command: [\"sh\"]"
+            inserted=1
+        }
+        next
+    }
+    {
+        print
+    }
+    END {
+        if (first_container_seen != 1 || inserted != 1) {
+            exit 1
+        }
+    }
+' "${POD_YAML}" > "${tmp_yaml}"; then
+    rm -f "${tmp_yaml}"
+    log_fail "Pod YAML 格式不符合预期，无法修改为 attach 模式"
     exit 1
 fi
+mv "${tmp_yaml}" "${POD_YAML}"
+log_pass "Pod YAML 已设置为 attach 模式（stdin/tty=true, command=sh）"
 
 #==================== 创建 Pod ====================#
 log_step "3.1 通过 kubelet 创建 Pod"

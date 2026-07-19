@@ -86,9 +86,15 @@ func main() {
 	androidADBPortStart := flag.Int("android-adb-port-start", 6520, "Android ADB host port start")
 	androidBaseInstanceNumStart := flag.Int("android-base-instance-num-start", 1, "Android Cuttlefish base_instance_num start")
 	androidWebRTCPortStart := flag.Int("android-webrtc-port-start", 0, "Android WebRTC host port start (0 disables allocation)")
-	androidLaunchTimeout := flag.Duration("android-launch-timeout", 180*time.Second, "Android launch readiness timeout")
+	androidLaunchTimeout := flag.Duration("android-launch-timeout", 30*time.Second, "Android launch readiness timeout")
 	androidStateDir := flag.String("android-state-dir", "/var/lib/cri-multiplex/android", "Android runtime state directory")
 	androidCVDGroup := flag.String("android-cvd-group", "cvdnetwork", "Supplementary group for Android Cuttlefish commands")
+	androidCNIEnabled := flag.Bool("android-cni-enabled", false, "Enable CNI networking for Android pods")
+	androidCNIConfDir := flag.String("android-cni-conf-dir", "/etc/cni/net.d", "Android CNI configuration directory")
+	androidCNIBinDir := flag.String("android-cni-bin-dir", "/opt/cni/bin", "Android CNI plugin binary directory")
+	androidCNIIfName := flag.String("android-cni-ifname", "eth0", "Android CNI interface name inside the pod netns")
+	androidCNINetNSDir := flag.String("android-cni-netns-dir", "/var/run/netns", "Android CNI netns directory")
+	androidCNINetNSPrefix := flag.String("android-cni-netns-prefix", "android-", "Android CNI netns name prefix")
 	flag.Parse()
 
 	containerEng := engine.NewContainerEngine(*containerdSocket)
@@ -125,7 +131,7 @@ func main() {
 	e2bEng := engine.NewE2BEngine(cfg)
 	defer e2bEng.Close()
 
-	if *androidEnabled && *androidNodeIP == "" {
+	if *androidEnabled && *androidNodeIP == "" && !*androidCNIEnabled {
 		*androidNodeIP = autoNodeIP()
 		if *androidNodeIP == "" {
 			log.Fatal("--android-node-ip is required when --android-enabled is set (auto-detection failed)")
@@ -142,6 +148,14 @@ func main() {
 		LaunchTimeout:        *androidLaunchTimeout,
 		StateDir:             *androidStateDir,
 		CVDGroup:             *androidCVDGroup,
+		CNI: engine.CNIConfig{
+			Enabled:     *androidCNIEnabled,
+			ConfDir:     *androidCNIConfDir,
+			BinDir:      *androidCNIBinDir,
+			IfName:      *androidCNIIfName,
+			NetNSDir:    *androidCNINetNSDir,
+			NetNSPrefix: *androidCNINetNSPrefix,
+		},
 	})
 	defer androidEng.Close()
 
@@ -155,8 +169,8 @@ func main() {
 		mux.Stop()
 	}()
 
-	log.Printf("starting cri-multiplex on %s (containerd: %s, e2b backend: %s, node-ip: %s, proxy: %s, android-enabled: %v, android-node-ip: %s)",
-		*socketPath, *containerdSocket, *e2bBackend, cfg.NodeIP, cfg.OrchestratorProxyAddr, *androidEnabled, *androidNodeIP)
+	log.Printf("starting cri-multiplex on %s (containerd: %s, e2b backend: %s, node-ip: %s, proxy: %s, android-enabled: %v, android-cni-enabled: %v, android-node-ip: %s)",
+		*socketPath, *containerdSocket, *e2bBackend, cfg.NodeIP, cfg.OrchestratorProxyAddr, *androidEnabled, *androidCNIEnabled, *androidNodeIP)
 	if err := mux.Start(*socketPath); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}

@@ -41,6 +41,7 @@ type AndroidConfig struct {
 	LaunchTimeout        time.Duration
 	StateDir             string
 	CVDGroup             string
+	CNI                  CNIConfig
 }
 
 type androidSandboxState string
@@ -76,9 +77,13 @@ type AndroidSandboxRecord struct {
 	NodeIP          string
 	ADBPort         int
 	WebRTCPort      int
+	PodIP           string
+	NetNSName       string
+	NetNSPath       string
 	LaunchPID       int
 	LaunchPGID      int
 	LaunchLogPath   string
+	CNIRecord       *CNIRecord
 
 	State     androidSandboxState
 	CreatedAt time.Time
@@ -114,6 +119,7 @@ type AndroidEngine struct {
 	containers     map[string]*AndroidContainerRecord
 	portOwners     map[int]string
 	instanceOwners map[int]string
+	cniManager     *CNIManager
 }
 
 func NewAndroidEngine(cfg AndroidConfig) *AndroidEngine {
@@ -127,13 +133,16 @@ func NewAndroidEngine(cfg AndroidConfig) *AndroidEngine {
 		cfg.BaseInstanceNumStart = 1
 	}
 	if cfg.LaunchTimeout == 0 {
-		cfg.LaunchTimeout = 180 * time.Second
+		cfg.LaunchTimeout = 30 * time.Second
 	}
 	if cfg.StateDir == "" {
 		cfg.StateDir = "/var/lib/cri-multiplex/android"
 	}
 	if cfg.CVDGroup == "" {
 		cfg.CVDGroup = "cvdnetwork"
+	}
+	if cfg.CNI.NetNSPrefix == "" {
+		cfg.CNI.NetNSPrefix = "android-"
 	}
 	return &AndroidEngine{
 		cfg:            cfg,
@@ -153,6 +162,23 @@ func (e *AndroidEngine) ensureEnabled() error {
 	return nil
 }
 
+func (e *AndroidEngine) ensureCNIManager() error {
+	if !e.cfg.CNI.Enabled {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.cniManager != nil {
+		return nil
+	}
+	mgr, err := NewCNIManager(e.cfg.CNI)
+	if err != nil {
+		return err
+	}
+	e.cniManager = mgr
+	return nil
+}
+
 func (e *AndroidEngine) validateHostPrerequisites() error {
 	launchPath := filepath.Join(e.cfg.ArtifactsDir, "bin", "launch_cvd")
 	if st, err := os.Stat(launchPath); err != nil {
@@ -165,6 +191,11 @@ func (e *AndroidEngine) validateHostPrerequisites() error {
 	}
 	if _, err := os.Stat("/dev/net/tun"); err != nil {
 		return status.Errorf(codes.FailedPrecondition, "/dev/net/tun is required for android runtime: %v", err)
+	}
+	if e.cfg.CNI.Enabled {
+		if _, err := exec.LookPath("ip"); err != nil {
+			return status.Errorf(codes.FailedPrecondition, "ip command is required for android CNI runtime: %v", err)
+		}
 	}
 	if _, err := lookupGroupID(e.cfg.CVDGroup); err != nil {
 		return status.Errorf(codes.FailedPrecondition, "android CVD group %q is required: %v", e.cfg.CVDGroup, err)
@@ -181,6 +212,9 @@ func (e *AndroidEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 	}
 	if err := e.validateHostPrerequisites(); err != nil {
 		return nil, err
+	}
+	if err := e.ensureCNIManager(); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "initialize android CNI manager: %v", err)
 	}
 
 	sandboxID := req.Config.Metadata.Uid
@@ -216,12 +250,13 @@ func (e *AndroidEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 	}
 
 	now := time.Now()
+	artifactsDir := e.artifactsDirForInstance(baseInstanceNum)
 	rec := &AndroidSandboxRecord{
 		CRISandboxID:    sandboxID,
 		PodUID:          sandboxID,
 		Name:            req.Config.Metadata.Name,
 		Namespace:       req.Config.Metadata.Namespace,
-		ArtifactsDir:    e.cfg.ArtifactsDir,
+		ArtifactsDir:    artifactsDir,
 		WorkDir:         filepath.Join(e.cfg.StateDir, sandboxID),
 		InstanceID:      annotationOrDefault(req.Config.Annotations, annAndroidInstanceID, shortAndroidID(sandboxID)),
 		BaseInstanceNum: baseInstanceNum,
@@ -234,9 +269,32 @@ func (e *AndroidEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		Annotations:     copyStringMap(req.Config.Annotations),
 	}
 	rec.LaunchLogPath = filepath.Join(rec.WorkDir, "launch_cvd.log")
+	if err := e.ensureArtifactsDir(rec); err != nil {
+		delete(e.portOwners, adbPort)
+		delete(e.instanceOwners, baseInstanceNum)
+		if webrtcPort > 0 {
+			delete(e.portOwners, webrtcPort)
+		}
+		return nil, err
+	}
+	if e.cfg.CNI.Enabled {
+		cniRecord, err := e.cniManager.Add(ctx, sandboxID, req.Config)
+		if err != nil {
+			delete(e.portOwners, adbPort)
+			delete(e.instanceOwners, baseInstanceNum)
+			if webrtcPort > 0 {
+				delete(e.portOwners, webrtcPort)
+			}
+			return nil, status.Errorf(codes.Internal, "android cni add failed: %v", err)
+		}
+		rec.CNIRecord = cniRecord
+		rec.PodIP = cniRecord.PodIP
+		rec.NetNSName = cniRecord.NetNSName
+		rec.NetNSPath = cniRecord.NetNSPath
+	}
 	e.pods[sandboxID] = rec
-	log.Printf("[AndroidEngine] sandbox created: cri_id=%s pod=%s/%s base_instance_num=%d adb=%d workdir=%s",
-		sandboxID, rec.Namespace, rec.Name, rec.BaseInstanceNum, rec.ADBPort, rec.WorkDir)
+	log.Printf("[AndroidEngine] sandbox created: cri_id=%s pod=%s/%s base_instance_num=%d adb=%d artifacts=%s workdir=%s cni=%v podIP=%s",
+		sandboxID, rec.Namespace, rec.Name, rec.BaseInstanceNum, rec.ADBPort, rec.ArtifactsDir, rec.WorkDir, e.cfg.CNI.Enabled, rec.accessIP())
 	return &runtime.RunPodSandboxResponse{PodSandboxId: sandboxID}, nil
 }
 
@@ -282,6 +340,12 @@ func (e *AndroidEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 	if err := e.stopCVD(ctx, rec); err != nil {
 		log.Printf("[AndroidEngine] RemovePodSandbox warning: sandbox=%s stop failed: %v", req.PodSandboxId, err)
 	}
+	var cniRecord *CNIRecord
+	var podCfg *runtime.PodSandboxConfig
+	if e.cfg.CNI.Enabled && rec.CNIRecord != nil {
+		cniRecord = rec.CNIRecord
+		podCfg = rec.toPodSandboxConfig()
+	}
 	e.mu.Lock()
 	delete(e.portOwners, rec.ADBPort)
 	if rec.WebRTCPort > 0 {
@@ -297,6 +361,11 @@ func (e *AndroidEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 	rec.State = androidSandboxRemoved
 	delete(e.pods, req.PodSandboxId)
 	e.mu.Unlock()
+	if cniRecord != nil && podCfg != nil && e.cniManager != nil {
+		if err := e.cniManager.Del(ctx, cniRecord, podCfg); err != nil {
+			log.Printf("[AndroidEngine] RemovePodSandbox warning: sandbox=%s cni del failed: %v", req.PodSandboxId, err)
+		}
+	}
 	log.Printf("[AndroidEngine] sandbox removed: cri_id=%s", req.PodSandboxId)
 	return &runtime.RemovePodSandboxResponse{}, nil
 }
@@ -312,7 +381,14 @@ func (e *AndroidEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSa
 		return nil, status.Errorf(codes.NotFound, "android sandbox %s not found", req.PodSandboxId)
 	}
 	anns := copyStringMap(rec.Annotations)
-	anns["android.dev/adb-url"] = fmt.Sprintf("%s:%d", rec.NodeIP, rec.ADBPort)
+	anns["android.dev/cni-enabled"] = strconv.FormatBool(e.cfg.CNI.Enabled)
+	if rec.PodIP != "" {
+		anns["android.dev/pod-ip"] = rec.PodIP
+	}
+	if rec.NetNSPath != "" {
+		anns["android.dev/cni-netns"] = rec.NetNSPath
+	}
+	anns["android.dev/adb-url"] = fmt.Sprintf("%s:%d", rec.accessIP(), rec.ADBPort)
 	anns["android.dev/adb-port"] = strconv.Itoa(rec.ADBPort)
 	anns["android.dev/cvd-state"] = string(rec.State)
 	anns["android.dev/instance-id"] = rec.InstanceID
@@ -321,7 +397,7 @@ func (e *AndroidEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSa
 	anns["android.dev/launch-log"] = rec.LaunchLogPath
 	if rec.WebRTCPort > 0 {
 		anns["android.dev/webrtc-port"] = strconv.Itoa(rec.WebRTCPort)
-		anns["android.dev/webrtc-url"] = fmt.Sprintf("http://%s:%d", rec.NodeIP, rec.WebRTCPort)
+		anns["android.dev/webrtc-url"] = fmt.Sprintf("http://%s:%d", rec.accessIP(), rec.WebRTCPort)
 	}
 	return &runtime.PodSandboxStatusResponse{Status: &runtime.PodSandboxStatus{
 		Id: rec.CRISandboxID,
@@ -332,7 +408,7 @@ func (e *AndroidEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSa
 		},
 		State:       androidPodState(rec.State),
 		CreatedAt:   rec.CreatedAt.UnixNano(),
-		Network:     &runtime.PodSandboxNetworkStatus{Ip: rec.NodeIP},
+		Network:     &runtime.PodSandboxNetworkStatus{Ip: rec.accessIP()},
 		Labels:      rec.Labels,
 		Annotations: anns,
 	}}, nil
@@ -437,7 +513,7 @@ func (e *AndroidEngine) StartContainer(ctx context.Context, req *runtime.StartCo
 	container.FinishedAt = time.Time{}
 	container.ExitCode = 0
 	e.mu.Unlock()
-	log.Printf("[AndroidEngine] StartContainer: android vm ready sandbox=%s adb=%s:%d", sandboxID, pod.NodeIP, pod.ADBPort)
+	log.Printf("[AndroidEngine] StartContainer: android vm ready sandbox=%s adb=%s:%d cni=%v", sandboxID, pod.accessIP(), pod.ADBPort, e.cfg.CNI.Enabled)
 	return &runtime.StartContainerResponse{}, nil
 }
 
@@ -676,6 +752,106 @@ func (e *AndroidEngine) allocateInstanceNumLocked(requested string, owner string
 	return 0, status.Error(codes.ResourceExhausted, "no android base instance nums available")
 }
 
+func (e *AndroidEngine) artifactsDirForInstance(baseInstanceNum int) string {
+	if baseInstanceNum <= 0 || baseInstanceNum == e.cfg.BaseInstanceNumStart {
+		return e.cfg.ArtifactsDir
+	}
+	return fmt.Sprintf("%s-%d", strings.TrimRight(e.cfg.ArtifactsDir, string(os.PathSeparator)), baseInstanceNum)
+}
+
+func (e *AndroidEngine) ensureArtifactsDir(rec *AndroidSandboxRecord) error {
+	if rec.ArtifactsDir == e.cfg.ArtifactsDir {
+		return nil
+	}
+	launchPath := filepath.Join(rec.ArtifactsDir, "bin", "launch_cvd")
+	cuttlefishDir := filepath.Join(rec.ArtifactsDir, "cuttlefish")
+	if st, err := os.Stat(launchPath); err == nil && st.Mode()&0111 != 0 && dirExists(cuttlefishDir) {
+		if err := os.RemoveAll(filepath.Join(rec.ArtifactsDir, "cuttlefish", "instances")); err != nil {
+			return status.Errorf(codes.Internal, "remove copied android instances dir %s: %v", rec.ArtifactsDir, err)
+		}
+		return nil
+	}
+	if !strings.HasPrefix(rec.ArtifactsDir, strings.TrimRight(e.cfg.ArtifactsDir, string(os.PathSeparator))+"-") {
+		return status.Errorf(codes.Internal, "refuse to recreate unexpected android artifacts dir: %s", rec.ArtifactsDir)
+	}
+	if err := os.RemoveAll(rec.ArtifactsDir); err != nil {
+		return status.Errorf(codes.Internal, "remove incomplete android artifacts dir %s: %v", rec.ArtifactsDir, err)
+	}
+	if err := os.MkdirAll(rec.ArtifactsDir, 0755); err != nil {
+		return status.Errorf(codes.Internal, "create android artifacts parent: %v", err)
+	}
+
+	entries, err := os.ReadDir(e.cfg.ArtifactsDir)
+	if err != nil {
+		return status.Errorf(codes.Internal, "read android artifacts dir %s: %v", e.cfg.ArtifactsDir, err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if skipAndroidArtifactsCopyEntry(name) {
+			continue
+		}
+		src := filepath.Join(e.cfg.ArtifactsDir, name)
+		dst := filepath.Join(rec.ArtifactsDir, name)
+		if name == "cuttlefish" {
+			if err := copyCuttlefishDirWithoutInstances(src, dst); err != nil {
+				return err
+			}
+		} else {
+			if err := copyAndroidArtifactPath(src, dst); err != nil {
+				return err
+			}
+		}
+	}
+	log.Printf("[AndroidEngine] prepared android artifacts copy: sandbox=%s base_instance_num=%d src=%s dst=%s",
+		rec.CRISandboxID, rec.BaseInstanceNum, e.cfg.ArtifactsDir, rec.ArtifactsDir)
+	return nil
+}
+
+func skipAndroidArtifactsCopyEntry(name string) bool {
+	if name == ".cuttlefish_config.json" || strings.HasPrefix(name, "cuttlefish_runtime") {
+		return true
+	}
+	if strings.HasSuffix(name, ".lock") {
+		return true
+	}
+	return false
+}
+
+func dirExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+func copyCuttlefishDirWithoutInstances(src, dst string) error {
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return status.Errorf(codes.Internal, "create android cuttlefish dir %s: %v", dst, err)
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return status.Errorf(codes.Internal, "read android cuttlefish dir %s: %v", src, err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == "instances" {
+			continue
+		}
+		if err := copyAndroidArtifactPath(filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyAndroidArtifactPath(src, dst string) error {
+	copyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(copyCtx, "cp", "-a", "--reflink=auto", src, dst)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return status.Errorf(codes.Internal, "copy android artifact %s to %s: %v output=%s", src, dst, err, string(out))
+	}
+	return nil
+}
+
 func (e *AndroidEngine) startCVD(ctx context.Context, rec *AndroidSandboxRecord) error {
 	if err := os.MkdirAll(rec.WorkDir, 0755); err != nil {
 		return status.Errorf(codes.Internal, "create android work dir: %v", err)
@@ -690,14 +866,27 @@ func (e *AndroidEngine) startCVD(ctx context.Context, rec *AndroidSandboxRecord)
 		fmt.Sprintf("--base_instance_num=%d", rec.BaseInstanceNum),
 		"--gpu_mode=guest_swiftshader",
 		"--extra_kernel_cmdline=arm64.nompam",
-		"--start_webrtc=true",
+		"--start_webrtc=false",
+		"--enable_modem_simulator=false",
+		"--enable_host_bluetooth=false",
 		"--vm_manager=qemu_cli",
 	}
 	if extra := strings.TrimSpace(rec.Annotations[annAndroidLaunchArgs]); extra != "" {
 		args = append(args, strings.Fields(extra)...)
 	}
 	launchPath := filepath.Join(rec.ArtifactsDir, "bin", "launch_cvd")
-	cmd := exec.CommandContext(context.Background(), launchPath, args...)
+	commandCtx := context.Background()
+	cmdArgs := append([]string{launchPath}, args...)
+	if rec.NetNSName != "" {
+		launchCmd := fmt.Sprintf(
+			"cd %s && HOME=%s ./bin/launch_cvd %s; rc=$?; if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; exec sleep infinity",
+			shellQuote(rec.ArtifactsDir),
+			shellQuote(rec.ArtifactsDir),
+			shellQuoteArgs(args),
+		)
+		cmdArgs = []string{"netns", "exec", rec.NetNSName, "/bin/bash", "-lc", launchCmd}
+	}
+	cmd := exec.CommandContext(commandCtx, "ip", cmdArgs...)
 	cmd.Dir = rec.ArtifactsDir
 	cmd.Env = append(os.Environ(), "HOME="+rec.ArtifactsDir)
 	cmd.Stdout = logFile
@@ -730,18 +919,9 @@ func (e *AndroidEngine) startCVD(ctx context.Context, rec *AndroidSandboxRecord)
 
 	waitCtx, cancel := context.WithTimeout(ctx, e.cfg.LaunchTimeout)
 	defer cancel()
-	if err := waitTCPReady(waitCtx, rec.NodeIP, rec.ADBPort, exitCh); err != nil {
+	if err := waitTCPReady(waitCtx, rec.accessIP(), rec.ADBPort, exitCh); err != nil {
 		_ = e.stopCVD(context.Background(), rec)
-		return status.Errorf(codes.DeadlineExceeded, "android ADB %s:%d not ready: %v", rec.NodeIP, rec.ADBPort, err)
-	}
-	select {
-	case err := <-exitCh:
-		_ = e.stopCVD(context.Background(), rec)
-		if err != nil {
-			return status.Errorf(codes.Internal, "launch_cvd exited after ADB became ready: %v", err)
-		}
-		return status.Error(codes.Internal, "launch_cvd exited after ADB became ready")
-	case <-time.After(5 * time.Second):
+		return status.Errorf(codes.Internal, "android adb not ready: %v", err)
 	}
 	return nil
 }
@@ -862,6 +1042,31 @@ func timeToUnixNano(t time.Time) int64 {
 		return 0
 	}
 	return t.UnixNano()
+}
+
+func (r *AndroidSandboxRecord) accessIP() string {
+	if r == nil {
+		return ""
+	}
+	if r.PodIP != "" {
+		return r.PodIP
+	}
+	return r.NodeIP
+}
+
+func (r *AndroidSandboxRecord) toPodSandboxConfig() *runtime.PodSandboxConfig {
+	if r == nil {
+		return nil
+	}
+	return &runtime.PodSandboxConfig{
+		Metadata: &runtime.PodSandboxMetadata{
+			Name:      r.Name,
+			Uid:       r.PodUID,
+			Namespace: r.Namespace,
+		},
+		Labels:      copyStringMap(r.Labels),
+		Annotations: copyStringMap(r.Annotations),
+	}
 }
 
 func annotationOrDefault(anns map[string]string, key, fallback string) string {

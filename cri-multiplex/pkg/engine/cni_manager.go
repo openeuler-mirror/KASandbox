@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"sort"
@@ -21,6 +22,7 @@ type CNIManager struct {
 	binDir   string
 	ifName   string
 	netNSDir string
+	prefix   string
 
 	cniConfig *libcni.CNIConfig
 	netConfig *libcni.NetworkConfigList
@@ -30,6 +32,7 @@ type CNIRecord struct {
 	SandboxID  string
 	Network    string
 	IfName     string
+	NetNSName  string
 	NetNSPath  string
 	PodIP      string
 	Gateway    string
@@ -50,6 +53,9 @@ func NewCNIManager(cfg CNIConfig) (*CNIManager, error) {
 	if cfg.NetNSDir == "" {
 		cfg.NetNSDir = "/var/run/netns"
 	}
+	if cfg.NetNSPrefix == "" {
+		cfg.NetNSPrefix = "e2b-"
+	}
 
 	netConfig, err := loadDefaultNetworkConf(cfg.ConfDir)
 	if err != nil {
@@ -61,6 +67,7 @@ func NewCNIManager(cfg CNIConfig) (*CNIManager, error) {
 		binDir:    cfg.BinDir,
 		ifName:    cfg.IfName,
 		netNSDir:  cfg.NetNSDir,
+		prefix:    cfg.NetNSPrefix,
 		cniConfig: libcni.NewCNIConfig([]string{cfg.BinDir}, nil),
 		netConfig: netConfig,
 	}, nil
@@ -96,7 +103,7 @@ func (m *CNIManager) Add(ctx context.Context, sandboxID string, podCfg *runtime.
 		return nil, fmt.Errorf("pod sandbox metadata is required for cni add")
 	}
 
-	netnsName := "e2b-" + shortID(sandboxID)
+	netnsName := m.prefix + shortID(sandboxID)
 	netnsPath := filepath.Join(m.netNSDir, netnsName)
 
 	goruntime.LockOSThread()
@@ -121,6 +128,11 @@ func (m *CNIManager) Add(ctx context.Context, sandboxID string, podCfg *runtime.
 	_ = hostNS.Close()
 	goruntime.UnlockOSThread()
 	defer netNS.Close()
+
+	if err := ensureNetNSLoopbackUp(netnsName); err != nil {
+		_ = netns.DeleteNamed(netnsName)
+		return nil, fmt.Errorf("enable loopback for %s: %w", netnsPath, err)
+	}
 
 	rt := m.runtimeConf(sandboxID, netnsPath, podCfg)
 	res, err := m.cniConfig.AddNetworkList(ctx, m.netConfig, rt)
@@ -149,6 +161,7 @@ func (m *CNIManager) Add(ctx context.Context, sandboxID string, podCfg *runtime.
 		SandboxID:  sandboxID,
 		Network:    m.netConfig.Name,
 		IfName:     m.ifName,
+		NetNSName:  netnsName,
 		NetNSPath:  netnsPath,
 		PodIP:      podIP,
 		Gateway:    gateway,
@@ -218,4 +231,12 @@ func shortID(id string) string {
 		return id
 	}
 	return id[:12]
+}
+
+func ensureNetNSLoopbackUp(netnsName string) error {
+	cmd := exec.Command("ip", "netns", "exec", netnsName, "ip", "link", "set", "lo", "up")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

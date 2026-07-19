@@ -23,6 +23,7 @@ ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}"
 ANDROID_ADB_PORT="${ANDROID_ADB_PORT:-6520}"
 ANDROID_BASE_INSTANCE_NUM="${ANDROID_BASE_INSTANCE_NUM:-1}"
 ANDROID_WAIT_TIMEOUT="${ANDROID_WAIT_TIMEOUT:-240s}"
+ANDROID_ADB_WAIT_TIMEOUT="${ANDROID_ADB_WAIT_TIMEOUT:-30}"
 ANDROID_CLEANUP_EXISTING="${ANDROID_CLEANUP_EXISTING:-1}"
 
 cleanup() {
@@ -61,13 +62,14 @@ log_pass "/dev/net/tun 存在"
 
 log_step "1.2 启动 cri-multiplex CNI+Android runtime 模式"
 
-if ! ANDROID_ENABLED=1 E2B_CNI_ENABLED=1 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR}" ANDROID_ADB_PORT_START="${ANDROID_ADB_PORT}" E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" >&2; then
+if ! ANDROID_ENABLED=1 E2B_CNI_ENABLED=1 ANDROID_CNI_ENABLED=1 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR}" ANDROID_ADB_PORT_START="${ANDROID_ADB_PORT}" E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" >&2; then
     log_fail "启动 cri-multiplex CNI+Android runtime 模式失败"
     exit 1
 fi
 log_pass "cri-multiplex CNI+Android runtime 模式已启动"
 
 require_cri_multiplex_cni_enabled || exit 1
+require_cri_multiplex_android_cni_enabled || exit 1
 
 if ! cri_multiplex_cmdline | grep -q -- "-android-enabled"; then
     log_fail "cri-multiplex 未启用 -android-enabled"
@@ -155,6 +157,13 @@ if [ -z "${POD_UID}" ]; then
     exit 1
 fi
 log_pass "Android Pod UID: ${POD_UID}"
+if [ -z "${POD_IP}" ]; then
+    log_fail "无法读取 Android PodIP"
+    exit 1
+fi
+log_pass "Android PodIP: ${POD_IP}"
+NETNS_NAME="android-${POD_UID:0:12}"
+NETNS_PATH="/var/run/netns/${NETNS_NAME}"
 
 log_step "4.1 验证 CRI PodSandboxStatus Android annotations"
 
@@ -165,16 +174,27 @@ if grep -q "not found\|NotFound\|level=fatal" <<< "${INSPECT_OUTPUT}"; then
     exit 1
 fi
 
-if grep -q '"android.dev/adb-url"' <<< "${INSPECT_OUTPUT}" &&
+if grep -q "\"ip\": \"${POD_IP}\"" <<< "${INSPECT_OUTPUT}" &&
+   grep -q '"android.dev/cni-enabled": "true"' <<< "${INSPECT_OUTPUT}" &&
+   grep -q "\"android.dev/pod-ip\": \"${POD_IP}\"" <<< "${INSPECT_OUTPUT}" &&
+   grep -q "\"android.dev/cni-netns\": \"${NETNS_PATH}\"" <<< "${INSPECT_OUTPUT}" &&
+   grep -q "\"android.dev/adb-url\": \"${POD_IP}:${ANDROID_ADB_PORT}\"" <<< "${INSPECT_OUTPUT}" &&
    grep -q "\"android.dev/adb-port\": \"${ANDROID_ADB_PORT}\"" <<< "${INSPECT_OUTPUT}"; then
-    log_pass "CRI status 返回 Android ADB annotations"
+    log_pass "CRI status 返回 Android CNI/ADB annotations"
 else
-    log_fail "CRI status 缺少 Android ADB annotations"
+    log_fail "CRI status 缺少 Android CNI/ADB annotations"
     echo "${INSPECT_OUTPUT}" >&2
     exit 1
 fi
 
-log_step "4.2 验证 ADB 端口可连接"
+log_step "4.2 验证 Android CNI netns 与 ADB 端口"
+
+if [ -e "${NETNS_PATH}" ]; then
+    log_pass "Android CNI netns 存在: ${NETNS_PATH}"
+else
+    log_fail "Android CNI netns 不存在: ${NETNS_PATH}"
+    exit 1
+fi
 
 ADB_URL=$(grep -oP '"android.dev/adb-url":\s*"\K[^"]+' <<< "${INSPECT_OUTPUT}" | head -1 || true)
 if [ -z "${ADB_URL}" ]; then
@@ -183,14 +203,15 @@ if [ -z "${ADB_URL}" ]; then
 fi
 ADB_HOST="${ADB_URL%:*}"
 ADB_PORT="${ADB_URL##*:}"
-
-if timeout 5 bash -c "cat < /dev/null > /dev/tcp/${ADB_HOST}/${ADB_PORT}" 2>/dev/null; then
-    log_pass "ADB 端口可连接: ${ADB_URL}"
-else
-    log_fail "ADB 端口不可连接: ${ADB_URL}"
-    tail -n 120 /tmp/cri-multiplex.log >&2 || true
+if [ "${ADB_HOST}" != "${POD_IP}" ] || [ "${ADB_PORT}" != "${ANDROID_ADB_PORT}" ]; then
+    log_fail "ADB URL 不匹配 PodIP/端口: ${ADB_URL}"
     exit 1
 fi
+
+wait_tcp_connect "${ADB_HOST}" "${ADB_PORT}" "${ANDROID_ADB_WAIT_TIMEOUT}" "ADB 端口 ${ADB_URL}" || {
+    tail -n 120 /tmp/cri-multiplex.log >&2 || true
+    exit 1
+}
 
 if command -v adb >/dev/null 2>&1; then
     log_info "执行 adb connect ${ADB_URL}"

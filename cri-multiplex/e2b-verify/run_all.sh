@@ -63,6 +63,7 @@ SCRIPTS=(
     "14|E2B CNI Service/DNS 行为验证|${SCRIPT_DIR}/14_cni_service_dns.sh"
     "15|E2B CNI NetworkPolicy ingress 验证|${SCRIPT_DIR}/15_cni_networkpolicy_ingress.sh"
     "16|E2B CNI NetworkPolicy egress 验证|${SCRIPT_DIR}/16_cni_networkpolicy_egress.sh"
+    "17|Android CNI PodIP/Netns 访问验证|${SCRIPT_DIR}/17_android_cni_podip.sh"
 )
 
 #==================== 执行 ====================#
@@ -119,7 +120,7 @@ for entry in "${SCRIPTS[@]}"; do
                     continue
                 fi
                 ;;
-            12|13)
+            12|13|17)
                 log_info "Android 用例会自行切换 cri-multiplex 到 CNI+Android runtime 模式 ..."
                 ;;
         esac
@@ -138,7 +139,7 @@ for entry in "${SCRIPTS[@]}"; do
                 TOTAL_FAIL=$((TOTAL_FAIL+1))
                 continue
             fi
-        elif [ "${num}" = "12" ] || [ "${num}" = "13" ]; then
+        elif [ "${num}" = "12" ] || [ "${num}" = "13" ] || [ "${num}" = "17" ]; then
             log_info "Android 用例会自行切换 cri-multiplex 到 CNI+Android runtime 模式 ..."
         fi
     fi

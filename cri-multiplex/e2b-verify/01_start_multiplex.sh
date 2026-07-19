@@ -21,9 +21,15 @@ ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}"
 ANDROID_NODE_IP="${ANDROID_NODE_IP:-}"
 ANDROID_ADB_PORT_START="${ANDROID_ADB_PORT_START:-6520}"
 ANDROID_BASE_INSTANCE_NUM_START="${ANDROID_BASE_INSTANCE_NUM_START:-1}"
-ANDROID_LAUNCH_TIMEOUT="${ANDROID_LAUNCH_TIMEOUT:-180s}"
+ANDROID_LAUNCH_TIMEOUT="${ANDROID_LAUNCH_TIMEOUT:-30s}"
 ANDROID_STATE_DIR="${ANDROID_STATE_DIR:-/var/lib/cri-multiplex/android}"
 ANDROID_CVD_GROUP="${ANDROID_CVD_GROUP:-cvdnetwork}"
+ANDROID_CNI_ENABLED="${ANDROID_CNI_ENABLED:-1}"
+ANDROID_CNI_CONF_DIR="${ANDROID_CNI_CONF_DIR:-/etc/cni/net.d}"
+ANDROID_CNI_BIN_DIR="${ANDROID_CNI_BIN_DIR:-/opt/cni/bin}"
+ANDROID_CNI_IFNAME="${ANDROID_CNI_IFNAME:-eth0}"
+ANDROID_CNI_NETNS_DIR="${ANDROID_CNI_NETNS_DIR:-/var/run/netns}"
+ANDROID_CNI_NETNS_PREFIX="${ANDROID_CNI_NETNS_PREFIX:-android-}"
 if [ "${E2B_CNI_ENABLED}" != "0" ] && [ "${E2B_CNI_ENABLED}" != "1" ]; then
     log_fail "E2B_CNI_ENABLED 必须是 0 或 1，当前值: ${E2B_CNI_ENABLED}"
     exit 1
@@ -33,8 +39,12 @@ if [ "${E2B_FORCE_RESTART}" != "0" ] && [ "${E2B_FORCE_RESTART}" != "1" ]; then
 	exit 1
 fi
 if [ "${ANDROID_ENABLED}" != "0" ] && [ "${ANDROID_ENABLED}" != "1" ]; then
-	log_fail "ANDROID_ENABLED 必须是 0 或 1，当前值: ${ANDROID_ENABLED}"
-	exit 1
+    log_fail "ANDROID_ENABLED 必须是 0 或 1，当前值: ${ANDROID_ENABLED}"
+    exit 1
+fi
+if [ "${ANDROID_CNI_ENABLED}" != "0" ] && [ "${ANDROID_CNI_ENABLED}" != "1" ]; then
+    log_fail "ANDROID_CNI_ENABLED 必须是 0 或 1，当前值: ${ANDROID_CNI_ENABLED}"
+    exit 1
 fi
 MODE_DESC="非 CNI"
 if [ "${E2B_CNI_ENABLED}" = "1" ]; then
@@ -123,6 +133,16 @@ if [ "${ANDROID_ENABLED}" = "1" ]; then
         -android-state-dir "${ANDROID_STATE_DIR}"
         -android-cvd-group "${ANDROID_CVD_GROUP}"
     )
+    if [ "${ANDROID_CNI_ENABLED}" = "1" ]; then
+        args+=(
+            -android-cni-enabled
+            -android-cni-conf-dir "${ANDROID_CNI_CONF_DIR}"
+            -android-cni-bin-dir "${ANDROID_CNI_BIN_DIR}"
+            -android-cni-ifname "${ANDROID_CNI_IFNAME}"
+            -android-cni-netns-dir "${ANDROID_CNI_NETNS_DIR}"
+            -android-cni-netns-prefix "${ANDROID_CNI_NETNS_PREFIX}"
+        )
+    fi
     if [ -n "${ANDROID_NODE_IP}" ]; then
         args+=(-android-node-ip "${ANDROID_NODE_IP}")
     fi
