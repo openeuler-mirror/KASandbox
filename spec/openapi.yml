@@ -614,6 +614,142 @@ components:
           items:
             $ref: "#/components/schemas/SandboxVolumeMount"
 
+    NewSandboxTransform:
+      description: Request body for the sandbox-transform endpoint.
+      required:
+        - templateName
+      properties:
+        templateName:
+          type: string
+          description: Identifier (ID or alias) of the required template.
+
+    SandboxCreateRequest:
+      description: Mirrors the orchestrator gRPC SandboxCreateRequest. Returned by the transform endpoint.
+      required:
+        - sandbox
+        - startTime
+        - endTime
+      properties:
+        sandbox:
+          $ref: "#/components/schemas/SandboxConfigGrpc"
+        startTime:
+          type: string
+          format: date-time
+          description: Sandbox start time (RFC 3339)
+        endTime:
+          type: string
+          format: date-time
+          description: Sandbox end time (RFC 3339)
+
+    SandboxConfigGrpc:
+      description: Mirrors the orchestrator gRPC SandboxConfig.
+      properties:
+        alias:
+          type: string
+        allowInternetAccess:
+          type: boolean
+        autoPause:
+          type: boolean
+        autoResume:
+          $ref: "#/components/schemas/SandboxAutoResumeConfigGrpc"
+        baseTemplateId:
+          type: string
+        buildId:
+          type: string
+        envdAccessToken:
+          type: string
+        envdVersion:
+          type: string
+        envVars:
+          $ref: "#/components/schemas/EnvVars"
+        executionId:
+          type: string
+        firecrackerVersion:
+          type: string
+        hugePages:
+          type: boolean
+        kernelVersion:
+          type: string
+        maxSandboxLength:
+          type: integer
+          format: int64
+          description: Maximum length of the sandbox in hours
+        metadata:
+          $ref: "#/components/schemas/SandboxMetadata"
+        network:
+          $ref: "#/components/schemas/SandboxNetworkConfigGrpc"
+        ramMb:
+          type: integer
+          format: int64
+        sandboxId:
+          type: string
+        snapshot:
+          type: boolean
+        teamId:
+          type: string
+        templateId:
+          type: string
+        totalDiskSizeMb:
+          type: integer
+          format: int64
+        vcpu:
+          type: integer
+          format: int64
+        volumeMounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/SandboxVolumeMountGrpc"
+
+    SandboxAutoResumeConfigGrpc:
+      description: Mirrors the orchestrator gRPC SandboxAutoResumeConfig.
+      properties:
+        policy:
+          type: string
+
+    SandboxNetworkConfigGrpc:
+      description: Mirrors the orchestrator gRPC SandboxNetworkConfig.
+      properties:
+        egress:
+          $ref: "#/components/schemas/SandboxNetworkEgressConfigGrpc"
+        ingress:
+          $ref: "#/components/schemas/SandboxNetworkIngressConfigGrpc"
+
+    SandboxNetworkEgressConfigGrpc:
+      description: Mirrors the orchestrator gRPC SandboxNetworkEgressConfig.
+      properties:
+        allowedCidrs:
+          type: array
+          items:
+            type: string
+        allowedDomains:
+          type: array
+          items:
+            type: string
+        deniedCidrs:
+          type: array
+          items:
+            type: string
+
+    SandboxNetworkIngressConfigGrpc:
+      description: Mirrors the orchestrator gRPC SandboxNetworkIngressConfig.
+      properties:
+        maskRequestHost:
+          type: string
+          nullable: true
+        trafficAccessToken:
+          type: string
+          nullable: true
+
+    SandboxVolumeMountGrpc:
+      description: Mirrors the orchestrator gRPC SandboxVolumeMount.
+      properties:
+        mountPath:
+          type: string
+        readOnly:
+          type: boolean
+        volumeId:
+          type: string
+
     ResumedSandbox:
       properties:
         timeout:
@@ -1918,6 +2054,35 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Sandbox"
+        "401":
+          $ref: "#/components/responses/401"
+        "400":
+          $ref: "#/components/responses/400"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /sandboxes/transform:
+    post:
+      description: Transform a sandbox-create request into orchestrator gRPC parameters.
+      tags: [sandboxes]
+      security:
+        - ApiKeyAuth: []
+        - Supabase1TokenAuth: []
+          Supabase2TeamAuth: []
+        - AdminTokenAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewSandboxTransform"
+      responses:
+        "200":
+          description: Successfully transformed request into orchestrator gRPC parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SandboxCreateRequest"
         "401":
           $ref: "#/components/responses/401"
         "400":
