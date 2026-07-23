@@ -16,6 +16,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export GOCACHE="${GOCACHE:-/tmp/cri-multiplex-gocache}"
 export GOPATH="${GOPATH:-/tmp/cri-multiplex-gopath}"
+export GOWORK=off
 
 usage() {
     sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
