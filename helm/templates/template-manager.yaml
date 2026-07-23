@@ -43,6 +43,9 @@ spec:
           mountPath: /fc-vm
         - name: tmp-templates
           mountPath: /tmp/templates
+        - name: host-var-run-netns
+          mountPath: /var/run/netns
+          mountPropagation: HostToContainer
         securityContext:
           privileged: true
         image: {{ .Values.registry }}/orchestrator
@@ -147,6 +150,10 @@ spec:
       - name: tmp-templates
         hostPath:
           path: /tmp
+          type: DirectoryOrCreate
+      - name: host-var-run-netns
+        hostPath:
+          path: /var/run/netns
           type: DirectoryOrCreate
 ---
 apiVersion: v1

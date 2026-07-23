@@ -21,14 +21,18 @@ fi
 # Helper function to check if a package is installed
 is_package_installed() {
     local pkg="$1"
-    if [[ "$OS_ID" == "ubuntu" || "$OS_ID" == "debian" ]]; then
-        dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"
-    elif [[ "$OS_ID" == "openEuler" || "$OS_ID" == "rhel" || "$OS_ID" == "centos" || "$OS_ID" == "fedora" ]]; then
-        rpm -q "$pkg" &>/dev/null
-    else
-        echo "Unsupported OS: $OS_ID"
-        return 1
-    fi
+    case "$OS_ID" in
+        ubuntu|debian)
+            dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"
+            ;;
+        openEuler|rhel|centos|fedora)
+            rpm -q "$pkg" >/dev/null 2>&1
+            ;;
+        *)
+            echo "Unsupported OS: $OS_ID"
+            return 1
+            ;;
+    esac
 }
 
 # Helper: install missing packages
@@ -38,15 +42,18 @@ install_packages() {
         return 0
     fi
 
-    if [[ "$OS_ID" == "ubuntu" || "$OS_ID" == "debian" ]]; then
-        echo "Updating apt cache..."
-        apt-get -q update
-        DEBIAN_FRONTEND=noninteractive DEBCONF_NOWARNINGS=yes \
-            apt-get -qq -o=Dpkg::Use-Pty=0 install -y --no-install-recommends $missing
-    elif [[ "$OS_ID" == "openEuler" || "$OS_ID" == "rhel" || "$OS_ID" == "centos" || "$OS_ID" == "fedora" ]]; then
-        echo "Installing via dnf: $missing"
-        dnf install --nogpgcheck -y $missing
-    fi
+    case "$OS_ID" in
+        ubuntu|debian)
+            echo "Updating apt cache..."
+            apt-get -q update
+            DEBIAN_FRONTEND=noninteractive DEBCONF_NOWARNINGS=yes \
+                apt-get -qq -o=Dpkg::Use-Pty=0 install -y --no-install-recommends $missing
+            ;;
+        openEuler|rhel|centos|fedora)
+            echo "Installing via dnf: $missing"
+            dnf install --nogpgcheck -y $missing
+            ;;
+    esac
 }
 
 # Install required packages if not already installed
