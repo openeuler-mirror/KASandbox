@@ -25,6 +25,8 @@ const (
 	maxSlotsReady                 = 64
 	waitOnNBDError                = 50 * time.Millisecond
 	devicePoolCloseReleaseTimeout = 10 * time.Minute
+	releaseRetryInterval          = 100 * time.Millisecond
+	forceDisconnectEveryAttempts  = 5
 )
 
 var (
@@ -174,30 +176,28 @@ func (d *DevicePool) Populate(ctx context.Context) {
 // https://superuser.com/questions/919895/how-to-get-a-list-of-connected-nbd-devices-on-ubuntu
 // https://github.com/NetworkBlockDevice/nbd/blob/17043b068f4323078637314258158aebbfff0a6c/nbd-client.c#L254
 func (d *DevicePool) isDeviceFree(slot DeviceSlot) (bool, error) {
-	// Continue only if the file doesn't exist.
+	return IsDeviceFree(slot)
+}
+
+// IsDeviceFree reports whether the kernel considers the NBD slot unused.
+func IsDeviceFree(slot DeviceSlot) (bool, error) {
 	pidFile := fmt.Sprintf("/sys/block/nbd%d/pid", slot)
 
 	_, err := os.Stat(pidFile)
 	if err == nil {
-		// File is present, therefore the device is in use.
 		return false, nil
 	}
-
 	if !os.IsNotExist(err) {
-		// Some other error occurred.
 		return false, fmt.Errorf("failed to stat pid file: %w", err)
 	}
 
 	sizeFile := fmt.Sprintf("/sys/block/nbd%d/size", slot)
-
 	data, err := os.ReadFile(sizeFile)
 	if err != nil {
 		return false, fmt.Errorf("failed to read size file: %w", err)
 	}
 
-	sizeStr := strings.TrimSpace(string(data))
-
-	size, err := strconv.ParseUint(sizeStr, 10, 64)
+	size, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
 	if err != nil {
 		return false, fmt.Errorf("failed to parse size: %w", err)
 	}
@@ -325,11 +325,19 @@ func (d *DevicePool) ReleaseDevice(ctx context.Context, idx DeviceSlot, opts ...
 			return err
 		}
 
-		if attempt%100 == 0 {
-			logger.L().Error(ctx, "error releasing device", zap.Int("attempt", attempt), zap.Error(err))
+		if opt.forceDisconnect && attempt%forceDisconnectEveryAttempts == 1 {
+			_ = ForceDisconnect(ctx, idx)
 		}
 
-		time.Sleep(500 * time.Millisecond)
+		if attempt%100 == 0 {
+			logger.L().Error(ctx, "error releasing device",
+				zap.Uint32("device_index", idx),
+				zap.Int("attempt", attempt),
+				zap.Error(err),
+			)
+		}
+
+		time.Sleep(releaseRetryInterval)
 	}
 }
 
@@ -345,19 +353,21 @@ func (d *DevicePool) Close(ctx context.Context) error {
 	})
 
 	d.mu.Lock()
-
 	var slotsToRelease []DeviceSlot
 	for slotIdx, e := d.usedSlots.NextSet(0); e; slotIdx, e = d.usedSlots.NextSet(slotIdx + 1) {
 		slotsToRelease = append(slotsToRelease, DeviceSlot(slotIdx))
 	}
-
 	d.mu.Unlock()
 
 	var errs error
 	for _, slot := range slotsToRelease {
+		if free, err := IsDeviceFree(slot); err == nil && !free {
+			_ = ForceDisconnect(ctx, slot)
+		}
 		err := d.ReleaseDevice(ctx, slot,
 			WithInfiniteRetry(),
 			WithTimeout(devicePoolCloseReleaseTimeout),
+			WithForceDisconnect(),
 		)
 		if err != nil {
 			errs = errors.Join(errs, fmt.Errorf("failed to release device %d: %w", slot, err))
@@ -367,9 +377,24 @@ func (d *DevicePool) Close(ctx context.Context) error {
 	return errs
 }
 
+// ReclaimOrphanedDevices force-disconnects NBD slots left connected by a
+// previous crash/SIGKILL. Safe to call at orchestrator startup.
+func (d *DevicePool) ReclaimOrphanedDevices(ctx context.Context) {
+	for slot := uint(0); slot < d.usedSlots.Len(); slot++ {
+		idx := DeviceSlot(slot)
+		free, err := IsDeviceFree(idx)
+		if err != nil || free {
+			continue
+		}
+		logger.L().Warn(ctx, "reclaiming orphaned nbd device", zap.Uint32("device_index", idx))
+		_ = ForceDisconnect(ctx, idx)
+	}
+}
+
 type releaseOptions struct {
-	timeout       time.Duration
-	infiniteRetry bool
+	timeout         time.Duration
+	infiniteRetry   bool
+	forceDisconnect bool
 }
 
 type ReleaseOption func(*releaseOptions)
@@ -383,5 +408,11 @@ func WithTimeout(timeout time.Duration) ReleaseOption {
 func WithInfiniteRetry() ReleaseOption {
 	return func(opts *releaseOptions) {
 		opts.infiniteRetry = true
+	}
+}
+
+func WithForceDisconnect() ReleaseOption {
+	return func(opts *releaseOptions) {
+		opts.forceDisconnect = true
 	}
 }
