@@ -16,6 +16,7 @@ log_section "01 — 启动 cri-multiplex"
 
 E2B_CNI_ENABLED="${E2B_CNI_ENABLED:-1}"
 E2B_FORCE_RESTART="${E2B_FORCE_RESTART:-0}"
+STATE_DIR="${STATE_DIR:-/var/lib/cri-multiplex/state}"
 ANDROID_ENABLED="${ANDROID_ENABLED:-0}"
 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}"
 ANDROID_NODE_IP="${ANDROID_NODE_IP:-}"
@@ -113,6 +114,7 @@ args=(
     -e2b-backend grpc
     -orchestrator-address "${ORCHESTRATOR_ADDRESS}"
     -orchestrator-proxy-address "${ORCHESTRATOR_PROXY_ADDRESS}"
+    -state-dir "${STATE_DIR}"
 )
 if [ "${E2B_CNI_ENABLED}" = "1" ]; then
     args+=(

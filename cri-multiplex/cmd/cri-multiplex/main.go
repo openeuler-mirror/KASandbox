@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net"
@@ -20,7 +21,12 @@ const (
 	defaultOrchestratorAddress   = "localhost:5008"
 	defaultOrchestratorProxyAddr = "localhost:5007"
 	defaultE2BBackend            = "grpc"
+	defaultStateDir              = "/var/lib/cri-multiplex/state"
 )
+
+type stateRestorer interface {
+	RestoreState(context.Context) error
+}
 
 // autoNodeIP 返回本机第一个非 lo 的 IPv4 地址，用于自动填充 --node-ip
 func autoNodeIP() string {
@@ -75,6 +81,7 @@ func main() {
 	e2bAPIURL := flag.String("e2b-api-url", "", "E2B API base URL (for rest backend)")
 	e2bAPIKey := flag.String("e2b-api-key", "", "E2B API key (for rest backend)")
 	nodeIP := flag.String("node-ip", "", "Node IP for host network mode (auto-detected if empty)")
+	stateDir := flag.String("state-dir", defaultStateDir, "cri-multiplex persistent state directory")
 	e2bCNIEnabled := flag.Bool("e2b-cni-enabled", false, "Enable CNI networking for E2B pod sandboxes")
 	cniConfDir := flag.String("cni-conf-dir", "/etc/cni/net.d", "CNI configuration directory")
 	cniBinDir := flag.String("cni-bin-dir", "/opt/cni/bin", "CNI plugin binary directory")
@@ -97,10 +104,15 @@ func main() {
 	androidCNINetNSPrefix := flag.String("android-cni-netns-prefix", "android-", "Android CNI netns name prefix")
 	flag.Parse()
 
+	stateStore, err := engine.NewJSONStateStore(*stateDir)
+	if err != nil {
+		log.Fatalf("initialize state store: %v", err)
+	}
+
 	containerEng := engine.NewContainerEngine(*containerdSocket)
 	defer containerEng.Close()
 
-	cfg := &engine.E2BConfig{}
+	cfg := &engine.E2BConfig{StateStore: stateStore}
 	switch *e2bBackend {
 	case "rest":
 		cfg.Backend = engine.BackendREST
@@ -156,10 +168,25 @@ func main() {
 			NetNSDir:    *androidCNINetNSDir,
 			NetNSPrefix: *androidCNINetNSPrefix,
 		},
+		StateStore: stateStore,
 	})
 	defer androidEng.Close()
 
-	mux := server.NewMuxServer(containerEng, e2bEng, androidEng)
+	restoreCtx, cancelRestore := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelRestore()
+	if restorer, ok := e2bEng.(stateRestorer); ok {
+		if err := restorer.RestoreState(restoreCtx); err != nil {
+			log.Fatalf("restore e2b state: %v", err)
+		}
+	}
+	if err := androidEng.RestoreState(restoreCtx); err != nil {
+		log.Fatalf("restore android state: %v", err)
+	}
+
+	mux := server.NewMuxServer(containerEng, e2bEng, androidEng, stateStore)
+	if err := mux.RestoreState(); err != nil {
+		log.Fatalf("restore mux state: %v", err)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -169,8 +196,8 @@ func main() {
 		mux.Stop()
 	}()
 
-	log.Printf("starting cri-multiplex on %s (containerd: %s, e2b backend: %s, node-ip: %s, proxy: %s, android-enabled: %v, android-cni-enabled: %v, android-node-ip: %s)",
-		*socketPath, *containerdSocket, *e2bBackend, cfg.NodeIP, cfg.OrchestratorProxyAddr, *androidEnabled, *androidCNIEnabled, *androidNodeIP)
+	log.Printf("starting cri-multiplex on %s (containerd: %s, e2b backend: %s, node-ip: %s, proxy: %s, state-dir: %s, android-enabled: %v, android-cni-enabled: %v, android-node-ip: %s)",
+		*socketPath, *containerdSocket, *e2bBackend, cfg.NodeIP, cfg.OrchestratorProxyAddr, *stateDir, *androidEnabled, *androidCNIEnabled, *androidNodeIP)
 	if err := mux.Start(*socketPath); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}

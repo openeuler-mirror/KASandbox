@@ -22,6 +22,7 @@ type MuxServer struct {
 	containerEngine engine.RuntimeEngine
 	e2bEngine       engine.RuntimeEngine
 	androidEngine   engine.RuntimeEngine
+	stateStore      engine.StateStore
 
 	podRoutes       sync.Map // podSandboxID -> engine.EngineType
 	containerRoutes sync.Map // containerID -> engine.EngineType
@@ -29,11 +30,90 @@ type MuxServer struct {
 	grpcServer *grpc.Server
 }
 
-func NewMuxServer(containerEngine, e2bEngine, androidEngine engine.RuntimeEngine) *MuxServer {
+func NewMuxServer(containerEngine, e2bEngine, androidEngine engine.RuntimeEngine, stores ...engine.StateStore) *MuxServer {
+	var store engine.StateStore
+	if len(stores) > 0 {
+		store = stores[0]
+	}
 	return &MuxServer{
 		containerEngine: containerEngine,
 		e2bEngine:       e2bEngine,
 		androidEngine:   androidEngine,
+		stateStore:      store,
+	}
+}
+
+func (s *MuxServer) RestoreState() error {
+	if s == nil || s.stateStore == nil {
+		return nil
+	}
+	routes, err := s.stateStore.LoadRoutes()
+	if err != nil {
+		return fmt.Errorf("load routes: %w", err)
+	}
+	for _, route := range routes {
+		if route.ID == "" {
+			continue
+		}
+		switch route.Kind {
+		case "pod":
+			s.podRoutes.Store(route.ID, route.Engine)
+		case "container":
+			s.containerRoutes.Store(route.ID, route.Engine)
+		default:
+			log.Printf("[MuxServer] skip unknown persisted route kind=%q id=%s engine=%s", route.Kind, route.ID, route.Engine)
+		}
+	}
+	e2bPods, err := s.stateStore.LoadE2BPods()
+	if err != nil {
+		return fmt.Errorf("load e2b pod routes: %w", err)
+	}
+	for _, pod := range e2bPods {
+		if pod.SandboxID == "" {
+			continue
+		}
+		s.podRoutes.Store(pod.SandboxID, engine.EngineTypeE2B)
+		if pod.ContainerName != "" {
+			s.containerRoutes.Store(pod.SandboxID+"-c", engine.EngineTypeE2B)
+		}
+	}
+	androidPods, err := s.stateStore.LoadAndroidPods()
+	if err != nil {
+		return fmt.Errorf("load android pod routes: %w", err)
+	}
+	for _, pod := range androidPods {
+		if pod.SandboxID == "" {
+			continue
+		}
+		s.podRoutes.Store(pod.SandboxID, engine.EngineTypeAndroid)
+		if pod.ContainerID != "" {
+			s.containerRoutes.Store(pod.ContainerID, engine.EngineTypeAndroid)
+		}
+	}
+	log.Printf("[MuxServer] restored %d route records, derived %d e2b pod routes and %d android pod routes",
+		len(routes), len(e2bPods), len(androidPods))
+	return nil
+}
+
+func (s *MuxServer) saveRoute(kind, id string, engineType engine.EngineType) {
+	if s == nil || s.stateStore == nil || id == "" {
+		return
+	}
+	if err := s.stateStore.SaveRoute(engine.RouteRecord{
+		Kind:   kind,
+		ID:     id,
+		Engine: engineType,
+	}); err != nil {
+		log.Printf("[MuxServer] WARNING: persist route failed kind=%s id=%s engine=%s: %v", kind, id, engineType, err)
+	}
+}
+
+func (s *MuxServer) deleteRoute(kind, id string) {
+	if s == nil || s.stateStore == nil || id == "" {
+		return
+	}
+	if err := s.stateStore.DeleteRoute(kind, id); err != nil {
+		log.Printf("[MuxServer] WARNING: delete route failed kind=%s id=%s: %v", kind, id, err)
 	}
 }
 
@@ -133,6 +213,7 @@ func (s *MuxServer) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandbo
 	}
 
 	s.podRoutes.Store(resp.PodSandboxId, eng.Type())
+	s.saveRoute("pod", resp.PodSandboxId, eng.Type())
 	log.Printf("[MuxServer] registered pod %s -> %s", resp.PodSandboxId, eng.Type())
 	return resp, nil
 }
@@ -149,6 +230,7 @@ func (s *MuxServer) CreateContainer(ctx context.Context, req *runtime.CreateCont
 	}
 
 	s.containerRoutes.Store(resp.ContainerId, eng.Type())
+	s.saveRoute("container", resp.ContainerId, eng.Type())
 	log.Printf("[MuxServer] registered container %s -> %s", resp.ContainerId, eng.Type())
 	return resp, nil
 }
@@ -178,6 +260,7 @@ func (s *MuxServer) RemoveContainer(ctx context.Context, req *runtime.RemoveCont
 	resp, err := eng.RemoveContainer(ctx, req)
 	if err == nil {
 		s.containerRoutes.Delete(req.ContainerId)
+		s.deleteRoute("container", req.ContainerId)
 	}
 	return resp, err
 }
@@ -207,6 +290,10 @@ func (s *MuxServer) RemovePodSandbox(ctx context.Context, req *runtime.RemovePod
 	resp, err := eng.RemovePodSandbox(ctx, req)
 	if err == nil {
 		s.podRoutes.Delete(req.PodSandboxId)
+		s.deleteRoute("pod", req.PodSandboxId)
+		defaultContainerID := req.PodSandboxId + "-c"
+		s.containerRoutes.Delete(defaultContainerID)
+		s.deleteRoute("container", defaultContainerID)
 	}
 	return resp, err
 }

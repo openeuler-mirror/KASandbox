@@ -111,6 +111,17 @@ func (m *HostPortManager) ReleasePorts(sandboxID string, ports []int) {
 	}
 }
 
+func (m *HostPortManager) RestorePorts(sandboxID string, mappings []PortMapping) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, mapping := range mappings {
+		if mapping.HostPort <= 0 || mapping.SandboxPort <= 0 {
+			continue
+		}
+		m.allocated[sandboxID+"-"+strconv.Itoa(mapping.SandboxPort)] = mapping.HostPort
+	}
+}
+
 func SetupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
 	tables, err := iptables.New()
 	if err != nil {
@@ -118,44 +129,65 @@ func SetupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandbox
 	}
 
 	// PREROUTING
-	_ = tables.Append("nat", "PREROUTING",
+	appendRuleIfMissing := func(table, chain string, rulespec ...string) error {
+		exists, err := tables.Exists(table, chain, rulespec...)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
+		return tables.Append(table, chain, rulespec...)
+	}
+
+	if err := appendRuleIfMissing("nat", "PREROUTING",
 		"-p", "tcp",
 		"-d", nodeIP,
 		"--dport", fmt.Sprintf("%d", hostPort),
 		"-j", "DNAT",
 		"--to-destination", fmt.Sprintf("%s:%d", sandboxIP, sandboxPort),
-	)
+	); err != nil {
+		return fmt.Errorf("append nat PREROUTING rule: %w", err)
+	}
 
 	// OUTPUT（宿主机本地访问）
-	_ = tables.Append("nat", "OUTPUT",
+	if err := appendRuleIfMissing("nat", "OUTPUT",
 		"-p", "tcp",
 		"-d", nodeIP,
 		"--dport", fmt.Sprintf("%d", hostPort),
 		"-j", "DNAT",
 		"--to-destination", fmt.Sprintf("%s:%d", sandboxIP, sandboxPort),
-	)
+	); err != nil {
+		return fmt.Errorf("append nat OUTPUT rule: %w", err)
+	}
 
 	// POSTROUTING
-	_ = tables.Append("nat", "POSTROUTING",
+	if err := appendRuleIfMissing("nat", "POSTROUTING",
 		"-p", "tcp",
 		"-d", sandboxIP,
 		"--dport", fmt.Sprintf("%d", sandboxPort),
 		"-j", "MASQUERADE",
-	)
+	); err != nil {
+		return fmt.Errorf("append nat POSTROUTING rule: %w", err)
+	}
 
 	// FORWARD 放行
-	_ = tables.Append("filter", "FORWARD",
+	if err := appendRuleIfMissing("filter", "FORWARD",
 		"-p", "tcp",
 		"-d", sandboxIP,
 		"--dport", fmt.Sprintf("%d", sandboxPort),
 		"-j", "ACCEPT",
-	)
-	_ = tables.Append("filter", "FORWARD",
+	); err != nil {
+		return fmt.Errorf("append filter FORWARD dst rule: %w", err)
+	}
+	if err := appendRuleIfMissing("filter", "FORWARD",
 		"-p", "tcp",
 		"-s", sandboxIP,
 		"--sport", fmt.Sprintf("%d", sandboxPort),
 		"-j", "ACCEPT",
-	)
+	); err != nil {
+		return fmt.Errorf("append filter FORWARD src rule: %w", err)
+	}
 
 	return nil
 }

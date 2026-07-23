@@ -24,6 +24,7 @@ type E2BConfig struct {
 	APIKey                string
 	NodeIP                string
 	CNI                   CNIConfig
+	StateStore            StateStore
 }
 
 type CNIConfig struct {
@@ -42,9 +43,9 @@ type E2BEngine interface {
 func NewE2BEngine(cfg *E2BConfig) E2BEngine {
 	switch cfg.Backend {
 	case BackendREST:
-		return newRestE2BEngine(cfg.APIBaseURL, cfg.APIKey)
+		return newRestE2BEngine(cfg.APIBaseURL, cfg.APIKey, cfg.StateStore)
 	default:
-		return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.OrchestratorProxyAddr, cfg.NodeIP, cfg.CNI)
+		return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.OrchestratorProxyAddr, cfg.NodeIP, cfg.CNI, cfg.StateStore)
 	}
 }
 
@@ -131,4 +132,94 @@ func (p *podInfo) toPodSandboxConfig() *runtime.PodSandboxConfig {
 		Labels:      p.labels,
 		Annotations: p.annotations,
 	}
+}
+
+func (p *podInfo) toPersistedState() E2BPodState {
+	if p == nil {
+		return E2BPodState{}
+	}
+	return E2BPodState{
+		SandboxID:            p.sandboxID,
+		E2BSandboxID:         p.e2bSandboxID,
+		PodUID:               p.podUID,
+		Name:                 p.name,
+		Namespace:            p.namespace,
+		Labels:               copyStringMap(p.labels),
+		Annotations:          copyStringMap(p.annotations),
+		CreatedAt:            p.createdAt,
+		EndedAt:              p.endedAt,
+		State:                p.state,
+		TemplateID:           p.templateID,
+		BuildID:              p.buildID,
+		ImageRef:             p.imageRef,
+		EnvdAccessToken:      p.envdAccessToken,
+		ContainerLabels:      copyStringMap(p.containerLabels),
+		ContainerAnnotations: copyStringMap(p.containerAnnotations),
+		ContainerName:        p.containerName,
+		ContainerCommand:     append([]string(nil), p.containerCommand...),
+		ContainerArgs:        append([]string(nil), p.containerArgs...),
+		ContainerStdin:       p.containerStdin,
+		ContainerTTY:         p.containerTTY,
+		ContainerState:       p.containerState,
+		ContainerCreatedAt:   p.containerCreatedAt,
+		ContainerStartedAt:   p.containerStartedAt,
+		ContainerFinishedAt:  p.containerFinishedAt,
+		ContainerExitCode:    p.containerExitCode,
+		HostIP:               p.hostIP,
+		HostPort:             p.hostPort,
+		PodIP:                p.podIP,
+		CNIEnabled:           p.cniEnabled,
+		CNIRecord:            cloneCNIRecord(p.cniRecord),
+		PortMappings:         append([]PortMapping(nil), p.portMappings...),
+	}
+}
+
+func podInfoFromPersistedState(p E2BPodState) *podInfo {
+	info := &podInfo{
+		sandboxID:       p.SandboxID,
+		e2bSandboxID:    p.E2BSandboxID,
+		podUID:          p.PodUID,
+		name:            p.Name,
+		namespace:       p.Namespace,
+		labels:          copyStringMap(p.Labels),
+		annotations:     copyStringMap(p.Annotations),
+		createdAt:       p.CreatedAt,
+		endedAt:         p.EndedAt,
+		state:           p.State,
+		templateID:      p.TemplateID,
+		buildID:         p.BuildID,
+		imageRef:        p.ImageRef,
+		envdAccessToken: p.EnvdAccessToken,
+
+		containerLabels:      copyStringMap(p.ContainerLabels),
+		containerAnnotations: copyStringMap(p.ContainerAnnotations),
+		containerName:        p.ContainerName,
+		containerCommand:     append([]string(nil), p.ContainerCommand...),
+		containerArgs:        append([]string(nil), p.ContainerArgs...),
+		containerStdin:       p.ContainerStdin,
+		containerTTY:         p.ContainerTTY,
+		containerState:       p.ContainerState,
+		containerCreatedAt:   p.ContainerCreatedAt,
+		containerStartedAt:   p.ContainerStartedAt,
+		containerFinishedAt:  p.ContainerFinishedAt,
+		containerExitCode:    p.ContainerExitCode,
+
+		hostIP:       p.HostIP,
+		hostPort:     p.HostPort,
+		podIP:        p.PodIP,
+		cniEnabled:   p.CNIEnabled,
+		cniRecord:    cloneCNIRecord(p.CNIRecord),
+		portMappings: append([]PortMapping(nil), p.PortMappings...),
+	}
+	return info
+}
+
+func cloneCNIRecord(rec *CNIRecord) *CNIRecord {
+	if rec == nil {
+		return nil
+	}
+	out := *rec
+	out.DNS = append([]string(nil), rec.DNS...)
+	out.ResultJSON = append([]byte(nil), rec.ResultJSON...)
+	return &out
 }

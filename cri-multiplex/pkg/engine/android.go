@@ -42,6 +42,7 @@ type AndroidConfig struct {
 	StateDir             string
 	CVDGroup             string
 	CNI                  CNIConfig
+	StateStore           StateStore
 }
 
 type androidSandboxState string
@@ -115,6 +116,7 @@ type AndroidContainerRecord struct {
 type AndroidEngine struct {
 	cfg            AndroidConfig
 	ops            androidRuntimeOps
+	stateStore     StateStore
 	mu             sync.Mutex
 	pods           map[string]*AndroidSandboxRecord
 	containers     map[string]*AndroidContainerRecord
@@ -162,6 +164,7 @@ func NewAndroidEngine(cfg AndroidConfig) *AndroidEngine {
 	return &AndroidEngine{
 		cfg:            cfg,
 		ops:            defaultAndroidRuntimeOps(),
+		stateStore:     cfg.StateStore,
 		pods:           make(map[string]*AndroidSandboxRecord),
 		containers:     make(map[string]*AndroidContainerRecord),
 		portOwners:     make(map[int]string),
@@ -170,6 +173,82 @@ func NewAndroidEngine(cfg AndroidConfig) *AndroidEngine {
 }
 
 func (e *AndroidEngine) Type() EngineType { return EngineTypeAndroid }
+
+func (e *AndroidEngine) RestoreState(ctx context.Context) error {
+	if e == nil || e.stateStore == nil {
+		return nil
+	}
+	states, err := e.stateStore.LoadAndroidPods()
+	if err != nil {
+		return fmt.Errorf("load android pods: %w", err)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, state := range states {
+		pod := androidSandboxRecordFromState(state)
+		if pod.CRISandboxID == "" || pod.State == androidSandboxRemoved {
+			continue
+		}
+		container := androidContainerRecordFromState(state)
+		if (pod.State == androidSandboxRunning || pod.State == androidSandboxVMStarting) && !androidProcessAlive(pod.LaunchPID, pod.LaunchPGID) {
+			log.Printf("[AndroidEngine] restored sandbox process missing, marking unknown: sandbox=%s pid=%d pgid=%d",
+				pod.CRISandboxID, pod.LaunchPID, pod.LaunchPGID)
+			pod.State = androidSandboxUnknown
+			if container != nil && container.State == androidContainerRunning {
+				container.State = androidContainerExited
+				container.FinishedAt = time.Now()
+			}
+		}
+		e.pods[pod.CRISandboxID] = pod
+		if pod.ADBPort > 0 {
+			e.portOwners[pod.ADBPort] = pod.CRISandboxID
+		}
+		if pod.WebRTCPort > 0 {
+			e.portOwners[pod.WebRTCPort] = pod.CRISandboxID
+		}
+		if pod.BaseInstanceNum > 0 {
+			e.instanceOwners[pod.BaseInstanceNum] = pod.CRISandboxID
+		}
+		if container != nil && container.State != androidContainerRemoved {
+			e.containers[container.ContainerID] = container
+		}
+		e.persistPodLocked(pod.CRISandboxID)
+	}
+	log.Printf("[AndroidEngine] restored %d pod records", len(states))
+	return nil
+}
+
+func (e *AndroidEngine) persistPodLocked(sandboxID string) {
+	if e == nil || e.stateStore == nil || sandboxID == "" {
+		return
+	}
+	pod := e.pods[sandboxID]
+	if pod == nil {
+		return
+	}
+	state := androidPodStateFromRecords(pod, e.firstContainerLocked(sandboxID))
+	if err := e.stateStore.SaveAndroidPod(state); err != nil {
+		log.Printf("[AndroidEngine] WARNING: persist pod state failed sandbox=%s: %v", sandboxID, err)
+	}
+}
+
+func (e *AndroidEngine) deletePodState(sandboxID string) {
+	if e == nil || e.stateStore == nil || sandboxID == "" {
+		return
+	}
+	if err := e.stateStore.DeleteAndroidPod(sandboxID); err != nil {
+		log.Printf("[AndroidEngine] WARNING: delete pod state failed sandbox=%s: %v", sandboxID, err)
+	}
+}
+
+func (e *AndroidEngine) firstContainerLocked(sandboxID string) *AndroidContainerRecord {
+	for _, c := range e.containers {
+		if c.CRISandboxID == sandboxID {
+			return c
+		}
+	}
+	return nil
+}
 
 func (e *AndroidEngine) ensureEnabled() error {
 	if !e.cfg.Enabled {
@@ -309,6 +388,7 @@ func (e *AndroidEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		rec.NetNSPath = cniRecord.NetNSPath
 	}
 	e.pods[sandboxID] = rec
+	e.persistPodLocked(sandboxID)
 	log.Printf("[AndroidEngine] sandbox created: cri_id=%s pod=%s/%s base_instance_num=%d adb=%d artifacts=%s workdir=%s cni=%v podIP=%s",
 		sandboxID, rec.Namespace, rec.Name, rec.BaseInstanceNum, rec.ADBPort, rec.ArtifactsDir, rec.WorkDir, e.cfg.CNI.Enabled, rec.accessIP())
 	return &runtime.RunPodSandboxResponse{PodSandboxId: sandboxID}, nil
@@ -339,6 +419,7 @@ func (e *AndroidEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 			c.ExitCode = 0
 		}
 	}
+	e.persistPodLocked(req.PodSandboxId)
 	e.mu.Unlock()
 	return &runtime.StopPodSandboxResponse{}, nil
 }
@@ -382,6 +463,7 @@ func (e *AndroidEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 			log.Printf("[AndroidEngine] RemovePodSandbox warning: sandbox=%s cni del failed: %v", req.PodSandboxId, err)
 		}
 	}
+	e.deletePodState(req.PodSandboxId)
 	log.Printf("[AndroidEngine] sandbox removed: cri_id=%s", req.PodSandboxId)
 	return &runtime.RemovePodSandboxResponse{}, nil
 }
@@ -491,6 +573,7 @@ func (e *AndroidEngine) CreateContainer(ctx context.Context, req *runtime.Create
 		LogPath:      req.Config.LogPath,
 	}
 	e.containers[containerID] = rec
+	e.persistPodLocked(req.PodSandboxId)
 	log.Printf("[AndroidEngine] CreateContainer: pod=%s container=%s image=%s", req.PodSandboxId, containerID, rec.Image)
 	return &runtime.CreateContainerResponse{ContainerId: containerID}, nil
 }
@@ -517,6 +600,7 @@ func (e *AndroidEngine) StartContainer(ctx context.Context, req *runtime.StartCo
 	if err := e.ops.startCVD(e, ctx, pod); err != nil {
 		e.mu.Lock()
 		pod.State = androidSandboxUnknown
+		e.persistPodLocked(sandboxID)
 		e.mu.Unlock()
 		return nil, err
 	}
@@ -528,6 +612,7 @@ func (e *AndroidEngine) StartContainer(ctx context.Context, req *runtime.StartCo
 	container.StartedAt = pod.StartedAt
 	container.FinishedAt = time.Time{}
 	container.ExitCode = 0
+	e.persistPodLocked(sandboxID)
 	e.mu.Unlock()
 	log.Printf("[AndroidEngine] StartContainer: android vm ready sandbox=%s adb=%s:%d cni=%v", sandboxID, pod.accessIP(), pod.ADBPort, e.cfg.CNI.Enabled)
 	return &runtime.StartContainerResponse{}, nil
@@ -557,6 +642,9 @@ func (e *AndroidEngine) StopContainer(ctx context.Context, req *runtime.StopCont
 		pod.State = androidSandboxStopped
 		pod.StoppedAt = time.Now()
 	}
+	if pod != nil {
+		e.persistPodLocked(sandboxID)
+	}
 	e.mu.Unlock()
 	return &runtime.StopContainerResponse{}, nil
 }
@@ -570,7 +658,9 @@ func (e *AndroidEngine) RemoveContainer(ctx context.Context, req *runtime.Remove
 		c.State = androidContainerRemoved
 		c.FinishedAt = time.Now()
 	}
+	sandboxID := stripContainerSuffix(req.ContainerId)
 	delete(e.containers, req.ContainerId)
+	e.persistPodLocked(sandboxID)
 	e.mu.Unlock()
 	return &runtime.RemoveContainerResponse{}, nil
 }
@@ -921,6 +1011,7 @@ func (e *AndroidEngine) startCVD(ctx context.Context, rec *AndroidSandboxRecord)
 	if pgid, err := syscall.Getpgid(cmd.Process.Pid); err == nil {
 		rec.LaunchPGID = pgid
 	}
+	e.persistPodLocked(rec.CRISandboxID)
 	e.mu.Unlock()
 	exitCh := make(chan error, 1)
 	go func() {
@@ -1033,6 +1124,113 @@ func waitTCPReady(ctx context.Context, host string, port int, exitCh <-chan erro
 		case <-ticker.C:
 		}
 	}
+}
+
+func androidPodStateFromRecords(pod *AndroidSandboxRecord, container *AndroidContainerRecord) AndroidPodState {
+	if pod == nil {
+		return AndroidPodState{}
+	}
+	state := AndroidPodState{
+		SandboxID:       pod.CRISandboxID,
+		PodUID:          pod.PodUID,
+		Name:            pod.Name,
+		Namespace:       pod.Namespace,
+		Labels:          copyStringMap(pod.Labels),
+		Annotations:     copyStringMap(pod.Annotations),
+		CreatedAt:       pod.CreatedAt,
+		StartedAt:       pod.StartedAt,
+		StoppedAt:       pod.StoppedAt,
+		State:           pod.State,
+		ArtifactsDir:    pod.ArtifactsDir,
+		WorkDir:         pod.WorkDir,
+		InstanceID:      pod.InstanceID,
+		BaseInstanceNum: pod.BaseInstanceNum,
+		NodeIP:          pod.NodeIP,
+		ADBPort:         pod.ADBPort,
+		WebRTCPort:      pod.WebRTCPort,
+		LaunchPID:       pod.LaunchPID,
+		LaunchPGID:      pod.LaunchPGID,
+		LaunchLogPath:   pod.LaunchLogPath,
+	}
+	if container != nil {
+		state.ContainerID = container.ContainerID
+		state.ContainerName = container.Name
+		state.ContainerAttempt = container.Attempt
+		state.ContainerImage = container.Image
+		state.ContainerImageRef = container.ImageRef
+		state.ContainerState = container.State
+		state.ContainerCreatedAt = container.CreatedAt
+		state.ContainerStartedAt = container.StartedAt
+		state.ContainerFinishedAt = container.FinishedAt
+		state.ContainerExitCode = container.ExitCode
+		state.ContainerLabels = copyStringMap(container.Labels)
+		state.ContainerAnnotations = copyStringMap(container.Annotations)
+		state.LogPath = container.LogPath
+		state.FullLogPath = container.FullLogPath
+	}
+	return state
+}
+
+func androidSandboxRecordFromState(state AndroidPodState) *AndroidSandboxRecord {
+	return &AndroidSandboxRecord{
+		CRISandboxID:    state.SandboxID,
+		PodUID:          state.PodUID,
+		Name:            state.Name,
+		Namespace:       state.Namespace,
+		ArtifactsDir:    state.ArtifactsDir,
+		WorkDir:         state.WorkDir,
+		InstanceID:      state.InstanceID,
+		BaseInstanceNum: state.BaseInstanceNum,
+		NodeIP:          state.NodeIP,
+		ADBPort:         state.ADBPort,
+		WebRTCPort:      state.WebRTCPort,
+		LaunchPID:       state.LaunchPID,
+		LaunchPGID:      state.LaunchPGID,
+		LaunchLogPath:   state.LaunchLogPath,
+		State:           state.State,
+		CreatedAt:       state.CreatedAt,
+		StartedAt:       state.StartedAt,
+		StoppedAt:       state.StoppedAt,
+		Labels:          copyStringMap(state.Labels),
+		Annotations:     copyStringMap(state.Annotations),
+	}
+}
+
+func androidContainerRecordFromState(state AndroidPodState) *AndroidContainerRecord {
+	if state.ContainerID == "" {
+		return nil
+	}
+	return &AndroidContainerRecord{
+		ContainerID:  state.ContainerID,
+		CRISandboxID: state.SandboxID,
+		Name:         state.ContainerName,
+		Attempt:      state.ContainerAttempt,
+		Image:        state.ContainerImage,
+		ImageRef:     state.ContainerImageRef,
+		State:        state.ContainerState,
+		CreatedAt:    state.ContainerCreatedAt,
+		StartedAt:    state.ContainerStartedAt,
+		FinishedAt:   state.ContainerFinishedAt,
+		ExitCode:     state.ContainerExitCode,
+		Labels:       copyStringMap(state.ContainerLabels),
+		Annotations:  copyStringMap(state.ContainerAnnotations),
+		LogPath:      state.LogPath,
+		FullLogPath:  state.FullLogPath,
+	}
+}
+
+func androidProcessAlive(pid, pgid int) bool {
+	if pgid > 0 {
+		if err := syscall.Kill(-pgid, 0); err == nil || err == syscall.EPERM {
+			return true
+		}
+	}
+	if pid > 0 {
+		if err := syscall.Kill(pid, 0); err == nil || err == syscall.EPERM {
+			return true
+		}
+	}
+	return false
 }
 
 func androidPodState(s androidSandboxState) runtime.PodSandboxState {

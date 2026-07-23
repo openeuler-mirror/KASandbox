@@ -64,12 +64,15 @@ SCRIPTS=(
     "15|E2B CNI NetworkPolicy ingress 验证|${SCRIPT_DIR}/15_cni_networkpolicy_ingress.sh"
     "16|E2B CNI NetworkPolicy egress 验证|${SCRIPT_DIR}/16_cni_networkpolicy_egress.sh"
     "17|Android CNI PodIP/Netns 访问验证|${SCRIPT_DIR}/17_android_cni_podip.sh"
+    "18|cri-multiplex 重启恢复验证|${SCRIPT_DIR}/18_state_restore.sh"
+    "19|状态持久化完整场景矩阵验证|${SCRIPT_DIR}/19_state_persistence_matrix.sh"
 )
 
 #==================== 执行 ====================#
 TOTAL_PASS=0
 TOTAL_FAIL=0
 TOTAL_SKIP=0
+MATCHED=0
 RESULTS=()
 
 for entry in "${SCRIPTS[@]}"; do
@@ -79,6 +82,7 @@ for entry in "${SCRIPTS[@]}"; do
     if [ -n "${ONLY}" ] && [ "${num}" != "${ONLY}" ]; then
         continue
     fi
+    MATCHED=$((MATCHED+1))
 
     # --skip-setup 过滤
     if [ "${SKIP_SETUP}" = "1" ] && [ "${num}" = "00" ]; then
@@ -176,6 +180,16 @@ for entry in "${SCRIPTS[@]}"; do
         RESULTS+=("${num}|${desc}|FAIL(${sub_pass}/${sub_fail}/${sub_skip})")
     fi
 done
+
+if [ -n "${ONLY}" ] && [ "${MATCHED}" -eq 0 ]; then
+    log_fail "未找到编号为 ${ONLY} 的用例"
+    echo "可用编号:"
+    for entry in "${SCRIPTS[@]}"; do
+        IFS='|' read -r num desc path <<< "${entry}"
+        echo "  ${num}  ${desc}"
+    done
+    exit 1
+fi
 
 #==================== 最终汇总 ====================#
 echo ""

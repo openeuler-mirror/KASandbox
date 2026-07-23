@@ -50,19 +50,62 @@ type createSandboxResponse struct {
 type restE2BEngine struct {
 	apiBaseURL string
 	apiKey     string
+	stateStore StateStore
 	tracker    *podTracker
 }
 
-func newRestE2BEngine(apiBaseURL, apiKey string) *restE2BEngine {
+func newRestE2BEngine(apiBaseURL, apiKey string, stores ...StateStore) *restE2BEngine {
+	var store StateStore
+	if len(stores) > 0 {
+		store = stores[0]
+	}
 	log.Printf("[RestE2BEngine] API base URL: %s", apiBaseURL)
 	return &restE2BEngine{
 		apiBaseURL: apiBaseURL,
 		apiKey:     apiKey,
+		stateStore: store,
 		tracker:    newPodTracker(),
 	}
 }
 
 func (e *restE2BEngine) Type() EngineType { return EngineTypeE2B }
+
+func (e *restE2BEngine) RestoreState(ctx context.Context) error {
+	if e == nil || e.stateStore == nil {
+		return nil
+	}
+	pods, err := e.stateStore.LoadE2BPods()
+	if err != nil {
+		return fmt.Errorf("load e2b pods: %w", err)
+	}
+	for _, rec := range pods {
+		pod := podInfoFromPersistedState(rec)
+		if pod.sandboxID == "" || pod.state == stateRemoved {
+			continue
+		}
+		e.tracker.Add(pod.sandboxID, pod)
+	}
+	log.Printf("[RestE2BEngine] restored %d pod records", len(pods))
+	return nil
+}
+
+func (e *restE2BEngine) persistPodState(pod *podInfo) {
+	if e == nil || e.stateStore == nil || pod == nil {
+		return
+	}
+	if err := e.stateStore.SaveE2BPod(pod.toPersistedState()); err != nil {
+		log.Printf("[RestE2BEngine] WARNING: persist pod state failed sandbox=%s: %v", pod.sandboxID, err)
+	}
+}
+
+func (e *restE2BEngine) deletePodState(sandboxID string) {
+	if e == nil || e.stateStore == nil || sandboxID == "" {
+		return
+	}
+	if err := e.stateStore.DeleteE2BPod(sandboxID); err != nil {
+		log.Printf("[RestE2BEngine] WARNING: delete pod state failed sandbox=%s: %v", sandboxID, err)
+	}
+}
 
 func (e *restE2BEngine) doRequest(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, e.apiBaseURL+path, body)
@@ -104,7 +147,7 @@ func (e *restE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		return nil, fmt.Errorf("POST /sandboxes returned empty sandboxID")
 	}
 
-	e.tracker.Add(sandboxResp.SandboxID, &podInfo{
+	pod := &podInfo{
 		sandboxID:   sandboxResp.SandboxID,
 		podUID:      req.Config.Metadata.Uid,
 		name:        req.Config.Metadata.Name,
@@ -112,7 +155,11 @@ func (e *restE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		labels:      req.Config.Labels,
 		annotations: req.Config.Annotations,
 		createdAt:   time.Now(),
-	})
+		state:       stateRunning,
+		templateID:  templateID,
+	}
+	e.tracker.Add(sandboxResp.SandboxID, pod)
+	e.persistPodState(pod)
 
 	log.Printf("[RestE2BEngine] sandbox created: %s (template=%s)", sandboxResp.SandboxID, templateID)
 	return &runtime.RunPodSandboxResponse{PodSandboxId: sandboxResp.SandboxID}, nil
@@ -132,6 +179,12 @@ func (e *restE2BEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 		return nil, fmt.Errorf("POST /sandboxes/%s/pause returned %d: %s", req.PodSandboxId, resp.StatusCode, string(body))
 	}
 
+	if pod, ok := e.tracker.Get(req.PodSandboxId); ok {
+		pod.state = stateStopped
+		now := time.Now()
+		pod.endedAt = &now
+		e.persistPodState(pod)
+	}
 	return &runtime.StopPodSandboxResponse{}, nil
 }
 
@@ -150,6 +203,7 @@ func (e *restE2BEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 	}
 
 	e.tracker.Delete(req.PodSandboxId)
+	e.deletePodState(req.PodSandboxId)
 	return &runtime.RemovePodSandboxResponse{}, nil
 }
 

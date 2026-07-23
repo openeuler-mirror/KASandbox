@@ -105,6 +105,7 @@ type grpcE2BEngine struct {
 	orchestratorProxyAddr string
 	nodeIP                string
 	hostPortOps           hostPortMappingOps
+	stateStore            StateStore
 	mu                    sync.Mutex
 	conn                  *grpc.ClientConn
 	client                orchestrator.SandboxServiceClient
@@ -124,13 +125,14 @@ type grpcE2BEngine struct {
 	cniManager      cniNetworkManager
 }
 
-func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP string, cniConfig CNIConfig) *grpcE2BEngine {
+func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP string, cniConfig CNIConfig, store StateStore) *grpcE2BEngine {
 	log.Printf("[GrpcE2BEngine] orchestrator address: %s, proxy: %s, nodeIP: %s, cni_enabled: %v", orchestratorAddr, orchestratorProxyAddr, nodeIP, cniConfig.Enabled)
 	e := &grpcE2BEngine{
 		orchestratorAddr:      orchestratorAddr,
 		orchestratorProxyAddr: orchestratorProxyAddr,
 		nodeIP:                nodeIP,
 		hostPortOps:           defaultHostPortMappingOps(),
+		stateStore:            store,
 		cniConfig:             cniConfig,
 		tracker:               newPodTracker(),
 		imageCache:            make(map[string]*e2bImageMeta),
@@ -147,6 +149,125 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP string, cn
 		}
 	}
 	return e
+}
+
+func (e *grpcE2BEngine) RestoreState(ctx context.Context) error {
+	if e == nil || e.stateStore == nil {
+		return nil
+	}
+	pods, err := e.stateStore.LoadE2BPods()
+	if err != nil {
+		return fmt.Errorf("load e2b pods: %w", err)
+	}
+	for _, rec := range pods {
+		pod := podInfoFromPersistedState(rec)
+		if pod.sandboxID == "" || pod.state == stateRemoved {
+			continue
+		}
+		e.tracker.Add(pod.sandboxID, pod)
+		if pod.hostIP != "" && len(pod.portMappings) > 0 {
+			e.hostPortManager.RestorePorts(pod.sandboxID, pod.portMappings)
+			for _, mapping := range pod.portMappings {
+				if mapping.HostPort <= 0 || mapping.SandboxPort <= 0 {
+					continue
+				}
+				if err := SetupHostPortMapping(e.nodeIP, mapping.HostPort, pod.hostIP, mapping.SandboxPort); err != nil {
+					log.Printf("[GrpcE2BEngine] WARNING: restore hostport mapping failed sandbox=%s host=%d sandbox=%d: %v",
+						pod.sandboxID, mapping.HostPort, mapping.SandboxPort, err)
+				}
+			}
+		} else if pod.hostPort > 0 {
+			e.hostPortManager.RestorePorts(pod.sandboxID, []PortMapping{{HostPort: pod.hostPort, SandboxPort: envdSandboxPort}})
+			if pod.hostIP != "" {
+				if err := SetupHostPortMapping(e.nodeIP, pod.hostPort, pod.hostIP, envdSandboxPort); err != nil {
+					log.Printf("[GrpcE2BEngine] WARNING: restore default hostport mapping failed sandbox=%s host=%d: %v",
+						pod.sandboxID, pod.hostPort, err)
+				}
+			}
+		}
+	}
+	images, err := e.stateStore.LoadE2BImages()
+	if err != nil {
+		return fmt.Errorf("load e2b images: %w", err)
+	}
+	e.imageMu.Lock()
+	for _, ref := range images {
+		templateID, buildID, err := parseE2BImageRef(ref)
+		if err != nil {
+			log.Printf("[GrpcE2BEngine] WARNING: skip invalid restored image ref %q: %v", ref, err)
+			continue
+		}
+		e.imageCache[ref] = &e2bImageMeta{
+			templateID: templateID,
+			buildID:    buildID,
+			pulledAt:   time.Now(),
+		}
+	}
+	e.imageMu.Unlock()
+	if err := e.reconcileRestoredPods(ctx); err != nil {
+		log.Printf("[GrpcE2BEngine] WARNING: reconcile restored pods failed: %v", err)
+	}
+	log.Printf("[GrpcE2BEngine] restored %d pod records and %d image records", len(pods), len(images))
+	return nil
+}
+
+func (e *grpcE2BEngine) reconcileRestoredPods(ctx context.Context) error {
+	if e == nil || e.stateStore == nil {
+		return nil
+	}
+	if err := e.ensureConn(); err != nil {
+		return err
+	}
+	list, err := e.client.List(ctx, &emptypb.Empty{})
+	if err != nil {
+		return err
+	}
+	active := activeSandboxIDs(list.Sandboxes)
+	for _, pod := range e.tracker.List() {
+		if pod.state != stateRunning {
+			continue
+		}
+		if _, ok := active[pod.envdSandboxID()]; ok {
+			continue
+		}
+		log.Printf("[GrpcE2BEngine] restored sandbox not found in orchestrator list, keeping persisted state: cri_id=%s e2b_id=%s active_count=%d",
+			pod.sandboxID, pod.envdSandboxID(), len(active))
+	}
+	return nil
+}
+
+func activeSandboxIDs(sandboxes []*orchestrator.RunningSandbox) map[string]struct{} {
+	active := make(map[string]struct{}, len(sandboxes)*2)
+	for _, sbx := range sandboxes {
+		if sbx == nil {
+			continue
+		}
+		if sbx.Config != nil && sbx.Config.SandboxId != "" {
+			active[sbx.Config.SandboxId] = struct{}{}
+		}
+		if sbx.ClientId != "" {
+			active[sbx.ClientId] = struct{}{}
+		}
+	}
+	return active
+}
+
+func (e *grpcE2BEngine) persistPodState(pod *podInfo) {
+	if e == nil || e.stateStore == nil || pod == nil {
+		return
+	}
+	if err := e.stateStore.SaveE2BPod(pod.toPersistedState()); err != nil {
+		log.Printf("[GrpcE2BEngine] WARNING: persist pod state failed sandbox=%s: %v", pod.sandboxID, err)
+	}
+}
+
+func (e *grpcE2BEngine) deletePodState(sandboxID string) {
+	if e == nil || e.stateStore == nil || sandboxID == "" {
+		return
+	}
+	if err := e.stateStore.DeleteE2BPod(sandboxID); err != nil {
+		log.Printf("[GrpcE2BEngine] WARNING: delete pod state failed sandbox=%s: %v", sandboxID, err)
+	}
 }
 
 func (e *grpcE2BEngine) ensureConn() error {
@@ -246,6 +367,7 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		if existing.state == stateStopped || existing.state == statePaused {
 			existing.state = stateRunning
 			existing.endedAt = nil
+			e.persistPodState(existing)
 			log.Printf("[GrpcE2BEngine] RunPodSandbox: sandbox %s exists in stopped state, marking running without orchestrator checkpoint", req.Config.Metadata.Uid)
 			return &runtime.RunPodSandboxResponse{PodSandboxId: req.Config.Metadata.Uid}, nil
 		}
@@ -360,7 +482,7 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		envdToken = t
 	}
 
-	e.tracker.Add(sandboxID, &podInfo{
+	pod := &podInfo{
 		sandboxID:       sandboxID,
 		e2bSandboxID:    e2bSandboxID,
 		podUID:          req.Config.Metadata.Uid,
@@ -380,7 +502,9 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		cniEnabled:   cniRecord != nil,
 		cniRecord:    cniRecord,
 		portMappings: allMappings,
-	})
+	}
+	e.tracker.Add(sandboxID, pod)
+	e.persistPodState(pod)
 
 	log.Printf("[GrpcE2BEngine] sandbox created: cri_id=%s, e2b_id=%s (client_id=%s, host_ip=%s, default_port=%d, mappings=%v, envd_token_set=%v)",
 		sandboxID, e2bSandboxID, resp.ClientId, hostIP, defaultHostPort, allMappings, envdToken != "")
@@ -423,6 +547,7 @@ func (e *grpcE2BEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 	}
 	now := time.Now()
 	pod.endedAt = &now
+	e.persistPodState(pod)
 	return &runtime.StopPodSandboxResponse{}, nil
 }
 
@@ -466,6 +591,7 @@ func (e *grpcE2BEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 		}
 	}
 	e.tracker.Delete(req.PodSandboxId)
+	e.deletePodState(req.PodSandboxId)
 	return &runtime.RemovePodSandboxResponse{}, nil
 }
 
@@ -549,14 +675,11 @@ func (e *grpcE2BEngine) ListPodSandbox(ctx context.Context, req *runtime.ListPod
 	if err != nil {
 		return nil, mapE2BError(err)
 	}
-	active := make(map[string]bool)
-	for _, sbx := range list.Sandboxes {
-		active[sbx.Config.SandboxId] = true
-	}
+	active := activeSandboxIDs(list.Sandboxes)
 	var items []*runtime.PodSandbox
 	for _, pod := range e.tracker.List() {
 		state := inferPodSandboxState(pod.state)
-		if !active[pod.envdSandboxID()] && pod.state == stateRunning {
+		if _, ok := active[pod.envdSandboxID()]; !ok && pod.state == stateRunning {
 			state = runtime.PodSandboxState_SANDBOX_NOTREADY
 		}
 		items = append(items, &runtime.PodSandbox{
@@ -606,6 +729,7 @@ func (e *grpcE2BEngine) CreateContainer(ctx context.Context, req *runtime.Create
 		pod.containerStartedAt = time.Time{}
 		pod.containerFinishedAt = time.Time{}
 		pod.containerExitCode = 0
+		e.persistPodState(pod)
 	}
 	return &runtime.CreateContainerResponse{ContainerId: containerID}, nil
 }
@@ -628,6 +752,7 @@ func (e *grpcE2BEngine) StartContainer(ctx context.Context, req *runtime.StartCo
 	pod.containerStartedAt = time.Now()
 	pod.containerFinishedAt = time.Time{}
 	pod.containerExitCode = 0
+	e.persistPodState(pod)
 	log.Printf("[GrpcE2BEngine] StartContainer: logical no-op, sandbox envd already ready: sandbox=%s", sandboxID)
 	return &runtime.StartContainerResponse{}, nil
 }
@@ -643,6 +768,7 @@ func (e *grpcE2BEngine) StopContainer(ctx context.Context, req *runtime.StopCont
 		pod.containerState = containerStateExited
 		pod.containerExitCode = 0
 		pod.containerFinishedAt = time.Now()
+		e.persistPodState(pod)
 	}
 	return &runtime.StopContainerResponse{}, nil
 }
@@ -653,6 +779,7 @@ func (e *grpcE2BEngine) RemoveContainer(ctx context.Context, req *runtime.Remove
 	if pod, ok := e.tracker.Get(sandboxID); ok {
 		pod.containerState = containerStateRemoved
 		pod.containerFinishedAt = time.Now()
+		e.persistPodState(pod)
 	}
 	return &runtime.RemoveContainerResponse{}, nil
 }
@@ -752,6 +879,11 @@ func (e *grpcE2BEngine) PullImage(ctx context.Context, req *runtime.PullImageReq
 		pulledAt:   time.Now(),
 	}
 	e.imageMu.Unlock()
+	if e.stateStore != nil {
+		if err := e.stateStore.SaveE2BImage(imageRef); err != nil {
+			log.Printf("[GrpcE2BEngine] WARNING: persist image state failed image=%s: %v", imageRef, err)
+		}
+	}
 	return &runtime.PullImageResponse{ImageRef: imageRef}, nil
 }
 
@@ -816,6 +948,11 @@ func (e *grpcE2BEngine) RemoveImage(ctx context.Context, req *runtime.RemoveImag
 	e.imageMu.Lock()
 	delete(e.imageCache, imageRef)
 	e.imageMu.Unlock()
+	if e.stateStore != nil {
+		if err := e.stateStore.DeleteE2BImage(imageRef); err != nil {
+			log.Printf("[GrpcE2BEngine] WARNING: delete image state failed image=%s: %v", imageRef, err)
+		}
+	}
 	return &runtime.RemoveImageResponse{}, nil
 }
 
