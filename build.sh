@@ -96,14 +96,37 @@ TIDY_DIRS=(
     "packages/db"
 )
 
+# 非 mooncake 模式下，go mod tidy 会因 //go:build mooncake 标签文件
+# 仍然把 mooncakestore 依赖加入 go.mod（tidy 视所有 build tag 为启用）。
+# 由于 orchestrator/api 等通过 replace => ../shared 引用本地 shared 模块，
+# tidy 这些模块时也会扫描 shared 源码，因此需在整个 tidy 循环期间移走
+# mooncake 源文件，循环结束后统一恢复。
+MOONCAKE_SRC="packages/shared/pkg/storage/storage_mooncake.go"
+MOONCAKE_MOVED=false
+
+# 恢复 mooncake 源文件的清理函数
+restore_mooncake() {
+    if $MOONCAKE_MOVED && [ -f "${MOONCAKE_SRC}.bak" ]; then
+        mv "${MOONCAKE_SRC}.bak" "$MOONCAKE_SRC"
+        echo -e "${YELLOW}→ 已恢复 mooncake 源文件${NC}"
+    fi
+}
+
+if ! $ENABLE_MOONCAKE && [ -f "$MOONCAKE_SRC" ]; then
+    mv "$MOONCAKE_SRC" "${MOONCAKE_SRC}.bak"
+    MOONCAKE_MOVED=true
+    # 注册 trap：脚本退出时（含 set -e 触发的异常退出）恢复 mooncake 源文件
+    trap restore_mooncake EXIT
+fi
+
 # 第一步：执行 go mod tidy 和 go mod vendor
 for dir in "${TIDY_DIRS[@]}"; do
     if [ -d "$dir" ]; then
         echo -e "${YELLOW}→ 进入 $dir 执行 go mod tidy 和 go mod vendor...${NC}"
         (
             cd "$dir"
-            /usr/local/go/bin/go mod tidy
-            GOWORK="off" /usr/local/go/bin/go mod vendor
+            GOWORK="off" go mod tidy
+            GOWORK="off" go mod vendor
         )
         echo -e "${GREEN}✓ $dir 完成${NC}"
     else
@@ -111,17 +134,30 @@ for dir in "${TIDY_DIRS[@]}"; do
     fi
 done
 
-echo -e "\n${GREEN}=== 构建二进制文件 ${BUILD_TAGS:+($BUILD_TAGS)}===${NC}"
+# 恢复 mooncake 源文件（trap 也会兜底，此处显式调用并解除 trap）
+restore_mooncake
+trap - EXIT
+
+# 根据主机架构确定输出目录
+GOARCH=${GOARCH:-$(go env GOARCH 2>/dev/null || uname -m)}
+# 规范化架构名 (uname -m 输出 x86_64 -> amd64, aarch64 -> arm64)
+case "$GOARCH" in
+    x86_64) GOARCH=amd64 ;;
+    aarch64) GOARCH=arm64 ;;
+esac
+BIN_DIR="bin/${GOARCH}"
+
+echo -e "\n${GREEN}=== 构建二进制文件 ${BUILD_TAGS:+($BUILD_TAGS)} [${GOARCH}]===${NC}"
 
 # 创建输出目录
-mkdir -p bin/arm64
+mkdir -p "$BIN_DIR"
 
 # 定义构建任务（目录、输出路径、构建参数）
 declare -A BUILD_TASKS=(
-    ["packages/api"]="../../bin/arm64/api ."
-    ["packages/client-proxy"]="../../bin/arm64/client-proxy ."
-    ["packages/envd"]="../../bin/arm64/envd ./main.go"
-    ["packages/orchestrator"]="../../bin/arm64/orchestrator ."
+    ["packages/api"]="../../${BIN_DIR}/api ."
+    ["packages/client-proxy"]="../../${BIN_DIR}/client-proxy ."
+    ["packages/envd"]="../../${BIN_DIR}/envd ./main.go"
+    ["packages/orchestrator"]="../../${BIN_DIR}/orchestrator ."
 )
 
 # 执行常规构建
@@ -132,7 +168,7 @@ for dir in "${!BUILD_TASKS[@]}"; do
         echo -e "${YELLOW}→ 构建 $dir -> $output${NC}"
         (
             cd "$dir"
-            /usr/local/go/bin/go build $BUILD_TAGS -o "$output" $args
+            go build $BUILD_TAGS -o "$output" $args
         )
         echo -e "${GREEN}✓ $output 构建完成${NC}"
     else
@@ -146,16 +182,16 @@ if [ -d "$DB_DIR" ]; then
     echo -e "${YELLOW}→ 构建 $DB_DIR 的 migrator...${NC}"
     (
         cd "$DB_DIR"
-        /usr/local/go/bin/go build $BUILD_TAGS -o ../../bin/arm64/migrator ./scripts/migrator.go
+       go build $BUILD_TAGS -o ../../${BIN_DIR}/migrator ./scripts/migrator.go
     )
-    echo -e "${GREEN}✓ bin/arm64/migrator 构建完成${NC}"
+    echo -e "${GREEN}✓ ${BIN_DIR}/migrator 构建完成${NC}"
 
     echo -e "${YELLOW}→ 构建 $DB_DIR 的 seed-db...${NC}"
     (
         cd "$DB_DIR"
-        /usr/local/go/bin/go build $BUILD_TAGS -o ../../bin/arm64/seed-db ./scripts/seed/postgres/seed-db.go
+        go build $BUILD_TAGS -o ../../${BIN_DIR}/seed-db ./scripts/seed/postgres/seed-db.go
     )
-    echo -e "${GREEN}✓ bin/arm64/seed-db 构建完成${NC}"
+    echo -e "${GREEN}✓ ${BIN_DIR}/seed-db 构建完成${NC}"
 else
     echo -e "${RED}✗ 目录 $DB_DIR 不存在${NC}"
 fi
@@ -166,13 +202,13 @@ if [ -d "$ORCHESTRATOR_DIR/cmd/fc-netns-exec" ]; then
     echo -e "${YELLOW}→ 构建 $ORCHESTRATOR_DIR 的 fc-netns-exec...${NC}"
     (
         cd "$ORCHESTRATOR_DIR"
-        CGO_ENABLED=0 GOOS=linux /usr/local/go/bin/go build -o ../../bin/arm64/fc-netns-exec ./cmd/fc-netns-exec
+        CGO_ENABLED=0 GOOS=linux go build -o ../../${BIN_DIR}/fc-netns-exec ./cmd/fc-netns-exec
     )
-    echo -e "${GREEN}✓ bin/arm64/fc-netns-exec 构建完成${NC}"
+    echo -e "${GREEN}✓ ${BIN_DIR}/fc-netns-exec 构建完成${NC}"
 else
     echo -e "${RED}✗ 目录 $ORCHESTRATOR_DIR/cmd/fc-netns-exec 不存在${NC}"
 fi
 
 echo -e "\n${GREEN}=== 所有任务执行完毕 ===${NC}"
-echo -e "${GREEN}生成的二进制文件位于: bin/arm64/${NC}"
-ls -lh bin/arm64/ 2>/dev/null || echo "目录为空或不存在"
+echo -e "${GREEN}生成的二进制文件位于: ${BIN_DIR}/${NC}"
+ls -lh "${BIN_DIR}/" 2>/dev/null || echo "目录为空或不存在"
