@@ -213,6 +213,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 
 	return &orchestrator.SandboxCreateResponse{
 		ClientId: s.info.ClientId,
+		HostIp:   sbx.Slot.HostIPString(),
 	}, nil
 }
 
