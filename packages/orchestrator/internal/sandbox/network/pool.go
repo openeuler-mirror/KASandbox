@@ -102,6 +102,10 @@ func NewPool(newSlotsPoolSize, reusedSlotsPoolSize int, slotStorage Storage, con
 	return pool
 }
 
+func (p *Pool) Config() Config {
+	return p.config
+}
+
 func (p *Pool) createNetworkSlot(ctx context.Context) (*Slot, error) {
 	ips, err := p.slotStorage.Acquire(ctx)
 	if err != nil {

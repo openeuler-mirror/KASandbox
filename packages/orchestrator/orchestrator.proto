@@ -51,6 +51,26 @@ message SandboxConfig {
 
   // Auto-resume policy for paused sandboxes.
   optional SandboxAutoResumeConfig auto_resume = 24;
+
+  // Runtime network facts supplied by the CRI shim.
+  // This is separate from SandboxNetworkConfig, which describes product-level
+  // ingress/egress policy.
+  optional SandboxRuntimeNetworkConfig runtime_network = 25;
+}
+
+message SandboxRuntimeNetworkConfig {
+  enum Mode {
+    ORCHESTRATOR_MANAGED = 0;
+    CNI_EXTERNAL_NETNS = 1;
+  }
+
+  Mode mode = 1;
+  string netns_path = 2;
+  string if_name = 3;
+  string pod_ip = 4;
+  string gateway = 5;
+  repeated string dns_servers = 6;
+  uint32 mtu = 7;
 }
 
 message SandboxAutoResumeConfig {

@@ -59,6 +59,11 @@ type Slot struct {
 	Key string
 	Idx int
 
+	ExternalNetNS bool
+	NetNSPath     string
+	PodIP         net.IP
+	IfName        string
+
 	Firewall *Firewall
 
 	// firewallCustomRules is used to track if custom firewall rules are set for the slot and need a cleanup.
@@ -152,7 +157,63 @@ func NewSlot(key string, idx int, config Config) (*Slot, error) {
 	return slot, nil
 }
 
+func NewExternalNetNSSlot(key string, runtimeNet *orchestrator.SandboxRuntimeNetworkConfig, config Config) (*Slot, error) {
+	if runtimeNet == nil {
+		return nil, fmt.Errorf("runtime network config is required for external netns slot")
+	}
+	if runtimeNet.GetNetnsPath() == "" {
+		return nil, fmt.Errorf("runtime network netns_path is required")
+	}
+	podIP := net.ParseIP(runtimeNet.GetPodIp())
+	if podIP == nil {
+		return nil, fmt.Errorf("runtime network pod_ip is invalid: %q", runtimeNet.GetPodIp())
+	}
+	ifName := runtimeNet.GetIfName()
+	if ifName == "" {
+		ifName = "eth0"
+	}
+
+	hostCIDR := fmt.Sprintf("%s/%d", podIP.String(), hostMask)
+	_, hostNet, err := net.ParseCIDR(hostCIDR)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse external netns host CIDR: %w", err)
+	}
+
+	tapCIDR := fmt.Sprintf("%s/%d", tapIp, tapMask)
+	tapIp, tapNet, err := net.ParseCIDR(tapCIDR)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse tap CIDR: %w", err)
+	}
+
+	return &Slot{
+		Key:           key,
+		Idx:           -1,
+		ExternalNetNS: true,
+		NetNSPath:     runtimeNet.GetNetnsPath(),
+		PodIP:         podIP,
+		IfName:        ifName,
+
+		tapIp:   tapIp,
+		tapMask: tapNet.Mask,
+
+		HostIP:   podIP,
+		hostNet:  hostNet,
+		hostCIDR: hostCIDR,
+
+		hyperloopPort: strconv.FormatUint(uint64(config.HyperloopProxyPort), 10),
+
+		tcpFirewallHTTPPort:  strconv.FormatUint(uint64(config.SandboxTCPFirewallHTTPPort), 10),
+		tcpFirewallTLSPort:   strconv.FormatUint(uint64(config.SandboxTCPFirewallTLSPort), 10),
+		tcpFirewallOtherPort: strconv.FormatUint(uint64(config.SandboxTCPFirewallOtherPort), 10),
+
+		config: config,
+	}, nil
+}
+
 func (s *Slot) VpeerName() string {
+	if s.ExternalNetNS && s.IfName != "" {
+		return s.IfName
+	}
 	return "eth0"
 }
 
@@ -193,6 +254,9 @@ func (s *Slot) NamespaceIP() string {
 }
 
 func (s *Slot) NamespaceID() string {
+	if s.ExternalNetNS && s.NetNSPath != "" {
+		return filepath.Base(s.NetNSPath)
+	}
 	return fmt.Sprintf("ns-%d", s.Idx)
 }
 
@@ -267,7 +331,7 @@ func (s *Slot) ConfigureInternet(ctx context.Context, network *orchestrator.Sand
 
 	s.firewallCustomRules.Store(true)
 
-	n, err := ns.GetNS(filepath.Join(netNamespacesDir, s.NamespaceID()))
+	n, err := ns.GetNS(s.NamespacePath())
 	if err != nil {
 		return fmt.Errorf("failed to get slot network namespace '%s': %w", s.NamespaceID(), err)
 	}
@@ -307,7 +371,7 @@ func (s *Slot) ResetInternet(ctx context.Context) error {
 		return nil
 	}
 
-	n, err := ns.GetNS(filepath.Join(netNamespacesDir, s.NamespaceID()))
+	n, err := ns.GetNS(s.NamespacePath())
 	if err != nil {
 		return fmt.Errorf("failed to get slot network namespace '%s': %w", s.NamespaceID(), err)
 	}
@@ -326,6 +390,13 @@ func (s *Slot) ResetInternet(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (s *Slot) NamespacePath() string {
+	if s.ExternalNetNS && s.NetNSPath != "" {
+		return s.NetNSPath
+	}
+	return filepath.Join(netNamespacesDir, s.NamespaceID())
 }
 
 func getHostNetworkCIDR() *net.IPNet {

@@ -71,7 +71,8 @@ type Config struct {
 	TotalDiskSizeMB int64
 	HugePages       bool
 
-	Network *orchestrator.SandboxNetworkConfig
+	Network        *orchestrator.SandboxNetworkConfig
+	RuntimeNetwork *orchestrator.SandboxRuntimeNetworkConfig
 
 	Envd EnvdMetadata
 
@@ -256,7 +257,7 @@ func (f *Factory) CreateSandbox(
 		}
 	}()
 
-	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network)
+	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork)
 
 	sandboxFiles := template.Files().NewSandboxFiles(runtime.SandboxID)
 	cleanup.Add(ctx, cleanupFiles(f.config, sandboxFiles))
@@ -506,7 +507,7 @@ func (f *Factory) ResumeSandbox(
 	}()
 
 	// Slot initialization
-	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network)
+	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork)
 
 	// Rootfs initialization
 	overlayPromise := utils.NewPromise(func() (rootfs.Provider, error) {
@@ -1136,10 +1137,25 @@ func getNetworkSlot(
 	networkPool *network.Pool,
 	cleanup *Cleanup,
 	networkConfig *orchestrator.SandboxNetworkConfig,
+	runtimeNetwork *orchestrator.SandboxRuntimeNetworkConfig,
 ) *utils.Promise[*network.Slot] {
 	return utils.NewPromise(func() (*network.Slot, error) {
 		ctx, span := tracer.Start(ctx, "get network-slot")
 		defer span.End()
+
+		if runtimeNetwork.GetMode() == orchestrator.SandboxRuntimeNetworkConfig_CNI_EXTERNAL_NETNS {
+			slot, err := network.NewExternalNetNSSlot(runtimeNetwork.GetNetnsPath(), runtimeNetwork, networkPool.Config())
+			if err != nil {
+				return nil, fmt.Errorf("failed to create external netns slot: %w", err)
+			}
+			if err = slot.CreateNetwork(ctx); err != nil {
+				return nil, fmt.Errorf("failed to create external netns network: %w", err)
+			}
+			cleanup.Add(ctx, func(ctx context.Context) error {
+				return slot.RemoveNetwork()
+			})
+			return slot, nil
+		}
 
 		slot, err := networkPool.Get(ctx, networkConfig)
 		if err != nil {
