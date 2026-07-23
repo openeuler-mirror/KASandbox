@@ -9,19 +9,9 @@ import (
 const annTemplateID = "e2b.dev/template-id"
 const annExposePorts = "e2b.dev/expose-ports" // 新增
 
-type E2BBackendType string
-
-const (
-	BackendGRPC E2BBackendType = "grpc"
-	BackendREST E2BBackendType = "rest"
-)
-
 type E2BConfig struct {
-	Backend               E2BBackendType
 	OrchestratorAddr      string
 	OrchestratorProxyAddr string
-	APIBaseURL            string
-	APIKey                string
 	NodeIP                string
 	CNI                   CNIConfig
 	StateStore            StateStore
@@ -41,12 +31,7 @@ type E2BEngine interface {
 }
 
 func NewE2BEngine(cfg *E2BConfig) E2BEngine {
-	switch cfg.Backend {
-	case BackendREST:
-		return newRestE2BEngine(cfg.APIBaseURL, cfg.APIKey, cfg.StateStore)
-	default:
-		return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.OrchestratorProxyAddr, cfg.NodeIP, cfg.CNI, cfg.StateStore)
-	}
+	return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.OrchestratorProxyAddr, cfg.NodeIP, cfg.CNI, cfg.StateStore)
 }
 
 type e2bState int

@@ -20,7 +20,6 @@ const (
 	defaultContainerdSocket      = "/run/containerd/containerd.sock"
 	defaultOrchestratorAddress   = "localhost:5008"
 	defaultOrchestratorProxyAddr = "localhost:5007"
-	defaultE2BBackend            = "grpc"
 	defaultStateDir              = "/var/lib/cri-multiplex/state"
 )
 
@@ -75,11 +74,8 @@ func autoNodeIP() string {
 func main() {
 	socketPath := flag.String("socket", defaultSocketPath, "Unix socket path for cri-multiplex")
 	containerdSocket := flag.String("containerd-socket", defaultContainerdSocket, "Unix socket path for containerd")
-	e2bBackend := flag.String("e2b-backend", defaultE2BBackend, "E2B backend: grpc or rest")
-	orchestratorAddress := flag.String("orchestrator-address", defaultOrchestratorAddress, "E2B orchestrator gRPC address (for grpc backend)")
+	orchestratorAddress := flag.String("orchestrator-address", defaultOrchestratorAddress, "E2B orchestrator gRPC address")
 	orchestratorProxyAddr := flag.String("orchestrator-proxy-address", defaultOrchestratorProxyAddr, "E2B orchestrator HTTP proxy address (for envd interaction)")
-	e2bAPIURL := flag.String("e2b-api-url", "", "E2B API base URL (for rest backend)")
-	e2bAPIKey := flag.String("e2b-api-key", "", "E2B API key (for rest backend)")
 	nodeIP := flag.String("node-ip", "", "Node IP for host network mode (auto-detected if empty)")
 	stateDir := flag.String("state-dir", defaultStateDir, "cri-multiplex persistent state directory")
 	e2bCNIEnabled := flag.Bool("e2b-cni-enabled", false, "Enable CNI networking for E2B pod sandboxes")
@@ -112,33 +108,26 @@ func main() {
 	containerEng := engine.NewContainerEngine(*containerdSocket)
 	defer containerEng.Close()
 
-	cfg := &engine.E2BConfig{StateStore: stateStore}
-	switch *e2bBackend {
-	case "rest":
-		cfg.Backend = engine.BackendREST
-		cfg.APIBaseURL = *e2bAPIURL
-		cfg.APIKey = *e2bAPIKey
-	default:
-		cfg.Backend = engine.BackendGRPC
-		cfg.OrchestratorAddr = *orchestratorAddress
-		cfg.OrchestratorProxyAddr = *orchestratorProxyAddr
-		// grpc 后端需要 node-ip 用于 PodSandboxStatus 网络状态报告
+	if *nodeIP == "" {
+		*nodeIP = autoNodeIP()
 		if *nodeIP == "" {
-			*nodeIP = autoNodeIP()
-			if *nodeIP == "" {
-				log.Fatal("--node-ip is required (or auto-detection failed). " +
-					"Example: --node-ip=$(hostname -I | awk '{print $1}')")
-			}
-			log.Printf("auto-detected node-ip: %s", *nodeIP)
+			log.Fatal("--node-ip is required (or auto-detection failed). " +
+				"Example: --node-ip=$(hostname -I | awk '{print $1}')")
 		}
-		cfg.NodeIP = *nodeIP
-		cfg.CNI = engine.CNIConfig{
+		log.Printf("auto-detected node-ip: %s", *nodeIP)
+	}
+	cfg := &engine.E2BConfig{
+		OrchestratorAddr:      *orchestratorAddress,
+		OrchestratorProxyAddr: *orchestratorProxyAddr,
+		NodeIP:                *nodeIP,
+		CNI: engine.CNIConfig{
 			Enabled:  *e2bCNIEnabled,
 			ConfDir:  *cniConfDir,
 			BinDir:   *cniBinDir,
 			IfName:   *cniIfName,
 			NetNSDir: *cniNetNSDir,
-		}
+		},
+		StateStore: stateStore,
 	}
 	e2bEng := engine.NewE2BEngine(cfg)
 	defer e2bEng.Close()
@@ -196,8 +185,8 @@ func main() {
 		mux.Stop()
 	}()
 
-	log.Printf("starting cri-multiplex on %s (containerd: %s, e2b backend: %s, node-ip: %s, proxy: %s, state-dir: %s, android-enabled: %v, android-cni-enabled: %v, android-node-ip: %s)",
-		*socketPath, *containerdSocket, *e2bBackend, cfg.NodeIP, cfg.OrchestratorProxyAddr, *stateDir, *androidEnabled, *androidCNIEnabled, *androidNodeIP)
+	log.Printf("starting cri-multiplex on %s (containerd: %s, orchestrator: %s, node-ip: %s, proxy: %s, state-dir: %s, android-enabled: %v, android-cni-enabled: %v, android-node-ip: %s)",
+		*socketPath, *containerdSocket, cfg.OrchestratorAddr, cfg.NodeIP, cfg.OrchestratorProxyAddr, *stateDir, *androidEnabled, *androidCNIEnabled, *androidNodeIP)
 	if err := mux.Start(*socketPath); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}

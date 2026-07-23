@@ -111,40 +111,38 @@ for entry in "${SCRIPTS[@]}"; do
                     continue
                 fi
                 ;;
-            07|08|09|10|11|14|15|16)
-                log_info "切换 cri-multiplex 到 CNI 模式，用于 kubelet/CNI 用例 ..."
+            07|08|09|10|11|12|13|14|15|16|17)
+                log_info "切换 cri-multiplex 到 CNI+Android runtime 模式，用于 07 及之后用例 ..."
                 set +e
-                switch_output=$(E2B_CNI_ENABLED=1 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" 2>&1)
+                switch_output=$(start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式" 2>&1)
                 switch_code=$?
                 set -e
                 echo "${switch_output}"
                 if [ ${switch_code} -ne 0 ]; then
-                    RESULTS+=("01-cni|切换 cri-multiplex 到 CNI 模式|FAIL(0/0/0)")
+                    RESULTS+=("01-cni-android|切换 cri-multiplex 到 CNI+Android runtime 模式|FAIL(0/0/0)")
                     TOTAL_FAIL=$((TOTAL_FAIL+1))
                     continue
                 fi
                 ;;
-            12|13|17)
-                log_info "Android 用例会自行切换 cri-multiplex 到 CNI+Android runtime 模式 ..."
+            18|19)
+                log_info "[${num}] 用例内部会以 CNI+Android runtime 模式启动 cri-multiplex，并使用独立 state-dir ..."
                 ;;
         esac
     else
         if [ "${num}" = "01" ]; then
             env_args=(E2B_CNI_ENABLED=0 E2B_FORCE_RESTART=1)
         elif [ "${num}" = "07" ]; then
-            log_info "切换 cri-multiplex 到 CNI 模式，用于 kubelet/CNI 用例 ..."
+            log_info "切换 cri-multiplex 到 CNI+Android runtime 模式，用于 07 及之后用例 ..."
             set +e
-            switch_output=$(E2B_CNI_ENABLED=1 "${SCRIPT_DIR}/01_start_multiplex.sh" 2>&1)
+            switch_output=$(start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式" 2>&1)
             switch_code=$?
             set -e
             echo "${switch_output}"
             if [ ${switch_code} -ne 0 ]; then
-                RESULTS+=("01-cni|切换 cri-multiplex 到 CNI 模式|FAIL(0/0/0)")
+                RESULTS+=("01-cni-android|切换 cri-multiplex 到 CNI+Android runtime 模式|FAIL(0/0/0)")
                 TOTAL_FAIL=$((TOTAL_FAIL+1))
                 continue
             fi
-        elif [ "${num}" = "12" ] || [ "${num}" = "13" ] || [ "${num}" = "17" ]; then
-            log_info "Android 用例会自行切换 cri-multiplex 到 CNI+Android runtime 模式 ..."
         fi
     fi
 

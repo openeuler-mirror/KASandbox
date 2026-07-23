@@ -111,7 +111,6 @@ cd "${MULTIPLEX_DIR}"
 args=(
     -socket "${SOCKET}"
     -containerd-socket "${CONTAINERD_SOCKET}"
-    -e2b-backend grpc
     -orchestrator-address "${ORCHESTRATOR_ADDRESS}"
     -orchestrator-proxy-address "${ORCHESTRATOR_PROXY_ADDRESS}"
     -state-dir "${STATE_DIR}"

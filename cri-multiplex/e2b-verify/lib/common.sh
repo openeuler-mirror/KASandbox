@@ -130,6 +130,33 @@ require_cri_multiplex_android_cni_enabled() {
     log_pass "cri-multiplex 已启用 Android CNI 模式"
 }
 
+start_cni_android_multiplex() {
+    local desc="${1:-启动 cri-multiplex CNI+Android runtime 模式}"
+    local adb_port_start="${ANDROID_ADB_PORT_START:-${ANDROID_ADB_PORT:-6520}}"
+    local base_instance_start="${ANDROID_BASE_INSTANCE_NUM_START:-${ANDROID_BASE_INSTANCE_NUM:-1}}"
+
+    log_info "${desc} ..."
+    if ! STATE_DIR="${STATE_DIR:-/var/lib/cri-multiplex/state}" \
+        ANDROID_ENABLED=1 \
+        E2B_CNI_ENABLED=1 \
+        ANDROID_CNI_ENABLED=1 \
+        ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}" \
+        ANDROID_ADB_PORT_START="${adb_port_start}" \
+        ANDROID_BASE_INSTANCE_NUM_START="${base_instance_start}" \
+        E2B_FORCE_RESTART=1 \
+        "${SCRIPT_DIR_COMMON}/01_start_multiplex.sh" >&2; then
+        log_fail "${desc} 失败"
+        return 1
+    fi
+    require_cri_multiplex_cni_enabled || return 1
+    require_cri_multiplex_android_cni_enabled || return 1
+    if ! cri_multiplex_cmdline | grep -q -- "-android-enabled"; then
+        log_fail "cri-multiplex 未启用 -android-enabled"
+        return 1
+    fi
+    log_pass "cri-multiplex 已启用 CNI+Android runtime 模式"
+}
+
 require_refresh_script() {
     local refresh_script="$1"
     if [ ! -f "${refresh_script}" ]; then
