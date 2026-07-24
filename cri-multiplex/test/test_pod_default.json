@@ -1,0 +1,15 @@
+{
+  "metadata": {
+    "name": "test-default-pod",
+    "namespace": "default",
+    "uid": "test-uid-001"
+  },
+  "log_directory": "/tmp",
+  "linux": {
+    "security_context": {
+      "namespace_options": {
+        "network": 2
+      }
+    }
+  }
+}
