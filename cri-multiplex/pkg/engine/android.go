@@ -23,12 +23,15 @@ import (
 const (
 	androidRuntimeHandler = "android"
 	androidDefaultImage   = "android.dev/cvd:local"
+	androidCVDADBBasePort = 6520
 
 	annAndroidADBPort    = "android.dev/adb-port"
 	annAndroidWebRTCPort = "android.dev/webrtc-port"
 	annAndroidLaunchArgs = "android.dev/launch-args"
 	annAndroidInstanceID = "android.dev/instance-id"
 	annAndroidBaseInst   = "android.dev/base-instance-num"
+	annAndroidGuestPorts = "android.dev/guest-service-ports"
+	annAndroidGuestDNS   = "android.dev/guest-dns-servers"
 )
 
 type AndroidConfig struct {
@@ -81,6 +84,10 @@ type AndroidSandboxRecord struct {
 	PodIP           string
 	NetNSName       string
 	NetNSPath       string
+	GuestIP         string
+	GuestGateway    string
+	GuestPrefix     string
+	TapName         string
 	LaunchPID       int
 	LaunchPGID      int
 	LaunchLogPath   string
@@ -129,6 +136,8 @@ type androidRuntimeOps struct {
 	validateHostPrerequisites func(*AndroidEngine) error
 	startCVD                  func(*AndroidEngine, context.Context, *AndroidSandboxRecord) error
 	stopCVD                   func(*AndroidEngine, context.Context, *AndroidSandboxRecord) error
+	configureGuestNetwork     func(*AndroidEngine, context.Context, *AndroidSandboxRecord) error
+	cleanupGuestNetwork       func(*AndroidEngine, context.Context, *AndroidSandboxRecord)
 }
 
 func defaultAndroidRuntimeOps() androidRuntimeOps {
@@ -136,6 +145,8 @@ func defaultAndroidRuntimeOps() androidRuntimeOps {
 		validateHostPrerequisites: (*AndroidEngine).validateHostPrerequisites,
 		startCVD:                  (*AndroidEngine).startCVD,
 		stopCVD:                   (*AndroidEngine).stopCVD,
+		configureGuestNetwork:     (*AndroidEngine).configureGuestNetwork,
+		cleanupGuestNetwork:       (*AndroidEngine).cleanupGuestNetwork,
 	}
 }
 
@@ -160,6 +171,9 @@ func NewAndroidEngine(cfg AndroidConfig) *AndroidEngine {
 	}
 	if cfg.CNI.NetNSPrefix == "" {
 		cfg.CNI.NetNSPrefix = "android-"
+	}
+	if cfg.CNI.IfName == "" {
+		cfg.CNI.IfName = "eth0"
 	}
 	return &AndroidEngine{
 		cfg:            cfg,
@@ -328,8 +342,7 @@ func (e *AndroidEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 	if err != nil {
 		return nil, err
 	}
-	defaultADBPort := e.cfg.ADBPortStart + baseInstanceNum - e.cfg.BaseInstanceNumStart
-	adbPort, err := e.allocatePortLocked(req.Config.Annotations[annAndroidADBPort], defaultADBPort, sandboxID)
+	adbPort, err := e.allocateADBPortLocked(req.Config.Annotations[annAndroidADBPort], baseInstanceNum, sandboxID)
 	if err != nil {
 		delete(e.instanceOwners, baseInstanceNum)
 		return nil, err
@@ -404,6 +417,9 @@ func (e *AndroidEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 	if !ok {
 		return &runtime.StopPodSandboxResponse{}, nil
 	}
+	if e.ops.cleanupGuestNetwork != nil {
+		e.ops.cleanupGuestNetwork(e, ctx, rec)
+	}
 	if err := e.ops.stopCVD(e, ctx, rec); err != nil {
 		log.Printf("[AndroidEngine] StopPodSandbox warning: sandbox=%s stop failed: %v", req.PodSandboxId, err)
 	}
@@ -433,6 +449,9 @@ func (e *AndroidEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 	e.mu.Unlock()
 	if !ok {
 		return &runtime.RemovePodSandboxResponse{}, nil
+	}
+	if e.ops.cleanupGuestNetwork != nil {
+		e.ops.cleanupGuestNetwork(e, ctx, rec)
 	}
 	if err := e.ops.stopCVD(e, ctx, rec); err != nil {
 		log.Printf("[AndroidEngine] RemovePodSandbox warning: sandbox=%s stop failed: %v", req.PodSandboxId, err)
@@ -482,6 +501,15 @@ func (e *AndroidEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSa
 	anns["android.dev/cni-enabled"] = strconv.FormatBool(e.cfg.CNI.Enabled)
 	if rec.PodIP != "" {
 		anns["android.dev/pod-ip"] = rec.PodIP
+	}
+	if rec.GuestIP != "" {
+		anns["android.dev/guest-ip"] = rec.GuestIP
+	}
+	if rec.GuestGateway != "" {
+		anns["android.dev/guest-gateway"] = rec.GuestGateway
+	}
+	if rec.TapName != "" {
+		anns["android.dev/guest-tap"] = rec.TapName
 	}
 	if rec.NetNSPath != "" {
 		anns["android.dev/cni-netns"] = rec.NetNSPath
@@ -604,6 +632,15 @@ func (e *AndroidEngine) StartContainer(ctx context.Context, req *runtime.StartCo
 		e.mu.Unlock()
 		return nil, err
 	}
+	if e.ops.configureGuestNetwork != nil {
+		if err := e.ops.configureGuestNetwork(e, ctx, pod); err != nil {
+			e.mu.Lock()
+			pod.State = androidSandboxUnknown
+			e.persistPodLocked(sandboxID)
+			e.mu.Unlock()
+			return nil, err
+		}
+	}
 
 	e.mu.Lock()
 	pod.State = androidSandboxRunning
@@ -628,6 +665,9 @@ func (e *AndroidEngine) StopContainer(ctx context.Context, req *runtime.StopCont
 	container := e.containers[req.ContainerId]
 	e.mu.Unlock()
 	if pod != nil {
+		if e.ops.cleanupGuestNetwork != nil {
+			e.ops.cleanupGuestNetwork(e, ctx, pod)
+		}
 		if err := e.ops.stopCVD(e, ctx, pod); err != nil {
 			log.Printf("[AndroidEngine] StopContainer warning: container=%s stop failed: %v", req.ContainerId, err)
 		}
@@ -835,6 +875,27 @@ func (e *AndroidEngine) allocatePortLocked(requested string, start int, owner st
 		}
 	}
 	return 0, status.Error(codes.ResourceExhausted, "no android host ports available")
+}
+
+func (e *AndroidEngine) allocateADBPortLocked(requested string, baseInstanceNum int, owner string) (int, error) {
+	// Cuttlefish derives adb_connector's TCP listen port from base_instance_num.
+	// The port is not controlled by launch_cvd through the CRI annotation, so a
+	// mismatched requested port would only turn into a later readiness timeout.
+	cvdPort := androidCVDADBBasePort + baseInstanceNum - 1
+	if requested != "" {
+		port, err := strconv.Atoi(requested)
+		if err != nil || port <= 0 || port > 65535 {
+			return 0, status.Errorf(codes.InvalidArgument, "invalid android adb port %q", requested)
+		}
+		if port != cvdPort {
+			return 0, status.Errorf(codes.InvalidArgument, "android adb port %d does not match cuttlefish base_instance_num %d port %d", port, baseInstanceNum, cvdPort)
+		}
+	}
+	if current, ok := e.portOwners[cvdPort]; ok && current != owner {
+		return 0, status.Errorf(codes.ResourceExhausted, "android adb port %d is already allocated", cvdPort)
+	}
+	e.portOwners[cvdPort] = owner
+	return cvdPort, nil
 }
 
 func (e *AndroidEngine) allocateInstanceNumLocked(requested string, owner string) (int, error) {
@@ -1151,6 +1212,12 @@ func androidPodStateFromRecords(pod *AndroidSandboxRecord, container *AndroidCon
 		LaunchPID:       pod.LaunchPID,
 		LaunchPGID:      pod.LaunchPGID,
 		LaunchLogPath:   pod.LaunchLogPath,
+		CNIEnabled:      pod.CNIRecord != nil,
+		CNIRecord:       cloneCNIRecord(pod.CNIRecord),
+		GuestIP:         pod.GuestIP,
+		GuestGateway:    pod.GuestGateway,
+		GuestPrefix:     pod.GuestPrefix,
+		TapName:         pod.TapName,
 	}
 	if container != nil {
 		state.ContainerID = container.ContainerID
@@ -1187,6 +1254,14 @@ func androidSandboxRecordFromState(state AndroidPodState) *AndroidSandboxRecord 
 		LaunchPID:       state.LaunchPID,
 		LaunchPGID:      state.LaunchPGID,
 		LaunchLogPath:   state.LaunchLogPath,
+		CNIRecord:       cloneCNIRecord(state.CNIRecord),
+		PodIP:           cniPodIP(state.CNIRecord),
+		NetNSName:       cniNetNSName(state.CNIRecord),
+		NetNSPath:       cniNetNSPath(state.CNIRecord),
+		GuestIP:         state.GuestIP,
+		GuestGateway:    state.GuestGateway,
+		GuestPrefix:     state.GuestPrefix,
+		TapName:         state.TapName,
 		State:           state.State,
 		CreatedAt:       state.CreatedAt,
 		StartedAt:       state.StartedAt,
