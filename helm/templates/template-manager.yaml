@@ -46,6 +46,9 @@ spec:
         - name: host-var-run-netns
           mountPath: /var/run/netns
           mountPropagation: HostToContainer
+        - name: harbor-ca-cert
+          mountPath: /etc/nginx/ssl/harbor.crt
+          readOnly: true
         securityContext:
           privileged: true
         image: {{ .Values.registry }}/orchestrator
@@ -100,11 +103,53 @@ spec:
           value: "{{ .Values.templateManagerPort }}"
         - name: GIN_MODE
           value: "release"
+        - name: SSL_CERT_FILE
+          value: "/etc/nginx/ssl/harbor.crt"
+        # --- Mooncake ---
+        - name: GLOG_logtostderr
+          value: "{{ .Values.mooncakeGlogLogtostderr }}"
+        - name: MOONCAKE_LOCAL_HOSTNAME
+          valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+        - name: MOONCAKE_MASTER_ADDR
+          value: "{{ .Values.mooncakeMasterAddr }}"
+        - name: MOONCAKE_METADATA_SERVER
+          value: "{{ .Values.mooncakeMetadataServer }}"
+        - name: MC_TCP_BIND_ADDRESS
+          valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+        - name: MOONCAKE_LOCAL_BUFFER_SIZE
+          value: "{{ .Values.mooncakeLocalBufferSize }}"
+        - name: MOONCAKE_GLOBAL_SEGMENT_SIZE
+          value: "{{ .Values.mooncakeGlobalSegmentSize }}"
+        - name: MOONCAKE_PROTOCOL
+          value: "{{ .Values.mooncakeProtocol }}"
+        - name: MC_URMA_TRANS_MODE
+          value: "{{ .Values.mcUrmaTransMode }}"
+        - name: MOONCAKE_DEVICE_NAME
+          value: "{{ .Values.mooncakeDeviceName }}"
+        - name: MC_LOG_ENABLE
+          value: "{{ .Values.mcLogEnable }}"
+        - name: MC_LOG_DIR
+          value: "{{ .Values.mcLogDir }}"
+        - name: MC_LOG_LEVEL
+          value: "{{ .Values.mcLogLevel }}"
+        - name: MC_STORE_LOCAL_HOT_CACHE_USE_SHM
+          value: "{{ .Values.mcStoreLocalHotCacheUseShm }}"
+        - name: MC_STORE_LOCAL_HOT_BLOCK_SIZE
+          value: "{{ .Values.mcStoreLocalHotBlockSize }}"
+        - name: MC_STORE_LOCAL_HOT_ADMISSION_THRESHOLD
+          value: "{{ .Values.mcStoreLocalHotAdmissionThreshold }}"
+        - name: MC_SLICE_SIZE
+          value: "{{ .Values.mcSliceSize }}"
+        - name: MC_WORKERS_PER_CTX
+          value: "{{ .Values.mcWorkersPerCtx }}"
+        - name: MC_MAX_WR
+          value: "{{ .Values.mcMaxWr }}"
         resources:
           requests:
-            cpu: 2
-            memory: 8Gi
-          limits:   { cpu: "2", memory: "8Gi" }
+            cpu: {{ .Values.templateManagerResourcesCpuCount }}m
+            memory: {{ .Values.templateManagerResourcesMemoryMb }}Mi
+            hugepages-2Mi: 8Gi
+          limits:   { cpu: "{{ .Values.templateManagerLimitsCpuCount }}m", memory: "{{ .Values.templateManagerLimitsMemoryMb }}Mi", hugepages-2Mi: "8Gi" }
         livenessProbe:
           exec:
             command: ["/bin/grpc_health_probe", "-addr=:{{ .Values.templateManagerPort | int }}"]
@@ -155,6 +200,10 @@ spec:
         hostPath:
           path: /var/run/netns
           type: DirectoryOrCreate
+      - name: harbor-ca-cert
+        hostPath:
+          path: /etc/harbor/certs/harbor.crt
+          type: File
 ---
 apiVersion: v1
 kind: Service

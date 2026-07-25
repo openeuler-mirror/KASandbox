@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw-deploy-for-local-exec
+  labels:
+    app: openclaw-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openclaw-deploy-for-local-exec
+  template:
+    metadata:
+      labels:
+        app: openclaw-deploy-for-local-exec
+    spec:
+      # runtimeClassName: kata-qemu-virtcca
+      containers:
+        - name: openclaw
+          image: swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/openclaw-openviking:0413
+          env:
+            - name: OPENVIKING_BASE_URL
+              value: "http://openviking:31933"  #
+            - name: ZAI_API_KEY
+              value: a2c824fafcca43dd8f033a5992c98fb5.hkwOV45wudADf1EW
+            - name: OPENCLAW_DEFAULT_MODEL
+              value: glm-4.6v
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+              name: http
+              protocol: TCP
+            - containerPort: 18791
+              name: openclaw
+              protocol: TCP
+            - containerPort: 18789
+              name: wss
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /root/.openclaw
+              name: openclaw-data
+      volumes:
+        - name: openclaw-data
+          hostPath:
+            path: /opt/e2b-infra/openclaw-data
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-deploy-for-local-exec
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+      nodePort: 30007
+    - name: openclaw
+      port: 18791
+      targetPort: openclaw
+      protocol: TCP
+      nodePort: 30006
+    - name: wss
+      port: 18789
+      targetPort: wss
+      protocol: TCP
+      nodePort: 30105
+  selector:
+    app: openclaw-deployment

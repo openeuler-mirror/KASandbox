@@ -1,0 +1,160 @@
+{{- if .Values.webhook.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: e2b-webhook
+  namespace: e2b
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: e2b-webhook
+  namespace: e2b
+  labels:
+    app.kubernetes.io/name: e2b-webhook
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: e2b-webhook
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: e2b-webhook
+    spec:
+      serviceAccountName: e2b-webhook
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: e2b-webhook
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: e2b-webhook
+          image: "{{ .Values.registry }}/{{ .Values.image.webhook }}"
+          imagePullPolicy: {{ .Values.pullPolicy }}
+          ports:
+            - name: webhook
+              containerPort: 8443
+              protocol: TCP
+          env:
+            - name: TLS_CERT_FILE
+              value: /tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /tls/tls.key
+            - name: PORT
+              value: "8443"
+            - name: E2B_API_URL
+              value: "http://api.e2b.svc.cluster.local:{{ .Values.apiPort }}"
+            - name: E2B_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: e2b-api-key
+                  key: api-key
+                  optional: true
+            - name: E2B_API_TIMEOUT
+              value: "4s"
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: webhook
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: webhook
+              scheme: HTTPS
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: tls
+          secret:
+            secretName: e2b-webhook-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: e2b-webhook
+  namespace: e2b
+spec:
+  selector:
+    app.kubernetes.io/name: e2b-webhook
+  ports:
+    - name: webhook
+      port: 443
+      targetPort: webhook
+      protocol: TCP
+---
+# MutatingWebhookConfiguration: 拦截 Pod 与 BatchSandbox 的 CREATE。
+# caBundle 由 deploy/deploy.sh 在 helm install 后注入 (占位为空)。
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: e2b-webhook
+  labels:
+    app.kubernetes.io/name: e2b-webhook
+webhooks:
+  - name: pod.e2b-webhook.e2b.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        name: e2b-webhook
+        namespace: e2b
+        path: /mutate
+        port: 443
+      caBundle: ""                 # 由 deploy/deploy.sh 注入
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        operations: ["CREATE"]
+        scope: "*"
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "kube-public", "kube-node-lease", "e2b"]
+    objectSelector:                # 只处理由 BatchSandbox 控制器创建的 spotbox pod
+      matchExpressions:
+        - key: batch-sandbox.sandbox.opensandbox.io/pod-index
+          operator: Exists
+  - name: batchsandbox.e2b-webhook.e2b.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore          # CRD 缺失时不阻塞其它资源
+    matchPolicy: Equivalent
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        name: e2b-webhook
+        namespace: e2b
+        path: /mutate
+        port: 443
+      caBundle: ""                 # 由 deploy/deploy.sh 注入
+    rules:
+      - apiGroups: ["sandbox.opensandbox.io"]
+        apiVersions: ["v1alpha1"]
+        resources: ["batchsandboxes"]
+        operations: ["CREATE"]
+        scope: "*"
+{{- end }}

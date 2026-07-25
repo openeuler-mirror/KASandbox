@@ -39,7 +39,7 @@ spec:
         - name: TEMPLATE_MANAGER_HOST
           value: "{{ .Values.templateManagerHost }}"
         - name: POSTGRES_CONNECTION_STRING
-          value: "{{ .Values.postgresConnectionString }}"
+          value: "postgresql://{{ .Values.postgresUser }}:{{ .Values.postgresPassword }}@{{ .Values.postgresUrl }}:{{ .Values.postgresPort | int }}/mydatabase?sslmode=disable"
         - name: SUPABASE_JWT_SECRETS
           value: "{{ .Values.supabaseJwtSecrets }}"
         - name: CLICKHOUSE_CONNECTION_STRING
@@ -82,7 +82,7 @@ spec:
             cpu: 250m
             memory: 128Mi
       - name: wait-redis
-        image: busybox:latest
+        image: "{{ .Values.registry }}/{{ .Values.image.busybox }}"
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -90,6 +90,17 @@ spec:
         - |
           until nc -z redis.e2b.svc.cluster.local {{ .Values.redisPort | int }}; do
             echo waiting for redis...
+            sleep 1
+          done
+      - name: wait-postgres
+        image: "{{ .Values.registry }}/{{ .Values.image.busybox }}"
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until nc -z {{ .Values.postgresUrl }} {{ .Values.postgresPort | int }}; do
+            echo waiting for postgres...
             sleep 1
           done
       containers:
@@ -113,7 +124,7 @@ spec:
         - name: API_GRPC_PORT
           value: "{{ .Values.apiGrpcPort }}"
         - name: POSTGRES_CONNECTION_STRING
-          value: "{{ .Values.postgresConnectionString }}"
+          value: "postgresql://{{ .Values.postgresUser }}:{{ .Values.postgresPassword }}@{{ .Values.postgresUrl }}:{{ .Values.postgresPort | int }}/mydatabase?sslmode=disable"
         - name: SUPABASE_JWT_SECRETS
           value: "{{ .Values.supabaseJwtSecrets }}"
         - name: CLICKHOUSE_CONNECTION_STRING
@@ -148,11 +159,11 @@ spec:
           value: "{{ .Values.sandboxStorageBackend }}"
         resources:
           requests:
-            cpu: 2000m
-            memory: 2048Mi
+            cpu: {{ .Values.apiResourcesCpuCount }}m
+            memory: {{ .Values.apiResourcesMemoryMb }}Mi
           limits:
-            cpu: 2000m
-            memory: 4096Mi
+            cpu: {{ .Values.apiLimitsCpuCount }}m
+            memory: {{ .Values.apiLimitsMemoryMb }}Mi
         livenessProbe:
           httpGet:
             path: /health
