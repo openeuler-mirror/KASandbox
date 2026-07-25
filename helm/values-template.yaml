@@ -7,8 +7,13 @@ image:
   api: "${API_DOCKER_IMAGE}"
   edge: "${CLIENT_PROXY_DOCKER_IMAGE}"
   migrator: "${DB_MIGRATOR_DOCKER_IMAGE}"
+  busybox: "${BUSYBOX_IMAGE}"
+  webhook: "${WEBHOOK_DOCKER_IMAGE}"
+# e2b-webhook 开关：true 部署，false 不部署（默认）
+webhook:
+  enabled: ${ENABLE_WEBHOOK}
 pullPolicy: IfNotPresent
-postgresConnectionString: ${POSTGRES_CONNECTION_STRING}
+postgresUrl: postgres.e2b.svc.cluster.local
 sandboxStorageBackend: ${SANDBOX_STORAGE_BACKEND}
 redisUrl: redis.e2b.svc.cluster.local
 redisClusterUrl: 
@@ -38,6 +43,12 @@ clickhouseResourcesCpuCount: ${CLICKHOUSE_RESOURCES_CPU_COUNT}
 clickhouseResourcesMemoryMb: ${CLICKHOUSE_RESOURCES_MEMORY_MB}
 clickhouseServerSecret: ${CLICKHOUSE_SERVER_SECRET}
 clickhouseHost: ${CLICKHOUSE_HOST}
+
+# --- api ---
+apiResourcesCpuCount: ${API_RESOURCES_CPU_COUNT}
+apiResourcesMemoryMb: ${API_RESOURCES_MEMORY_MB}
+apiLimitsCpuCount: ${API_LIMITS_CPU_COUNT}
+apiLimitsMemoryMb: ${API_LIMITS_MEMORY_MB}
 
 # --- Loki / Logs collector ---
 logsCollectorPublicIp: ${LOGS_COLLECTOR_PUBLIC_IP}
@@ -84,8 +95,44 @@ grafanaUsername: "${GRAFANA_USERNAME}"
 grafanaOtelCollectorToken: "${GRAFANA_OTEL_COLLECTOR_TOKEN}"
 grafanaOtlpUrl: "${GRAFANA_OTLP_URL}"
 
+# --- postgres ---
+postgresImage: ${POSTGRES_DOCKER_IMAGE}
+postgresPort: ${POSTGRES_PORT}
+postgresResourcesCpuCount: ${POSTGRES_RESOURCES_CPU_COUNT}
+postgresResourcesMemoryMb: ${POSTGRES_RESOURCES_MEMORY_MB}
+postgresLimitsCpuCount: ${POSTGRES_LIMITS_CPU_COUNT}
+postgresLimitsMemoryMb: ${POSTGRES_LIMITS_MEMORY_MB}
+postgresUser: ${POSTGRES_USER}
+postgresPassword: ${POSTGRES_PASSWORD}
+
+
+
 # --- template-manager ---
 buildCacheBucketName: "${BUILD_CACHE_BUCKET_NAME}"
+templateManagerResourcesCpuCount: ${TEMPLATE_MANAGER_RESOURCES_CPU_COUNT}
+templateManagerResourcesMemoryMb: ${TEMPLATE_MANAGER_RESOURCES_MEMORY_MB}
+templateManagerLimitsCpuCount: ${TEMPLATE_MANAGER_LIMITS_CPU_COUNT}
+templateManagerLimitsMemoryMb: ${TEMPLATE_MANAGER_LIMITS_MEMORY_MB}
+
+# --- Mooncake ---
+mooncakeNodeIp: "${NODE_IP}"
+mooncakeGlogLogtostderr: "${GLOG_logtostderr}"
+mooncakeMasterAddr: "${MOONCAKE_MASTER_ADDR}"
+mooncakeMetadataServer: "${MOONCAKE_METADATA_SERVER}"
+mooncakeLocalBufferSize: "${MOONCAKE_LOCAL_BUFFER_SIZE}"
+mooncakeGlobalSegmentSize: "${MOONCAKE_GLOBAL_SEGMENT_SIZE}"
+mooncakeProtocol: "${MOONCAKE_PROTOCOL}"
+mcUrmaTransMode: "${MC_URMA_TRANS_MODE}"
+mooncakeDeviceName: "${MOONCAKE_DEVICE_NAME}"
+mcLogEnable: "${MC_LOG_ENABLE}"
+mcLogDir: "${MC_LOG_DIR}"
+mcLogLevel: "${MC_LOG_LEVEL}"
+mcStoreLocalHotCacheUseShm: "${MC_STORE_LOCAL_HOT_CACHE_USE_SHM}"
+mcStoreLocalHotBlockSize: "${MC_STORE_LOCAL_HOT_BLOCK_SIZE}"
+mcStoreLocalHotAdmissionThreshold: "${MC_STORE_LOCAL_HOT_ADMISSION_THRESHOLD}"
+mcSliceSize: "${MC_SLICE_SIZE}"
+mcWorkersPerCtx: "${MC_WORKERS_PER_CTX}"
+mcMaxWr: "${MC_MAX_WR}"
 
 # --- Ports ---
 apiPort: ${API_PORT}

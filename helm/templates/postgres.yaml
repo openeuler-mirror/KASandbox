@@ -1,0 +1,100 @@
+# PostgreSQL Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: e2b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # 对齐 edge 节点亲和规则，调度到同一节点池
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/{{ .Values.api.pool }}
+                operator: Exists
+
+      containers:
+      - name: postgres
+        image: "{{ .Values.registry }}/{{ .Values.postgresImage }}"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: {{ .Values.postgresPort | int }}
+          name: db-port
+
+        # PostgreSQL 基础环境变量
+        env:
+        - name: POSTGRES_USER
+          value: "{{ .Values.postgresUser }}"
+        - name: POSTGRES_PASSWORD
+          value: "{{ .Values.postgresPassword }}"
+
+        # 资源配额（和 edge 风格统一，使用 Values 注入）
+        resources:
+          requests:
+            cpu: {{ .Values.postgresResourcesCpuCount }}m
+            memory: {{ .Values.postgresResourcesMemoryMb }}Mi
+          limits:
+            cpu: {{ .Values.postgresLimitsCpuCount }}m
+            memory: {{ .Values.postgresLimitsMemoryMb }}Mi
+
+        # 存活探针：postgres 专用健康检查
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - exec pg_isready -U {{ .Values.postgresUser }} -h 127.0.0.1 -p {{ .Values.postgresPort | int }}
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        # 就绪探针
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - exec pg_isready -U {{ .Values.postgresUser }} -h 127.0.0.1 -p {{ .Values.postgresPort | int }}
+          initialDelaySeconds: 20
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        # 持久化存储（必加，数据不丢失）
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+
+      volumes:
+       - name: postgres-data
+         hostPath:
+          path: /data/postgres
+          type: DirectoryOrCreate
+---
+# PostgreSQL Service 内部访问
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: e2b
+spec:
+  clusterIP: None
+  ports:
+  - port: {{ .Values.postgresPort | int }}
+    targetPort: db-port
+    name: db
+  selector:
+    app: postgres
