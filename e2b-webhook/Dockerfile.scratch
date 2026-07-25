@@ -1,0 +1,7 @@
+FROM scratch
+
+COPY e2b-webhook /usr/local/bin/e2b-webhook
+
+EXPOSE 8443
+
+ENTRYPOINT ["e2b-webhook"]
