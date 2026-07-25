@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"os/user"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -106,6 +107,19 @@ func TestConfigureProcessEnvDoesNotInheritParentEnvironment(t *testing.T) {
 	require.Equal(t, "process", env["PROCESS_ENV"])
 	require.Equal(t, "process", env["OVERRIDDEN_ENV"])
 	require.NotContains(t, env, "E2B_SECRET_TOKEN")
+}
+
+func TestProcessSignalUsesSignalConstants(t *testing.T) {
+	signal, ok := ProcessSignal(processRpc.Signal_SIGNAL_SIGKILL)
+	require.True(t, ok)
+	require.Equal(t, syscall.SIGKILL, signal)
+
+	signal, ok = ProcessSignal(processRpc.Signal_SIGNAL_SIGTERM)
+	require.True(t, ok)
+	require.Equal(t, syscall.SIGTERM, signal)
+
+	_, ok = ProcessSignal(processRpc.Signal_SIGNAL_UNSPECIFIED)
+	require.False(t, ok)
 }
 
 func envSliceToMap(env []string) map[string]string {
