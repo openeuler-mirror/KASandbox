@@ -22,6 +22,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/config"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/filesystem"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/oci"
+	coreraw "github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/raw"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/layer"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/metrics"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/phases"
@@ -44,6 +45,8 @@ const (
 	baseLayerTimeout = 10 * time.Minute
 
 	defaultUser = "root"
+
+	rawWindowsInitialEnvdVersion = "0.0.0"
 )
 
 var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/phases/base")
@@ -107,6 +110,8 @@ func (bb *BaseBuilder) String(ctx context.Context) (string, error) {
 	var baseSource string
 	if bb.Config.FromTemplate != nil {
 		baseSource = "FROM TEMPLATE " + bb.Config.FromTemplate.GetAlias()
+	} else if bb.Config.UsesRawImage() {
+		baseSource = "FROM RAW " + bb.Config.FromImageRaw
 	} else {
 		fromImage := bb.Config.FromImage
 		if fromImage == "" {
@@ -129,6 +134,33 @@ func (bb *BaseBuilder) Metadata() phases.PhaseMeta {
 	}
 }
 
+func (bb *BaseBuilder) ValidateSourceCapability(ctx context.Context, userLogger logger.Logger) error {
+	var err error
+	switch {
+	case bb.Config.UsesRawImage():
+		if bb.Config.GuestOS() != vmm.OsWindows {
+			err = fmt.Errorf("the current raw-image build implementation only supports Windows guests, got %q", bb.Config.GuestOS())
+		} else if _, parseErr := coreraw.ParseSource(bb.Config.FromImageRaw); parseErr != nil {
+			err = parseErr
+		}
+	case !bb.Config.UsesRawImage() && bb.Config.FromTemplate == nil && bb.Config.GuestOS() != vmm.OsLinux:
+		err = fmt.Errorf("the current OCI build implementation only supports Linux guests, got %q", bb.Config.GuestOS())
+	}
+
+	if err == nil {
+		return nil
+	}
+
+	userLogger.Error(ctx, err.Error())
+	bb.logger.Error(ctx, "unsupported template source and guest OS configuration",
+		logger.WithTemplateID(bb.Config.TemplateID),
+		logger.WithBuildID(bb.Template.BuildID),
+		zap.Error(err),
+	)
+
+	return phases.NewPhaseBuildError(bb.Metadata(), err)
+}
+
 func (bb *BaseBuilder) Build(
 	ctx context.Context,
 	userLogger logger.Logger,
@@ -141,7 +173,14 @@ func (bb *BaseBuilder) Build(
 	))
 	defer span.End()
 
-	baseMetadata, err := bb.buildLayerFromOCI(
+	build := bb.buildLayerFromOCI
+	if bb.Config.UsesRawImage() {
+		// Raw images skip OCI conversion; the disk is registered as the rootfs
+		// as-is.
+		build = bb.buildLayerFromRaw
+	}
+
+	baseMetadata, err := build(
 		ctx,
 		userLogger,
 		currentLayer.Metadata,
@@ -156,6 +195,131 @@ func (bb *BaseBuilder) Build(
 		Cached:   false,
 		Hash:     currentLayer.Hash,
 	}, nil
+}
+
+// buildLayerFromRaw builds the base layer from a raw (non-OCI) disk image. The
+// guest image already contains envd, so this path skips the OCI provisioning,
+// ext4 integrity checks and disk enlargement that the OCI path performs. It
+// downloads the raw disk, registers it as the rootfs and snapshots a booted
+// sandbox into the base layer.
+func (bb *BaseBuilder) buildLayerFromRaw(
+	ctx context.Context,
+	userLogger logger.Logger,
+	baseMetadata metadata.Template,
+	hash string,
+) (metadata.Template, error) {
+	templateBuildDir := filepath.Join(bb.BuilderConfig.TemplatesDir, baseMetadata.Template.BuildID)
+	err := os.MkdirAll(templateBuildDir, 0o777)
+	if err != nil {
+		return metadata.Template{}, fmt.Errorf("error creating template build directory: %w", err)
+	}
+	defer func() {
+		err := os.RemoveAll(templateBuildDir)
+		if err != nil {
+			bb.logger.Error(ctx, "Error while removing template build directory", zap.Error(err))
+		}
+	}()
+
+	// Created here to be able to pass it to CreateSandbox for populating COW cache
+	rootfsPath := filepath.Join(templateBuildDir, rootfsBuildFileName)
+
+	rootfs, memfile, _, err := constructLayerFilesFromRaw(ctx, userLogger, bb.BuildContext, baseMetadata.Template.BuildID, bb.Config.FromImageRaw, rootfsPath, bb.Config.RegistryAuthProvider)
+	if err != nil {
+		return metadata.Template{}, fmt.Errorf("error building environment from raw image: %w", err)
+	}
+
+	cacheFiles, err := storage.TemplateFiles{BuildID: baseMetadata.Template.BuildID}.CacheFiles(bb.BuildContext.BuilderConfig.StorageConfig)
+	if err != nil {
+		err = errors.Join(err, rootfs.Close(), memfile.Close())
+
+		return metadata.Template{}, fmt.Errorf("error creating template files: %w", err)
+	}
+	localTemplate := sbxtemplate.NewLocalTemplate(cacheFiles, rootfs, memfile)
+	defer localTemplate.Close(ctx)
+
+	envdVersion := bb.EnvdVersion
+	if bb.Config.IsWindows() {
+		envdVersion = rawWindowsInitialEnvdVersion
+	}
+
+	baseSbxConfig := sandbox.Config{
+		Vcpu:      bb.Config.VCpuCount,
+		RamMB:     bb.Config.MemoryMB,
+		HugePages: bb.Config.HugePages,
+
+		// Allow sandbox internet access during the base build
+		Network: &orchestrator.SandboxNetworkConfig{},
+
+		Envd: sandbox.EnvdMetadata{
+			Version: envdVersion,
+		},
+
+		VMMConfig: vmm.VMMConfig{
+			Type:          vmm.BackendType(bb.Config.VMMType).OrDefault(),
+			KernelVersion: bb.Config.KernelVersion,
+			VMMVersion:    bb.Config.FirecrackerVersion,
+			OsType:        bb.Config.GuestOS(),
+		},
+	}
+
+	// Create sandbox for building the template layer
+	sandboxCreator := layer.NewCreateSandbox(
+		baseSbxConfig,
+		bb.sandboxFactory,
+		baseLayerTimeout,
+		layer.WithRootfsCachePath(rootfsPath),
+	)
+
+	// Flush the guest page cache to disk. The base raw layer is later cold-booted
+	// by finalize (not resumed from memory), so an un-flushed filesystem can
+	// leave the bootloader/filesystem inconsistent on the next boot.
+	actionExecutor := layer.NewFunctionAction(func(ctx context.Context, sbx *sandbox.Sandbox, meta metadata.Template) (metadata.Template, error) {
+		if bb.Config.IsWindows() {
+			guestEnvdVersion, err := sandboxtools.GetWindowsEnvdVersion(
+				ctx,
+				bb.proxy,
+				sbx.Runtime.SandboxID,
+			)
+			if err != nil {
+				return metadata.Template{}, fmt.Errorf("error getting guest envd version: %w", err)
+			}
+
+			meta.Template.EnvdVersion = guestEnvdVersion
+			sbx.Config.Envd.Version = guestEnvdVersion
+		}
+
+		err := sandboxtools.SyncChangesToDisk(
+			ctx,
+			bb.proxy,
+			sbx.Runtime.SandboxID,
+			bb.Config.GuestOS(),
+		)
+		if err != nil {
+			return metadata.Template{}, fmt.Errorf("error running sync command: %w", err)
+		}
+
+		return meta, nil
+	})
+
+	templateProvider := layer.NewDirectSourceTemplateProvider(localTemplate)
+
+	baseLayer, err := bb.layerExecutor.BuildLayer(
+		ctx,
+		userLogger,
+		layer.LayerBuildCommand{
+			SourceTemplate: templateProvider,
+			CurrentLayer:   baseMetadata,
+			Hash:           hash,
+			UpdateEnvd:     false,
+			SandboxCreator: sandboxCreator,
+			ActionExecutor: actionExecutor,
+		},
+	)
+	if err != nil {
+		return metadata.Template{}, fmt.Errorf("error building base layer from raw image: %w", err)
+	}
+
+	return baseLayer, nil
 }
 
 func (bb *BaseBuilder) buildLayerFromOCI(
@@ -215,6 +379,7 @@ func (bb *BaseBuilder) buildLayerFromOCI(
 			Type:          vmm.BackendType(bb.Config.VMMType).OrDefault(),
 			KernelVersion: bb.Config.KernelVersion,
 			VMMVersion:    bb.Config.FirecrackerVersion,
+			OsType:        bb.Config.GuestOS(),
 		},
 	}
 	err = bb.provisionSandbox(
@@ -268,6 +433,7 @@ func (bb *BaseBuilder) buildLayerFromOCI(
 			ctx,
 			bb.proxy,
 			sbx.Runtime.SandboxID,
+			bb.Config.GuestOS(),
 		)
 		if err != nil {
 			return metadata.Template{}, fmt.Errorf("error running sync command: %w", err)
@@ -349,11 +515,22 @@ func (bb *BaseBuilder) Layer(
 				KernelVersion:      bb.Config.KernelVersion,
 				FirecrackerVersion: bb.Config.FirecrackerVersion,
 				VMMType:            string(vmm.BackendType(bb.Config.VMMType).OrDefault()),
+				OsType:             string(bb.Config.GuestOS()),
 			},
 			Context:      cmdMeta,
-			FromImage:    &bb.Config.FromImage,
 			FromTemplate: nil,
 			Start:        nil,
+		}
+
+		if bb.Config.UsesRawImage() {
+			meta.FromImageRaw = &bb.Config.FromImageRaw
+		} else {
+			meta.FromImage = &bb.Config.FromImage
+		}
+		if bb.Config.IsWindows() {
+			meta.Context.User = ""
+			meta.Context.WorkDir = nil
+			meta.Context.OsType = string(vmm.OsWindows)
 		}
 
 		notCachedResult := phases.LayerResult{
@@ -377,6 +554,12 @@ func (bb *BaseBuilder) Layer(
 		meta, err = bb.index.Cached(ctx, bm.Template.BuildID)
 		if err != nil {
 			logger.L().Info(ctx, "base layer metadata not found in cache, building new base layer", zap.Error(err), zap.String("hash", hash))
+
+			return notCachedResult, nil
+		}
+
+		if bb.Config.UsesRawImage() && bb.Config.IsWindows() && meta.Template.EnvdVersion == "" {
+			logger.L().Info(ctx, "raw Windows base layer metadata missing guest envd version, building new base layer", zap.String("hash", hash))
 
 			return notCachedResult, nil
 		}

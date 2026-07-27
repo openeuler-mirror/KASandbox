@@ -80,12 +80,12 @@ func (t *TemplateBuild) uploadRootfsHeader(ctx context.Context, h *headers.Heade
 
 	serialized, err := headers.Serialize(h.Metadata, h.Mapping)
 	if err != nil {
-		return fmt.Errorf("error when serializing memfile header: %w", err)
+		return fmt.Errorf("error when serializing rootfs header: %w", err)
 	}
 
 	err = object.Put(ctx, serialized)
 	if err != nil {
-		return fmt.Errorf("error when uploading memfile header: %w", err)
+		return fmt.Errorf("error when uploading rootfs header: %w", err)
 	}
 
 	return nil

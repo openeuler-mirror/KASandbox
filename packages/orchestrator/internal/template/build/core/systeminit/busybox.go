@@ -24,4 +24,3 @@ func init() {
 		panic(errors.New("unsupported arch: " + runtime.GOARCH))
 	}
 }
-

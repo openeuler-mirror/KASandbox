@@ -33,6 +33,7 @@ func (f *Factory) NewProcess(
 	svConfig := Config{
 		KernelVersion:     versions.KernelVersion,
 		StratoVirtVersion: versions.VMMVersion,
+		OsType:            versions.OsType,
 	}
 	return NewProcess(
 		ctx,
