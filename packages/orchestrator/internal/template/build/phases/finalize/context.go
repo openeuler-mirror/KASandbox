@@ -6,20 +6,20 @@ import (
 )
 
 func normalizeTemplateContext(meta metadata.Template, osType vmm.OsType) metadata.Template {
-	if osType != vmm.OsWindows {
+	if osType != vmm.OsWindows && osType != vmm.OsAndroid {
 		return meta
 	}
 
-	meta.Context = normalizeCommandContext(meta.Context)
+	meta.Context = normalizeCommandContext(meta.Context, osType)
 	if meta.Start != nil {
-		meta.Start.Context = normalizeCommandContext(meta.Start.Context)
+		meta.Start.Context = normalizeCommandContext(meta.Start.Context, osType)
 	}
 
 	return meta
 }
 
-func normalizeCommandContext(cmdCtx metadata.Context) metadata.Context {
-	cmdCtx = cmdCtx.WithOsType(string(vmm.OsWindows))
+func normalizeCommandContext(cmdCtx metadata.Context, osType vmm.OsType) metadata.Context {
+	cmdCtx = cmdCtx.WithOsType(string(osType))
 	cmdCtx.User = ""
 	cmdCtx.WorkDir = nil
 

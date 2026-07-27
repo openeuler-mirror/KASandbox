@@ -179,6 +179,7 @@ func (a *APIStore) PostV2TemplatesTemplateIDBuildsBuildID(c *gin.Context, templa
 		body.ReadyCmd,
 		body.FromImage,
 		body.FromImageRaw,
+		body.FromImageMultiDisk,
 		body.FromTemplate,
 		body.FromImageRegistry,
 		body.OsType,

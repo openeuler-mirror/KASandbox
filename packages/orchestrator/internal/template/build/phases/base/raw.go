@@ -5,18 +5,64 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	containerregistry "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/uuid"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/build"
+	sbxtemplate "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/buildcontext"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/config"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/oci/auth"
 	coreraw "github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/raw"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/constants"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
+	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 )
+
+func constructLayerFilesFromMultiDisk(
+	ctx context.Context,
+	userLogger logger.Logger,
+	buildContext buildcontext.BuildContext,
+	baseBuildID string,
+	disks *config.MultiDiskConfig,
+	dir string,
+	authProvider auth.RegistryAuthProvider,
+) ([]sbxtemplate.Disk, block.ReadonlyDevice, error) {
+	buildID, err := uuid.Parse(baseBuildID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse build id: %w", err)
+	}
+
+	specs := []struct {
+		name string
+		url  string
+		typ  build.DiffType
+	}{{storage.RootfsName, disks.OS, build.Rootfs}, {storage.PersistentName, disks.Persistent, build.RootfsPersistent}, {storage.SDCardName, disks.SDCard, build.RootfsSDCard}}
+	result := make([]sbxtemplate.Disk, 0, len(specs))
+	for _, spec := range specs {
+		path := filepath.Join(dir, spec.name)
+		if err := fetchRawImage(ctx, userLogger, spec.url, path, authProvider); err != nil {
+			return nil, nil, fmt.Errorf("error fetching %s disk: %w", spec.name, err)
+		}
+		if err := alignFileToBlockSize(path, buildContext.Config.RootfsBlockSize()); err != nil {
+			return nil, nil, fmt.Errorf("error aligning %s disk: %w", spec.name, err)
+		}
+		device, err := block.NewLocal(path, buildContext.Config.RootfsBlockSize(), buildID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error opening %s disk: %w", spec.name, err)
+		}
+		result = append(result, sbxtemplate.Disk{Name: spec.name, DiffType: spec.typ, Device: device})
+	}
+
+	memfile, err := block.NewEmpty(buildContext.Config.MemoryMB<<constants.ToMBShift, config.MemfilePageSize(buildContext.Config.HugePages), buildID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error creating memfile: %w", err)
+	}
+	return result, memfile, nil
+}
 
 // constructLayerFilesFromRaw registers a raw disk image as the template rootfs.
 // Unlike the OCI import path it performs no filesystem conversion: the

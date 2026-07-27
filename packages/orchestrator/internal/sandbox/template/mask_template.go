@@ -65,6 +65,8 @@ func (c *MaskTemplate) Rootfs() (block.ReadonlyDevice, error) {
 	return c.template.Rootfs()
 }
 
+func (c *MaskTemplate) Disks(ctx context.Context) ([]Disk, error) { return c.template.Disks(ctx) }
+
 func (c *MaskTemplate) Snapfile() (File, error) {
 	return c.template.Snapfile()
 }

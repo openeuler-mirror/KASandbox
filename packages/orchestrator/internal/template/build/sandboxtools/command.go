@@ -226,6 +226,9 @@ func guestShell(osType string, command string) (string, []string) {
 	if osType == string(vmm.OsWindows) {
 		return "powershell.exe", []string{"-NoLogo", "-NonInteractive", "-Command", command}
 	}
+	if osType == string(vmm.OsAndroid) {
+		return "/system/bin/sh", []string{"-c", command}
+	}
 
 	return "/bin/bash", []string{"-l", "-c", command}
 }
@@ -237,7 +240,7 @@ func guestShell(osType string, command string) (string, []string) {
 func buildCommandEnvs(meta metadata.Context) map[string]string {
 	envs := maps.Clone(meta.EnvVars)
 
-	if meta.OsType == string(vmm.OsWindows) {
+	if meta.OsType == string(vmm.OsWindows) || meta.OsType == string(vmm.OsAndroid) {
 		return envs
 	}
 
@@ -280,6 +283,9 @@ const windowsSyncCommand = `$ErrorActionPreference = 'Stop'; Get-Volume | Where-
 func syncCommand(osType vmm.OsType) (string, metadata.Context) {
 	if osType.OrDefault() == vmm.OsWindows {
 		return windowsSyncCommand, metadata.Context{OsType: string(vmm.OsWindows)}
+	}
+	if osType.OrDefault() == vmm.OsAndroid {
+		return "/system/bin/sync", metadata.Context{OsType: string(vmm.OsAndroid)}
 	}
 
 	return rootfs.SandboxBusyBoxPath + " sync", metadata.Context{User: "root"}

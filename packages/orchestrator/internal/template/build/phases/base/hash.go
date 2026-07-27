@@ -25,6 +25,9 @@ func (bb *BaseBuilder) Hash(ctx context.Context, _ phases.LayerResult) (string, 
 	case bb.Config.UsesRawImage():
 		// Raw images have no FromImage; key on the raw URL.
 		baseSource = fmt.Sprintf("raw:%s", bb.Config.FromImageRaw)
+	case bb.Config.UsesMultiDisk():
+		d := bb.Config.FromImageMultiDisk
+		baseSource = fmt.Sprintf("multidisk:%s:%s:%s", d.OS, d.Persistent, d.SDCard)
 	default:
 		// Note: When "default" tag is used, the cached version might become ambiguous (not always default)
 		// To update it now, you need to force the rebuild of the template, which will update this layer for all templates

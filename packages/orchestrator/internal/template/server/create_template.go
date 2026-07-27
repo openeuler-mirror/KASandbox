@@ -75,7 +75,7 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 	// TODO: Remove, temporary handling when version is not sent from the API
 	version := templateRequest.GetVersion()
 	if version == "" {
-		if cfg.GetFromImage() == "" && cfg.GetFromImageRaw() == "" && cfg.GetFromTemplate() == nil {
+		if cfg.GetFromImage() == "" && cfg.GetFromImageRaw() == "" && cfg.GetFromImageMultiDisk() == nil && cfg.GetFromTemplate() == nil {
 			version = templates.TemplateV1Version
 		} else {
 			version = templates.TemplateV2BetaVersion
@@ -83,18 +83,24 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 	}
 
 	template := config.TemplateConfig{
-		Version:              version,
-		TeamID:               cfg.GetTeamID(),
-		TemplateID:           cfg.GetTemplateID(),
-		CacheScope:           cacheScope,
-		VCpuCount:            int64(cfg.GetVCpuCount()),
-		MemoryMB:             int64(cfg.GetMemoryMB()),
-		StartCmd:             cfg.GetStartCommand(),
-		ReadyCmd:             cfg.GetReadyCommand(),
-		DiskSizeMB:           int64(cfg.GetDiskSizeMB()),
-		HugePages:            hugePages,
-		FromImage:            cfg.GetFromImage(),
-		FromImageRaw:         cfg.GetFromImageRaw(),
+		Version:      version,
+		TeamID:       cfg.GetTeamID(),
+		TemplateID:   cfg.GetTemplateID(),
+		CacheScope:   cacheScope,
+		VCpuCount:    int64(cfg.GetVCpuCount()),
+		MemoryMB:     int64(cfg.GetMemoryMB()),
+		StartCmd:     cfg.GetStartCommand(),
+		ReadyCmd:     cfg.GetReadyCommand(),
+		DiskSizeMB:   int64(cfg.GetDiskSizeMB()),
+		HugePages:    hugePages,
+		FromImage:    cfg.GetFromImage(),
+		FromImageRaw: cfg.GetFromImageRaw(),
+		FromImageMultiDisk: func() *config.MultiDiskConfig {
+			if disks := cfg.GetFromImageMultiDisk(); disks != nil {
+				return &config.MultiDiskConfig{OS: disks.GetOs(), Persistent: disks.GetPersistent(), SDCard: disks.GetSdcard()}
+			}
+			return nil
+		}(),
 		FromTemplate:         cfg.GetFromTemplate(),
 		RegistryAuthProvider: authProvider,
 		Force:                cfg.Force,

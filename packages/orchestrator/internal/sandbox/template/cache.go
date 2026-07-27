@@ -173,11 +173,11 @@ func (c *Cache) AddSnapshot(
 	ctx context.Context,
 	buildId string,
 	memfileHeader *header.Header,
-	rootfsHeader *header.Header,
+	rootfsHeaders map[build.DiffType]*header.Header,
 	localSnapfile File,
 	localMetafile File,
 	memfileDiff build.Diff,
-	rootfsDiff build.Diff,
+	rootfsDiffs map[build.DiffType]build.Diff,
 ) error {
 	switch memfileDiff.(type) {
 	case *build.NoDiff:
@@ -185,17 +185,19 @@ func (c *Cache) AddSnapshot(
 		c.buildStore.Add(memfileDiff)
 	}
 
-	switch rootfsDiff.(type) {
-	case *build.NoDiff:
-	default:
-		c.buildStore.Add(rootfsDiff)
+	for _, rootfsDiff := range rootfsDiffs {
+		switch rootfsDiff.(type) {
+		case *build.NoDiff:
+		default:
+			c.buildStore.Add(rootfsDiff)
+		}
 	}
 
 	storageTemplate, err := newTemplateFromStorage(
 		c.config,
 		buildId,
 		memfileHeader,
-		rootfsHeader,
+		rootfsHeaders,
 		c.persistence,
 		c.blockMetrics,
 		localSnapfile,

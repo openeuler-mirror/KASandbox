@@ -53,6 +53,7 @@ func (tm *TemplateManager) CreateTemplate(
 	readyCommand *string,
 	fromImage *string,
 	fromImageRaw *api.FromImageRaw,
+	fromImageMultiDisk *api.FromImageMultiDisk,
 	fromTemplate *string,
 	fromImageRegistry *api.FromImageRegistry,
 	osType *api.OsType,
@@ -127,7 +128,7 @@ func (tm *TemplateManager) CreateTemplate(
 		DiskSizeMB:         int32(diskSizeMB),
 		KernelVersion:      kernelVersion,
 		FirecrackerVersion: firecrackerVersion,
-		HugePages:          features.HasHugePages(),
+		HugePages:          features.HasHugePages() && resolvedOsType == api.Linux,
 		StartCommand:       startCmd,
 		ReadyCommand:       readyCmd,
 		Force:              force,
@@ -137,7 +138,7 @@ func (tm *TemplateManager) CreateTemplate(
 		OsType:             string(resolvedOsType),
 	}
 
-	err = setTemplateSource(ctx, tm, teamID, teamSlug, template, fromImage, fromImageRaw, fromTemplate, version)
+	err = setTemplateSource(ctx, tm, teamID, teamSlug, template, fromImage, fromImageRaw, fromImageMultiDisk, fromTemplate, version)
 	if err != nil {
 		// If the error is related to fromTemplate, set the build status to failed with the appropriate message
 		// This is to unify the error handling with fromImage errors
@@ -303,7 +304,7 @@ func resolveBuildVM(osType *api.OsType) (api.OsType, string, error) {
 	resolvedOsType := api.Linux
 	if osType != nil {
 		switch *osType {
-		case api.Linux, api.Windows:
+		case api.Linux, api.Windows, api.Android:
 			resolvedOsType = *osType
 		default:
 			return "", "", fmt.Errorf("unsupported osType %q", *osType)
@@ -311,14 +312,14 @@ func resolveBuildVM(osType *api.OsType) (api.OsType, string, error) {
 	}
 
 	resolvedVMMType := defaultBuildVMMType
-	if resolvedOsType == api.Windows {
+	if resolvedOsType == api.Windows || resolvedOsType == api.Android {
 		resolvedVMMType = windowsBuildVMMType
 	}
 
 	return resolvedOsType, resolvedVMMType, nil
 }
 
-// setTemplateSource sets the source (fromImage, fromImageRaw or fromTemplate)
+// setTemplateSource sets the template image source.
 func setTemplateSource(
 	ctx context.Context,
 	tm *TemplateManager,
@@ -327,6 +328,7 @@ func setTemplateSource(
 	template *templatemanagergrpc.TemplateConfig,
 	fromImage *string,
 	fromImageRaw *api.FromImageRaw,
+	fromImageMultiDisk *api.FromImageMultiDisk,
 	fromTemplate *string,
 	version string,
 ) error {
@@ -334,16 +336,17 @@ func setTemplateSource(
 	hasImage := fromImage != nil
 	hasRaw := fromImageRaw != nil
 	hasTemplate := fromTemplate != nil
+	hasMultiDisk := fromImageMultiDisk != nil
 
 	// Validate input: exactly one source must be provided
 	sources := 0
-	for _, has := range []bool{hasImage, hasRaw, hasTemplate} {
+	for _, has := range []bool{hasImage, hasRaw, hasMultiDisk, hasTemplate} {
 		if has {
 			sources++
 		}
 	}
 	if sources != 1 {
-		return &api.InvalidRequestError{Err: fmt.Errorf("must specify exactly one of fromImage, fromImageRaw or fromTemplate")}
+		return &api.InvalidRequestError{Err: fmt.Errorf("must specify exactly one of fromImage, fromImageRaw, fromImageMultiDisk or fromTemplate")}
 	}
 
 	switch {
@@ -353,6 +356,14 @@ func setTemplateSource(
 		}
 		template.Source = &templatemanagergrpc.TemplateConfig_FromImageRaw{
 			FromImageRaw: fromImageRaw.Url,
+		}
+	case hasMultiDisk:
+		template.Source = &templatemanagergrpc.TemplateConfig_FromImageMultiDisk{
+			FromImageMultiDisk: &templatemanagergrpc.FromImageMultiDisk{
+				Os:         fromImageMultiDisk.Os,
+				Persistent: fromImageMultiDisk.Persistent,
+				Sdcard:     fromImageMultiDisk.Sdcard,
+			},
 		}
 	case hasTemplate:
 		if strings.TrimSpace(*fromTemplate) == "" {
