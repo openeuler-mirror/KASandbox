@@ -9,7 +9,7 @@ import (
 //go:embed busybox_1.36.1-2
 var busyboxX86 []byte
 
-//go:embed busybox_1.35_arm64
+//go:embed busybox_1.36.1-2_arm64
 var busyboxArm64 []byte
 
 var BusyboxBinary []byte

@@ -150,10 +150,15 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 	}
 	preamble.WriteString("\n")
 
+	// Relocate the Android serial and logcat logs from /tmp to /tmp/templates so
+	// all build-time logs land alongside the StratoVirt -D log.
+	serialLogPath := filepath.Join("/tmp/templates", filepath.Base(files.SandboxSerialLogPath()))
+	logcatPath := filepath.Join("/tmp/templates", filepath.Base(files.SandboxAndroidLogcatPath()))
+
 	// Pre-compute the dynamic VMM argument groups so the main command can be
 	// assembled via a single fmt.Sprintf template, mirroring buildWindowsCommand.
 	diskArgs := buildAndroidDiskArgs(guestDiskPaths)
-	virtconsoleArgs := buildAndroidVirtconsoleArgs(pipeDir, files)
+	virtconsoleArgs := buildAndroidVirtconsoleArgs(pipeDir, serialLogPath, logcatPath)
 
 	vsockArg := ""
 	if vsockGuestCID > 0 {
@@ -162,6 +167,7 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 
 	cmd := fmt.Sprintf(
 		"ip netns exec %s %s "+
+			"-D /tmp/templates/%s-%s.log "+
 			"-machine virt,gic-version=3,dump-guest-core=off,mem-share=on "+
 			"-accel kvm "+
 			"-smp %d,cores=%d,threads=1 "+
@@ -184,6 +190,8 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 			"%s",
 		slot.NamespaceID(),
 		versions.StratoVirtPath(b.config),
+		files.BuildID,
+		files.SandboxID,
 		vcpuCount,
 		vcpuCount,
 		memoryMB,
@@ -197,7 +205,7 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 		slot.TapName(),      // hostnet1 (netdev1) ifname = tap0
 		slot.VpeerName(),    // hostnet1 (netdev1) id = "eth0" (used by MMDS)
 		qmpSocket,
-		files.SandboxSerialLogPath(),
+		serialLogPath,
 		incomingArg,
 	)
 
@@ -225,7 +233,7 @@ func buildAndroidDiskArgs(guestDiskPaths []string) string {
 // Android HALs. Ports 0 and 2 capture the kernel serial log and logcat to
 // files; the ports listed in pipeByPort connect to FIFO pairs under pipeDir
 // for HAL host↔guest IPC; the rest are left null.
-func buildAndroidVirtconsoleArgs(pipeDir string, files *storage.SandboxFiles) string {
+func buildAndroidVirtconsoleArgs(pipeDir string, serialLogPath, logcatPath string) string {
 	var args strings.Builder
 	pipeByPort := map[int]string{
 		3:  "keymaster_fifo_vm",
@@ -243,9 +251,9 @@ func buildAndroidVirtconsoleArgs(pipeDir string, files *storage.SandboxFiles) st
 	for port := 0; port < 31; port++ {
 		switch port {
 		case 0:
-			fmt.Fprintf(&args, "-chardev file,id=hvc0,path=%s -device virtconsole,id=hvc0,chardev=hvc0,nr=0 ", files.SandboxSerialLogPath())
+			fmt.Fprintf(&args, "-chardev file,id=hvc0,path=%s -device virtconsole,id=hvc0,chardev=hvc0,nr=0 ", serialLogPath)
 		case 2:
-			fmt.Fprintf(&args, "-chardev file,id=hvc2,path=%s -device virtconsole,id=hvc2,chardev=hvc2,nr=2 ", files.SandboxAndroidLogcatPath())
+			fmt.Fprintf(&args, "-chardev file,id=hvc2,path=%s -device virtconsole,id=hvc2,chardev=hvc2,nr=2 ", logcatPath)
 		default:
 			if name, ok := pipeByPort[port]; ok {
 				fmt.Fprintf(&args, "-chardev pipe,id=hvc%d,path=%s -device virtconsole,id=hvc%d,chardev=hvc%d,nr=%d ", port, filepath.Join(pipeDir, name), port, port, port)
