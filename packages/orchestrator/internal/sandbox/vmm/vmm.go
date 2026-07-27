@@ -81,7 +81,7 @@ type Factory interface {
 		slot *network.Slot,
 		files *storage.SandboxFiles,
 		versions VMMConfig,
-		rootfsProvider rootfs.Provider,
+		rootfsProviders []rootfs.Provider,
 		rootfsPaths RootfsPaths,
 	) (Process, error)
 }

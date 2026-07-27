@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
@@ -67,6 +68,9 @@ func (b *CommandBuilder) Build(
 			incomingArg,
 		)
 	}
+	if versions.OsType.OrDefault() == vmm.OsAndroid {
+		return b.buildAndroidCommand(versions, files, slot, qmpSocket, memoryMB, vcpuCount, incomingArg)
+	}
 
 	cmd := fmt.Sprintf(
 		"mount --make-rprivate / &&\n"+
@@ -117,6 +121,62 @@ func (b *CommandBuilder) Build(
 		KernelPath: kernelPath,
 		QmpSocket:  qmpSocket,
 	}
+}
+
+func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.SandboxFiles, slot *network.Slot, qmpSocket string, memoryMB, vcpuCount int64, incomingArg string) *CommandResult {
+	diskNames := []string{storage.RootfsName, storage.PersistentName, storage.SDCardName}
+	guestDiskPaths := make([]string, len(diskNames))
+	var preamble strings.Builder
+	preamble.WriteString("mount --make-rprivate / &&\n")
+	fmt.Fprintf(&preamble, "mount -t tmpfs tmpfs %s -o X-mount.mkdir &&\n", b.config.SandboxDir)
+	for i, name := range diskNames {
+		guestDiskPaths[i] = filepath.Join(b.config.SandboxDir, fmt.Sprintf("android-disk-%d.raw", i))
+		fmt.Fprintf(&preamble, "ln -s %s %s &&\n", files.SandboxCacheDiskLinkPath(b.config.StorageConfig, name), guestDiskPaths[i])
+	}
+	pipeDir := filepath.Join(b.config.SandboxDir, "android-pipes")
+	fmt.Fprintf(&preamble, "mkdir -p %s &&\n", pipeDir)
+	pipeNames := []string{"keymaster_fifo_vm", "gatekeeper_fifo_vm", "bt_fifo_vm", "gnsshvc_fifo_vm", "locationhvc_fifo_vm", "uwb_fifo_vm", "oemlock_fifo_vm", "keymint_fifo_vm", "nfc_fifo_vm", "sensors_control_fifo_vm", "sensors_data_fifo_vm"}
+	for _, name := range pipeNames {
+		path := filepath.Join(pipeDir, name)
+		fmt.Fprintf(&preamble, "mkfifo -m 600 %s.in %s.out 2>/dev/null || true; ", path, path)
+	}
+	preamble.WriteString("\n")
+
+	var args strings.Builder
+	fmt.Fprintf(&args, "ip netns exec %s %s -machine virt,gic-version=3,dump-guest-core=off,mem-share=on -accel kvm -smp %d,cores=%d,threads=1 -m size=%dM,maxmem=%dM -uuid 699acfc4-c8c4-11e7-882b-%012x -cpu host ", slot.NamespaceID(), versions.StratoVirtPath(b.config), vcpuCount, vcpuCount, memoryMB, memoryMB+4, slot.Idx)
+	fmt.Fprintf(&args, "-drive file=%s,if=pflash,unit=0,readonly=true ", filepath.Join(b.config.FirmwareDir, androidBootloaderFile))
+	for i, path := range guestDiskPaths {
+		bootIndex := ""
+		if i == 0 {
+			bootIndex = ",bootindex=1"
+		}
+		fmt.Fprintf(&args, "-drive file=%s,format=raw,if=none,id=drive-virtio-disk%d,aio=threads -device virtio-blk-pci,drive=drive-virtio-disk%d,id=virtio-disk%d,bus=pcie.0,addr=0x%x%s ", path, i, i, i, i+2, bootIndex)
+	}
+	args.WriteString("-boot strict=on -msg timestamp=on -rtc base=utc -device virtio-serial-pci,id=virtio-serial0,bus=pcie.0,addr=0x11,max-ports=31 ")
+	pipeByPort := map[int]string{3: "keymaster_fifo_vm", 4: "gatekeeper_fifo_vm", 5: "bt_fifo_vm", 6: "gnsshvc_fifo_vm", 7: "locationhvc_fifo_vm", 9: "uwb_fifo_vm", 10: "oemlock_fifo_vm", 11: "keymint_fifo_vm", 12: "nfc_fifo_vm", 18: "sensors_control_fifo_vm", 19: "sensors_data_fifo_vm"}
+	for port := 0; port < 31; port++ {
+		switch port {
+		case 0:
+			fmt.Fprintf(&args, "-chardev file,id=hvc0,path=%s -device virtconsole,id=hvc0,chardev=hvc0,nr=0 ", files.SandboxSerialLogPath())
+		case 2:
+			fmt.Fprintf(&args, "-chardev file,id=hvc2,path=%s -device virtconsole,id=hvc2,chardev=hvc2,nr=2 ", files.SandboxAndroidLogcatPath())
+		default:
+			if name, ok := pipeByPort[port]; ok {
+				fmt.Fprintf(&args, "-chardev pipe,id=hvc%d,path=%s -device virtconsole,id=hvc%d,chardev=hvc%d,nr=%d ", port, filepath.Join(pipeDir, name), port, port, port)
+			} else {
+				fmt.Fprintf(&args, "-chardev null,id=hvc%d -device virtconsole,id=hvc%d,chardev=hvc%d,nr=%d ", port, port, port, port)
+			}
+		}
+	}
+	fmt.Fprintf(&args, "-device vhost-vsock-pci,id=vsock0,guest-cid=%d,bus=pcie.0,addr=0x6 ", slot.VsockCID())
+	args.WriteString("-device nec-usb-xhci,id=xhci,bus=pcie.0,addr=0x7 -device usb-tablet,id=tablet -device usb-kbd,id=kbd ")
+	fmt.Fprintf(&args, "-netdev tap,id=hostnet0,ifname=%s -device virtio-net-pci,id=net0,netdev=hostnet0,bus=pcie.0,addr=0x8,mac=00:1a:11:e0:cf:00 ", slot.TapName())
+	fmt.Fprintf(&args, "-netdev tap,id=hostnet1,ifname=%s -device virtio-net-pci,id=net1,netdev=hostnet1,bus=pcie.0,addr=0x9,mac=00:1a:11:e1:cf:00 ", slot.ExtraTapName())
+	args.WriteString("-device virtio-gpu-pci,id=gpu0,bus=pcie.0,addr=0x10,xres=720,yres=1280 -vnc 127.0.0.1:544 ")
+	fmt.Fprintf(&args, "-object rng-random,id=objrng0,filename=/dev/urandom -device virtio-rng-pci,id=rng0,rng=objrng0,bus=pcie.0,addr=0x5,max-bytes=1024,period=2000 -qmp unix:%s,server,nowait -serial file,path=%s %s", qmpSocket, files.SandboxSerialLogPath(), incomingArg)
+
+	rootfsPath := guestDiskPaths[0]
+	return &CommandResult{Value: preamble.String() + args.String(), RootfsPath: rootfsPath, QmpSocket: qmpSocket}
 }
 
 // buildWindowsCommand builds the StratoVirt invocation for a Windows guest.

@@ -17,6 +17,34 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 )
 
+// createTap creates and enables a TAP device in the current network namespace.
+// An address is optional because secondary guest interfaces may be connected to
+// a TAP without using the TAP itself as an L3 gateway.
+func createTap(name string, address *net.IPNet) error {
+	tapAttrs := netlink.NewLinkAttrs()
+	tapAttrs.Name = name
+	tap := &netlink.Tuntap{
+		Mode:      netlink.TUNTAP_MODE_TAP,
+		LinkAttrs: tapAttrs,
+	}
+
+	if err := netlink.LinkAdd(tap); err != nil {
+		return fmt.Errorf("error creating tap device %s: %w", name, err)
+	}
+
+	if err := netlink.LinkSetUp(tap); err != nil {
+		return fmt.Errorf("error setting tap device %s up: %w", name, err)
+	}
+
+	if address != nil {
+		if err := netlink.AddrAdd(tap, &netlink.Addr{IPNet: address}); err != nil {
+			return fmt.Errorf("error setting address of tap device %s: %w", name, err)
+		}
+	}
+
+	return nil
+}
+
 func (s *Slot) CreateNetwork(ctx context.Context) error {
 	if s.ExternalNetNS {
 		return s.CreateExternalNetNSNetwork(ctx)
@@ -121,33 +149,14 @@ func (s *Slot) CreateNetwork(ctx context.Context) error {
 		return fmt.Errorf("error setting network namespace to %s: %w", ns.String(), err)
 	}
 
-	// Create Tap device for FC in NS
-	tapAttrs := netlink.NewLinkAttrs()
-	tapAttrs.Name = s.TapName()
-	tapAttrs.Namespace = ns
-	tap := &netlink.Tuntap{
-		Mode:      netlink.TUNTAP_MODE_TAP,
-		LinkAttrs: tapAttrs,
+	// Both TAP devices belong to the network slot and live for as long as its
+	// namespace. Each NIC uses its own /30 so their host-side addresses and
+	// routes don't conflict.
+	if err := createTap(s.TapName(), &net.IPNet{IP: s.TapIP(), Mask: s.TapCIDR()}); err != nil {
+		return err
 	}
-
-	err = netlink.LinkAdd(tap)
-	if err != nil {
-		return fmt.Errorf("error creating tap device: %w", err)
-	}
-
-	err = netlink.LinkSetUp(tap)
-	if err != nil {
-		return fmt.Errorf("error setting tap device up: %w", err)
-	}
-
-	err = netlink.AddrAdd(tap, &netlink.Addr{
-		IPNet: &net.IPNet{
-			IP:   s.TapIP(),
-			Mask: s.TapCIDR(),
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("error setting address of the tap device: %w", err)
+	if err := createTap(s.ExtraTapName(), &net.IPNet{IP: s.ExtraTapIP(), Mask: s.ExtraTapCIDR()}); err != nil {
+		return err
 	}
 
 	// Set NS lo device up
@@ -179,6 +188,10 @@ func (s *Slot) CreateNetwork(ctx context.Context) error {
 	err = tables.Append("nat", "POSTROUTING", "-o", s.VpeerName(), "-s", s.NamespaceIP(), "-j", "SNAT", "--to", s.HostIPString())
 	if err != nil {
 		return fmt.Errorf("error creating postrouting rule to vpeer: %w", err)
+	}
+	err = tables.Append("nat", "POSTROUTING", "-o", s.VpeerName(), "-s", s.ExtraNamespaceIP(), "-j", "SNAT", "--to", s.HostIPString())
+	if err != nil {
+		return fmt.Errorf("error creating extra tap postrouting rule to vpeer: %w", err)
 	}
 
 	err = tables.Append("nat", "PREROUTING", "-i", s.VpeerName(), "-d", s.HostIPString(), "-j", "DNAT", "--to", s.NamespaceIP())

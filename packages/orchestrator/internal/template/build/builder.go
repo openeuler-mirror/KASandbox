@@ -147,11 +147,8 @@ func (b *Builder) Build(ctx context.Context, template storage.TemplateFiles, cfg
 
 	cacheScope := cfg.CacheScope
 
-	// Validate Android-specific source and build-step invariants
-	// before doing any work, so the build fails fast with a clear user error.
-	if err := cfg.Validate(); err != nil {
-		return nil, phases.NewPhaseBuildError(phases.PhaseMeta{StepType: "base"}, err)
-	}
+	// Validate template, update force layers if needed
+	cfg = forceSteps(cfg)
 
 	isV1Build := utils.IsVersion(cfg.Version, templates.TemplateV1Version) || (cfg.FromImage == "" && cfg.FromImageRaw == "" && cfg.FromImageMultiDisk == nil && cfg.FromTemplate == nil)
 
@@ -200,9 +197,6 @@ func (b *Builder) Build(ctx context.Context, template storage.TemplateFiles, cfg
 			e = errors.Join(e, fmt.Errorf("error removing build files: %w", removeErr))
 		}
 	}(context.WithoutCancel(ctx))
-
-	// Validate template, update force layers if needed
-	cfg = forceSteps(cfg)
 
 	envdVersion, err := envd.GetEnvdVersion(ctx, b.config.HostEnvdPath)
 	if err != nil {
@@ -314,17 +308,19 @@ func runBuild(
 		bc.Config.Force,
 	)
 
+	skipGuestBuildPhases := bc.Config.IsWindows() || bc.Config.IsAndroid()
 	var stepBuilders []phases.BuilderPhase
-	if bc.Config.IsWindows() {
+	if skipGuestBuildPhases {
 		if len(bc.Config.Steps) > 0 {
-			userLogger.Warn(ctx, fmt.Sprintf("Skipping %d build steps because Windows builds do not currently support steps", len(bc.Config.Steps)),
+			userLogger.Warn(ctx, fmt.Sprintf("Skipping %d build steps because %s builds do not currently support steps", len(bc.Config.Steps), bc.Config.GuestOS()),
 				logger.WithTemplateID(bc.Config.TemplateID),
 				logger.WithBuildID(bc.Template.BuildID),
 				zap.Int("step_count", len(bc.Config.Steps)),
 			)
-			builder.logger.Warn(ctx, "skipping build steps for Windows template",
+			builder.logger.Warn(ctx, "skipping build steps for guest OS",
 				logger.WithTemplateID(bc.Config.TemplateID),
 				logger.WithBuildID(bc.Template.BuildID),
+				zap.String("os_type", string(bc.Config.GuestOS())),
 				zap.Int("step_count", len(bc.Config.Steps)),
 			)
 		}
@@ -371,10 +367,10 @@ func runBuild(
 	if err != nil {
 		return nil, fmt.Errorf("error checking build version: %w", err)
 	}
-	if ok && !bc.Config.IsWindows() {
+	if ok && !skipGuestBuildPhases {
 		builders = append(builders, userBuilder)
+		builders = append(builders, stepBuilders...)
 	}
-	builders = append(builders, stepBuilders...)
 	builders = append(builders, postProcessingBuilder)
 	builders = append(builders, optimizeBuilder)
 
