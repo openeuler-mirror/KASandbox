@@ -2,6 +2,7 @@ package fc
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -17,9 +18,17 @@ const (
 	orphanKillWait    = 2 * time.Second
 )
 
+// orchestratorFCSockRe matches --api-sock paths created by SandboxFiles:
+// fc-{sandboxID}-{randomID}.sock
+var orchestratorFCSockRe = regexp.MustCompile(`--api-sock\s+\S*fc-[^/\s]+-[^/\s]+\.sock`)
+
 // KillOrphanedProcesses terminates leftover Firecracker processes that still
 // hold /dev/nbdX open after abrupt sandbox/orchestrator stops.
-func KillOrphanedProcesses(ctx context.Context) int {
+//
+// Only processes started by this orchestrator are targeted: the binary must
+// live under firecrackerVersionsDir and the API socket must match
+// fc-{sandboxID}-{randomID}.sock.
+func KillOrphanedProcesses(ctx context.Context, firecrackerVersionsDir string) int {
 	procs, err := process.ProcessesWithContext(ctx)
 	if err != nil {
 		logger.L().Warn(ctx, "failed to list processes while killing orphaned firecracker", zap.Error(err))
@@ -30,7 +39,7 @@ func KillOrphanedProcesses(ctx context.Context) int {
 	var targets []*process.Process
 	for _, p := range procs {
 		cmdline, err := p.CmdlineWithContext(ctx)
-		if err != nil || cmdline == "" || !isFirecrackerCmdline(cmdline) {
+		if err != nil || cmdline == "" || !isOrchestratorFirecrackerCmdline(cmdline, firecrackerVersionsDir) {
 			continue
 		}
 		targets = append(targets, p)
@@ -52,11 +61,12 @@ func KillOrphanedProcesses(ctx context.Context) int {
 	killed := 0
 	for _, p := range targets {
 		alive, err := p.IsRunningWithContext(ctx)
-		if err != nil || !alive {
+		if err == nil && !alive {
 			killed++
 
 			continue
 		}
+		// err != nil or still alive: still attempt SIGKILL.
 		if err := p.KillWithContext(ctx); err == nil {
 			killed++
 		}
@@ -70,14 +80,22 @@ func KillOrphanedProcesses(ctx context.Context) int {
 	return killed
 }
 
-func isFirecrackerCmdline(cmdline string) bool {
-	return strings.Contains(strings.ToLower(cmdline), FirecrackerBinaryName) &&
-		strings.Contains(cmdline, "--api-sock")
+func isOrchestratorFirecrackerCmdline(cmdline, firecrackerVersionsDir string) bool {
+	if !strings.Contains(strings.ToLower(cmdline), FirecrackerBinaryName) {
+		return false
+	}
+	if firecrackerVersionsDir == "" || !strings.Contains(cmdline, firecrackerVersionsDir) {
+		return false
+	}
+
+	return orchestratorFCSockRe.MatchString(cmdline)
 }
 
 func anyAlive(ctx context.Context, targets []*process.Process) bool {
 	for _, p := range targets {
-		if alive, err := p.IsRunningWithContext(ctx); err == nil && alive {
+		alive, err := p.IsRunningWithContext(ctx)
+		// Treat status-check failures as alive so wait loops fall back to timeout.
+		if err != nil || alive {
 			return true
 		}
 	}

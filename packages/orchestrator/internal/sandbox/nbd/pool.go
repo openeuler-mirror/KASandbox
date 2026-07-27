@@ -175,10 +175,7 @@ func (d *DevicePool) Populate(ctx context.Context) {
 // https://unix.stackexchange.com/questions/33508/check-which-network-block-devices-are-in-use
 // https://superuser.com/questions/919895/how-to-get-a-list-of-connected-nbd-devices-on-ubuntu
 // https://github.com/NetworkBlockDevice/nbd/blob/17043b068f4323078637314258158aebbfff0a6c/nbd-client.c#L254
-func (d *DevicePool) isDeviceFree(slot DeviceSlot) (bool, error) {
-	return IsDeviceFree(slot)
-}
-
+//
 // IsDeviceFree reports whether the kernel considers the NBD slot unused.
 func IsDeviceFree(slot DeviceSlot) (bool, error) {
 	pidFile := fmt.Sprintf("/sys/block/nbd%d/pid", slot)
@@ -238,7 +235,7 @@ func (d *DevicePool) getFreeDeviceSlot() (*DeviceSlot, error) {
 			return nil, NoFreeSlotsError{}
 		}
 
-		free, err := d.isDeviceFree(slot)
+		free, err := IsDeviceFree(slot)
 		if err != nil {
 			cleanup()
 
@@ -275,7 +272,7 @@ func (d *DevicePool) GetDevice(ctx context.Context) (DeviceSlot, error) {
 }
 
 func (d *DevicePool) release(ctx context.Context, idx DeviceSlot) error {
-	free, err := d.isDeviceFree(idx)
+	free, err := IsDeviceFree(idx)
 	if err != nil {
 		return fmt.Errorf("failed to check if device is free: %w", err)
 	}
@@ -362,7 +359,12 @@ func (d *DevicePool) Close(ctx context.Context) error {
 	var errs error
 	for _, slot := range slotsToRelease {
 		if free, err := IsDeviceFree(slot); err == nil && !free {
-			_ = ForceDisconnect(ctx, slot)
+			if ferr := ForceDisconnect(ctx, slot); ferr != nil {
+				logger.L().Warn(ctx, "force disconnect before release failed",
+					zap.Uint32("device_index", slot),
+					zap.Error(ferr),
+				)
+			}
 		}
 		err := d.ReleaseDevice(ctx, slot,
 			WithInfiniteRetry(),
@@ -387,7 +389,12 @@ func (d *DevicePool) ReclaimOrphanedDevices(ctx context.Context) {
 			continue
 		}
 		logger.L().Warn(ctx, "reclaiming orphaned nbd device", zap.Uint32("device_index", idx))
-		_ = ForceDisconnect(ctx, idx)
+		if err := ForceDisconnect(ctx, idx); err != nil {
+			logger.L().Error(ctx, "failed to reclaim orphaned nbd device",
+				zap.Uint32("device_index", idx),
+				zap.Error(err),
+			)
+		}
 	}
 }
 

@@ -308,6 +308,11 @@ func (d *DirectPathMount) Close(ctx context.Context) error {
 		if err := disconnectNBDWithTimeout(ctx, idx, disconnectTimeout); err != nil {
 			if ferr := ForceDisconnect(ctx, idx); ferr != nil {
 				errs = append(errs, fmt.Errorf("error disconnecting NBD: %w", errors.Join(err, ferr)))
+			} else {
+				logger.L().Warn(ctx, "NBD disconnect failed, force disconnect succeeded",
+					zap.Uint32("device_index", idx),
+					zap.Error(err),
+				)
 			}
 		}
 	}
