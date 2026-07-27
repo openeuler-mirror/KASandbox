@@ -56,6 +56,8 @@ type Process struct {
 	kernelPath      string
 	files           *storage.SandboxFiles
 
+	vsockGuestCID int64
+
 	exitOnce *utils.ErrorOnce
 	execCtx  context.Context
 }
@@ -79,6 +81,10 @@ func (p *Process) prepareDiskLinks() error {
 		}
 	}
 	return nil
+}
+
+func (p *Process) SetVsockConfig(cid int64) {
+	p.vsockGuestCID = cid
 }
 
 func NewProcess(
@@ -168,6 +174,7 @@ func (p *Process) Create(
 		vcpuCount,
 		hugePages,
 		"",
+		p.vsockGuestCID,
 	)
 
 	p.rootfsPath = cmdResult.RootfsPath
@@ -255,6 +262,7 @@ func (p *Process) Resume(
 		vcpuCount,
 		hugePages,
 		incomingURI,
+		p.vsockGuestCID,
 	)
 
 	cmd := exec.CommandContext(p.execCtx, "unshare", "-m", "--", "bash", "-c", cmdResult.Value)

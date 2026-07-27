@@ -188,6 +188,8 @@ func (ppb *PostProcessingBuilder) Build(
 			VMMVersion:    ppb.Config.FirecrackerVersion,
 			OsType:        osType,
 		},
+
+		// OSType: metadata.OSType(ppb.Config.OSType),
 	}
 
 	// Select the IO Engine to use for the rootfs drive

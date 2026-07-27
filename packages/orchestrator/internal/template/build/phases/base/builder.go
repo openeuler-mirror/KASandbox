@@ -448,6 +448,8 @@ func (bb *BaseBuilder) buildLayerFromOCI(
 			VMMVersion:    bb.Config.FirecrackerVersion,
 			OsType:        bb.Config.GuestOS(),
 		},
+
+		// OSType: metadata.OSType(bb.Config.OSType),
 	}
 	err = bb.provisionSandbox(
 		ctx,
