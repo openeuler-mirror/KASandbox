@@ -56,6 +56,8 @@ message SandboxConfig {
   // This is separate from SandboxNetworkConfig, which describes product-level
   // ingress/egress policy.
   optional SandboxRuntimeNetworkConfig runtime_network = 25;
+  string os_type = 26;
+  string vmm_type = 27;
 }
 
 message SandboxRuntimeNetworkConfig {
@@ -144,6 +146,8 @@ message RunningSandbox {
 
   google.protobuf.Timestamp start_time = 3;
   google.protobuf.Timestamp end_time = 4;
+
+  reserved 5;
 }
 
 message SandboxListResponse {
