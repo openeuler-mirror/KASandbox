@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"testing"
 
@@ -58,6 +59,41 @@ func TestAndroidGuestServicePortsParsesDedupesAndSorts(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("ports = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestAndroidEthernetIPConfigEncodesStaticDNSConfig(t *testing.T) {
+	payload, err := androidEthernetIPConfig(androidGuestNetwork{
+		Gateway: "192.168.240.1",
+		GuestIP: "192.168.240.2",
+		Prefix:  "30",
+		DNS:     []string{"8.8.8.8", "1.1.1.1"},
+	})
+	if err != nil {
+		t.Fatalf("androidEthernetIPConfig: %v", err)
+	}
+	wantHex := "" +
+		"00000003000c697041737369676e6d656e740006535441544943" +
+		"000b6c696e6b41646472657373000d3139322e3136382e3234302e32" +
+		"0000001e0007676174657761790000000000000001000d3139322e3136382e3234302e31" +
+		"0003646e730007382e382e382e380003646e730007312e312e312e31" +
+		"000d70726f787953657474696e677300044e4f4e45000269640004657468310003656f73"
+	want, err := hex.DecodeString(wantHex)
+	if err != nil {
+		t.Fatalf("decode want hex: %v", err)
+	}
+	if hex.EncodeToString(payload) != hex.EncodeToString(want) {
+		t.Fatalf("payload hex = %s, want %s", hex.EncodeToString(payload), hex.EncodeToString(want))
+	}
+}
+
+func TestAndroidEthernetIPConfigRejectsInvalidPrefix(t *testing.T) {
+	if _, err := androidEthernetIPConfig(androidGuestNetwork{
+		Gateway: "192.168.240.1",
+		GuestIP: "192.168.240.2",
+		Prefix:  "bad",
+	}); err == nil {
+		t.Fatal("expected invalid prefix error")
 	}
 }
 

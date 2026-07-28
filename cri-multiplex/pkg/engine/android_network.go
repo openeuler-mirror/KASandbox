@@ -1,10 +1,13 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -24,6 +27,9 @@ const (
 	androidGuestNetBaseC   = 240
 	androidGuestNetMaxInst = 1024
 	androidGuestNetID      = 100
+
+	androidEthernetIPConfigPath = "/data/misc/apexdata/com.android.tethering/misc/ethernet/ipconfig.txt"
+	androidEthernetIPConfigTmp  = "/data/local/tmp/cri-multiplex-eth-ipconfig.txt"
 )
 
 type androidGuestNetwork struct {
@@ -137,6 +143,24 @@ func (e *AndroidEngine) configureGuestNetworkGuestSide(ctx context.Context, rec 
 		}
 	}
 
+	if err := e.configureGuestKernelNetwork(ctx, adbPath, serial, network); err != nil {
+		return err
+	}
+	if len(network.DNS) > 0 {
+		if err := e.installGuestEthernetConfig(ctx, adbPath, serial, network); err != nil {
+			return err
+		}
+		if err := e.restartGuestFramework(ctx, adbPath, serial); err != nil {
+			return err
+		}
+		if err := e.configureGuestKernelNetwork(ctx, adbPath, serial, network); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *AndroidEngine) configureGuestKernelNetwork(ctx context.Context, adbPath, serial string, network androidGuestNetwork) error {
 	commands := []string{
 		fmt.Sprintf("ip link set %s up", shellQuote(androidGuestIface)),
 		fmt.Sprintf("ip addr replace %s/%s dev %s", shellQuote(network.GuestIP), shellQuote(network.Prefix), shellQuote(androidGuestIface)),
@@ -144,7 +168,7 @@ func (e *AndroidEngine) configureGuestNetworkGuestSide(ctx context.Context, rec 
 		fmt.Sprintf("ndc network interface add %d %s 2>/dev/null || true", androidGuestNetID, shellQuote(androidGuestIface)),
 		fmt.Sprintf("ndc network default set %d 2>/dev/null || true", androidGuestNetID),
 		fmt.Sprintf("ip route replace %s dev %s src %s table %s", shellQuote(network.Subnet), shellQuote(androidGuestIface), shellQuote(network.GuestIP), shellQuote(androidGuestRouteTable)),
-		fmt.Sprintf("ip route replace default via %s dev %s table %s", shellQuote(network.Gateway), shellQuote(androidGuestIface), shellQuote(androidGuestRouteTable)),
+		fmt.Sprintf("ip route replace default via %s dev %s table %s onlink", shellQuote(network.Gateway), shellQuote(androidGuestIface), shellQuote(androidGuestRouteTable)),
 		fmt.Sprintf("while ip rule del pref 100 2>/dev/null; do :; done; ip rule add from %s/32 lookup %s pref 100", shellQuote(network.GuestIP), shellQuote(androidGuestRouteTable)),
 		fmt.Sprintf("while ip rule del pref 101 2>/dev/null; do :; done; ip rule add to %s lookup %s pref 101", shellQuote(network.Subnet), shellQuote(androidGuestRouteTable)),
 	}
@@ -165,6 +189,100 @@ func (e *AndroidEngine) configureGuestNetworkGuestSide(ctx context.Context, rec 
 		}
 	}
 	return nil
+}
+
+func (e *AndroidEngine) installGuestEthernetConfig(ctx context.Context, adbPath, serial string, network androidGuestNetwork) error {
+	payload, err := androidEthernetIPConfig(network)
+	if err != nil {
+		return status.Errorf(codes.Internal, "build android ethernet config: %v", err)
+	}
+
+	tmp, err := os.CreateTemp("", "cri-multiplex-android-eth-*.bin")
+	if err != nil {
+		return status.Errorf(codes.Internal, "create android ethernet config temp file: %v", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(payload); err != nil {
+		_ = tmp.Close()
+		return status.Errorf(codes.Internal, "write android ethernet config temp file: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return status.Errorf(codes.Internal, "close android ethernet config temp file: %v", err)
+	}
+
+	if err := runAndroidCommand(ctx, 30*time.Second, adbPath, "-s", serial, "push", tmpPath, androidEthernetIPConfigTmp); err != nil {
+		return status.Errorf(codes.Internal, "push android ethernet config: %v", err)
+	}
+	install := fmt.Sprintf("mkdir -p %s && cp %s %s && chown system:system %s && chmod 600 %s",
+		shellQuote(filepath.Dir(androidEthernetIPConfigPath)),
+		shellQuote(androidEthernetIPConfigTmp),
+		shellQuote(androidEthernetIPConfigPath),
+		shellQuote(androidEthernetIPConfigPath),
+		shellQuote(androidEthernetIPConfigPath))
+	if err := runAndroidCommand(ctx, 30*time.Second, adbPath, "-s", serial, "shell", "su 0 sh -c "+shellQuote(install)); err != nil {
+		return status.Errorf(codes.Internal, "install android ethernet config: %v", err)
+	}
+	return nil
+}
+
+func (e *AndroidEngine) restartGuestFramework(ctx context.Context, adbPath, serial string) error {
+	if err := runAndroidCommand(ctx, 60*time.Second, adbPath, "-s", serial, "shell", "su 0 sh -c "+shellQuote("stop; sleep 2; start")); err != nil {
+		return status.Errorf(codes.Internal, "restart android framework for ethernet config: %v", err)
+	}
+	if err := runAndroidCommand(ctx, 90*time.Second, adbPath, "connect", serial); err != nil {
+		return status.Errorf(codes.Internal, "reconnect adb after framework restart: %v", err)
+	}
+	if err := runAndroidCommand(ctx, 90*time.Second, adbPath, "-s", serial, "wait-for-device"); err != nil {
+		return status.Errorf(codes.Internal, "wait adb after framework restart: %v", err)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(12 * time.Second):
+	}
+	return nil
+}
+
+func androidEthernetIPConfig(network androidGuestNetwork) ([]byte, error) {
+	if network.GuestIP == "" || network.Prefix == "" || network.Gateway == "" {
+		return nil, fmt.Errorf("guest IP, prefix and gateway are required")
+	}
+	buf := bytes.NewBuffer(nil)
+	writeInt32 := func(v int32) {
+		_ = binary.Write(buf, binary.BigEndian, v)
+	}
+	writeUTF := func(s string) {
+		b := []byte(s)
+		_ = binary.Write(buf, binary.BigEndian, uint16(len(b)))
+		_, _ = buf.Write(b)
+	}
+
+	prefix, err := strconv.Atoi(network.Prefix)
+	if err != nil {
+		return nil, fmt.Errorf("invalid guest prefix %q: %w", network.Prefix, err)
+	}
+
+	writeInt32(3)
+	writeUTF("ipAssignment")
+	writeUTF("STATIC")
+	writeUTF("linkAddress")
+	writeUTF(network.GuestIP)
+	writeInt32(int32(prefix))
+	writeUTF("gateway")
+	writeInt32(0)
+	writeInt32(1)
+	writeUTF(network.Gateway)
+	for _, dns := range network.DNS {
+		writeUTF("dns")
+		writeUTF(dns)
+	}
+	writeUTF("proxySettings")
+	writeUTF("NONE")
+	writeUTF("id")
+	writeUTF(androidGuestIface)
+	writeUTF("eos")
+	return buf.Bytes(), nil
 }
 
 func androidGuestNetworkForRecord(rec *AndroidSandboxRecord, dns []string) (androidGuestNetwork, error) {
