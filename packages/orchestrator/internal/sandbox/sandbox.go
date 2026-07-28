@@ -16,7 +16,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/e2b-dev/infra/packages/clickhouse/pkg/hoststats"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
@@ -110,7 +109,7 @@ type RuntimeMetadata struct {
 
 type Resources struct {
 	Slot   *network.Slot
-	rootfs []rootfs.Provider
+	rootfs rootfs.Provider
 	memory uffd.MemoryBackend
 }
 
@@ -249,7 +248,7 @@ func (f *Factory) CreateSandbox(
 	runtime RuntimeMetadata,
 	template template.Template,
 	sandboxTimeout time.Duration,
-	directDiskPaths map[string]string,
+	rootfsCachePath string,
 	processOptions vmm.ProcessOptions,
 	apiConfigToStore *orchestrator.SandboxConfig,
 ) (s *Sandbox, e error) {
@@ -276,30 +275,39 @@ func (f *Factory) CreateSandbox(
 	sandboxFiles := template.Files().NewSandboxFiles(runtime.SandboxID)
 	cleanup.Add(ctx, cleanupFiles(f.config, sandboxFiles))
 
-	disks, err := template.Disks(ctx)
+	rootFS, err := template.Rootfs()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get template disks: %w", err)
+		return nil, fmt.Errorf("failed to get rootfs: %w", err)
 	}
 
-	rootfsProviders := make([]rootfs.Provider, 0, len(disks))
-	for _, disk := range disks {
-		var provider rootfs.Provider
-		if directPath := directDiskPaths[disk.Name]; directPath != "" {
-			provider, err = rootfs.NewDirectProvider(ctx, disk.Device, directPath)
-		} else {
-			provider, err = rootfs.NewNBDProvider(ctx, disk.Device, sandboxFiles.SandboxCacheDiskPath(f.config.StorageConfig, disk.Name), f.devicePool, f.featureFlags)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to create %s disk provider: %w", disk.Name, err)
-		}
-		rootfsProviders = append(rootfsProviders, provider)
-		cleanup.Add(ctx, provider.Close)
-		go func(name string, p rootfs.Provider) {
-			if runErr := p.Start(execCtx); runErr != nil {
-				logger.L().Error(ctx, "disk overlay error", zap.String("disk", name), zap.Error(runErr))
-			}
-		}(disk.Name, provider)
+	var rootfsProvider rootfs.Provider
+	if rootfsCachePath == "" {
+		rootfsProvider, err = rootfs.NewNBDProvider(
+			ctx,
+			rootFS,
+			sandboxFiles.SandboxCacheRootfsPath(f.config.StorageConfig),
+			f.devicePool,
+			f.featureFlags,
+		)
+	} else {
+		rootfsProvider, err = rootfs.NewDirectProvider(
+			ctx,
+			rootFS,
+			// Populate direct cache directly from the source file
+			// This is needed for marking all blocks as dirty and being able to read them directly
+			rootfsCachePath,
+		)
 	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to create rootfs overlay: %w", err)
+	}
+	cleanup.Add(ctx, rootfsProvider.Close)
+	go func() {
+		runErr := rootfsProvider.Start(execCtx)
+		if runErr != nil {
+			logger.L().Error(ctx, "rootfs overlay error", zap.Error(runErr))
+		}
+	}()
 
 	memfile, err := template.Memfile(ctx)
 	if err != nil {
@@ -329,7 +337,7 @@ func (f *Factory) CreateSandbox(
 		ips,
 		sandboxFiles,
 		config.VMMConfig,
-		rootfsProviders,
+		rootfsProvider,
 		vmm.ConstantRootfsPaths,
 	)
 	if err != nil {
@@ -357,7 +365,7 @@ func (f *Factory) CreateSandbox(
 
 	resources := &Resources{
 		Slot:   ips,
-		rootfs: rootfsProviders,
+		rootfs: rootfsProvider,
 		memory: uffd.NewNoopMemory(memfileSize, memfile.BlockSize()),
 	}
 
@@ -516,35 +524,42 @@ func (f *Factory) ResumeSandbox(
 		}
 	}()
 
-	disks, err := t.Disks(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get template disks: %w", err)
-	}
+	// Slot initialization
+	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork)
 
-	rootfsProviders := make([]rootfs.Provider, 0, len(disks))
-	for _, disk := range disks {
-		provider, providerErr := rootfs.NewNBDProvider(
+	// Rootfs initialization
+	overlayPromise := utils.NewPromise(func() (rootfs.Provider, error) {
+		readonlyRootfs, err := t.Rootfs()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get rootfs: %w", err)
+		}
+
+		telemetry.ReportEvent(ctx, "got template rootfs")
+
+		overlay, err := rootfs.NewNBDProvider(
 			ctx,
-			disk.Device,
-			sandboxFiles.SandboxCacheDiskPath(f.config.StorageConfig, disk.Name),
+			readonlyRootfs,
+			sandboxFiles.SandboxCacheRootfsPath(f.config.StorageConfig),
 			f.devicePool,
 			f.featureFlags,
 		)
-		if providerErr != nil {
-			return nil, fmt.Errorf("failed to create %s disk overlay: %w", disk.Name, providerErr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create rootfs overlay: %w", err)
 		}
-		rootfsProviders = append(rootfsProviders, provider)
-		cleanup.Add(ctx, provider.Close)
-		go func(name string, p rootfs.Provider) {
-			if runErr := p.Start(execCtx); runErr != nil {
-				logger.L().Error(ctx, "disk overlay error", zap.String("disk", name), zap.Error(runErr))
-			}
-		}(disk.Name, provider)
-	}
-	telemetry.ReportEvent(ctx, "created disk overlays")
 
-	// Slot initialization
-	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork)
+		cleanup.Add(ctx, overlay.Close)
+
+		telemetry.ReportEvent(ctx, "created rootfs overlay")
+
+		go func() {
+			runErr := overlay.Start(execCtx)
+			if runErr != nil {
+				logger.L().Error(ctx, "rootfs overlay error", zap.Error(runErr))
+			}
+		}()
+
+		return overlay, nil
+	})
 
 	// Memory initialization
 	memoryPromise := utils.NewPromise(func() (struct{}, error) {
@@ -578,6 +593,13 @@ func (f *Factory) ResumeSandbox(
 
 	telemetry.ReportEvent(ctx, "got network slot")
 
+	tOverlay := time.Now()
+	overlay, err := overlayPromise.Wait(ctx)
+	if err != nil {
+		return nil, err
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] wait rootfs overlay cost: %.3f ms, traceID=%s", time.Since(tOverlay).Seconds()*1000, traceID)
+
 	tMemory := time.Now()
 	_, err = memoryPromise.Wait(ctx)
 	if err != nil {
@@ -607,15 +629,16 @@ func (f *Factory) ResumeSandbox(
 
 	t4 := time.Now()
 	metadataVMM := vmm.BackendType(meta.Template.VMMType).OrDefault()
-	metadataOS, err := vmm.ParseOsType(meta.Template.OsType)
-	if err != nil {
-		return nil, fmt.Errorf("invalid template OS/VMM metadata: %w", err)
+	metadataOS := vmm.OsType(meta.Template.OsType).OrDefault()
+	if config.VMMConfig.Backend() != metadataVMM || config.VMMConfig.OsType.OrDefault() != metadataOS {
+		return nil, fmt.Errorf(
+			"requested sandbox OS/VMM configuration %q/%q does not match template metadata %q/%q",
+			config.VMMConfig.OsType.OrDefault(),
+			config.VMMConfig.Backend(),
+			metadataOS,
+			metadataVMM,
+		)
 	}
-	if err := vmm.ValidateBackendForOS(metadataOS, metadataVMM); err != nil {
-		return nil, fmt.Errorf("invalid template OS/VMM metadata: %w", err)
-	}
-	config.VMMConfig.Type = metadataVMM
-	config.VMMConfig.OsType = metadataOS
 	vmmFactory, vmmErr := newVMMFactory(config.VMMConfig.Backend())
 	if vmmErr != nil {
 		return nil, vmmErr
@@ -628,7 +651,7 @@ func (f *Factory) ResumeSandbox(
 		ips,
 		sandboxFiles,
 		config.VMMConfig,
-		rootfsProviders,
+		overlay,
 		vmm.RootfsPaths{
 			TemplateVersion: meta.Version,
 			TemplateID:      config.BaseTemplateID,
@@ -704,7 +727,7 @@ func (f *Factory) ResumeSandbox(
 
 	resources := &Resources{
 		Slot:   ips,
-		rootfs: rootfsProviders,
+		rootfs: overlay,
 		memory: vmmUffd,
 	}
 
@@ -964,9 +987,9 @@ func (s *Sandbox) Pause(
 		return nil, fmt.Errorf("failed to get original memfile: %w", err)
 	}
 
-	originalDisks, err := s.Template.Disks(ctx)
+	originalRootfs, err := s.Template.Rootfs()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get original disks: %w", err)
+		return nil, fmt.Errorf("failed to get original rootfs: %w", err)
 	}
 
 	memfileDiffMetadata, err := s.Resources.memory.DiffMetadata(ctx, s.process)
@@ -988,50 +1011,20 @@ func (s *Sandbox) Pause(
 	}
 	cleanup.AddNoContext(ctx, memfileDiff.Close)
 
-	rootfsDiffs := make(map[build.DiffType]build.Diff, len(originalDisks))
-	rootfsDiffHeaders := make(map[build.DiffType]*header.Header, len(originalDisks))
-	var resultMu sync.Mutex
-	barrier := newDiskCloseBarrier(len(originalDisks), func() error {
-		return s.Close(ctx)
-	})
-	closeHook := func(closeCtx context.Context) error {
-		barrier.Arrive()
-		select {
-		case <-barrier.Done():
-			return barrier.Err()
-		case <-closeCtx.Done():
-			return closeCtx.Err()
-		}
+	rootfsDiff, rootfsDiffHeader, err := pauseProcessRootfs(
+		ctx,
+		buildID,
+		originalRootfs.Header(),
+		&RootfsDiffCreator{
+			rootfs:    s.rootfs,
+			closeHook: s.Close,
+		},
+		s.config.DefaultCacheDir,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error while post processing: %w", err)
 	}
-	group, groupCtx := errgroup.WithContext(ctx)
-	for i, disk := range originalDisks {
-		i, disk := i, disk
-		group.Go(func() error {
-			rootfsDiff, rootfsDiffHeader, err := pauseProcessRootfs(groupCtx, buildID, disk.DiffType, disk.Device.Header(), &RootfsDiffCreator{rootfs: s.rootfs[i], closeHook: closeHook}, s.config.DefaultCacheDir)
-			if err != nil {
-				barrier.Abort()
-				return fmt.Errorf("post processing %s disk: %w", disk.Name, err)
-			}
-			resultMu.Lock()
-			rootfsDiffs[disk.DiffType] = rootfsDiff
-			rootfsDiffHeaders[disk.DiffType] = rootfsDiffHeader
-			resultMu.Unlock()
-			return nil
-		})
-	}
-	if err := group.Wait(); err != nil {
-		barrier.Abort()
-		resultMu.Lock()
-		for _, rootfsDiff := range rootfsDiffs {
-			err = errors.Join(err, rootfsDiff.Close())
-		}
-		resultMu.Unlock()
-		err = errors.Join(err, barrier.Err())
-		return nil, fmt.Errorf("error while post processing disks: %w", err)
-	}
-	for _, rootfsDiff := range rootfsDiffs {
-		cleanup.AddNoContext(ctx, rootfsDiff.Close)
-	}
+	cleanup.AddNoContext(ctx, rootfsDiff.Close)
 
 	metadataFileLink := template.NewLocalFileLink(snapshotTemplateFiles.CacheMetadataPath())
 	cleanup.AddNoContext(ctx, metadataFileLink.Close)
@@ -1046,8 +1039,8 @@ func (s *Sandbox) Pause(
 		Metafile:          metadataFileLink,
 		MemfileDiff:       memfileDiff,
 		MemfileDiffHeader: memfileDiffHeader,
-		RootfsDiffs:       rootfsDiffs,
-		RootfsDiffHeaders: rootfsDiffHeaders,
+		RootfsDiffs:       map[build.DiffType]build.Diff{build.Rootfs: rootfsDiff},
+		RootfsDiffHeaders: map[build.DiffType]*header.Header{build.Rootfs: rootfsDiffHeader},
 
 		cleanup: cleanup,
 	}, nil
@@ -1061,59 +1054,6 @@ func (s *Sandbox) MemoryPrefetchData(ctx context.Context) (block.PrefetchData, e
 	}
 
 	return prefetchData, nil
-}
-
-type diskCloseBarrier struct {
-	total int
-
-	mu      sync.Mutex
-	arrived int
-	err     error
-
-	once    sync.Once
-	done    chan struct{}
-	closeFn func() error
-}
-
-func newDiskCloseBarrier(total int, closeFn func() error) *diskCloseBarrier {
-	return &diskCloseBarrier{total: total, done: make(chan struct{}), closeFn: closeFn}
-}
-
-func (b *diskCloseBarrier) Arrive() {
-	b.mu.Lock()
-	b.arrived++
-	ready := b.arrived == b.total
-	b.mu.Unlock()
-
-	if ready {
-		b.close()
-	}
-}
-
-func (b *diskCloseBarrier) Abort() {
-	b.close()
-}
-
-func (b *diskCloseBarrier) close() {
-	b.once.Do(func() {
-		err := b.closeFn()
-		b.mu.Lock()
-		b.err = err
-		b.mu.Unlock()
-		close(b.done)
-	})
-}
-
-func (b *diskCloseBarrier) Done() <-chan struct{} {
-	return b.done
-}
-
-func (b *diskCloseBarrier) Err() error {
-	<-b.done
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	return b.err
 }
 
 func pauseProcessMemory(
@@ -1159,7 +1099,6 @@ func pauseProcessMemory(
 func pauseProcessRootfs(
 	ctx context.Context,
 	buildId uuid.UUID,
-	diffType build.DiffType,
 	originalHeader *header.Header,
 	diffCreator DiffCreator,
 	cacheDir string,
@@ -1167,7 +1106,7 @@ func pauseProcessRootfs(
 	ctx, span := tracer.Start(ctx, "process-rootfs")
 	defer span.End()
 
-	rootfsDiffFile, err := build.NewLocalDiffFile(cacheDir, buildId.String(), diffType)
+	rootfsDiffFile, err := build.NewLocalDiffFile(cacheDir, buildId.String(), build.Rootfs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create rootfs diff: %w", err)
 	}

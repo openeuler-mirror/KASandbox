@@ -90,19 +90,9 @@ func (tm *TemplateManager) CreateTemplate(
 		}
 	}()
 
-	var resolvedOsType api.OsType
-	var resolvedVMMType BackendType
-	var err error
-	if fromTemplate == nil || *fromTemplate == "" {
-		resolvedOsType, resolvedVMMType, err = resolveBuildVM(osType)
-	} else if osType != nil {
-		// A template derived from another template inherits its VMM from the
-		// source metadata. Preserve an explicitly requested OS only so the
-		// orchestrator can verify that it matches the source template.
-		resolvedOsType, _, err = resolveBuildVM(osType)
-	}
+	resolvedOsType, resolvedVMMType, err := resolveBuildVM(osType)
 	if err != nil {
-		return err
+		return &api.InvalidRequestError{Err: err}
 	}
 
 	features, err := sandbox.NewVersionInfo(firecrackerVersion)
@@ -138,13 +128,13 @@ func (tm *TemplateManager) CreateTemplate(
 		DiskSizeMB:         int32(diskSizeMB),
 		KernelVersion:      kernelVersion,
 		FirecrackerVersion: firecrackerVersion,
-		HugePages:          features.HasHugePages(),
+		HugePages:          features.HasHugePages() && resolvedOsType == api.Linux,
 		StartCommand:       startCmd,
 		ReadyCommand:       readyCmd,
 		Force:              force,
 		Steps:              convertTemplateSteps(steps),
 		FromImageRegistry:  imageRegistry,
-		VmmType:            string(resolvedVMMType),
+		VmmType:            resolvedVMMType,
 		OsType:             string(resolvedOsType),
 	}
 
@@ -305,14 +295,12 @@ func convertImageRegistry(registry *api.FromImageRegistry) (*templatemanagergrpc
 	}
 }
 
-type BackendType string
-
 const (
-	BackendFirecracker BackendType = "firecracker"
-	BackendStratoVirt  BackendType = "stratovirt"
+	defaultBuildVMMType = "firecracker"
+	windowsBuildVMMType = "stratovirt"
 )
 
-func resolveBuildVM(osType *api.OsType) (api.OsType, BackendType, error) {
+func resolveBuildVM(osType *api.OsType) (api.OsType, string, error) {
 	resolvedOsType := api.Linux
 	if osType != nil {
 		switch *osType {
@@ -323,9 +311,9 @@ func resolveBuildVM(osType *api.OsType) (api.OsType, BackendType, error) {
 		}
 	}
 
-	resolvedVMMType := BackendFirecracker
+	resolvedVMMType := defaultBuildVMMType
 	if resolvedOsType == api.Windows || resolvedOsType == api.Android {
-		resolvedVMMType = BackendStratoVirt
+		resolvedVMMType = windowsBuildVMMType
 	}
 
 	return resolvedOsType, resolvedVMMType, nil
@@ -347,7 +335,7 @@ func setTemplateSource(
 	// hasImage can be empty for v1 template builds
 	hasImage := fromImage != nil
 	hasRaw := fromImageRaw != nil
-	hasTemplate := fromTemplate != nil && *fromTemplate != ""
+	hasTemplate := fromTemplate != nil
 	hasMultiDisk := fromImageMultiDisk != nil
 
 	// Validate input: exactly one source must be provided
@@ -358,13 +346,13 @@ func setTemplateSource(
 		}
 	}
 	if sources != 1 {
-		return fmt.Errorf("must specify exactly one of fromImage, fromImageRaw, fromImageMultiDisk or fromTemplate")
+		return &api.InvalidRequestError{Err: fmt.Errorf("must specify exactly one of fromImage, fromImageRaw, fromImageMultiDisk or fromTemplate")}
 	}
 
 	switch {
 	case hasRaw:
 		if strings.TrimSpace(fromImageRaw.Url) == "" {
-			return fmt.Errorf("fromImageRaw.url must not be empty")
+			return &api.InvalidRequestError{Err: fmt.Errorf("fromImageRaw.url must not be empty")}
 		}
 		template.Source = &templatemanagergrpc.TemplateConfig_FromImageRaw{
 			FromImageRaw: fromImageRaw.Url,
@@ -379,7 +367,7 @@ func setTemplateSource(
 		}
 	case hasTemplate:
 		if strings.TrimSpace(*fromTemplate) == "" {
-			return fmt.Errorf("fromTemplate must not be empty")
+			return &api.InvalidRequestError{Err: fmt.Errorf("fromTemplate must not be empty")}
 		}
 		identifier, tag, err := id.ParseName(*fromTemplate)
 		if err != nil {
@@ -430,7 +418,7 @@ func setTemplateSource(
 		}
 	default: // hasImage
 		if version != templates.TemplateV1Version && strings.TrimSpace(*fromImage) == "" {
-			return fmt.Errorf("fromImage must not be empty")
+			return &api.InvalidRequestError{Err: fmt.Errorf("fromImage must not be empty")}
 		}
 		template.Source = &templatemanagergrpc.TemplateConfig_FromImage{
 			FromImage: *fromImage,
