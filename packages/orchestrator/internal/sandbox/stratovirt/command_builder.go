@@ -36,6 +36,7 @@ func (b *CommandBuilder) Build(
 	vcpuCount int64,
 	_ bool,
 	incomingURI string,
+	vsockGuestCID int64,
 ) *CommandResult {
 	kernelPath := filepath.Join(b.config.SandboxDir, versions.SandboxKernelDir(), SandboxKernelFile)
 	rootfsPath := filepath.Join(b.config.SandboxDir, SandboxRootfsFile)
@@ -69,7 +70,12 @@ func (b *CommandBuilder) Build(
 		)
 	}
 	if versions.OsType.OrDefault() == vmm.OsAndroid {
-		return b.buildAndroidCommand(versions, files, slot, qmpSocket, memoryMB, vcpuCount, incomingArg)
+		return b.buildAndroidCommand(versions, files, slot, qmpSocket, memoryMB, vcpuCount, incomingArg, vsockGuestCID)
+	}
+
+	vsockArg := ""
+	if vsockGuestCID > 0 {
+		vsockArg = fmt.Sprintf("-device vhost-vsock-device,id=vsock0,guest-cid=%d ", vsockGuestCID)
 	}
 
 	cmd := fmt.Sprintf(
@@ -91,6 +97,7 @@ func (b *CommandBuilder) Build(
 			"-pci virtio-net-pci,netdev=netdev,id=%s,mac=%s "+
 			"-qmp unix:%s,server,nowait "+
 			"-serial file,path=%s "+
+			"%s"+
 			"%s",
 		b.config.SandboxDir,
 		hostRootfsLinkPath,
@@ -112,6 +119,7 @@ func (b *CommandBuilder) Build(
 		slot.TapMAC(),
 		qmpSocket,
 		serialLogPath,
+		vsockArg,
 		incomingArg,
 	)
 
@@ -123,7 +131,7 @@ func (b *CommandBuilder) Build(
 	}
 }
 
-func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.SandboxFiles, slot *network.Slot, qmpSocket string, memoryMB, vcpuCount int64, incomingArg string) *CommandResult {
+func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.SandboxFiles, slot *network.Slot, qmpSocket string, memoryMB, vcpuCount int64, incomingArg string, vsockGuestCID int64) *CommandResult {
 	diskNames := []string{storage.RootfsName, storage.PersistentName, storage.SDCardName}
 	guestDiskPaths := make([]string, len(diskNames))
 	var preamble strings.Builder
@@ -142,24 +150,110 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 	}
 	preamble.WriteString("\n")
 
+	// Relocate the Android serial and logcat logs from /tmp to /tmp/templates so
+	// all build-time logs land alongside the StratoVirt -D log.
+	serialLogPath := filepath.Join("/tmp/templates", filepath.Base(files.SandboxSerialLogPath()))
+	logcatPath := filepath.Join("/tmp/templates", filepath.Base(files.SandboxAndroidLogcatPath()))
+
+	// Pre-compute the dynamic VMM argument groups so the main command can be
+	// assembled via a single fmt.Sprintf template, mirroring buildWindowsCommand.
+	diskArgs := buildAndroidDiskArgs(guestDiskPaths)
+	virtconsoleArgs := buildAndroidVirtconsoleArgs(pipeDir, serialLogPath, logcatPath)
+
+	vsockArg := ""
+	if vsockGuestCID > 0 {
+		vsockArg = fmt.Sprintf("-device vhost-vsock-pci,id=vsock0,guest-cid=%d,bus=pcie.0,addr=0x6 ", vsockGuestCID)
+	}
+
+	cmd := fmt.Sprintf(
+		"ip netns exec %s %s "+
+			"-disable-seccomp "+
+			"-D /tmp/templates/%s-%s.log "+
+			"-machine virt,gic-version=3,dump-guest-core=off,mem-share=on "+
+			"-accel kvm "+
+			"-smp %d,cores=%d,threads=1 "+
+			"-m size=%dM,maxmem=%dM "+
+			"-uuid 699acfc4-c8c4-11e7-882b-%012x "+
+			"-cpu host "+
+			"-drive file=%s,if=pflash,unit=0,readonly=true "+
+			"%s"+
+			"-boot strict=on -msg timestamp=on -rtc base=utc "+
+			"-device virtio-serial-pci,id=virtio-serial0,bus=pcie.0,addr=0x11,max-ports=31 "+
+			"%s"+
+			"%s"+
+			"-netdev tap,id=netdev0,ifname=%s -device virtio-net-pci,netdev=netdev0,id=eth1,bus=pcie.0,addr=0x8,mac=00:1a:11:e0:cf:00 "+
+			"-netdev tap,id=netdev1,ifname=%s -device virtio-net-pci,netdev=netdev1,id=%s,bus=pcie.0,addr=0x9,mac=00:1a:11:e1:cf:00 "+
+			"-device virtio-gpu-pci,id=gpu0,bus=pcie.0,addr=0x10,xres=720,yres=1280 "+
+			"-object rng-random,id=objrng0,filename=/dev/urandom -device virtio-rng-pci,id=rng0,rng=objrng0,bus=pcie.0,addr=0x5,max-bytes=1024,period=2000 "+
+			"-qmp unix:%s,server,nowait "+
+			"-serial file,path=%s "+
+			"%s",
+		slot.NamespaceID(),
+		versions.StratoVirtPath(b.config),
+		files.BuildID,
+		files.SandboxID,
+		vcpuCount,
+		vcpuCount,
+		memoryMB,
+		memoryMB+4,
+		slot.Idx,
+		filepath.Join(b.config.FirmwareDir, androidBootloaderFile),
+		diskArgs,
+		virtconsoleArgs,
+		vsockArg,
+		slot.ExtraTapName(), // hostnet0 (netdev0) ifname = cvd-mtap
+		slot.TapName(),      // hostnet1 (netdev1) ifname = tap0
+		slot.VpeerName(),    // hostnet1 (netdev1) id = "eth0" (used by MMDS)
+		qmpSocket,
+		serialLogPath,
+		incomingArg,
+	)
+
+	rootfsPath := guestDiskPaths[0]
+	return &CommandResult{Value: preamble.String() + cmd, RootfsPath: rootfsPath, QmpSocket: qmpSocket}
+}
+
+// buildAndroidDiskArgs renders the three Android data disks (os, persistent,
+// sdcard) as virtio-blk-pci devices. The first disk (os) gets bootindex=1 so
+// the guest boots from it.
+func buildAndroidDiskArgs(guestDiskPaths []string) string {
 	var args strings.Builder
-	fmt.Fprintf(&args, "ip netns exec %s %s -machine virt,gic-version=3,dump-guest-core=off,mem-share=on -accel kvm -smp %d,cores=%d,threads=1 -m size=%dM,maxmem=%dM -uuid 699acfc4-c8c4-11e7-882b-%012x -cpu host ", slot.NamespaceID(), versions.StratoVirtPath(b.config), vcpuCount, vcpuCount, memoryMB, memoryMB+4, slot.Idx)
-	fmt.Fprintf(&args, "-drive file=%s,if=pflash,unit=0,readonly=true ", filepath.Join(b.config.FirmwareDir, androidBootloaderFile))
 	for i, path := range guestDiskPaths {
 		bootIndex := ""
 		if i == 0 {
 			bootIndex = ",bootindex=1"
 		}
-		fmt.Fprintf(&args, "-drive file=%s,format=raw,if=none,id=drive-virtio-disk%d,aio=threads -device virtio-blk-pci,drive=drive-virtio-disk%d,id=virtio-disk%d,bus=pcie.0,addr=0x%x%s ", path, i, i, i, i+2, bootIndex)
+		fmt.Fprintf(&args, "-drive file=%s,format=raw,if=none,id=drive-virtio-disk%d,aio=threads -device virtio-blk-pci,drive=drive-virtio-disk%d,id=virtio-disk%d,bus=pcie.0,addr=0x%x%s ",
+			path, i, i, i, i+2, bootIndex)
 	}
-	args.WriteString("-boot strict=on -msg timestamp=on -rtc base=utc -device virtio-serial-pci,id=virtio-serial0,bus=pcie.0,addr=0x11,max-ports=31 ")
-	pipeByPort := map[int]string{3: "keymaster_fifo_vm", 4: "gatekeeper_fifo_vm", 5: "bt_fifo_vm", 6: "gnsshvc_fifo_vm", 7: "locationhvc_fifo_vm", 9: "uwb_fifo_vm", 10: "oemlock_fifo_vm", 11: "keymint_fifo_vm", 12: "nfc_fifo_vm", 18: "sensors_control_fifo_vm", 19: "sensors_data_fifo_vm"}
+	return args.String()
+}
+
+// buildAndroidVirtconsoleArgs renders the 31 virtio-serial ports used by the
+// Android HALs. Ports 0 and 2 capture the kernel serial log and logcat to
+// files; the ports listed in pipeByPort connect to FIFO pairs under pipeDir
+// for HAL host↔guest IPC; the rest are left null.
+func buildAndroidVirtconsoleArgs(pipeDir string, serialLogPath, logcatPath string) string {
+	var args strings.Builder
+	pipeByPort := map[int]string{
+		3:  "keymaster_fifo_vm",
+		4:  "gatekeeper_fifo_vm",
+		5:  "bt_fifo_vm",
+		6:  "gnsshvc_fifo_vm",
+		7:  "locationhvc_fifo_vm",
+		9:  "uwb_fifo_vm",
+		10: "oemlock_fifo_vm",
+		11: "keymint_fifo_vm",
+		12: "nfc_fifo_vm",
+		18: "sensors_control_fifo_vm",
+		19: "sensors_data_fifo_vm",
+	}
 	for port := 0; port < 31; port++ {
 		switch port {
 		case 0:
-			fmt.Fprintf(&args, "-chardev file,id=hvc0,path=%s -device virtconsole,id=hvc0,chardev=hvc0,nr=0 ", files.SandboxSerialLogPath())
+			fmt.Fprintf(&args, "-chardev file,id=hvc0,path=%s -device virtconsole,id=hvc0,chardev=hvc0,nr=0 ", serialLogPath)
 		case 2:
-			fmt.Fprintf(&args, "-chardev file,id=hvc2,path=%s -device virtconsole,id=hvc2,chardev=hvc2,nr=2 ", files.SandboxAndroidLogcatPath())
+			fmt.Fprintf(&args, "-chardev file,id=hvc2,path=%s -device virtconsole,id=hvc2,chardev=hvc2,nr=2 ", logcatPath)
 		default:
 			if name, ok := pipeByPort[port]; ok {
 				fmt.Fprintf(&args, "-chardev pipe,id=hvc%d,path=%s -device virtconsole,id=hvc%d,chardev=hvc%d,nr=%d ", port, filepath.Join(pipeDir, name), port, port, port)
@@ -168,15 +262,7 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 			}
 		}
 	}
-	fmt.Fprintf(&args, "-device vhost-vsock-pci,id=vsock0,guest-cid=%d,bus=pcie.0,addr=0x6 ", slot.VsockCID())
-	args.WriteString("-device nec-usb-xhci,id=xhci,bus=pcie.0,addr=0x7 -device usb-tablet,id=tablet -device usb-kbd,id=kbd ")
-	fmt.Fprintf(&args, "-netdev tap,id=hostnet0,ifname=%s -device virtio-net-pci,id=net0,netdev=hostnet0,bus=pcie.0,addr=0x8,mac=00:1a:11:e0:cf:00 ", slot.TapName())
-	fmt.Fprintf(&args, "-netdev tap,id=hostnet1,ifname=%s -device virtio-net-pci,id=net1,netdev=hostnet1,bus=pcie.0,addr=0x9,mac=00:1a:11:e1:cf:00 ", slot.ExtraTapName())
-	args.WriteString("-device virtio-gpu-pci,id=gpu0,bus=pcie.0,addr=0x10,xres=720,yres=1280 -vnc 127.0.0.1:544 ")
-	fmt.Fprintf(&args, "-object rng-random,id=objrng0,filename=/dev/urandom -device virtio-rng-pci,id=rng0,rng=objrng0,bus=pcie.0,addr=0x5,max-bytes=1024,period=2000 -qmp unix:%s,server,nowait -serial file,path=%s %s", qmpSocket, files.SandboxSerialLogPath(), incomingArg)
-
-	rootfsPath := guestDiskPaths[0]
-	return &CommandResult{Value: preamble.String() + args.String(), RootfsPath: rootfsPath, QmpSocket: qmpSocket}
+	return args.String()
 }
 
 // buildWindowsCommand builds the StratoVirt invocation for a Windows guest.
@@ -201,17 +287,15 @@ func (b *CommandBuilder) buildWindowsCommand(
 			"mount -t tmpfs tmpfs %s -o X-mount.mkdir &&\n\n"+
 			"ln -s %s %s &&\n\n"+
 			"ip netns exec %s %s "+
+			"-disable-seccomp "+
 			"-machine type=%s "+
 			"%s "+
 			"-cpu host,pmu=on "+
 			"-drive file=%s,if=pflash,unit=0,readonly=true "+
-			"-drive file=%s,format=raw,id=disk,readonly=off,direct=off,aio=off "+
+			"-drive file=%s,format=raw,id=disk,readonly=off,direct=off,aio=threads "+
 			"-device virtio-blk-pci,drive=disk,id=blk,bus=pcie.0,addr=0x2.0x0 "+
 			"-device virtio-gpu-pci,id=gpu,bus=pcie.0,addr=0x7,xres=1280,yres=720 "+
 			"-vnc 0.0.0.0:2 "+
-			"-device nec-usb-xhci,id=xhci,bus=pcie.0,addr=0x9 "+
-			"-device usb-kbd,id=kbd "+
-			"-device usb-tablet,id=tablet "+
 			"-netdev tap,id=netdev,ifname=%s "+
 			"-device virtio-net-pci,netdev=netdev,id=%s,bus=pcie.0,addr=0x6,mac=%s "+
 			"-qmp unix:%s,server,nowait "+

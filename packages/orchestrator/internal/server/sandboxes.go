@@ -329,6 +329,7 @@ func (s *Server) List(ctx context.Context, _ *emptypb.Empty) (*orchestrator.Sand
 			ClientId:  s.info.ClientId,
 			StartTime: timestamppb.New(startedAt),
 			EndTime:   timestamppb.New(sbx.GetEndAt()),
+			OsType:    string(sbx.Config.VMMConfig.OsType.OrDefault()),
 		})
 	}
 

@@ -86,3 +86,11 @@ func (s *SandboxFiles) SandboxSerialLogPath() string {
 func (s *SandboxFiles) SandboxAndroidLogcatPath() string {
 	return filepath.Join(s.tmpDir, fmt.Sprintf("logcat-%s-%s.log", s.SandboxID, s.randomID))
 }
+
+// SandboxHostDir returns a per-sandbox directory on the host for sandbox-specific
+// auxiliary files (e.g. cuttlefish_config.json for Android host services).
+// The directory is created on demand by callers via os.MkdirAll and removed
+// explicitly during sandbox cleanup after host services release their files.
+func (s *SandboxFiles) SandboxHostDir() string {
+	return filepath.Join(s.tmpDir, fmt.Sprintf("sandbox-%s-%s", s.SandboxID, s.randomID))
+}

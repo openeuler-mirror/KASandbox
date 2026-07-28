@@ -363,6 +363,8 @@ func runBuild(
 	}
 	if ok && !skipGuestBuildPhases {
 		builders = append(builders, userBuilder)
+	}
+	if !skipGuestBuildPhases {
 		builders = append(builders, stepBuilders...)
 	}
 	builders = append(builders, postProcessingBuilder)

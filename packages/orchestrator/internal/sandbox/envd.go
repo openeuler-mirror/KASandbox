@@ -1,12 +1,15 @@
 package sandbox
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -16,6 +19,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/envd"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/shared/pkg/consts"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
@@ -25,6 +29,88 @@ import (
 const (
 	loopDelay = 5 * time.Millisecond
 )
+
+type responseBodyWithConn struct {
+	io.ReadCloser
+	conn net.Conn
+}
+
+func (b *responseBodyWithConn) Close() error {
+	bodyErr := b.ReadCloser.Close()
+	connErr := b.conn.Close()
+	if bodyErr != nil {
+		return bodyErr
+	}
+
+	return connErr
+}
+
+// doStratoVirtInitRequest sends the small init request with one TCP write.
+// StratoVirt's virtio-net path can delay responses indefinitely when net/http
+// splits the headers and body across separate writes during guest cold boot.
+// A single write avoids that transport-specific deadlock for every StratoVirt
+// guest while retaining the instrumented HTTP transport for other VMMs.
+func (s *Sandbox) doStratoVirtInitRequest(
+	ctx context.Context,
+	method, address string,
+	body []byte,
+) (*http.Response, error) {
+	u, err := url.Parse(address)
+	if err != nil {
+		return nil, fmt.Errorf("parse Android envd URL: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, address, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build Android envd request: %w", err)
+	}
+	req.Host = u.Host
+	req.Header.Set("Content-Type", "application/json")
+	if s.Config.Envd.AccessToken != nil {
+		req.Header.Set("X-Access-Token", *s.Config.Envd.AccessToken)
+	}
+	// Connection: close makes the server close the keep-alive socket after the
+	// response so http.ReadResponse can detect body EOF deterministically.
+	req.Close = true
+
+	// http.Request.Write serializes the request line, headers and body into a
+	// single buffer that we can flush in one conn.Write below.
+	var requestBuf bytes.Buffer
+	if err := req.Write(&requestBuf); err != nil {
+		return nil, fmt.Errorf("serialize Android envd request: %w", err)
+	}
+
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", u.Host)
+	if err != nil {
+		return nil, err
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			conn.Close()
+			return nil, err
+		}
+	}
+
+	written, err := conn.Write(requestBuf.Bytes())
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if written != requestBuf.Len() {
+		conn.Close()
+		return nil, io.ErrShortWrite
+	}
+
+	response, err := http.ReadResponse(bufio.NewReader(conn), req)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	response.Body = &responseBodyWithConn{ReadCloser: response.Body, conn: conn}
+
+	return response, nil
+}
 
 // doRequestWithInfiniteRetries does a request with infinite retries until the context is done.
 // The parent context should have a deadline or a timeout.
@@ -60,6 +146,7 @@ func (s *Sandbox) doRequestWithInfiniteRetries(
 
 			return nil, requestCount, err
 		}
+		request.Header.Set("Content-Type", "application/json")
 
 		// make sure request to already authorized envd will not fail
 		// this can happen in sandbox resume and in some edge cases when previous request was success, but we continued
@@ -67,7 +154,12 @@ func (s *Sandbox) doRequestWithInfiniteRetries(
 			request.Header.Set("X-Access-Token", *s.Config.Envd.AccessToken)
 		}
 
-		response, err := sandboxHttpClient.Do(request)
+		var response *http.Response
+		if s.Config.VMMConfig.Backend() == vmm.BackendStratoVirt {
+			response, err = s.doStratoVirtInitRequest(reqCtx, method, address, body)
+		} else {
+			response, err = sandboxHttpClient.Do(request)
+		}
 		cancel()
 
 		if err == nil {
@@ -123,7 +215,6 @@ func (s *Sandbox) initEnvd(ctx context.Context) (e error) {
 
 		return fmt.Errorf("failed to init envd: %w", err)
 	}
-
 	if count > 1 {
 		// Track failed envd init calls
 		envdInitCalls.Add(ctx, count-1, metric.WithAttributes(attributesFail...))
@@ -137,7 +228,6 @@ func (s *Sandbox) initEnvd(ctx context.Context) (e error) {
 	if err != nil {
 		return fmt.Errorf("failed to read envd init response body: %w", err)
 	}
-
 	if response.StatusCode != http.StatusNoContent {
 		logger.L().Error(ctx, "envd init request failed",
 			logger.WithSandboxID(s.Runtime.SandboxID),

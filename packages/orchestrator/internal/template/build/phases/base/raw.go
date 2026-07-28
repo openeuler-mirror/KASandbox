@@ -49,7 +49,7 @@ func constructLayerFilesFromAndroidRaw(
 	newfsMsdosPath string,
 	dir string,
 	authProvider auth.RegistryAuthProvider,
-) ([]sbxtemplate.Disk, block.ReadonlyDevice, error) {
+) (_ []sbxtemplate.Disk, _ block.ReadonlyDevice, resultErr error) {
 	buildID, err := uuid.Parse(baseBuildID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse build id: %w", err)
@@ -71,6 +71,15 @@ func constructLayerFilesFromAndroidRaw(
 		}},
 	}
 	result := make([]sbxtemplate.Disk, 0, len(specs))
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		for i := len(result) - 1; i >= 0; i-- {
+			resultErr = errors.Join(resultErr, result[i].Device.Close())
+		}
+	}()
+
 	for _, spec := range specs {
 		path := filepath.Join(dir, spec.name)
 		if err := spec.prepare(path); err != nil {

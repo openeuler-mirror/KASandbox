@@ -444,6 +444,7 @@ func run(config cfg.Config) (success bool) {
 
 	// sandbox factory
 	sandboxFactory := sandbox.NewFactory(config.BuilderConfig, networkPool, devicePool, featureFlags, hostStatsDelivery, cgroupManager)
+	closers = append(closers, closer{"sandbox factory", sandboxFactory.Close})
 
 	volumeService := volumes.New(config)
 

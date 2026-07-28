@@ -14,9 +14,12 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/config"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/constants"
+	"go.uber.org/zap"
+
 	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 	"github.com/e2b-dev/infra/packages/shared/pkg/fc/models"
 	"github.com/e2b-dev/infra/packages/shared/pkg/id"
+	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
@@ -133,8 +136,28 @@ func (cs *CreateSandbox) Sandbox(
 	if err != nil {
 		return nil, fmt.Errorf("create sandbox: %w", err)
 	}
+
+	// Register the sandbox before waiting for envd. Android performs network
+	// initialization and outbound requests while envd is starting; the TCP
+	// firewall must already be able to associate those connections with this
+	// sandbox. BuildLayer keeps the registration for the rest of the build.
+	layerExecutor.sandboxes.Insert(sbx)
 	defer func() {
 		if err != nil {
+			layerExecutor.sandboxes.Remove(sbx.Runtime.SandboxID)
+			closeErr := layerExecutor.proxy.RemoveFromPool(sbx.LifecycleID)
+			if closeErr != nil {
+				// Errors here will be from forcefully closing the connections, so we can ignore them—they will at worst timeout on their own.
+				layerExecutor.logger.Warn(ctx, "errors when manually closing connections to sandbox", zap.Error(closeErr))
+			} else {
+				layerExecutor.logger.Debug(
+					ctx,
+					"removed proxy from pool",
+					logger.WithSandboxID(sbx.Runtime.SandboxID),
+					logger.WithExecutionID(sbx.Runtime.ExecutionID),
+				)
+			}
+
 			// Close the sandbox in case of error to avoid leaking resources
 			err = errors.Join(err, sbx.Close(ctx))
 		}

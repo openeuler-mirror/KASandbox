@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -298,21 +299,22 @@ func (t *storageTemplate) Disks(ctx context.Context) ([]Disk, error) {
 	t.disksMu.Lock()
 	defer t.disksMu.Unlock()
 	if t.disks != nil {
-		return t.disks, nil
+		return slices.Clone(t.disks), nil
 	}
 
 	root, err := t.Rootfs()
 	if err != nil {
 		return nil, err
 	}
-	t.disks = []Disk{{Name: storage.RootfsName, DiffType: build.Rootfs, Device: root}}
+	disks := []Disk{{Name: storage.RootfsName, DiffType: build.Rootfs, Device: root}}
 
 	meta, err := t.Metadata()
 	if err != nil {
 		return nil, err
 	}
 	if meta.Template.OsType != "android" {
-		return t.disks, nil
+		t.disks = disks
+		return slices.Clone(t.disks), nil
 	}
 
 	for _, spec := range []struct {
@@ -321,12 +323,16 @@ func (t *storageTemplate) Disks(ctx context.Context) ([]Disk, error) {
 	}{{storage.PersistentName, build.RootfsPersistent}, {storage.SDCardName, build.RootfsSDCard}} {
 		device, err := NewStorage(ctx, t.buildStore, t.files.BuildID, spec.typ, t.rootfsHeaders[spec.typ], t.persistence, t.metrics)
 		if err != nil {
+			for i := len(disks) - 1; i > 0; i-- {
+				err = errors.Join(err, disks[i].Device.Close())
+			}
 			return nil, fmt.Errorf("failed to create %s disk storage: %w", spec.name, err)
 		}
-		t.disks = append(t.disks, Disk{Name: spec.name, DiffType: spec.typ, Device: device})
+		disks = append(disks, Disk{Name: spec.name, DiffType: spec.typ, Device: device})
 	}
 
-	return t.disks, nil
+	t.disks = disks
+	return slices.Clone(t.disks), nil
 }
 
 func (t *storageTemplate) Snapfile() (File, error) {

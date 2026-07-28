@@ -24,6 +24,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/build"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/cgroup"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/hostservice"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/rootfs"
@@ -161,8 +162,9 @@ type Sandbox struct {
 	files   *storage.SandboxFiles
 	cleanup *Cleanup
 
-	process      vmm.Process
-	cgroupHandle *cgroup.CgroupHandle
+	process         vmm.Process
+	cgroupHandle    *cgroup.CgroupHandle
+	androidServices *hostservice.AndroidServices
 
 	Template template.Template
 
@@ -185,6 +187,11 @@ func (s *Sandbox) LoggerMetadata() sbxlogger.SandboxMetadata {
 		TemplateID: s.Runtime.TemplateID,
 		TeamID:     s.Runtime.TeamID,
 	}
+}
+
+type networkSlotRes struct {
+	slot *network.Slot
+	err  error
 }
 
 // GetStartedAt returns the sandbox start time in a thread-safe manner.
@@ -210,6 +217,8 @@ type Factory struct {
 	featureFlags      *featureflags.Client
 	hostStatsDelivery hoststats.Delivery
 	cgroupManager     cgroup.Manager
+	cidPool           *hostservice.CIDPool
+	vsockMux          *hostservice.VsockMux
 }
 
 func NewFactory(
@@ -227,7 +236,16 @@ func NewFactory(
 		featureFlags:      featureFlags,
 		hostStatsDelivery: hostStatsDelivery,
 		cgroupManager:     cgroupManager,
+		cidPool:           hostservice.NewCIDPool(2000),
+		vsockMux:          hostservice.NewVsockMux(),
 	}
+}
+
+func (f *Factory) Close(ctx context.Context) error {
+	if f == nil || f.vsockMux == nil {
+		return nil
+	}
+	return f.vsockMux.Close(ctx)
 }
 
 func newVMMFactory(backend vmm.BackendType) (vmm.Factory, error) {
@@ -301,6 +319,17 @@ func (f *Factory) CreateSandbox(
 		}(disk.Name, provider)
 	}
 
+	switch config.VMMConfig.OsType.OrDefault() {
+	case vmm.OsAndroid:
+		if len(rootfsProviders) != 3 {
+			return nil, fmt.Errorf("android sandbox expects 3 rootfs providers, got %d", len(rootfsProviders))
+		}
+	default:
+		if len(rootfsProviders) != 1 {
+			return nil, fmt.Errorf("sandbox expects 1 rootfs provider for OS %q, got %d", config.VMMConfig.OsType.OrDefault(), len(rootfsProviders))
+		}
+	}
+
 	memfile, err := template.Memfile(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get memfile: %w", err)
@@ -338,6 +367,29 @@ func (f *Factory) CreateSandbox(
 
 	telemetry.ReportEvent(ctx, "created vmm client")
 
+	// Android host services must start before the VMM boots so the guest sees
+	// the allocated vsock CID.
+	var androidServices *hostservice.AndroidServices
+	if metadata.OSType(config.VMMConfig.OsType) == metadata.OSTypeAndroid {
+		if ips.ExternalNetNS {
+			return nil, fmt.Errorf("Android host services do not support CNI external network namespaces")
+		}
+		androidServices, err = hostservice.StartAndroidServices(ctx, hostservice.AndroidServicesParams{
+			Config:     f.config,
+			CIDPool:    f.cidPool,
+			Process:    vmmHandle,
+			Cleanup:    cleanup,
+			Mux:        f.vsockMux,
+			SandboxID:  runtime.SandboxID,
+			SandboxDir: sandboxFiles.SandboxHostDir(),
+			NetNSName:  ips.NamespaceID(),
+			MobileTap:  ips.ExtraTapName(),
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	err = vmmHandle.Create(
 		ctx,
 		sbxlogger.SandboxMetadata{
@@ -354,6 +406,18 @@ func (f *Factory) CreateSandbox(
 		return nil, fmt.Errorf("failed to create VMM: %w", err)
 	}
 	telemetry.ReportEvent(ctx, "created vmm process")
+
+	if androidServices != nil {
+		proxyAddr := androidServices.ADBAddress
+		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, 30*time.Second); err != nil {
+			return nil, fmt.Errorf("vsock proxy not ready: %w", err)
+		}
+		rilCtx, cancelRIL := context.WithTimeout(ctx, f.config.ReadyCheckTimeout)
+		defer cancelRIL()
+		if err := androidServices.WaitForModemConnection(rilCtx); err != nil {
+			return nil, fmt.Errorf("guest RIL did not reconnect to modem simulator: %w", err)
+		}
+	}
 
 	resources := &Resources{
 		Slot:   ips,
@@ -383,6 +447,8 @@ func (f *Factory) CreateSandbox(
 		config:   f.config,
 		files:    sandboxFiles,
 		process:  vmmHandle,
+
+		androidServices: androidServices,
 
 		cleanup: cleanup,
 
@@ -633,6 +699,17 @@ func (f *Factory) ResumeSandbox(
 		return nil, vmmErr
 	}
 
+	switch config.VMMConfig.OsType.OrDefault() {
+	case vmm.OsAndroid:
+		if len(rootfsProviders) != 3 {
+			return nil, fmt.Errorf("android sandbox expects 3 rootfs providers, got %d", len(rootfsProviders))
+		}
+	default:
+		if len(rootfsProviders) != 1 {
+			return nil, fmt.Errorf("sandbox expects 1 rootfs provider for OS %q, got %d", config.VMMConfig.OsType.OrDefault(), len(rootfsProviders))
+		}
+	}
+
 	vmmHandle, vmmErr := vmmFactory.NewProcess(
 		ctx,
 		execCtx,
@@ -653,6 +730,28 @@ func (f *Factory) ResumeSandbox(
 	}
 
 	zap.L().Sugar().Infof("[ResumeSandbox] vmmFactory.NewProcess cost: %.3f ms, traceID=%s", time.Since(t4).Seconds()*1000, traceID)
+	var androidServices *hostservice.AndroidServices
+	if metadata.OSType(meta.Template.OsType) == metadata.OSTypeAndroid {
+		if ips.ExternalNetNS {
+			return nil, fmt.Errorf("Android host services do not support CNI external network namespaces")
+		}
+		androidServices, err = hostservice.StartAndroidServices(ctx, hostservice.AndroidServicesParams{
+			Config:     f.config,
+			CIDPool:    f.cidPool,
+			Process:    vmmHandle,
+			Cleanup:    cleanup,
+			Mux:        f.vsockMux,
+			SandboxID:  runtime.SandboxID,
+			SandboxDir: sandboxFiles.SandboxHostDir(),
+			NetNSName:  ips.NamespaceID(),
+			MobileTap:  ips.ExtraTapName(),
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// ==================== 6. 恢复 VM ====================
 	phaseStart := time.Now()
 	telemetry.ReportEvent(ctx, "created VMM process")
 
@@ -711,6 +810,22 @@ func (f *Factory) ResumeSandbox(
 	if vmmStartErr != nil {
 		return nil, fmt.Errorf("failed to start VMM: %w", vmmStartErr)
 	}
+	if androidServices != nil {
+		proxyAddr := androidServices.ADBAddress
+		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, 30*time.Second); err != nil {
+			return nil, fmt.Errorf("vsock proxy not ready (guest adbd unreachable): %w", err)
+		}
+		logger.L().Info(ctx, "android host services ready",
+			zap.String("sandbox_id", runtime.SandboxID),
+			zap.String("proxy_addr", proxyAddr),
+		)
+		rilCtx, cancelRIL := context.WithTimeout(ctx, f.config.ReadyCheckTimeout)
+		defer cancelRIL()
+		if err := androidServices.WaitForModemConnection(rilCtx); err != nil {
+			return nil, fmt.Errorf("guest RIL did not reconnect to modem simulator: %w", err)
+		}
+	}
+
 	zap.L().Sugar().Infof("[ResumeSandbox] resume VM cost: %d ms, traceID=%s", time.Since(phaseStart).Milliseconds(), traceID)
 	telemetry.ReportEvent(ctx, "initialized VMM")
 
@@ -743,6 +858,8 @@ func (f *Factory) ResumeSandbox(
 		config:   f.config,
 		files:    sandboxFiles,
 		process:  vmmHandle,
+
+		androidServices: androidServices,
 
 		cleanup: cleanup,
 
@@ -852,6 +969,12 @@ func (s *Sandbox) doStop(ctx context.Context) error {
 	// Stop the health checks before stopping the sandbox
 	s.Checks.Stop()
 
+	if s.androidServices != nil {
+		if hostSvcErr := s.androidServices.Stop(ctx); hostSvcErr != nil {
+			errs = append(errs, fmt.Errorf("failed to stop Android host services: %w", hostSvcErr))
+		}
+	}
+
 	vmmStopErr := s.process.Stop(ctx)
 	if vmmStopErr != nil {
 		errs = append(errs, fmt.Errorf("failed to stop VMM: %w", vmmStopErr))
@@ -884,6 +1007,12 @@ func (s *Sandbox) Shutdown(ctx context.Context) error {
 
 	// Stop the health check before pausing the VM
 	s.Checks.Stop()
+
+	if s.androidServices != nil {
+		if err := s.androidServices.Stop(ctx); err != nil {
+			return fmt.Errorf("failed to stop host services: %w", err)
+		}
+	}
 
 	if err := s.process.Pause(ctx); err != nil {
 		return fmt.Errorf("failed to pause VM: %w", err)
@@ -956,6 +1085,12 @@ func (s *Sandbox) Pause(
 
 	// Stop the health check before pausing the VM
 	s.Checks.Stop()
+
+	if s.androidServices != nil {
+		if err := s.androidServices.Stop(ctx); err != nil {
+			return nil, fmt.Errorf("failed to stop Android host services before snapshot: %w", err)
+		}
+	}
 
 	if err := s.process.Pause(ctx); err != nil {
 		return nil, fmt.Errorf("failed to pause VM: %w", err)

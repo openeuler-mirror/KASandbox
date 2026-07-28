@@ -292,20 +292,13 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 		rootfs, memfile, _, err = constructLayerFilesFromWindowsRaw(ctx, userLogger, bb.BuildContext, baseMetadata.Template.BuildID, bb.Config.FromImageRaw, rootfsPath, bb.Config.RegistryAuthProvider)
 	}
 	if err != nil {
-		if memfile != nil {
-			err = errors.Join(err, memfile.Close())
-		}
-		for _, disk := range disks {
-			if disk.Device != nil {
-				err = errors.Join(err, disk.Device.Close())
-			}
-		}
+		err = errors.Join(err, closeRawLayerFiles(rootfs, disks, memfile))
 		return metadata.Template{}, fmt.Errorf("error building environment from raw image: %w", err)
 	}
 
 	cacheFiles, err := storage.TemplateFiles{BuildID: baseMetadata.Template.BuildID}.CacheFiles(bb.BuildContext.BuilderConfig.StorageConfig)
 	if err != nil {
-		err = errors.Join(err, rootfs.Close(), memfile.Close())
+		err = errors.Join(err, closeRawLayerFiles(rootfs, disks, memfile))
 
 		return metadata.Template{}, fmt.Errorf("error creating template files: %w", err)
 	}
@@ -313,7 +306,7 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 	if bb.Config.IsAndroid() {
 		localTemplate, err = sbxtemplate.NewLocalMultiDiskTemplate(cacheFiles, disks, memfile)
 		if err != nil {
-			return metadata.Template{}, errors.Join(err, rootfs.Close(), memfile.Close())
+			return metadata.Template{}, errors.Join(err, closeRawLayerFiles(rootfs, disks, memfile))
 		}
 	} else {
 		localTemplate = sbxtemplate.NewLocalTemplate(cacheFiles, rootfs, memfile)
@@ -403,6 +396,24 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 	}
 
 	return baseLayer, nil
+}
+
+func closeRawLayerFiles(rootfs block.ReadonlyDevice, disks []sbxtemplate.Disk, memfile block.ReadonlyDevice) error {
+	var errs []error
+	if memfile != nil {
+		errs = append(errs, memfile.Close())
+	}
+	if len(disks) > 0 {
+		for i := len(disks) - 1; i >= 0; i-- {
+			if disks[i].Device != nil {
+				errs = append(errs, disks[i].Device.Close())
+			}
+		}
+	} else if rootfs != nil {
+		errs = append(errs, rootfs.Close())
+	}
+
+	return errors.Join(errs...)
 }
 
 func localDiskPaths(dir string, disks []sbxtemplate.Disk) map[string]string {

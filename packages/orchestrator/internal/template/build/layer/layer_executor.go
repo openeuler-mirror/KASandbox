@@ -85,7 +85,9 @@ func (lb *LayerExecutor) BuildLayer(
 	defer sbx.Close(ctx)
 
 	// Add to proxy so we can call envd and route traffic from the sandbox
-	lb.sandboxes.Insert(sbx)
+	// Use InsertIfAbsent rather than Insert so a creator
+	// that already registered does not trigger OnInsert a second time.
+	lb.sandboxes.InsertIfAbsent(sbx)
 	defer func() {
 		lb.sandboxes.Remove(sbx.Runtime.SandboxID)
 

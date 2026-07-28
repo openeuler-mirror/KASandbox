@@ -17,32 +17,69 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 )
 
+// tapOpts configures a TAP device created via createTap.
+//
+// VnetHdr enables IFF_VNET_HDR on the TAP so the guest can use virtio-net
+// offloads. If the kernel rejects IFF_VNET_HDR (e.g. very old kernels or
+// tap already created without the flag), createTap retries without it so
+// callers don't have to special-case the failure.
+type tapOpts struct {
+	Name    string
+	Address *net.IPNet
+	VnetHdr bool
+}
+
 // createTap creates and enables a TAP device in the current network namespace.
 // An address is optional because secondary guest interfaces may be connected to
 // a TAP without using the TAP itself as an L3 gateway.
-func createTap(name string, address *net.IPNet) error {
+func createTap(o tapOpts) error {
+	if err := linkAddTuntap(o.Name, o.VnetHdr); err != nil {
+		// Fall back to a plain TAP (no IFF_VNET_HDR) when the host kernel
+		// rejects the flag. This keeps non-Android slots and older hosts
+		// working without forcing a hard failure.
+		if o.VnetHdr {
+			if retryErr := linkAddTuntap(o.Name, false); retryErr != nil {
+				return fmt.Errorf("error creating tap device %s (with vnet_hdr retry): %w (original: %v)", o.Name, retryErr, err)
+			}
+		} else {
+			return fmt.Errorf("error creating tap device %s: %w", o.Name, err)
+		}
+	}
+
+	tap, err := netlink.LinkByName(o.Name)
+	if err != nil {
+		return fmt.Errorf("error finding tap device %s: %w", o.Name, err)
+	}
+
+	if err := netlink.LinkSetUp(tap); err != nil {
+		return fmt.Errorf("error setting tap device %s up: %w", o.Name, err)
+	}
+
+	if o.Address != nil {
+		// broadcast "+" is computed by the kernel from IP/mask, so we
+		// intentionally leave Broadcast unset here.
+		if err := netlink.AddrAdd(tap, &netlink.Addr{IPNet: o.Address}); err != nil {
+			return fmt.Errorf("error setting address of tap device %s: %w", o.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// linkAddTuntap adds a TAP device with the given name. When vnetHdr is true,
+// IFF_VNET_HDR is requested so the guest can use virtio-net offloads.
+func linkAddTuntap(name string, vnetHdr bool) error {
 	tapAttrs := netlink.NewLinkAttrs()
 	tapAttrs.Name = name
 	tap := &netlink.Tuntap{
 		Mode:      netlink.TUNTAP_MODE_TAP,
 		LinkAttrs: tapAttrs,
 	}
-
-	if err := netlink.LinkAdd(tap); err != nil {
-		return fmt.Errorf("error creating tap device %s: %w", name, err)
+	if vnetHdr {
+		tap.Flags = netlink.TUNTAP_VNET_HDR
 	}
 
-	if err := netlink.LinkSetUp(tap); err != nil {
-		return fmt.Errorf("error setting tap device %s up: %w", name, err)
-	}
-
-	if address != nil {
-		if err := netlink.AddrAdd(tap, &netlink.Addr{IPNet: address}); err != nil {
-			return fmt.Errorf("error setting address of tap device %s: %w", name, err)
-		}
-	}
-
-	return nil
+	return netlink.LinkAdd(tap)
 }
 
 func (s *Slot) CreateNetwork(ctx context.Context) error {
@@ -152,10 +189,17 @@ func (s *Slot) CreateNetwork(ctx context.Context) error {
 	// Both TAP devices belong to the network slot and live for as long as its
 	// namespace. Each NIC uses its own /30 so their host-side addresses and
 	// routes don't conflict.
-	if err := createTap(s.TapName(), &net.IPNet{IP: s.TapIP(), Mask: s.TapCIDR()}); err != nil {
+	if err := createTap(tapOpts{
+		Name:    s.TapName(),
+		Address: &net.IPNet{IP: s.TapIP(), Mask: s.TapCIDR()},
+	}); err != nil {
 		return err
 	}
-	if err := createTap(s.ExtraTapName(), &net.IPNet{IP: s.ExtraTapIP(), Mask: s.ExtraTapCIDR()}); err != nil {
+	if err := createTap(tapOpts{
+		Name:    s.ExtraTapName(), // cvd-mtap
+		Address: &net.IPNet{IP: s.ExtraTapIP(), Mask: s.ExtraTapCIDR()},
+		VnetHdr: true, // IFF_VNET_HDR for virtio-net offloads
+	}); err != nil {
 		return err
 	}
 
@@ -189,9 +233,14 @@ func (s *Slot) CreateNetwork(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("error creating postrouting rule to vpeer: %w", err)
 	}
-	err = tables.Append("nat", "POSTROUTING", "-o", s.VpeerName(), "-s", s.ExtraNamespaceIP(), "-j", "SNAT", "--to", s.HostIPString())
+	// Android normally routes guest traffic through cvd-mtap. Using
+	// MASQUERADE here exposes the namespace vpeer (10.12.x.x) to host-side
+	// proxies, but sandbox lookup is keyed by the per-slot HostIP (10.11.x.x).
+	// Use the same stable source identity as the primary TAP so concurrent
+	// Android sandboxes remain distinguishable to the TCP firewall.
+	err = tables.Append("nat", "POSTROUTING", "-o", s.VpeerName(), "-s", cvdTapNetwork, "-j", "SNAT", "--to", s.HostIPString())
 	if err != nil {
-		return fmt.Errorf("error creating extra tap postrouting rule to vpeer: %w", err)
+		return fmt.Errorf("error creating cvd-mtap postrouting masquerade rule: %w", err)
 	}
 
 	err = tables.Append("nat", "PREROUTING", "-i", s.VpeerName(), "-d", s.HostIPString(), "-j", "DNAT", "--to", s.NamespaceIP())

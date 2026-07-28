@@ -39,6 +39,18 @@ var blockToAccessType = map[block.AccessType]AccessType{
 	block.Prefetch: AccessPrefetch,
 }
 
+// OSType is the guest operating system family targeted by a template.
+// It is set explicitly by the caller at template creation time and stored in
+// template metadata; it must NOT be inferred from VMMType because a single
+// VMM backend (e.g. Stratovirt) may host multiple OS families.
+type OSType string
+
+const (
+	OSTypeLinux   OSType = "linux"
+	OSTypeAndroid OSType = "android"
+	OSTypeWindows OSType = "windows"
+)
+
 type Version struct {
 	Version any `json:"version"`
 }
@@ -47,11 +59,7 @@ type Context struct {
 	User    string            `json:"user,omitempty"`
 	WorkDir *string           `json:"workdir,omitempty"`
 	EnvVars map[string]string `json:"env_vars,omitempty"`
-	// OsType is the guest OS family ("linux"/"windows") the command runs on.
-	// Empty means linux. It drives the shell selection at command dispatch time
-	// (mirroring the SDK), so a Windows guest runs commands via powershell.exe
-	// instead of /bin/bash. omitempty keeps Linux metadata byte-for-byte stable.
-	OsType string `json:"os_type,omitempty"`
+	OsType  string            `json:"os_type,omitempty"`
 }
 
 func (c Context) WithUser(user string) Context {
@@ -116,15 +124,15 @@ type Prefetch struct {
 }
 
 type Template struct {
-	Version  uint64           `json:"version"`
-	Template TemplateMetadata `json:"template"`
-	Context  Context          `json:"context"`
-	Start    *Start           `json:"start,omitempty"`
+	Version      uint64           `json:"version"`
+	Template     TemplateMetadata `json:"template"`
+	Context      Context          `json:"context"`
+	Start        *Start           `json:"start,omitempty"`
 	// FromImage, FromImageRaw and FromTemplate are mutually exclusive.
-	FromImage    *string       `json:"from_image,omitempty"`
-	FromImageRaw *string       `json:"from_image_raw,omitempty"`
-	FromTemplate *FromTemplate `json:"from_template,omitempty"`
-	Prefetch     *Prefetch     `json:"prefetch,omitempty"`
+	FromImage    *string          `json:"from_image,omitempty"`
+	FromImageRaw *string          `json:"from_image_raw,omitempty"`
+	FromTemplate *FromTemplate    `json:"from_template,omitempty"`
+	Prefetch     *Prefetch        `json:"prefetch,omitempty"`
 }
 
 func V1TemplateVersion() Template {
@@ -179,6 +187,7 @@ func (t Template) WithPrefetch(prefetch *Prefetch) Template {
 		Start:        t.Start,
 		FromTemplate: t.FromTemplate,
 		FromImage:    t.FromImage,
+		FromImageRaw: t.FromImageRaw,
 		Prefetch:     prefetch,
 	}
 }

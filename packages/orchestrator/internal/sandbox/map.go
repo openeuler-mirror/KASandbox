@@ -73,6 +73,18 @@ func (m *Map) Insert(sbx *Sandbox) {
 	})
 }
 
+func (m *Map) InsertIfAbsent(sbx *Sandbox) bool {
+	if !m.sandboxes.InsertIfAbsent(sbx.Runtime.SandboxID, sbx) {
+		return false
+	}
+
+	go m.trigger(func(s MapSubscriber) {
+		s.OnInsert(sbx)
+	})
+
+	return true
+}
+
 func (m *Map) Remove(sandboxID string) {
 	m.sandboxes.Remove(sandboxID)
 

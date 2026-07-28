@@ -56,8 +56,6 @@ message SandboxConfig {
   // This is separate from SandboxNetworkConfig, which describes product-level
   // ingress/egress policy.
   optional SandboxRuntimeNetworkConfig runtime_network = 25;
-  // Guest operating system family resolved from template metadata.
-  string os_type = 26;
 }
 
 message SandboxRuntimeNetworkConfig {
@@ -148,6 +146,8 @@ message RunningSandbox {
 
   google.protobuf.Timestamp start_time = 3;
   google.protobuf.Timestamp end_time = 4;
+  // Guest operating system family used by the running sandbox.
+  string os_type = 5;
 }
 
 message SandboxListResponse {
