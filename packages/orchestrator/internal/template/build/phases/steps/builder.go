@@ -15,7 +15,7 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/buildcontext"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/commands"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/layer"
@@ -133,7 +133,6 @@ func (sb *StepBuilder) Layer(
 		BuildID:            uuid.NewString(),
 		KernelVersion:      sb.Config.KernelVersion,
 		FirecrackerVersion: sb.Config.FirecrackerVersion,
-		VMMType:            string(vmm.BackendType(sb.Config.VMMType).OrDefault()),
 	}
 
 	return phases.LayerResult{
@@ -168,10 +167,9 @@ func (sb *StepBuilder) Build(
 			Version: sb.EnvdVersion,
 		},
 
-		VMMConfig: vmm.VMMConfig{
-			Type:          vmm.BackendType(sb.Config.VMMType).OrDefault(),
-			KernelVersion: sb.Config.KernelVersion,
-			VMMVersion:    sb.Config.FirecrackerVersion,
+		FirecrackerConfig: fc.Config{
+			KernelVersion:      sb.Config.KernelVersion,
+			FirecrackerVersion: sb.Config.FirecrackerVersion,
 		},
 	}
 

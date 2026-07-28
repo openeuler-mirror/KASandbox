@@ -113,7 +113,7 @@ func (sb *StartScriptBuilder) buildArgs(
 	return args
 }
 
-func (sb *StartScriptBuilder) firecrackerCommand(args startScriptArgs, rootfsPaths vmm.RootfsPaths) string {
+func (sb *StartScriptBuilder) firecrackerCommand(args startScriptArgs, rootfsPaths RootfsPaths) string {
 	firecrackerArgs := fmt.Sprintf("%s --api-sock %s",
 		args.FirecrackerPath,
 		args.FirecrackerSocket,

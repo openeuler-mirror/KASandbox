@@ -25,10 +25,10 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	blockmetrics "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block/metrics"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/tcpfirewall"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/rootfs"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
@@ -952,9 +952,9 @@ func run(ctx context.Context, buildID string, iterations int, coldStart, noPrefe
 			RamMB:          512,
 			Network:        &orchestrator.SandboxNetworkConfig{},
 			Envd:           sandbox.EnvdMetadata{Vars: map[string]string{}, AccessToken: &token, Version: "1.0.0"},
-			VMMConfig: vmm.VMMConfig{
-				KernelVersion: meta.Template.KernelVersion,
-				VMMVersion:    meta.Template.FirecrackerVersion,
+			FirecrackerConfig: fc.Config{
+				KernelVersion:      meta.Template.KernelVersion,
+				FirecrackerVersion: meta.Template.FirecrackerVersion,
 			},
 		},
 	}

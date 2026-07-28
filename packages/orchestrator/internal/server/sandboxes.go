@@ -22,7 +22,7 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
 	"github.com/e2b-dev/infra/packages/shared/pkg/events"
 	featureflags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
@@ -155,9 +155,9 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 				Vars:        req.GetSandbox().GetEnvVars(),
 			},
 
-			VMMConfig: vmm.VMMConfig{
-				KernelVersion: req.GetSandbox().GetKernelVersion(),
-				VMMVersion:    req.GetSandbox().GetFirecrackerVersion(),
+			FirecrackerConfig: fc.Config{
+				KernelVersion:      req.GetSandbox().GetKernelVersion(),
+				FirecrackerVersion: req.GetSandbox().GetFirecrackerVersion(),
 			},
 
 			VolumeMounts: createVolumeMountModelsFromAPI(req.GetSandbox().GetVolumeMounts()),
@@ -580,9 +580,8 @@ func (s *Server) snapshotAndCacheSandbox(
 
 	meta = meta.SameVersionTemplate(metadata.TemplateMetadata{
 		BuildID:            buildID,
-		KernelVersion:      sbx.Config.VMMConfig.KernelVersion,
-		FirecrackerVersion: sbx.Config.VMMConfig.VMMVersion,
-		VMMType:            string(sbx.Config.VMMConfig.Backend()),
+		KernelVersion:      sbx.Config.FirecrackerConfig.KernelVersion,
+		FirecrackerVersion: sbx.Config.FirecrackerConfig.FirecrackerVersion,
 	})
 
 	snapshot, err := sbx.Pause(ctx, meta)

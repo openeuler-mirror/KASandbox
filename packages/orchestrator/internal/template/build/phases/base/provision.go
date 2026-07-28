@@ -19,8 +19,8 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	sbxtemplate "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/config"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/filesystem"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/rootfs"
@@ -123,7 +123,7 @@ func (bb *BaseBuilder) provisionSandbox(
 		localTemplate,
 		provisionTimeout,
 		rootfsPath,
-		vmm.ProcessOptions{
+		fc.ProcessOptions{
 			// Set the IO Engine explicitly to the default value
 			IoEngine: utils.ToPtr(layer.DefaultIoEngine),
 

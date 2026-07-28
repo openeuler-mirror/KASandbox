@@ -10,8 +10,8 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	sbxtemplate "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/config"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/constants"
 	"github.com/e2b-dev/infra/packages/shared/pkg/env"
@@ -109,7 +109,7 @@ func (cs *CreateSandbox) Sandbox(
 		template,
 		cs.timeout,
 		cs.rootfsCachePath,
-		vmm.ProcessOptions{
+		fc.ProcessOptions{
 			InitScriptPath:      constants.SystemdInitPath,
 			KernelLogs:          env.IsDevelopment(),
 			SystemdToKernelLogs: false,

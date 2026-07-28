@@ -24,10 +24,10 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	blockmetrics "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block/metrics"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/tcpfirewall"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build"
 	buildconfig "github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/config"
@@ -206,9 +206,9 @@ func BenchmarkBaseImageLaunch(b *testing.B) {
 			AccessToken: &accessToken,
 			Version:     "1.2.3",
 		},
-		VMMConfig: vmm.VMMConfig{
-			KernelVersion: kernelVersion,
-			VMMVersion:    fcVersion,
+		FirecrackerConfig: fc.Config{
+			KernelVersion:      kernelVersion,
+			FirecrackerVersion: fcVersion,
 		},
 	}
 

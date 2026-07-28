@@ -7,16 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bits-and-blooms/bitset"
-
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/rootfs"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
-	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
 
@@ -34,6 +30,7 @@ type Process interface {
 		metadata sbxlogger.SandboxMetadata,
 		uffdSocketPath string,
 		snapfile template.File,
+		memfile template.File,
 		uffdReady chan struct{},
 		accessToken *string,
 		memoryMB int64,
@@ -44,10 +41,7 @@ type Process interface {
 	) error
 	Stop(ctx context.Context) error
 	Pause(ctx context.Context) error
-	CreateSnapshot(ctx context.Context, snapfilePath string) error
-	MemoryInfo(ctx context.Context, blockSize int64) (*header.DiffMetadata, error)
-	DirtyMemory(ctx context.Context, blockSize int64) (*header.DiffMetadata, error)
-	ExportMemory(ctx context.Context, include *bitset.BitSet, cachePath string, blockSize int64) (*block.Cache, error)
+	CreateSnapshot(ctx context.Context, snapfilePath, memfilePath string) error
 	Pid() (int, error)
 	Exit() *utils.ErrorOnce
 }
@@ -101,12 +95,4 @@ func ProcessState(ctx context.Context, pid int) (string, error) {
 	}
 
 	return strings.TrimSpace(string(output)), nil
-}
-
-func (b BackendType) OrDefault() BackendType {
-	if b == "" {
-		return BackendFirecracker
-	}
-
-	return b
 }

@@ -11,13 +11,8 @@ import (
 )
 
 type VMMConfig struct {
-	Type          BackendType
 	KernelVersion string
 	VMMVersion    string
-}
-
-func (c VMMConfig) Backend() BackendType {
-	return c.Type.OrDefault()
 }
 
 func (c VMMConfig) HostKernelPath(config cfg.BuilderConfig) string {

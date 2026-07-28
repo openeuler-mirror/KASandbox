@@ -26,11 +26,9 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/rootfs"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/stratovirt"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/uffd"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/uffd/prefetch"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
 	featureflags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
@@ -78,7 +76,7 @@ type Config struct {
 
 	Envd EnvdMetadata
 
-	VMMConfig vmm.VMMConfig
+	FirecrackerConfig fc.Config
 
 	VolumeMounts []VolumeMountConfig
 }
@@ -149,18 +147,18 @@ type Sandbox struct {
 	*Resources
 	*Metadata
 
-	// LifecycleID is a unique identifier for each VMM process.
+	// LifecycleID is a unique identifier for each Firecracker process.
 	// It is used internally by the orchestrator for map eviction guards
 	// and proxy connection pooling. Unlike ExecutionID (which is stable
 	// across checkpoints and shared with the API), LifecycleID changes
-	// every time a new VMM is started.
+	// every time a new Firecracker VM is started.
 	LifecycleID string
 
 	config  cfg.BuilderConfig
 	files   *storage.SandboxFiles
 	cleanup *Cleanup
 
-	process      vmm.Process
+	process      *fc.Process
 	cgroupHandle *cgroup.CgroupHandle
 
 	Template template.Template
@@ -229,17 +227,6 @@ func NewFactory(
 	}
 }
 
-func newVMMFactory(backend vmm.BackendType) (vmm.Factory, error) {
-	switch backend {
-	case vmm.BackendStratoVirt:
-		return stratovirt.NewDefaultFactory(), nil
-	case vmm.BackendFirecracker:
-		return fc.NewDefaultFactory(), nil
-	default:
-		return nil, fmt.Errorf("unsupported VMM type %q", backend)
-	}
-}
-
 // CreateSandbox creates the sandbox.
 // IMPORTANT: You must Close() the sandbox after you are done with it.
 func (f *Factory) CreateSandbox(
@@ -249,7 +236,7 @@ func (f *Factory) CreateSandbox(
 	template template.Template,
 	sandboxTimeout time.Duration,
 	rootfsCachePath string,
-	processOptions vmm.ProcessOptions,
+	processOptions fc.ProcessOptions,
 	apiConfigToStore *orchestrator.SandboxConfig,
 ) (s *Sandbox, e error) {
 	ctx, span := tracer.Start(ctx, "create sandbox")
@@ -325,28 +312,23 @@ func (f *Factory) CreateSandbox(
 		return nil, err
 	}
 
-	vmmFactory, err := newVMMFactory(config.VMMConfig.Backend())
-	if err != nil {
-		return nil, err
-	}
-
-	vmmHandle, err := vmmFactory.NewProcess(
+	fcHandle, err := fc.NewProcess(
 		ctx,
 		execCtx,
 		f.config,
 		ips,
 		sandboxFiles,
-		config.VMMConfig,
+		config.FirecrackerConfig,
 		rootfsProvider,
-		vmm.ConstantRootfsPaths,
+		fc.ConstantRootfsPaths,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to init VMM: %w", err)
+		return nil, fmt.Errorf("failed to init FC: %w", err)
 	}
 
-	telemetry.ReportEvent(ctx, "created vmm client")
+	telemetry.ReportEvent(ctx, "created fc client")
 
-	err = vmmHandle.Create(
+	err = fcHandle.Create(
 		ctx,
 		sbxlogger.SandboxMetadata{
 			SandboxID:  runtime.SandboxID,
@@ -359,9 +341,9 @@ func (f *Factory) CreateSandbox(
 		processOptions,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create VMM: %w", err)
+		return nil, fmt.Errorf("failed to create FC: %w", err)
 	}
-	telemetry.ReportEvent(ctx, "created vmm process")
+	telemetry.ReportEvent(ctx, "created fc process")
 
 	resources := &Resources{
 		Slot:   ips,
@@ -390,7 +372,7 @@ func (f *Factory) CreateSandbox(
 		Template: template,
 		config:   f.config,
 		files:    sandboxFiles,
-		process:  vmmHandle,
+		process:  fcHandle,
 
 		cleanup: cleanup,
 
@@ -411,10 +393,10 @@ func (f *Factory) CreateSandbox(
 		defer span.End()
 
 		// If the process exists, stop the sandbox properly
-		vmmErr := vmmHandle.Exit().Wait()
+		fcErr := fcHandle.Exit.Wait()
 		err := sbx.Stop(ctx)
 
-		exit.SetError(errors.Join(err, vmmErr))
+		exit.SetError(errors.Join(err, fcErr))
 	}()
 
 	return sbx, nil
@@ -628,34 +610,27 @@ func (f *Factory) ResumeSandbox(
 	zap.L().Sugar().Infof("[ResumeSandbox] create cgroup cost: %.3f ms, traceID=%s", time.Since(tCgroup).Seconds()*1000, traceID)
 
 	t4 := time.Now()
-	config.VMMConfig.Type = vmm.BackendType(meta.Template.VMMType).OrDefault()
-	vmmFactory, vmmErr := newVMMFactory(config.VMMConfig.Backend())
-	if vmmErr != nil {
-		return nil, vmmErr
-	}
-
-	vmmHandle, vmmErr := vmmFactory.NewProcess(
+	fcHandle, fcErr := fc.NewProcess(
 		ctx,
 		execCtx,
 		f.config,
 		ips,
 		sandboxFiles,
-		config.VMMConfig,
+		// The versions need to base exactly the same as the paused sandbox template because of the FC compatibility.
+		config.FirecrackerConfig,
 		overlay,
-		vmm.RootfsPaths{
+		fc.RootfsPaths{
 			TemplateVersion: meta.Version,
 			TemplateID:      config.BaseTemplateID,
 			BuildID:         rootfs.Header().Metadata.BaseBuildId.String(),
 		},
 	)
-
-	if vmmErr != nil {
-		return nil, fmt.Errorf("failed to create VMM: %w", vmmErr)
+	if fcErr != nil {
+		return nil, fmt.Errorf("failed to create FC: %w", fcErr)
 	}
-
-	zap.L().Sugar().Infof("[ResumeSandbox] vmmFactory.NewProcess cost: %.3f ms, traceID=%s", time.Since(t4).Seconds()*1000, traceID)
+	zap.L().Sugar().Infof("[ResumeSandbox] fc.NewProcess cost: %.3f ms, traceID=%s", time.Since(t4).Seconds()*1000, traceID)
 	phaseStart := time.Now()
-	telemetry.ReportEvent(ctx, "created VMM process")
+	telemetry.ReportEvent(ctx, "created FC process")
 
 	// todo: check if kernel, firecracker, and envd versions exist
 	tSnapfile := time.Now()
@@ -669,7 +644,7 @@ func (f *Factory) ResumeSandbox(
 	telemetry.ReportEvent(ctx, "got snapfile")
 
 	tUffd := time.Now()
-	vmmUffd, err := uffdPromise.Wait(ctx)
+	fcUffd, err := uffdPromise.Wait(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get uffd: %w", err)
 	}
@@ -678,11 +653,11 @@ func (f *Factory) ResumeSandbox(
 	uffdStartCtx, cancelUffdStartCtx := context.WithCancelCause(ctx)
 	defer cancelUffdStartCtx(fmt.Errorf("uffd finished starting"))
 	go func() {
-		uffdWaitErr := vmmUffd.Exit().Wait()
+		uffdWaitErr := fcUffd.Exit().Wait()
 
 		cancelUffdStartCtx(fmt.Errorf("uffd process exited: %w", errors.Join(uffdWaitErr, context.Cause(uffdStartCtx))))
 	}()
-	vmmStartErr := vmmHandle.Resume(
+	fcStartErr := fcHandle.Resume(
 		uffdStartCtx,
 		sbxlogger.SandboxMetadata{
 			SandboxID:  runtime.SandboxID,
@@ -691,11 +666,8 @@ func (f *Factory) ResumeSandbox(
 		},
 		fcUffdPath,
 		snapfile,
-		vmmUffd.Ready(),
+		fcUffd.Ready(),
 		config.Envd.AccessToken,
-		config.RamMB,
-		config.Vcpu,
-		config.HugePages,
 		cgroupFD,
 		span.SpanContext().TraceID().String(),
 	)
@@ -709,16 +681,17 @@ func (f *Factory) ResumeSandbox(
 		}
 	}
 
-	if vmmStartErr != nil {
-		return nil, fmt.Errorf("failed to start VMM: %w", vmmStartErr)
+	if fcStartErr != nil {
+		return nil, fmt.Errorf("failed to start FC: %w", fcStartErr)
 	}
 	zap.L().Sugar().Infof("[ResumeSandbox] resume VM cost: %d ms, traceID=%s", time.Since(phaseStart).Milliseconds(), traceID)
-	telemetry.ReportEvent(ctx, "initialized VMM")
+
+	telemetry.ReportEvent(ctx, "initialized FC")
 
 	resources := &Resources{
 		Slot:   ips,
 		rootfs: overlay,
-		memory: vmmUffd,
+		memory: fcUffd,
 	}
 
 	metadata := &Metadata{
@@ -743,7 +716,7 @@ func (f *Factory) ResumeSandbox(
 		Template: t,
 		config:   f.config,
 		files:    sandboxFiles,
-		process:  vmmHandle,
+		process:  fcHandle,
 
 		cleanup: cleanup,
 
@@ -777,7 +750,7 @@ func (f *Factory) ResumeSandbox(
 
 	if f.featureFlags.BoolFlag(execCtx, featureflags.HostStatsEnabled) {
 		samplingInterval := time.Duration(f.featureFlags.IntFlag(execCtx, featureflags.HostStatsSamplingInterval)) * time.Millisecond
-		initializeHostStatsCollector(execCtx, sbx, vmmHandle, meta.Template.BuildID, runtime, config, f.hostStatsDelivery, samplingInterval)
+		initializeHostStatsCollector(execCtx, sbx, fcHandle, meta.Template.BuildID, runtime, config, f.hostStatsDelivery, samplingInterval)
 	}
 
 	go sbx.Checks.Start(execCtx)
@@ -788,17 +761,17 @@ func (f *Factory) ResumeSandbox(
 		ctx, span := tracer.Start(execCtx, "sandbox-exit-wait")
 		defer span.End()
 
-		// Wait for either uffd or VMM process to exit
+		// Wait for either uffd or fc process to exit
 		select {
-		case <-vmmUffd.Exit().Done():
-		case <-vmmHandle.Exit().Done():
+		case <-fcUffd.Exit().Done():
+		case <-fcHandle.Exit.Done():
 		}
 
 		err := sbx.Stop(ctx)
 
-		uffdWaitErr := vmmUffd.Exit().Wait()
-		vmmErr := vmmHandle.Exit().Wait()
-		exit.SetError(errors.Join(err, vmmErr, uffdWaitErr))
+		uffdWaitErr := fcUffd.Exit().Wait()
+		fcErr := fcHandle.Exit.Wait()
+		exit.SetError(errors.Join(err, fcErr, uffdWaitErr))
 	}()
 
 	return sbx, nil
@@ -853,14 +826,14 @@ func (s *Sandbox) doStop(ctx context.Context) error {
 	// Stop the health checks before stopping the sandbox
 	s.Checks.Stop()
 
-	vmmStopErr := s.process.Stop(ctx)
-	if vmmStopErr != nil {
-		errs = append(errs, fmt.Errorf("failed to stop VMM: %w", vmmStopErr))
+	fcStopErr := s.process.Stop(ctx)
+	if fcStopErr != nil {
+		errs = append(errs, fmt.Errorf("failed to stop FC: %w", fcStopErr))
 	}
 
 	// The process exited, we can continue with the rest of the cleanup.
 	// We could use select with ctx.Done() to wait for cancellation, but if the process is not exited the whole cleanup will be in a bad state and will result in unexpected behavior.
-	<-s.process.Exit().Done()
+	<-s.process.Exit.Done()
 
 	// Remove cgroup after process has exited
 	if s.cgroupHandle != nil {
@@ -1052,7 +1025,7 @@ func pauseProcessMemory(
 	originalHeader *header.Header,
 	diffMetadata *header.DiffMetadata,
 	cacheDir string,
-	process vmm.Process,
+	fc *fc.Process,
 ) (d build.Diff, h *header.Header, e error) {
 	ctx, span := tracer.Start(ctx, "process-memory")
 	defer span.End()
@@ -1064,7 +1037,7 @@ func pauseProcessMemory(
 
 	memfileDiffPath := build.GenerateDiffCachePath(cacheDir, buildID.String(), build.Memfile)
 
-	cache, err := process.ExportMemory(
+	cache, err := fc.ExportMemory(
 		ctx,
 		diffMetadata.Dirty,
 		memfileDiffPath,
@@ -1130,7 +1103,7 @@ func pauseProcessRootfs(
 // the provided Cleanup so the cgroup is removed on error paths.
 //
 // Returns the CgroupHandle and the cgroup directory FD to pass to the
-// VMM process. If cgroup accounting is disabled, returns (nil, cgroup.NoCgroupFD).
+// Firecracker process. If cgroup accounting is disabled, returns (nil, cgroup.NoCgroupFD).
 func createCgroup(ctx context.Context, cgroupManager cgroup.Manager, sandboxID string, cleanup *Cleanup) (*cgroup.CgroupHandle, int) {
 	ctx, span := tracer.Start(ctx, "sandbox-create-cgroup", trace.WithAttributes(
 		telemetry.WithSandboxID(sandboxID),
@@ -1256,7 +1229,7 @@ func (s *Sandbox) WaitForExit(ctx context.Context) error {
 			return nil
 		}
 
-		return fmt.Errorf("vmm process exited prematurely: %w", err)
+		return fmt.Errorf("fc process exited prematurely: %w", err)
 	}
 }
 
@@ -1290,10 +1263,10 @@ func (s *Sandbox) WaitForEnvd(
 			cancel(fmt.Errorf("syncing took too long"))
 		case <-ctx.Done():
 			return
-		case <-s.process.Exit().Done():
-			err := s.process.Exit().Error()
+		case <-s.process.Exit.Done():
+			err := s.process.Exit.Error()
 
-			cancel(fmt.Errorf("vmm process exited prematurely: %w", err))
+			cancel(fmt.Errorf("fc process exited prematurely: %w", err))
 		}
 	}()
 

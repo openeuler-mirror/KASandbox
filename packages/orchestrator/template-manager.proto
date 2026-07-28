@@ -84,7 +84,6 @@ message TemplateConfig {
   optional FromImageRegistry fromImageRegistry = 15;
 
   string teamID = 16;
-  string vmmType = 17;
 }
 
 message TemplateCreateRequest {

@@ -70,7 +70,6 @@ type TemplateMetadata struct {
 	BuildID            string `json:"build_id"`
 	KernelVersion      string `json:"kernel_version"`
 	FirecrackerVersion string `json:"firecracker_version"`
-	VMMType            string `json:"vmm_type,omitempty"`
 }
 
 // MemoryPrefetchMapping stores block offsets that should be prefetched when starting a sandbox.

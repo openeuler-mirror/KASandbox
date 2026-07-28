@@ -62,9 +62,6 @@ type TemplateConfig struct {
 	// Firecracker version to use
 	FirecrackerVersion string
 
-	// VMM type to use for building the template.
-	VMMType string
-
 	// Kernel version to use
 	KernelVersion string
 }

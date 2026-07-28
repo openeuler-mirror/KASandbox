@@ -30,7 +30,6 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 		telemetry.WithBuildID(cfg.GetBuildID()),
 		attribute.String("env.kernel.version", cfg.GetKernelVersion()),
 		attribute.String("env.firecracker.version", cfg.GetFirecrackerVersion()),
-		attribute.String("env.vmm.type", cfg.GetVmmType()),
 		attribute.String("env.start_cmd", cfg.GetStartCommand()),
 		attribute.Int64("env.memory_mb", int64(cfg.GetMemoryMB())),
 		attribute.Int64("env.vcpu_count", int64(cfg.GetVCpuCount())),
@@ -78,7 +77,6 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 		Steps:                cfg.GetSteps(),
 		KernelVersion:        cfg.GetKernelVersion(),
 		FirecrackerVersion:   cfg.GetFirecrackerVersion(),
-		VMMType:              cfg.GetVmmType(),
 	}
 
 	logs := buildlogger.NewLogEntryLogger()
