@@ -201,8 +201,10 @@ func (a *APIStore) PostTemplatesTemplateIDBuildsBuildID(c *gin.Context, template
 		build.RamMb,
 		build.ReadyCmd,
 		&fromImage,
+		nil, // fromImageRaw not supported in v1 handler
 		nil, // fromTemplate not supported in v1 handler
 		nil, // fromImageRegistry not supported in v1 handler
+		nil, // osType not supported in v1 handler
 		&forceRebuild,
 		nil,
 		apiutils.WithClusterFallback(team.ClusterID),

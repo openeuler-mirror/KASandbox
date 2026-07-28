@@ -79,12 +79,15 @@ message TemplateConfig {
   oneof source {
      string fromImage = 11;
      FromTemplateConfig fromTemplate = 14;
+     // Registry reference containing a raw disk image layer.
+     string fromImageRaw = 18;
    }
 
   optional FromImageRegistry fromImageRegistry = 15;
 
   string teamID = 16;
   string vmmType = 17;
+  string osType = 19;
 }
 
 message TemplateCreateRequest {

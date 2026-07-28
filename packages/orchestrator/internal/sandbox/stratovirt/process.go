@@ -32,6 +32,8 @@ import (
 
 var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/stratovirt")
 
+const windowsUEFIFirmwareFile = "QEMU_EFI-pflash.raw"
+
 var _ vmm.Process = (*Process)(nil)
 
 type Process struct {
@@ -73,9 +75,16 @@ func NewProcess(
 		return nil, fmt.Errorf("error stating stratovirt binary: %w", err)
 	}
 
-	_, err = os.Stat(versions.HostKernelPath(config))
-	if err != nil {
-		return nil, fmt.Errorf("error stating kernel file: %w", err)
+	if versions.OsType.OrDefault() == vmm.OsWindows {
+		_, err := os.Stat(filepath.Join(config.FirmwareDir, windowsUEFIFirmwareFile))
+		if err != nil {
+			return nil, fmt.Errorf("error stating UEFI firmware: %w", err)
+		}
+	} else if versions.OsType.OrDefault() == vmm.OsLinux {
+		_, err := os.Stat(versions.HostKernelPath(config))
+		if err != nil {
+			return nil, fmt.Errorf("error stating kernel file: %w", err)
+		}
 	}
 
 	return &Process{

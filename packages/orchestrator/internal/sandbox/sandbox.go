@@ -628,7 +628,17 @@ func (f *Factory) ResumeSandbox(
 	zap.L().Sugar().Infof("[ResumeSandbox] create cgroup cost: %.3f ms, traceID=%s", time.Since(tCgroup).Seconds()*1000, traceID)
 
 	t4 := time.Now()
-	config.VMMConfig.Type = vmm.BackendType(meta.Template.VMMType).OrDefault()
+	metadataVMM := vmm.BackendType(meta.Template.VMMType).OrDefault()
+	metadataOS := vmm.OsType(meta.Template.OsType).OrDefault()
+	if config.VMMConfig.Backend() != metadataVMM || config.VMMConfig.OsType.OrDefault() != metadataOS {
+		return nil, fmt.Errorf(
+			"requested sandbox OS/VMM configuration %q/%q does not match template metadata %q/%q",
+			config.VMMConfig.OsType.OrDefault(),
+			config.VMMConfig.Backend(),
+			metadataOS,
+			metadataVMM,
+		)
+	}
 	vmmFactory, vmmErr := newVMMFactory(config.VMMConfig.Backend())
 	if vmmErr != nil {
 		return nil, vmmErr
@@ -1029,8 +1039,8 @@ func (s *Sandbox) Pause(
 		Metafile:          metadataFileLink,
 		MemfileDiff:       memfileDiff,
 		MemfileDiffHeader: memfileDiffHeader,
-		RootfsDiff:        rootfsDiff,
-		RootfsDiffHeader:  rootfsDiffHeader,
+		RootfsDiffs:       map[build.DiffType]build.Diff{build.Rootfs: rootfsDiff},
+		RootfsDiffHeaders: map[build.DiffType]*header.Header{build.Rootfs: rootfsDiffHeader},
 
 		cleanup: cleanup,
 	}, nil

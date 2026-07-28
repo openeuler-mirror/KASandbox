@@ -115,6 +115,44 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		return nil, fmt.Errorf("failed to get template snapshot data: %w", err)
 	}
 
+	sandboxConfig := proto.CloneOf(req.GetSandbox())
+	requestedOS, err := vmm.ParseOsType(sandboxConfig.GetOsType())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid sandbox OS/VMM configuration: %s", err)
+	}
+	requestedVMM := vmm.BackendType(sandboxConfig.GetVmmType()).OrDefault()
+	if err := vmm.ValidateBackendForOS(requestedOS, requestedVMM); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid sandbox OS/VMM configuration: %s", err)
+	}
+
+	templateMetadata, err := template.Metadata()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read template metadata: %w", err)
+	}
+	metadataOS := vmm.OsType(templateMetadata.Template.OsType).OrDefault()
+	metadataVMM := vmm.BackendType(templateMetadata.Template.VMMType).OrDefault()
+	if requestedOS != metadataOS || requestedVMM != metadataVMM {
+		return nil, status.Errorf(
+			codes.FailedPrecondition,
+			"sandbox OS/VMM configuration %q/%q does not match template metadata %q/%q",
+			requestedOS,
+			requestedVMM,
+			metadataOS,
+			metadataVMM,
+		)
+	}
+
+	sandboxConfig.OsType = string(requestedOS)
+	sandboxConfig.VmmType = string(requestedVMM)
+	if requestedVMM == vmm.BackendStratoVirt && sandboxConfig.GetHugePages() {
+		logger.L().Warn(ctx, "HugePages are not supported by StratoVirt; disabling HugePages",
+			logger.WithSandboxID(sandboxConfig.GetSandboxId()),
+			logger.WithTemplateID(sandboxConfig.GetTemplateId()),
+		)
+		sandboxConfig.HugePages = false
+	}
+	req.Sandbox = sandboxConfig
+
 	// Clone the network config to avoid modifying the original request
 	network := proto.CloneOf(req.GetSandbox().GetNetwork())
 
@@ -156,8 +194,10 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 			},
 
 			VMMConfig: vmm.VMMConfig{
+				Type:          requestedVMM,
 				KernelVersion: req.GetSandbox().GetKernelVersion(),
 				VMMVersion:    req.GetSandbox().GetFirecrackerVersion(),
+				OsType:        requestedOS,
 			},
 
 			VolumeMounts: createVolumeMountModelsFromAPI(req.GetSandbox().GetVolumeMounts()),
@@ -583,6 +623,7 @@ func (s *Server) snapshotAndCacheSandbox(
 		KernelVersion:      sbx.Config.VMMConfig.KernelVersion,
 		FirecrackerVersion: sbx.Config.VMMConfig.VMMVersion,
 		VMMType:            string(sbx.Config.VMMConfig.Backend()),
+		OsType:             meta.Template.OsType,
 	})
 
 	snapshot, err := sbx.Pause(ctx, meta)

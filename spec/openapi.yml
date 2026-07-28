@@ -455,6 +455,14 @@ components:
           nullable: true
           description: Base domain where the sandbox traffic is accessible
 
+    OsType:
+      type: string
+      enum:
+        - linux
+        - windows
+        - android
+      description: Guest operating system of the sandbox. Absent implies linux.
+
     SandboxDetail:
       required:
         - templateID
@@ -1270,17 +1278,30 @@ components:
           type: string
           description: Password to use for the registry
 
+    FromImageRaw:
+      type: object
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          description: Registry reference containing the raw disk image layer to use as the template base.
+
     TemplateBuildStartV2:
       type: object
       properties:
         fromImage:
           type: string
           description: Image to use as a base for the template build
+        fromImageRaw:
+          $ref: "#/components/schemas/FromImageRaw"
         fromTemplate:
           type: string
           description: Template to use as a base for the template build
         fromImageRegistry:
           $ref: "#/components/schemas/FromImageRegistry"
+        osType:
+          $ref: "#/components/schemas/OsType"
         force:
           default: false
           type: boolean

@@ -13,8 +13,8 @@ import (
 type Snapshot struct {
 	MemfileDiff       build.Diff
 	MemfileDiffHeader *header.Header
-	RootfsDiff        build.Diff
-	RootfsDiffHeader  *header.Header
+	RootfsDiffs       map[build.DiffType]build.Diff
+	RootfsDiffHeaders map[build.DiffType]*header.Header
 	Snapfile          template.File
 	Metafile          template.File
 
@@ -38,21 +38,21 @@ func (s *Snapshot) Upload(
 		memfilePath = &memfileLocalPath
 	}
 
-	var rootfsPath *string
-	switch r := s.RootfsDiff.(type) {
-	case *build.NoDiff:
-	default:
-		rootfsLocalPath, err := r.CachePath()
-		if err != nil {
-			return fmt.Errorf("error getting rootfs diff path: %w", err)
+	rootfsPaths := make(map[build.DiffType]string)
+	for diffType, r := range s.RootfsDiffs {
+		if _, ok := r.(*build.NoDiff); ok {
+			continue
 		}
-
-		rootfsPath = &rootfsLocalPath
+		path, err := r.CachePath()
+		if err != nil {
+			return fmt.Errorf("error getting %s diff path: %w", diffType, err)
+		}
+		rootfsPaths[diffType] = path
 	}
 
 	templateBuild := NewTemplateBuild(
 		s.MemfileDiffHeader,
-		s.RootfsDiffHeader,
+		s.RootfsDiffHeaders,
 		persistence,
 		templateFiles,
 	)
@@ -62,7 +62,7 @@ func (s *Snapshot) Upload(
 		s.Metafile.Path(),
 		s.Snapfile.Path(),
 		memfilePath,
-		rootfsPath,
+		rootfsPaths,
 	)
 
 	// Wait for the upload to finish

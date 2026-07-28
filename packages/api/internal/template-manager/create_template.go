@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
@@ -20,6 +21,7 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/id"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
+	"github.com/e2b-dev/infra/packages/shared/pkg/templates"
 	ut "github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
 
@@ -50,8 +52,10 @@ func (tm *TemplateManager) CreateTemplate(
 	memoryMB int64,
 	readyCommand *string,
 	fromImage *string,
+	fromImageRaw *api.FromImageRaw,
 	fromTemplate *string,
 	fromImageRegistry *api.FromImageRegistry,
+	osType *api.OsType,
 	force *bool,
 	steps *[]api.TemplateStep,
 	clusterID uuid.UUID,
@@ -84,6 +88,11 @@ func (tm *TemplateManager) CreateTemplate(
 			e = errors.Join(e, fmt.Errorf("failed to set build status to failed: %w", err))
 		}
 	}()
+
+	resolvedOsType, resolvedVMMType, err := resolveBuildVM(osType)
+	if err != nil {
+		return &api.InvalidRequestError{Err: err}
+	}
 
 	features, err := sandbox.NewVersionInfo(firecrackerVersion)
 	if err != nil {
@@ -118,15 +127,17 @@ func (tm *TemplateManager) CreateTemplate(
 		DiskSizeMB:         int32(diskSizeMB),
 		KernelVersion:      kernelVersion,
 		FirecrackerVersion: firecrackerVersion,
-		HugePages:          features.HasHugePages(),
+		HugePages:          features.HasHugePages() && resolvedOsType == api.Linux,
 		StartCommand:       startCmd,
 		ReadyCommand:       readyCmd,
 		Force:              force,
 		Steps:              convertTemplateSteps(steps),
 		FromImageRegistry:  imageRegistry,
+		VmmType:            resolvedVMMType,
+		OsType:             string(resolvedOsType),
 	}
 
-	err = setTemplateSource(ctx, tm, teamID, teamSlug, template, fromImage, fromTemplate)
+	err = setTemplateSource(ctx, tm, teamID, teamSlug, template, fromImage, fromImageRaw, fromTemplate, version)
 	if err != nil {
 		// If the error is related to fromTemplate, set the build status to failed with the appropriate message
 		// This is to unify the error handling with fromImage errors
@@ -283,19 +294,70 @@ func convertImageRegistry(registry *api.FromImageRegistry) (*templatemanagergrpc
 	}
 }
 
-// setTemplateSource sets the source (either fromImage or fromTemplate)
-func setTemplateSource(ctx context.Context, tm *TemplateManager, teamID uuid.UUID, teamSlug string, template *templatemanagergrpc.TemplateConfig, fromImage *string, fromTemplate *string) error {
+const (
+	defaultBuildVMMType = "firecracker"
+	windowsBuildVMMType = "stratovirt"
+)
+
+func resolveBuildVM(osType *api.OsType) (api.OsType, string, error) {
+	resolvedOsType := api.Linux
+	if osType != nil {
+		switch *osType {
+		case api.Linux, api.Windows, api.Android:
+			resolvedOsType = *osType
+		default:
+			return "", "", fmt.Errorf("unsupported osType %q", *osType)
+		}
+	}
+
+	resolvedVMMType := defaultBuildVMMType
+	if resolvedOsType == api.Windows || resolvedOsType == api.Android {
+		resolvedVMMType = windowsBuildVMMType
+	}
+
+	return resolvedOsType, resolvedVMMType, nil
+}
+
+// setTemplateSource sets the template image source.
+func setTemplateSource(
+	ctx context.Context,
+	tm *TemplateManager,
+	teamID uuid.UUID,
+	teamSlug string,
+	template *templatemanagergrpc.TemplateConfig,
+	fromImage *string,
+	fromImageRaw *api.FromImageRaw,
+	fromTemplate *string,
+	version string,
+) error {
 	// hasImage can be empty for v1 template builds
 	hasImage := fromImage != nil
-	hasTemplate := fromTemplate != nil && *fromTemplate != ""
+	hasRaw := fromImageRaw != nil
+	hasTemplate := fromTemplate != nil
 
 	// Validate input: exactly one source must be provided
+	sources := 0
+	for _, has := range []bool{hasImage, hasRaw, hasTemplate} {
+		if has {
+			sources++
+		}
+	}
+	if sources != 1 {
+		return &api.InvalidRequestError{Err: fmt.Errorf("must specify exactly one of fromImage, fromImageRaw or fromTemplate")}
+	}
+
 	switch {
-	case hasImage && hasTemplate:
-		return fmt.Errorf("cannot specify both fromImage and fromTemplate")
-	case !hasImage && !hasTemplate:
-		return fmt.Errorf("must specify either fromImage or fromTemplate")
+	case hasRaw:
+		if strings.TrimSpace(fromImageRaw.Url) == "" {
+			return &api.InvalidRequestError{Err: fmt.Errorf("fromImageRaw.url must not be empty")}
+		}
+		template.Source = &templatemanagergrpc.TemplateConfig_FromImageRaw{
+			FromImageRaw: fromImageRaw.Url,
+		}
 	case hasTemplate:
+		if strings.TrimSpace(*fromTemplate) == "" {
+			return &api.InvalidRequestError{Err: fmt.Errorf("fromTemplate must not be empty")}
+		}
 		identifier, tag, err := id.ParseName(*fromTemplate)
 		if err != nil {
 			return &FromTemplateError{
@@ -344,6 +406,9 @@ func setTemplateSource(ctx context.Context, tm *TemplateManager, teamID uuid.UUI
 			},
 		}
 	default: // hasImage
+		if version != templates.TemplateV1Version && strings.TrimSpace(*fromImage) == "" {
+			return &api.InvalidRequestError{Err: fmt.Errorf("fromImage must not be empty")}
+		}
 		template.Source = &templatemanagergrpc.TemplateConfig_FromImage{
 			FromImage: *fromImage,
 		}
