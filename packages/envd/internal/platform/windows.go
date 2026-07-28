@@ -48,6 +48,12 @@ func ValidateProcessRequest(req *processRpc.StartRequest) error {
 	return nil
 }
 
+func CommandContext(ctx context.Context, process *processRpc.ProcessConfig) *exec.Cmd {
+	cmdName, args := mapShellCommand(process.GetCmd(), process.GetArgs())
+
+	return exec.CommandContext(ctx, cmdName, args...)
+}
+
 func ConfigureProcessCredentials(
 	_ *exec.Cmd,
 	_ *user.User,
@@ -92,6 +98,30 @@ func SendProcessSignal(cmd *exec.Cmd, _ syscall.Signal) error {
 	return cmd.Process.Kill()
 }
 
+func mapShellCommand(cmd string, args []string) (string, []string) {
+	// TODO: Replace this compatibility mapping with a real cross-platform command adapter if shell parity expands.
+	switch cmd {
+	case "/bin/bash", "/bin/sh", "/usr/bin/bash", "/usr/bin/sh":
+		if len(args) >= 3 && args[0] == "-l" && args[1] == "-c" {
+			return "cmd.exe", []string{"/c", args[2]}
+		}
+
+		if len(args) >= 2 && args[0] == "-c" {
+			return "cmd.exe", []string{"/c", args[1]}
+		}
+	case "/usr/bin/env":
+		if len(args) >= 4 && (args[0] == "bash" || args[0] == "sh") && args[1] == "-l" && args[2] == "-c" {
+			return "cmd.exe", []string{"/c", args[3]}
+		}
+
+		if len(args) >= 3 && (args[0] == "bash" || args[0] == "sh") && args[1] == "-c" {
+			return "cmd.exe", []string{"/c", args[2]}
+		}
+	}
+
+	return cmd, args
+}
+
 func UserIDUints(_ *user.User) (uid, gid uint32, err error) {
 	return 0, 0, nil
 }
@@ -100,28 +130,8 @@ func UserIDInts(_ *user.User) (uid, gid int, err error) {
 	return 0, 0, nil
 }
 
-func SetSystemTime(t time.Time) error {
-	utc := t.UTC()
-	systemTime := systemtime{
-		Year:         uint16(utc.Year()),
-		Month:        uint16(utc.Month()),
-		DayOfWeek:    uint16(utc.Weekday()),
-		Day:          uint16(utc.Day()),
-		Hour:         uint16(utc.Hour()),
-		Minute:       uint16(utc.Minute()),
-		Second:       uint16(utc.Second()),
-		Milliseconds: uint16(utc.Nanosecond() / int(time.Millisecond)),
-	}
-
-	r1, _, callErr := setSystemTime.Call(uintptr(unsafe.Pointer(&systemTime)))
-	if r1 == 0 {
-		if callErr != syscall.Errno(0) {
-			return fmt.Errorf("failed to set Windows system time: %w", callErr)
-		}
-
-		return errors.New("failed to set Windows system time")
-	}
-
+func SetSystemTime(time.Time) error {
+	// TODO: Implement Windows system clock updates if /init timestamp sync is required.
 	return nil
 }
 
@@ -248,19 +258,6 @@ func diskStatsForPath(path string) (DiskSpace, error) {
 }
 
 var getDiskFreeSpaceEx = syscall.NewLazyDLL("kernel32.dll").NewProc("GetDiskFreeSpaceExW")
-
-type systemtime struct {
-	Year         uint16
-	Month        uint16
-	DayOfWeek    uint16
-	Day          uint16
-	Hour         uint16
-	Minute       uint16
-	Second       uint16
-	Milliseconds uint16
-}
-
-var setSystemTime = syscall.NewLazyDLL("kernel32.dll").NewProc("SetSystemTime")
 
 func IsPathOnNetworkMount(_ string) (bool, error) {
 	// TODO: Detect Windows UNC paths and mapped network drives.

@@ -53,6 +53,10 @@ func ValidateProcessRequest(*processRpc.StartRequest) error {
 	return nil
 }
 
+func CommandContext(ctx context.Context, process *processRpc.ProcessConfig) *exec.Cmd {
+	return exec.CommandContext(ctx, process.GetCmd(), process.GetArgs()...)
+}
+
 func ConfigureProcessCredentials(
 	cmd *exec.Cmd,
 	u *user.User,
