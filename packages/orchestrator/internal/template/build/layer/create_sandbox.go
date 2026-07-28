@@ -120,7 +120,7 @@ func (cs *CreateSandbox) Sandbox(
 		},
 		template,
 		cs.timeout,
-		cs.directDiskPaths,
+		cs.directDiskPaths[storage.RootfsName],
 		vmm.ProcessOptions{
 			InitScriptPath:      constants.SystemdInitPath,
 			KernelLogs:          env.IsDevelopment(),
