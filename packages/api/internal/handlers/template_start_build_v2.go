@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -178,10 +177,8 @@ func (a *APIStore) PostV2TemplatesTemplateIDBuildsBuildID(c *gin.Context, templa
 		build.RamMb,
 		body.ReadyCmd,
 		body.FromImage,
-		body.FromImageRaw,
 		body.FromTemplate,
 		body.FromImageRegistry,
-		body.OsType,
 		body.Force,
 		body.Steps,
 		clusters.WithClusterFallback(team.ClusterID),
@@ -198,12 +195,6 @@ func (a *APIStore) PostV2TemplatesTemplateIDBuildsBuildID(c *gin.Context, templa
 
 	if err != nil {
 		telemetry.ReportCriticalError(ctx, "build failed", err, telemetry.WithTemplateID(templateID))
-		var invalidRequestErr *api.InvalidRequestError
-		if errors.As(err, &invalidRequestErr) {
-			a.sendAPIStoreError(c, http.StatusBadRequest, invalidRequestErr.Error())
-
-			return
-		}
 		a.sendAPIStoreError(c, http.StatusInternalServerError, fmt.Sprintf("Error when starting template build: %s", err))
 
 		return

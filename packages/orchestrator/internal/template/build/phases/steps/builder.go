@@ -134,8 +134,6 @@ func (sb *StepBuilder) Layer(
 		KernelVersion:      sb.Config.KernelVersion,
 		FirecrackerVersion: sb.Config.FirecrackerVersion,
 		VMMType:            string(vmm.BackendType(sb.Config.VMMType).OrDefault()),
-		OsType:             sourceLayer.Metadata.Template.OsType,
-		EnvdVersion:        sourceLayer.Metadata.Template.EnvdVersion,
 	}
 
 	return phases.LayerResult{
@@ -161,32 +159,19 @@ func (sb *StepBuilder) Build(
 
 	step := sb.step
 
-	// The build-step sandbox config is constructed fresh on each resume/create,
-	// so carry forward the OS type recorded by the previous layer.
-	osType := vmm.OsType(sourceLayer.Metadata.Template.OsType).OrDefault()
-	if sb.Config.IsWindows() {
-		osType = vmm.OsWindows
-	}
-
-	envdVersion := sb.EnvdVersion
-	if sb.Config.UsesRawImage() && osType == vmm.OsWindows && sourceLayer.Metadata.Template.EnvdVersion != "" {
-		envdVersion = sourceLayer.Metadata.Template.EnvdVersion
-	}
-
 	sbxConfig := sandbox.Config{
 		Vcpu:      sb.Config.VCpuCount,
 		RamMB:     sb.Config.MemoryMB,
 		HugePages: sb.Config.HugePages,
 
 		Envd: sandbox.EnvdMetadata{
-			Version: envdVersion,
+			Version: sb.EnvdVersion,
 		},
 
 		VMMConfig: vmm.VMMConfig{
 			Type:          vmm.BackendType(sb.Config.VMMType).OrDefault(),
 			KernelVersion: sb.Config.KernelVersion,
 			VMMVersion:    sb.Config.FirecrackerVersion,
-			OsType:        osType,
 		},
 	}
 
@@ -220,7 +205,6 @@ func (sb *StepBuilder) Build(
 			ctx,
 			sb.proxy,
 			sbx.Runtime.SandboxID,
-			osType,
 		)
 		if err != nil {
 			return metadata.Template{}, fmt.Errorf("error running sync command: %w", err)
