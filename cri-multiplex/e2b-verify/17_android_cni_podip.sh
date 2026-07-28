@@ -29,6 +29,7 @@ ANDROID_WAIT_TIMEOUT="${ANDROID_WAIT_TIMEOUT:-240s}"
 ANDROID_ADB_WAIT_TIMEOUT="${ANDROID_ADB_WAIT_TIMEOUT:-30}"
 ANDROID_CLEANUP_WAIT_TIMEOUT="${ANDROID_CLEANUP_WAIT_TIMEOUT:-150}"
 ANDROID_GUEST_SERVICE_PORT="${ANDROID_GUEST_SERVICE_PORT:-18080}"
+ANDROID_DNS_TEST_HOST="${ANDROID_DNS_TEST_HOST:-example.com}"
 ADB_BIN="${ADB_BIN:-${ANDROID_ARTIFACTS_DIR}/bin/adb}"
 
 cleanup() {
@@ -226,10 +227,14 @@ else
 fi
 
 log_step "3.8 验证 Android guest DNS 当前状态"
-if "${ADB_BIN}" -s "${ADB_URL}" shell "ping -c 1 -W 5 www.baidu.com" >&2; then
-    log_pass "Android guest hostname DNS 解析可用"
+DNS_OUTPUT=$("${ADB_BIN}" -s "${ADB_URL}" shell "getent hosts ${ANDROID_DNS_TEST_HOST} 2>/dev/null || ping -c 1 -W 1 ${ANDROID_DNS_TEST_HOST} 2>&1 | head -n 1" 2>&1 || true)
+echo "${DNS_OUTPUT}" >&2
+if grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}[[:space:]]|^([0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}[[:space:]]|PING .*\(([0-9]{1,3}\.){3}[0-9]{1,3}\)|PING .*\(([0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}\)' <<< "${DNS_OUTPUT}"; then
+    log_pass "Android guest hostname DNS 解析可用: ${ANDROID_DNS_TEST_HOST}"
 else
-    log_skip "Android guest hostname DNS 暂未纳入硬性通过项；当前已验证公网 IP 出口和 PodIP 入口"
+    log_fail "Android guest hostname DNS 解析不可用: ${ANDROID_DNS_TEST_HOST}"
+    "${ADB_BIN}" -s "${ADB_URL}" shell "su 0 dumpsys ethernet | sed -n '1,120p'; su 0 dumpsys dnsresolver | sed -n '1,180p'" >&2 || true
+    exit 1
 fi
 
 log_step "4.1 删除 Pod 验证清理"
