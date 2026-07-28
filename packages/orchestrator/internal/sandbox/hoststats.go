@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/e2b-dev/infra/packages/clickhouse/pkg/hoststats"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 )
 
@@ -17,7 +17,7 @@ import (
 func initializeHostStatsCollector(
 	ctx context.Context,
 	sbx *Sandbox,
-	vmmHandle vmm.Process,
+	fcHandle *fc.Process,
 	buildID string,
 	runtime RuntimeMetadata,
 	config Config,
@@ -28,9 +28,9 @@ func initializeHostStatsCollector(
 		return
 	}
 
-	vmmPID, err := vmmHandle.Pid()
+	firecrackerPID, err := fcHandle.Pid()
 	if err != nil {
-		logger.L().Error(ctx, "failed to get VMM PID for host stats",
+		logger.L().Error(ctx, "failed to get firecracker PID for host stats",
 			logger.WithSandboxID(runtime.SandboxID),
 			zap.Error(err))
 
@@ -57,7 +57,7 @@ func initializeHostStatsCollector(
 			VCPUCount:   config.Vcpu,
 			MemoryMB:    config.RamMB,
 		},
-		int32(vmmPID),
+		int32(firecrackerPID),
 		hostStatsDelivery,
 		samplingInterval,
 		cgroupStats,

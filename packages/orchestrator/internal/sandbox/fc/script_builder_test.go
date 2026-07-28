@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 )
 
@@ -21,7 +20,7 @@ func TestStartScriptBuilder_Build(t *testing.T) {
 		name                  string
 		versions              Config
 		files                 *storage.SandboxFiles
-		rootfsPaths           vmm.RootfsPaths
+		rootfsPaths           RootfsPaths
 		namespaceID           string
 		expectedRootfsPath    string
 		expectedKernelPath    string
@@ -34,7 +33,7 @@ func TestStartScriptBuilder_Build(t *testing.T) {
 				FirecrackerVersion: "1.4.0",
 			},
 			files: createTestSandboxFiles("test-sandbox", "static-id"),
-			rootfsPaths: vmm.RootfsPaths{
+			rootfsPaths: RootfsPaths{
 				TemplateVersion: 2,
 				TemplateID:      "template-123",
 				BuildID:         "build-456",
@@ -59,7 +58,7 @@ func TestStartScriptBuilder_Build(t *testing.T) {
 				FirecrackerVersion: "1.3.0",
 			},
 			files: createTestSandboxFiles("legacy-sandbox", "legacy-id"),
-			rootfsPaths: vmm.RootfsPaths{
+			rootfsPaths: RootfsPaths{
 				TemplateVersion: 1,
 				TemplateID:      "legacy-template",
 				BuildID:         "legacy-build",
@@ -84,7 +83,7 @@ func TestStartScriptBuilder_Build(t *testing.T) {
 				FirecrackerVersion: "1.5.0-beta",
 			},
 			files: createTestSandboxFiles("custom-sandbox", "custom-id"),
-			rootfsPaths: vmm.RootfsPaths{
+			rootfsPaths: RootfsPaths{
 				TemplateVersion: 2,
 				TemplateID:      "custom-template",
 				BuildID:         "custom-build",
@@ -149,7 +148,7 @@ func TestStartScriptBuilder_FirecrackerCommandModes(t *testing.T) {
 	versions := Config{KernelVersion: "6.1.0", FirecrackerVersion: "1.4.0"}
 	files := createTestSandboxFiles("test-sandbox", "static-id")
 
-	restoredRootfs := vmm.RootfsPaths{TemplateVersion: 2, TemplateID: "template-123", BuildID: "build-456"}
+	restoredRootfs := RootfsPaths{TemplateVersion: 2, TemplateID: "template-123", BuildID: "build-456"}
 	builder := NewStartScriptBuilder(config)
 	result, err := builder.Build(versions, files, restoredRootfs, "ns-789")
 	require.NoError(t, err)
@@ -163,7 +162,7 @@ func TestStartScriptBuilder_FirecrackerCommandModes(t *testing.T) {
 
 	config.FirecrackerNetnsExecHelper = "/opt/e2b-infra/bin/fc-netns-exec"
 	builder = NewStartScriptBuilder(config)
-	result, err = builder.Build(versions, files, vmm.RootfsPaths{TemplateVersion: 2}, "ns-789")
+	result, err = builder.Build(versions, files, RootfsPaths{TemplateVersion: 2}, "ns-789")
 	require.NoError(t, err)
 	assert.Contains(t, result.Value, "ip netns exec ns-789 /fc-versions/1.4.0/firecracker --api-sock")
 }

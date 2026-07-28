@@ -10,14 +10,13 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	sbxtemplate "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/config"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/constants"
 	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 	"github.com/e2b-dev/infra/packages/shared/pkg/fc/models"
 	"github.com/e2b-dev/infra/packages/shared/pkg/id"
-	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
 
@@ -27,7 +26,7 @@ type CreateSandbox struct {
 	timeout        time.Duration
 	sandboxFactory *sandbox.Factory
 
-	directDiskPaths map[string]string
+	rootfsCachePath string
 	ioEngine        *string
 }
 
@@ -39,7 +38,7 @@ const (
 var _ SandboxCreator = (*CreateSandbox)(nil)
 
 type createSandboxOptions struct {
-	directDiskPaths map[string]string
+	rootfsCachePath string
 	ioEngine        *string
 }
 
@@ -53,24 +52,13 @@ func WithIoEngine(ioEngine string) CreateSandboxOption {
 
 func WithRootfsCachePath(rootfsCachePath string) CreateSandboxOption {
 	return func(opts *createSandboxOptions) {
-		opts.directDiskPaths[storage.RootfsName] = rootfsCachePath
-	}
-}
-
-// WithDirectDiskPaths configures local writable files used to establish the
-// first stored generation of each disk. Disks omitted from the map use an NBD
-// copy-on-write overlay.
-func WithDirectDiskPaths(paths map[string]string) CreateSandboxOption {
-	return func(opts *createSandboxOptions) {
-		for name, path := range paths {
-			opts.directDiskPaths[name] = path
-		}
+		opts.rootfsCachePath = rootfsCachePath
 	}
 }
 
 func NewCreateSandbox(config sandbox.Config, sandboxFactory *sandbox.Factory, timeout time.Duration, options ...CreateSandboxOption) *CreateSandbox {
 	opts := &createSandboxOptions{
-		directDiskPaths: make(map[string]string),
+		rootfsCachePath: "",
 		ioEngine:        utils.ToPtr(DefaultIoEngine),
 	}
 	for _, option := range options {
@@ -80,7 +68,7 @@ func NewCreateSandbox(config sandbox.Config, sandboxFactory *sandbox.Factory, ti
 	return &CreateSandbox{
 		config:          config,
 		timeout:         timeout,
-		directDiskPaths: opts.directDiskPaths,
+		rootfsCachePath: opts.rootfsCachePath,
 		sandboxFactory:  sandboxFactory,
 		ioEngine:        opts.ioEngine,
 	}
@@ -120,8 +108,8 @@ func (cs *CreateSandbox) Sandbox(
 		},
 		template,
 		cs.timeout,
-		cs.directDiskPaths,
-		vmm.ProcessOptions{
+		cs.rootfsCachePath,
+		fc.ProcessOptions{
 			InitScriptPath:      constants.SystemdInitPath,
 			KernelLogs:          env.IsDevelopment(),
 			SystemdToKernelLogs: false,
@@ -133,15 +121,8 @@ func (cs *CreateSandbox) Sandbox(
 	if err != nil {
 		return nil, fmt.Errorf("create sandbox: %w", err)
 	}
-
-	// Register the sandbox before waiting for envd. Android performs network
-	// initialization and outbound requests while envd is starting; the TCP
-	// firewall must already be able to associate those connections with this
-	// sandbox. BuildLayer keeps the registration for the rest of the build.
-	layerExecutor.sandboxes.Insert(sbx)
 	defer func() {
 		if err != nil {
-			layerExecutor.sandboxes.Remove(sbx.Runtime.SandboxID)
 			// Close the sandbox in case of error to avoid leaking resources
 			err = errors.Join(err, sbx.Close(ctx))
 		}

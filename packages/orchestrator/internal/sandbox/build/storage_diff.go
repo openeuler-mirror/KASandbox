@@ -73,7 +73,7 @@ func storageObjectType(diffType DiffType) (storage.SeekableObjectType, bool) {
 	switch diffType {
 	case Memfile:
 		return storage.MemfileObjectType, true
-	case Rootfs, RootfsPersistent, RootfsSDCard:
+	case Rootfs:
 		return storage.RootFSObjectType, true
 	default:
 		return storage.UnknownSeekableObjectType, false

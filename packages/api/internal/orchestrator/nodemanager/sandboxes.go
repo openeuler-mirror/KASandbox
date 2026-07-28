@@ -116,7 +116,6 @@ func (n *Node) GetSandboxes(ctx context.Context) ([]sandbox.Sandbox, error) {
 				network,
 				networkTrafficAccessToken,
 				volumeMounts,
-				config.GetOsType(),
 			),
 		)
 	}

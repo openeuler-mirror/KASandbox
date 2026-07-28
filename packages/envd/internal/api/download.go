@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
 
 	"github.com/e2b-dev/infra/packages/envd/internal/execcontext"
@@ -60,7 +61,7 @@ func (a *API) GetFiles(w http.ResponseWriter, r *http.Request, params GetFilesPa
 		l.Msg("File read")
 	}()
 
-	u, err := permissions.GetUser(username)
+	u, err := user.Lookup(username)
 	if err != nil {
 		errMsg = fmt.Errorf("error looking up user '%s': %w", username, err)
 		errorCode = http.StatusUnauthorized

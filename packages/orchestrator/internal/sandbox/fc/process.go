@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,7 +25,6 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/rootfs"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/socket"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/shared/pkg/keys"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
@@ -35,7 +35,29 @@ import (
 
 var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc")
 
-var _ vmm.Process = (*Process)(nil)
+type ProcessOptions struct {
+	// IoEngine is the io engine to use for the rootfs drive.
+	IoEngine *string
+
+	// InitScriptPath is the path to the init script that will be executed inside the VM on kernel start.
+	InitScriptPath string
+
+	// KernelLogs is a flag to enable kernel logs output to the process stdout.
+	KernelLogs bool
+
+	// SystemdToKernelLogs is a flag to enable systemd logs output to the console.
+	// It enabled the kernel logs by default too.
+	SystemdToKernelLogs bool
+
+	// KvmClock is a flag to enable kvm-clock as the clocksource for the kernel.
+	KvmClock bool
+
+	// Stdout is the writer to which the process stdout will be written.
+	Stdout io.Writer
+
+	// Stderr is the writer to which the process stderr will be written.
+	Stderr io.Writer
+}
 
 type Process struct {
 	Versions Config
@@ -51,7 +73,7 @@ type Process struct {
 	kernelPath     string
 	files          *storage.SandboxFiles
 
-	exitOnce *utils.ErrorOnce
+	Exit *utils.ErrorOnce
 
 	client *apiClient
 }
@@ -64,7 +86,7 @@ func NewProcess(
 	files *storage.SandboxFiles,
 	versions Config,
 	rootfsProvider rootfs.Provider,
-	rootfsPaths vmm.RootfsPaths,
+	rootfsPaths RootfsPaths,
 ) (*Process, error) {
 	ctx, childSpan := tracer.Start(ctx, "initialize-fc", trace.WithAttributes(
 		attribute.Int("sandbox.slot.index", slot.Idx),
@@ -119,7 +141,7 @@ func NewProcess(
 
 	return &Process{
 		Versions:              versions,
-		exitOnce:              utils.NewErrorOnce(),
+		Exit:                  utils.NewErrorOnce(),
 		cmd:                   cmd,
 		firecrackerSocketPath: files.SandboxFirecrackerSocketPath(),
 		config:                config,
@@ -189,7 +211,7 @@ func (p *Process) configure(
 			if errors.As(waitErr, &exitErr) {
 				// Check if the process was killed by a signal
 				if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() && (status.Signal() == syscall.SIGKILL || status.Signal() == syscall.SIGTERM) {
-					p.exitOnce.SetError(nil)
+					p.Exit.SetError(nil)
 
 					return
 				}
@@ -198,14 +220,14 @@ func (p *Process) configure(
 			logger.L().Error(ctx, "error waiting for fc process", zap.Error(waitErr))
 
 			errMsg := fmt.Errorf("error waiting for fc process: %w", waitErr)
-			p.exitOnce.SetError(errMsg)
+			p.Exit.SetError(errMsg)
 
 			cancelStart(errMsg)
 
 			return
 		}
 
-		p.exitOnce.SetError(nil)
+		p.Exit.SetError(nil)
 	}()
 
 	// Wait for the FC process to start so we can use FC API
@@ -230,7 +252,7 @@ func (p *Process) Create(
 	vCPUCount int64,
 	memoryMB int64,
 	hugePages bool,
-	options vmm.ProcessOptions,
+	options ProcessOptions,
 ) error {
 	ctx, childSpan := tracer.Start(ctx, "create-fc")
 	defer childSpan.End()
@@ -256,7 +278,7 @@ func (p *Process) Create(
 
 	// IPv4 configuration - format: [local_ip]::[gateway_ip]:[netmask]:hostname:iface:dhcp_option:[dns]
 	ipv4 := fmt.Sprintf("%s::%s:%s:instance:%s:off:%s", p.slot.NamespaceIP(), p.slot.TapIPString(), p.slot.TapMaskString(), p.slot.VpeerName(), p.slot.TapName())
-	args := vmm.KernelArgs{
+	args := KernelArgs{
 		// Disable kernel logs for production to speed the FC operations
 		// https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md#logging-and-performance
 		"quiet":    "",
@@ -371,15 +393,9 @@ func (p *Process) Resume(
 	snapfile template.File,
 	uffdReady chan struct{},
 	accessToken *string,
-	memoryMB int64,
-	vcpuCount int64,
-	hugePages bool,
 	cgroupFD int,
 	traceID string,
 ) error {
-	_ = memoryMB
-	_ = vcpuCount
-	_ = hugePages
 	ctx, span := tracer.Start(ctx, "resume-fc")
 	defer span.End()
 
@@ -528,6 +544,19 @@ func (p *Process) Pid() (int, error) {
 	return p.cmd.Process.Pid, nil
 }
 
+// getProcessState returns the state of the process.
+// It's used to check if the process is in the D state, because gopsutil doesn't show that.
+func getProcessState(ctx context.Context, pid int) (string, error) {
+	output, err := exec.CommandContext(ctx, "ps", "-o", "stat=", "-p", fmt.Sprint(pid)).Output()
+	if err != nil {
+		return "", fmt.Errorf("error getting state of pid=%d: %w", pid, err)
+	}
+
+	state := strings.TrimSpace(string(output))
+
+	return state, nil
+}
+
 func (p *Process) Stop(ctx context.Context) error {
 	if p.cmd.Process == nil {
 		return fmt.Errorf("fc process not started")
@@ -535,7 +564,7 @@ func (p *Process) Stop(ctx context.Context) error {
 
 	// Check if process has already exited.
 	select {
-	case <-p.exitOnce.Done():
+	case <-p.Exit.Done():
 		logger.L().Info(ctx, "fc process already exited", logger.WithSandboxID(p.files.SandboxID))
 
 		return nil
@@ -545,7 +574,7 @@ func (p *Process) Stop(ctx context.Context) error {
 	// this function should never fail b/c a previous context was canceled.
 	ctx = context.WithoutCancel(ctx)
 
-	state, err := vmm.ProcessState(ctx, p.cmd.Process.Pid)
+	state, err := getProcessState(ctx, p.cmd.Process.Pid)
 	if err != nil {
 		logger.L().Warn(ctx, "failed to get fc process state", zap.Error(err), logger.WithSandboxID(p.files.SandboxID))
 	} else if state == "D" {
@@ -574,7 +603,7 @@ func (p *Process) Stop(ctx context.Context) error {
 				logger.L().Info(ctx, "sent SIGKILL to fc process because it was not responding to SIGTERM for 10 seconds", logger.WithSandboxID(p.files.SandboxID))
 			}
 
-			state, err := vmm.ProcessState(ctx, p.cmd.Process.Pid)
+			state, err := getProcessState(ctx, p.cmd.Process.Pid)
 			if err != nil {
 				logger.L().Warn(ctx, "failed to get fc process state after sending SIGKILL", zap.Error(err), logger.WithSandboxID(p.files.SandboxID))
 			} else if state == "D" {
@@ -582,7 +611,7 @@ func (p *Process) Stop(ctx context.Context) error {
 			}
 
 		// If the FC process exited, we can return.
-		case <-p.exitOnce.Done():
+		case <-p.Exit.Done():
 			return
 		}
 	}()
@@ -603,8 +632,4 @@ func (p *Process) CreateSnapshot(ctx context.Context, snapfilePath string) error
 	defer childSpan.End()
 
 	return p.client.createSnapshot(ctx, snapfilePath)
-}
-
-func (p *Process) Exit() *utils.ErrorOnce {
-	return p.exitOnce
 }

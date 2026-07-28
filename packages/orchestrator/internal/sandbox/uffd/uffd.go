@@ -15,10 +15,10 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/uffd/fdexit"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/uffd/memory"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/uffd/userfaultfd"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
@@ -216,8 +216,8 @@ func (u *Uffd) Exit() *utils.ErrorOnce {
 // DiffMetadata waits for the current requests to finish and returns the dirty pages.
 //
 // It *MUST* be only called after the sandbox was successfully paused via API and after the snapshot endpoint was called.
-func (u *Uffd) DiffMetadata(ctx context.Context, process vmm.Process) (*header.DiffMetadata, error) {
-	return process.DirtyMemory(ctx, u.memfile.BlockSize())
+func (u *Uffd) DiffMetadata(ctx context.Context, f *fc.Process) (*header.DiffMetadata, error) {
+	return f.DirtyMemory(ctx, u.memfile.BlockSize())
 }
 
 // PrefetchData returns page fault data for prefetch mapping.

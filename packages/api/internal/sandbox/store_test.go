@@ -174,7 +174,6 @@ func createTestSandbox() sandbox.Sandbox {
 		nil, // network
 		nil, // trafficAccessToken
 		nil, // volumes
-		"",  // osType
 	)
 }
 

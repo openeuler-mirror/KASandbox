@@ -39,7 +39,6 @@ func NewSandbox(
 	network *types.SandboxNetworkConfig,
 	trafficAccessToken *string,
 	mounts []*types.SandboxVolumeMountConfig,
-	osType string,
 ) Sandbox {
 	return Sandbox{
 		SandboxID:  sandboxID,
@@ -72,7 +71,6 @@ func NewSandbox(
 		BaseTemplateID:      baseTemplateID,
 		Network:             network,
 		VolumeMounts:        mounts,
-		OsType:              osType,
 	}
 }
 
@@ -106,7 +104,6 @@ type Sandbox struct {
 	AutoResume          *types.SandboxAutoResumeConfig    `json:"autoResume,omitempty"`
 	Network             *types.SandboxNetworkConfig       `json:"network"`
 	VolumeMounts        []*types.SandboxVolumeMountConfig `json:"volumeMounts"`
-	OsType              string                            `json:"osType,omitempty"`
 
 	State State `json:"state"`
 }
@@ -121,21 +118,7 @@ func (s Sandbox) ToAPISandbox() *api.Sandbox {
 		EnvdAccessToken:    s.EnvdAccessToken,
 		TrafficAccessToken: s.TrafficAccessToken,
 		Domain:             s.Domain,
-		OsType:             toAPIOsType(s.OsType),
 	}
-}
-
-// toAPIOsType preserves compatibility with older orchestrators that do not
-// populate os_type. Current orchestrators always return the OS resolved from
-// template metadata.
-func toAPIOsType(osType string) *api.OsType {
-	if osType == "" {
-		return nil
-	}
-
-	value := api.OsType(osType)
-
-	return &value
 }
 
 func (s Sandbox) LoggerMetadata() sbxlogger.SandboxMetadata {

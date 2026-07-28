@@ -3,10 +3,10 @@ package process
 import (
 	"context"
 	"fmt"
+	"syscall"
 
 	"connectrpc.com/connect"
 
-	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 	rpc "github.com/e2b-dev/infra/packages/envd/internal/services/spec/process"
 )
 
@@ -19,8 +19,13 @@ func (s *Service) SendSignal(
 		return nil, err
 	}
 
-	signal, ok := platform.ProcessSignal(req.Msg.GetSignal())
-	if !ok {
+	var signal syscall.Signal
+	switch req.Msg.GetSignal() {
+	case rpc.Signal_SIGNAL_SIGKILL:
+		signal = syscall.SIGKILL
+	case rpc.Signal_SIGNAL_SIGTERM:
+		signal = syscall.SIGTERM
+	default:
 		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("invalid signal: %s", req.Msg.GetSignal()))
 	}
 

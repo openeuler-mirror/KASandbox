@@ -18,7 +18,6 @@ import (
 	"github.com/e2b-dev/infra/packages/envd/internal/execcontext"
 	"github.com/e2b-dev/infra/packages/envd/internal/logs"
 	"github.com/e2b-dev/infra/packages/envd/internal/permissions"
-	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 	"github.com/e2b-dev/infra/packages/envd/internal/utils"
 )
 
@@ -53,7 +52,7 @@ func processFile(r *http.Request, path string, part io.Reader, uid, gid int, log
 
 	hasBeenChowned := false
 	if canBePreChowned {
-		err = platform.Chown(path, uid, gid)
+		err = os.Chown(path, uid, gid)
 		if err != nil {
 			if !os.IsNotExist(err) {
 				err = fmt.Errorf("error changing file ownership: %w", err)
@@ -81,7 +80,7 @@ func processFile(r *http.Request, path string, part io.Reader, uid, gid int, log
 	defer file.Close()
 
 	if !hasBeenChowned {
-		err = platform.Chown(path, uid, gid)
+		err = os.Chown(path, uid, gid)
 		if err != nil {
 			err := fmt.Errorf("error changing file ownership: %w", err)
 
@@ -247,7 +246,7 @@ func (a *API) PostFiles(w http.ResponseWriter, r *http.Request, params PostFiles
 		return
 	}
 
-	u, err := permissions.GetUser(username)
+	u, err := user.Lookup(username)
 	if err != nil {
 		errMsg = fmt.Errorf("error looking up user '%s': %w", username, err)
 		errorCode = http.StatusUnauthorized
