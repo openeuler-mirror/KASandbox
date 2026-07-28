@@ -247,7 +247,7 @@ func (a *API) PostFiles(w http.ResponseWriter, r *http.Request, params PostFiles
 		return
 	}
 
-	u, err := permissions.GetUser(username)
+	u, err := user.Lookup(username)
 	if err != nil {
 		errMsg = fmt.Errorf("error looking up user '%s': %w", username, err)
 		errorCode = http.StatusUnauthorized

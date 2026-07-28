@@ -1,4 +1,4 @@
-//go:build linux && !android
+//go:build linux
 
 // portf (port forward) periodaically scans opened TCP ports on the 127.0.0.1 (or localhost)
 // and launches `socat` process for every such port in the background.
