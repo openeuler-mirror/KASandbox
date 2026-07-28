@@ -191,8 +191,6 @@ func (sb *StepBuilder) Build(
 			VMMVersion:    sb.Config.FirecrackerVersion,
 			OsType:        osType,
 		},
-
-		// OSType: metadata.OSType(sb.Config.OSType),
 	}
 
 	// First not cached layer is create (to change CPU, Memory, etc), subsequent are layers are resumes.

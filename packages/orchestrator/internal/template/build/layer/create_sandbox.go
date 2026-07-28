@@ -133,15 +133,8 @@ func (cs *CreateSandbox) Sandbox(
 	if err != nil {
 		return nil, fmt.Errorf("create sandbox: %w", err)
 	}
-
-	// Register the sandbox before waiting for envd. Android performs network
-	// initialization and outbound requests while envd is starting; the TCP
-	// firewall must already be able to associate those connections with this
-	// sandbox. BuildLayer keeps the registration for the rest of the build.
-	layerExecutor.sandboxes.Insert(sbx)
 	defer func() {
 		if err != nil {
-			layerExecutor.sandboxes.Remove(sbx.Runtime.SandboxID)
 			// Close the sandbox in case of error to avoid leaking resources
 			err = errors.Join(err, sbx.Close(ctx))
 		}

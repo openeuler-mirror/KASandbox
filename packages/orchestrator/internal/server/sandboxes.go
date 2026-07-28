@@ -241,16 +241,10 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		},
 	)
 
-	ports := sbx.HostServicePorts()
 	return &orchestrator.SandboxCreateResponse{
 		ClientId: s.info.ClientId,
 		HostIp:   sbx.Slot.HostIPString(),
 		OsType:   string(templateOS),
-
-		AdbPort:             int32(ports.AdbPort),
-		ModemSimulatorPort:  int32(ports.ModemSimulatorPort),
-		WebrtcHttpPort:      int32(ports.WebrtcHttpPort),
-		WebrtcStreamingPort: int32(ports.WebrtcStreamingPort),
 	}, nil
 }
 

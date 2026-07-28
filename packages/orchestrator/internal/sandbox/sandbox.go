@@ -24,7 +24,6 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/build"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/cgroup"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/hostservice"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/rootfs"
@@ -81,11 +80,6 @@ type Config struct {
 	Envd EnvdMetadata
 
 	VMMConfig vmm.VMMConfig
-
-	// OSType is the guest OS family. Used by CreateSandbox to decide whether
-	// to start host-side services (adb vsock proxy when OSType == OSTypeAndroid).
-	// ResumeSandbox ignores this field and reads OSType from template metadata.
-	// OSType metadata.OSType
 
 	VolumeMounts []VolumeMountConfig
 }
@@ -169,10 +163,6 @@ type Sandbox struct {
 
 	process      vmm.Process
 	cgroupHandle *cgroup.CgroupHandle
-	hostSvcMgr   *hostservice.Manager
-	// hostSvcPorts is zero-value for non-Android sandboxes. Propagated to
-	// the API via the gRPC SandboxCreateResponse.
-	hostSvcPorts hostservice.Ports
 
 	Template template.Template
 
@@ -195,17 +185,6 @@ func (s *Sandbox) LoggerMetadata() sbxlogger.SandboxMetadata {
 		TemplateID: s.Runtime.TemplateID,
 		TeamID:     s.Runtime.TeamID,
 	}
-}
-
-// HostServicePorts returns the host-side ports for this sandbox's Android
-// emulator services. Zero-value for non-Android sandboxes.
-func (s *Sandbox) HostServicePorts() hostservice.Ports {
-	return s.hostSvcPorts
-}
-
-type networkSlotRes struct {
-	slot *network.Slot
-	err  error
 }
 
 // GetStartedAt returns the sandbox start time in a thread-safe manner.
@@ -231,7 +210,6 @@ type Factory struct {
 	featureFlags      *featureflags.Client
 	hostStatsDelivery hoststats.Delivery
 	cgroupManager     cgroup.Manager
-	cidPool           *hostservice.CIDPool
 }
 
 func NewFactory(
@@ -249,7 +227,6 @@ func NewFactory(
 		featureFlags:      featureFlags,
 		hostStatsDelivery: hostStatsDelivery,
 		cgroupManager:     cgroupManager,
-		cidPool:           hostservice.NewCIDPool(1000),
 	}
 }
 
@@ -361,50 +338,6 @@ func (f *Factory) CreateSandbox(
 
 	telemetry.ReportEvent(ctx, "created vmm client")
 
-	// Allocate CID and build Android host services BEFORE the VMM boots so
-	// the guest sees the right vsock CID. All four services share the
-	// per-sandbox CID.
-	var hostSvcMgr *hostservice.Manager
-	var hostSvcPorts hostservice.Ports
-	if metadata.OSType(config.VMMConfig.OsType) == metadata.OSTypeAndroid {
-		allocatedCID, cidErr := f.cidPool.Allocate(ctx)
-		if cidErr != nil {
-			return nil, fmt.Errorf("allocate vsock CID: %w", cidErr)
-		}
-		cleanup.Add(ctx, func(context.Context) error {
-			f.cidPool.Release(allocatedCID)
-			return nil
-		})
-
-		if svProc, ok := vmmHandle.(*stratovirt.Process); ok {
-			svProc.SetVsockConfig(allocatedCID)
-		}
-
-		var services []hostservice.Service
-		services, hostSvcPorts, err = buildAndroidHostServices(ctx, f.config, allocatedCID, runtime.SandboxID, sandboxFiles.SandboxHostDir())
-		if err != nil {
-			return nil, fmt.Errorf("build android host services: %w", err)
-		}
-		hostSvcMgr = hostservice.NewManager(services)
-
-		logger.L().Info(ctx, "android host services configured",
-			zap.Int64("cid", allocatedCID),
-			zap.Int("adb_port", hostSvcPorts.AdbPort),
-			zap.Int("modem_simulator_port", hostSvcPorts.ModemSimulatorPort),
-			zap.Int("webrtc_http_port", hostSvcPorts.WebrtcHttpPort),
-			zap.Int("webrtc_streaming_port", hostSvcPorts.WebrtcStreamingPort),
-			zap.String("sandbox_id", runtime.SandboxID),
-		)
-	}
-	if hostSvcMgr != nil {
-		if err := hostSvcMgr.StartAll(ctx); err != nil {
-			return nil, fmt.Errorf("failed to start android host services: %w", err)
-		}
-		cleanup.AddPriority(ctx, func(ctx context.Context) error {
-			return hostSvcMgr.StopAll(ctx)
-		})
-	}
-
 	err = vmmHandle.Create(
 		ctx,
 		sbxlogger.SandboxMetadata{
@@ -421,13 +354,6 @@ func (f *Factory) CreateSandbox(
 		return nil, fmt.Errorf("failed to create VMM: %w", err)
 	}
 	telemetry.ReportEvent(ctx, "created vmm process")
-
-	if hostSvcMgr != nil && hostSvcPorts.AdbPort > 0 {
-		proxyAddr := fmt.Sprintf("127.0.0.1:%d", hostSvcPorts.AdbPort)
-		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, 30*time.Second); err != nil {
-			return nil, fmt.Errorf("vsock proxy not ready: %w", err)
-		}
-	}
 
 	resources := &Resources{
 		Slot:   ips,
@@ -457,9 +383,6 @@ func (f *Factory) CreateSandbox(
 		config:   f.config,
 		files:    sandboxFiles,
 		process:  vmmHandle,
-
-		hostSvcMgr:   hostSvcMgr,
-		hostSvcPorts: hostSvcPorts,
 
 		cleanup: cleanup,
 
@@ -718,48 +641,6 @@ func (f *Factory) ResumeSandbox(
 	}
 
 	zap.L().Sugar().Infof("[ResumeSandbox] vmmFactory.NewProcess cost: %.3f ms, traceID=%s", time.Since(t4).Seconds()*1000, traceID)
-	var hostSvcMgr *hostservice.Manager
-	var hostSvcPorts hostservice.Ports
-	if metadata.OSType(meta.Template.OsType) == metadata.OSTypeAndroid {
-		allocatedCID, err := f.cidPool.Allocate(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("allocate vsock CID: %w", err)
-		}
-		cleanup.Add(ctx, func(context.Context) error {
-			f.cidPool.Release(allocatedCID)
-			return nil
-		})
-
-		if svProc, ok := vmmHandle.(*stratovirt.Process); ok {
-			svProc.SetVsockConfig(allocatedCID)
-		}
-
-		var services []hostservice.Service
-		services, hostSvcPorts, err = buildAndroidHostServices(ctx, f.config, allocatedCID, runtime.SandboxID, sandboxFiles.SandboxHostDir())
-		if err != nil {
-			return nil, fmt.Errorf("build android host services: %w", err)
-		}
-		hostSvcMgr = hostservice.NewManager(services)
-
-		logger.L().Info(ctx, "android host services configured",
-			zap.Int64("cid", allocatedCID),
-			zap.Int("adb_port", hostSvcPorts.AdbPort),
-			zap.Int("modem_simulator_port", hostSvcPorts.ModemSimulatorPort),
-			zap.Int("webrtc_http_port", hostSvcPorts.WebrtcHttpPort),
-			zap.Int("webrtc_streaming_port", hostSvcPorts.WebrtcStreamingPort),
-			zap.String("sandbox_id", runtime.SandboxID),
-		)
-	}
-	if hostSvcMgr != nil {
-		if err := hostSvcMgr.StartAll(ctx); err != nil {
-			return nil, fmt.Errorf("failed to start android host services: %w", err)
-		}
-		cleanup.AddPriority(ctx, func(ctx context.Context) error {
-			return hostSvcMgr.StopAll(ctx)
-		})
-	}
-
-	// ==================== 6. 恢复 VM ====================
 	phaseStart := time.Now()
 	telemetry.ReportEvent(ctx, "created VMM process")
 
@@ -788,23 +669,13 @@ func (f *Factory) ResumeSandbox(
 
 		cancelUffdStartCtx(fmt.Errorf("uffd process exited: %w", errors.Join(uffdWaitErr, context.Cause(uffdStartCtx))))
 	}()
-	sandboxMetadata := sbxlogger.SandboxMetadata{
-		SandboxID:  runtime.SandboxID,
-		TemplateID: runtime.TemplateID,
-		TeamID:     runtime.TeamID,
-	}
-
-	resumeCgroupFD := cgroupFD
-	if metadata.OSType(meta.Template.OsType) == metadata.OSTypeAndroid {
-		// CLONE_INTO_CGROUP requires a cgroup v2 directory FD. The deployment
-		// runs cgroup v1, so attach accounting after launch rather than making
-		// fork/exec fail before StratoVirt starts.
-		resumeCgroupFD = cgroup.NoCgroupFD
-	}
-
 	vmmStartErr := vmmHandle.Resume(
 		uffdStartCtx,
-		sandboxMetadata,
+		sbxlogger.SandboxMetadata{
+			SandboxID:  runtime.SandboxID,
+			TemplateID: runtime.TemplateID,
+			TeamID:     runtime.TeamID,
+		},
 		fcUffdPath,
 		snapfile,
 		vmmUffd.Ready(),
@@ -812,8 +683,8 @@ func (f *Factory) ResumeSandbox(
 		config.RamMB,
 		config.Vcpu,
 		config.HugePages,
-		resumeCgroupFD,
-		traceID,
+		cgroupFD,
+		span.SpanContext().TraceID().String(),
 	)
 
 	// Release the cgroup directory FD — the kernel already used it during clone
@@ -828,17 +699,6 @@ func (f *Factory) ResumeSandbox(
 	if vmmStartErr != nil {
 		return nil, fmt.Errorf("failed to start VMM: %w", vmmStartErr)
 	}
-	if hostSvcMgr != nil && hostSvcPorts.AdbPort > 0 {
-		proxyAddr := fmt.Sprintf("127.0.0.1:%d", hostSvcPorts.AdbPort)
-		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, 30*time.Second); err != nil {
-			return nil, fmt.Errorf("vsock proxy not ready (guest adbd unreachable): %w", err)
-		}
-		logger.L().Info(ctx, "android host services ready",
-			zap.String("sandbox_id", runtime.SandboxID),
-			zap.String("proxy_addr", proxyAddr),
-		)
-	}
-
 	zap.L().Sugar().Infof("[ResumeSandbox] resume VM cost: %d ms, traceID=%s", time.Since(phaseStart).Milliseconds(), traceID)
 	telemetry.ReportEvent(ctx, "initialized VMM")
 
@@ -871,9 +731,6 @@ func (f *Factory) ResumeSandbox(
 		config:   f.config,
 		files:    sandboxFiles,
 		process:  vmmHandle,
-
-		hostSvcMgr:   hostSvcMgr,
-		hostSvcPorts: hostSvcPorts,
 
 		cleanup: cleanup,
 
@@ -992,12 +849,6 @@ func (s *Sandbox) doStop(ctx context.Context) error {
 	// We could use select with ctx.Done() to wait for cancellation, but if the process is not exited the whole cleanup will be in a bad state and will result in unexpected behavior.
 	<-s.process.Exit().Done()
 
-	if s.hostSvcMgr != nil {
-		if hostSvcErr := s.hostSvcMgr.StopAll(ctx); hostSvcErr != nil {
-			errs = append(errs, fmt.Errorf("failed to stop host services: %w", hostSvcErr))
-		}
-	}
-
 	// Remove cgroup after process has exited
 	if s.cgroupHandle != nil {
 		if cgroupErr := s.cgroupHandle.Remove(ctx); cgroupErr != nil {
@@ -1021,14 +872,6 @@ func (s *Sandbox) Shutdown(ctx context.Context) error {
 
 	// Stop the health check before pausing the VM
 	s.Checks.Stop()
-
-	// Suspend host-side services (e.g. adb vsock proxy) before pausing the
-	// VMM so their connection state is consistent with the paused guest.
-	if s.hostSvcMgr != nil {
-		if err := s.hostSvcMgr.SuspendAll(); err != nil {
-			return fmt.Errorf("failed to suspend host services: %w", err)
-		}
-	}
 
 	if err := s.process.Pause(ctx); err != nil {
 		return fmt.Errorf("failed to pause VM: %w", err)
@@ -1101,23 +944,6 @@ func (s *Sandbox) Pause(
 
 	// Stop the health check before pausing the VM
 	s.Checks.Stop()
-
-	// Android host processes hold live vsock connections. Freezing those
-	// processes would persist host socket state that cannot be recreated by a
-	// new vhost-vsock backend on snapshot restore, leaving the restored guest's
-	// vsock device unusable. Template snapshots are terminal for this Sandbox,
-	// so fully stop the per-sandbox processes before pausing Android. Shared
-	// config/modem listeners remain host-wide and are not owned by this manager.
-	// Other guest types retain the existing suspend behavior.
-	if s.hostSvcMgr != nil {
-		if s.Config.VMMConfig.OsType.OrDefault() == vmm.OsAndroid {
-			if err := s.hostSvcMgr.StopAll(ctx); err != nil {
-				return nil, fmt.Errorf("failed to stop Android host services before snapshot: %w", err)
-			}
-		} else if err := s.hostSvcMgr.SuspendAll(); err != nil {
-			return nil, fmt.Errorf("failed to suspend host services: %w", err)
-		}
-	}
 
 	if err := s.process.Pause(ctx); err != nil {
 		return nil, fmt.Errorf("failed to pause VM: %w", err)
