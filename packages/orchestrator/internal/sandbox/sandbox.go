@@ -1039,8 +1039,8 @@ func (s *Sandbox) Pause(
 		Metafile:          metadataFileLink,
 		MemfileDiff:       memfileDiff,
 		MemfileDiffHeader: memfileDiffHeader,
-		RootfsDiffs:       map[build.DiffType]build.Diff{build.Rootfs: rootfsDiff},
-		RootfsDiffHeaders: map[build.DiffType]*header.Header{build.Rootfs: rootfsDiffHeader},
+		RootfsDiff:        rootfsDiff,
+		RootfsDiffHeader:  rootfsDiffHeader,
 
 		cleanup: cleanup,
 	}, nil

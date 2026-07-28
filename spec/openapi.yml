@@ -460,7 +460,6 @@ components:
       enum:
         - linux
         - windows
-        - android
       description: Guest operating system of the sandbox. Absent implies linux.
 
     SandboxDetail:
@@ -1285,24 +1284,7 @@ components:
       properties:
         url:
           type: string
-          description: Registry reference containing the raw disk image layer to use as the template base.
-
-    FromImageMultiDisk:
-      type: object
-      required:
-        - os
-        - persistent
-        - sdcard
-      properties:
-        os:
-          type: string
-          description: Registry reference containing the Android OS composite raw disk image.
-        persistent:
-          type: string
-          description: Registry reference containing the Android persistent composite raw disk image.
-        sdcard:
-          type: string
-          description: Registry reference containing the Android sdcard raw disk image.
+          description: URL of the raw (non-OCI) disk image to use as a base for the template build.
 
     TemplateBuildStartV2:
       type: object
@@ -1312,8 +1294,6 @@ components:
           description: Image to use as a base for the template build
         fromImageRaw:
           $ref: "#/components/schemas/FromImageRaw"
-        fromImageMultiDisk:
-          $ref: "#/components/schemas/FromImageMultiDisk"
         fromTemplate:
           type: string
           description: Template to use as a base for the template build

@@ -167,12 +167,9 @@ func (sb *StepBuilder) Build(
 	if sb.Config.IsWindows() {
 		osType = vmm.OsWindows
 	}
-	if sb.Config.IsAndroid() {
-		osType = vmm.OsAndroid
-	}
 
 	envdVersion := sb.EnvdVersion
-	if (sb.Config.UsesRawImage() || sb.Config.UsesMultiDisk()) && (osType == vmm.OsWindows || osType == vmm.OsAndroid) && sourceLayer.Metadata.Template.EnvdVersion != "" {
+	if sb.Config.UsesRawImage() && osType == vmm.OsWindows && sourceLayer.Metadata.Template.EnvdVersion != "" {
 		envdVersion = sourceLayer.Metadata.Template.EnvdVersion
 	}
 

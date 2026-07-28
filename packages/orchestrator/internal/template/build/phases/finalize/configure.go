@@ -28,10 +28,6 @@ var ConfigureScriptTemplate = tt.Must(tt.New("provisioning-finish-script").Parse
 var configureScriptFileWindows string
 var ConfigureScriptTemplateWindows = tt.Must(tt.New("provisioning-finish-script-windows").Parse(configureScriptFileWindows))
 
-//go:embed configure.android.sh
-var configureScriptFileAndroid string
-var ConfigureScriptTemplateAndroid = tt.Must(tt.New("provisioning-finish-script-android").Parse(configureScriptFileAndroid))
-
 type ConfigurationParams struct {
 	EnvID      string
 	TemplateID string
@@ -52,10 +48,6 @@ func configurationScript(osType vmm.OsType, params ConfigurationParams) (string,
 	if osType == vmm.OsWindows {
 		tmpl = ConfigureScriptTemplateWindows
 		cmdCtx = metadata.Context{OsType: string(vmm.OsWindows)}
-	}
-	if osType == vmm.OsAndroid {
-		tmpl = ConfigureScriptTemplateAndroid
-		cmdCtx = metadata.Context{OsType: string(vmm.OsAndroid)}
 	}
 
 	var scriptDef bytes.Buffer

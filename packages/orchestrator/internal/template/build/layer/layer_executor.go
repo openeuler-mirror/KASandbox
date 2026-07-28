@@ -108,7 +108,7 @@ func (lb *LayerExecutor) BuildLayer(
 		// Skip for Windows sandboxes: updateEnvdInSandbox replaces a Linux envd
 		// binary via `mv`/`chmod` and restarts it with `systemctl`, none of which
 		// apply to a Windows guest.
-		if osType := sbx.Config.VMMConfig.OsType.OrDefault(); osType != vmm.OsWindows && osType != vmm.OsAndroid {
+		if sbx.Config.VMMConfig.OsType.OrDefault() != vmm.OsWindows {
 			err = lb.updateEnvdInSandbox(ctx, userLogger, sbx)
 			if err != nil {
 				lb.logger.Error(
@@ -275,11 +275,11 @@ func (lb *LayerExecutor) PauseAndUpload(
 		context.WithoutCancel(ctx),
 		meta.Template.BuildID,
 		snapshot.MemfileDiffHeader,
-		snapshot.RootfsDiffHeaders,
+		snapshot.RootfsDiffHeader,
 		snapshot.Snapfile,
 		snapshot.Metafile,
 		snapshot.MemfileDiff,
-		snapshot.RootfsDiffs,
+		snapshot.RootfsDiff,
 	)
 	if err != nil {
 		err = errors.Join(err, snapshot.Close(context.WithoutCancel(ctx)))

@@ -173,7 +173,7 @@ func validateTemplate(
 func validateContext(
 	context metadata.Context,
 ) (err error) {
-	if context.User == "" && context.OsType != string(vmm.OsWindows) && context.OsType != string(vmm.OsAndroid) {
+	if context.User == "" && context.OsType != string(vmm.OsWindows) {
 		err = errors.Join(err, fmt.Errorf("context user is empty"))
 	}
 	if context.WorkDir != nil && *context.WorkDir == "" {

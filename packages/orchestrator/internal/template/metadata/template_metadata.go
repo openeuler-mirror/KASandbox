@@ -71,12 +71,6 @@ type FromTemplate struct {
 	BuildID string `json:"build_id"`
 }
 
-type MultiDiskSpec struct {
-	OS         string `json:"os"`
-	Persistent string `json:"persistent"`
-	SDCard     string `json:"sdcard"`
-}
-
 type Start struct {
 	StartCmd string  `json:"start_command"`
 	ReadyCmd string  `json:"ready_command"`
@@ -126,12 +120,11 @@ type Template struct {
 	Template TemplateMetadata `json:"template"`
 	Context  Context          `json:"context"`
 	Start    *Start           `json:"start,omitempty"`
-	// FromImage, FromImageRaw, FromImageMultiDisk and FromTemplate are mutually exclusive.
-	FromImage          *string        `json:"from_image,omitempty"`
-	FromImageRaw       *string        `json:"from_image_raw,omitempty"`
-	FromImageMultiDisk *MultiDiskSpec `json:"from_image_multi_disk,omitempty"`
-	FromTemplate       *FromTemplate  `json:"from_template,omitempty"`
-	Prefetch           *Prefetch      `json:"prefetch,omitempty"`
+	// FromImage / FromImageRaw / FromTemplate are the mutually-exclusive build sources.
+	FromImage    *string       `json:"from_image,omitempty"`
+	FromImageRaw *string       `json:"from_image_raw,omitempty"`
+	FromTemplate *FromTemplate `json:"from_template,omitempty"`
+	Prefetch     *Prefetch     `json:"prefetch,omitempty"`
 }
 
 func V1TemplateVersion() Template {
@@ -155,27 +148,23 @@ func (t Template) BasedOn(
 
 func (t Template) NewVersionTemplate(metadata TemplateMetadata) Template {
 	return Template{
-		Version:            CurrentVersion,
-		Template:           metadata,
-		Context:            t.Context,
-		Start:              t.Start,
-		FromTemplate:       t.FromTemplate,
-		FromImage:          t.FromImage,
-		FromImageRaw:       t.FromImageRaw,
-		FromImageMultiDisk: t.FromImageMultiDisk,
+		Version:      CurrentVersion,
+		Template:     metadata,
+		Context:      t.Context,
+		Start:        t.Start,
+		FromTemplate: t.FromTemplate,
+		FromImage:    t.FromImage,
 	}
 }
 
 func (t Template) SameVersionTemplate(metadata TemplateMetadata) Template {
 	return Template{
-		Version:            t.Version,
-		Template:           metadata,
-		Context:            t.Context,
-		Start:              t.Start,
-		FromTemplate:       t.FromTemplate,
-		FromImage:          t.FromImage,
-		FromImageRaw:       t.FromImageRaw,
-		FromImageMultiDisk: t.FromImageMultiDisk,
+		Version:      t.Version,
+		Template:     metadata,
+		Context:      t.Context,
+		Start:        t.Start,
+		FromTemplate: t.FromTemplate,
+		FromImage:    t.FromImage,
 	}
 }
 

@@ -17,7 +17,6 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 	"github.com/e2b-dev/infra/packages/shared/pkg/fc/models"
 	"github.com/e2b-dev/infra/packages/shared/pkg/id"
-	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
 
@@ -27,7 +26,7 @@ type CreateSandbox struct {
 	timeout        time.Duration
 	sandboxFactory *sandbox.Factory
 
-	directDiskPaths map[string]string
+	rootfsCachePath string
 	ioEngine        *string
 }
 
@@ -39,7 +38,7 @@ const (
 var _ SandboxCreator = (*CreateSandbox)(nil)
 
 type createSandboxOptions struct {
-	directDiskPaths map[string]string
+	rootfsCachePath string
 	ioEngine        *string
 }
 
@@ -53,24 +52,13 @@ func WithIoEngine(ioEngine string) CreateSandboxOption {
 
 func WithRootfsCachePath(rootfsCachePath string) CreateSandboxOption {
 	return func(opts *createSandboxOptions) {
-		opts.directDiskPaths[storage.RootfsName] = rootfsCachePath
-	}
-}
-
-// WithDirectDiskPaths configures local writable files used to establish the
-// first stored generation of each disk. Disks omitted from the map use an NBD
-// copy-on-write overlay.
-func WithDirectDiskPaths(paths map[string]string) CreateSandboxOption {
-	return func(opts *createSandboxOptions) {
-		for name, path := range paths {
-			opts.directDiskPaths[name] = path
-		}
+		opts.rootfsCachePath = rootfsCachePath
 	}
 }
 
 func NewCreateSandbox(config sandbox.Config, sandboxFactory *sandbox.Factory, timeout time.Duration, options ...CreateSandboxOption) *CreateSandbox {
 	opts := &createSandboxOptions{
-		directDiskPaths: make(map[string]string),
+		rootfsCachePath: "",
 		ioEngine:        utils.ToPtr(DefaultIoEngine),
 	}
 	for _, option := range options {
@@ -80,7 +68,7 @@ func NewCreateSandbox(config sandbox.Config, sandboxFactory *sandbox.Factory, ti
 	return &CreateSandbox{
 		config:          config,
 		timeout:         timeout,
-		directDiskPaths: opts.directDiskPaths,
+		rootfsCachePath: opts.rootfsCachePath,
 		sandboxFactory:  sandboxFactory,
 		ioEngine:        opts.ioEngine,
 	}
@@ -120,7 +108,7 @@ func (cs *CreateSandbox) Sandbox(
 		},
 		template,
 		cs.timeout,
-		cs.directDiskPaths[storage.RootfsName],
+		cs.rootfsCachePath,
 		vmm.ProcessOptions{
 			InitScriptPath:      constants.SystemdInitPath,
 			KernelLogs:          env.IsDevelopment(),
