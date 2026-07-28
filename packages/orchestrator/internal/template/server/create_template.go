@@ -10,13 +10,11 @@ import (
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/builderrors"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/buildlogger"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/config"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/oci/auth"
 	templatemanager "github.com/e2b-dev/infra/packages/shared/pkg/grpc/template-manager"
-	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 	"github.com/e2b-dev/infra/packages/shared/pkg/templates"
@@ -27,36 +25,16 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 	defer childSpan.End()
 
 	cfg := templateRequest.GetTemplate()
-	osType, err := vmm.ParseOsType(cfg.GetOsType())
-	if err != nil {
-		return nil, fmt.Errorf("invalid OS/VMM configuration: %w", err)
-	}
-
-	vmmType := vmm.BackendType(cfg.GetVmmType()).OrDefault()
-	if err := vmm.ValidateBackendForOS(osType, vmmType); err != nil {
-		return nil, fmt.Errorf("invalid OS/VMM configuration: %w", err)
-	}
-
-	hugePages := cfg.GetHugePages()
-	if vmmType == vmm.BackendStratoVirt && hugePages {
-		s.buildLogger.Warn(ctx, "HugePages are not supported by StratoVirt; disabling HugePages",
-			logger.WithTemplateID(cfg.GetTemplateID()),
-			logger.WithBuildID(cfg.GetBuildID()),
-		)
-		hugePages = false
-	}
-
 	childSpan.SetAttributes(
 		telemetry.WithTemplateID(cfg.GetTemplateID()),
 		telemetry.WithBuildID(cfg.GetBuildID()),
 		attribute.String("env.kernel.version", cfg.GetKernelVersion()),
 		attribute.String("env.firecracker.version", cfg.GetFirecrackerVersion()),
-		attribute.String("env.vmm.type", string(vmmType)),
-		attribute.String("env.os.type", string(osType)),
+		attribute.String("env.vmm.type", cfg.GetVmmType()),
 		attribute.String("env.start_cmd", cfg.GetStartCommand()),
 		attribute.Int64("env.memory_mb", int64(cfg.GetMemoryMB())),
 		attribute.Int64("env.vcpu_count", int64(cfg.GetVCpuCount())),
-		attribute.Bool("env.huge_pages", hugePages),
+		attribute.Bool("env.huge_pages", cfg.GetHugePages()),
 	)
 
 	metadata := storage.TemplateFiles{
@@ -75,7 +53,7 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 	// TODO: Remove, temporary handling when version is not sent from the API
 	version := templateRequest.GetVersion()
 	if version == "" {
-		if cfg.GetFromImage() == "" && cfg.GetFromImageRaw() == "" && cfg.GetFromTemplate() == nil {
+		if cfg.GetFromImage() == "" && cfg.GetFromTemplate() == nil {
 			version = templates.TemplateV1Version
 		} else {
 			version = templates.TemplateV2BetaVersion
@@ -92,17 +70,15 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 		StartCmd:             cfg.GetStartCommand(),
 		ReadyCmd:             cfg.GetReadyCommand(),
 		DiskSizeMB:           int64(cfg.GetDiskSizeMB()),
-		HugePages:            hugePages,
+		HugePages:            cfg.GetHugePages(),
 		FromImage:            cfg.GetFromImage(),
-		FromImageRaw:         cfg.GetFromImageRaw(),
 		FromTemplate:         cfg.GetFromTemplate(),
 		RegistryAuthProvider: authProvider,
 		Force:                cfg.Force,
 		Steps:                cfg.GetSteps(),
 		KernelVersion:        cfg.GetKernelVersion(),
 		FirecrackerVersion:   cfg.GetFirecrackerVersion(),
-		VMMType:              string(vmmType),
-		OsType:               osType,
+		VMMType:              cfg.GetVmmType(),
 	}
 
 	logs := buildlogger.NewLogEntryLogger()

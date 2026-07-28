@@ -1,7 +1,6 @@
 package config
 
 import (
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/oci/auth"
 	templatemanager "github.com/e2b-dev/infra/packages/shared/pkg/grpc/template-manager"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
@@ -48,10 +47,6 @@ type TemplateConfig struct {
 	// FromImage is the base image to use for building the template.
 	FromImage string
 
-	// FromImageRaw is the URL of a raw (non-OCI) disk image. A non-empty value
-	// registers the disk as the rootfs directly and skips OCI conversion.
-	FromImageRaw string
-
 	// FromTemplate is the base template to use for building the template.
 	FromTemplate *templatemanager.FromTemplateConfig
 
@@ -70,9 +65,6 @@ type TemplateConfig struct {
 	// VMM type to use for building the template.
 	VMMType string
 
-	// OsType is the guest operating system family to use for the build.
-	OsType vmm.OsType
-
 	// Kernel version to use
 	KernelVersion string
 }
@@ -87,17 +79,4 @@ func MemfilePageSize(hugePages bool) int64 {
 
 func (e TemplateConfig) RootfsBlockSize() int64 {
 	return header.RootfsBlockSize
-}
-
-func (e TemplateConfig) UsesRawImage() bool {
-	return e.FromImageRaw != ""
-}
-
-func (e TemplateConfig) GuestOS() vmm.OsType {
-	return e.OsType.OrDefault()
-}
-
-// IsWindows reports whether the template build targets a Windows guest.
-func (e TemplateConfig) IsWindows() bool {
-	return e.GuestOS() == vmm.OsWindows
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	sbxtemplate "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/buildcontext"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/envd"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/sandboxtools"
@@ -103,24 +102,19 @@ func (lb *LayerExecutor) BuildLayer(
 		}
 	}()
 
-	// Update envd binary to the latest version.
+	// Update envd binary to the latest version
 	if cmd.UpdateEnvd {
-		// Skip for Windows sandboxes: updateEnvdInSandbox replaces a Linux envd
-		// binary via `mv`/`chmod` and restarts it with `systemctl`, none of which
-		// apply to a Windows guest.
-		if sbx.Config.VMMConfig.OsType.OrDefault() != vmm.OsWindows {
-			err = lb.updateEnvdInSandbox(ctx, userLogger, sbx)
-			if err != nil {
-				lb.logger.Error(
-					ctx,
-					"error updating envd",
-					logger.WithSandboxID(sbx.Runtime.SandboxID),
-					logger.WithExecutionID(sbx.Runtime.ExecutionID),
-					zap.Error(err),
-				)
+		err = lb.updateEnvdInSandbox(ctx, userLogger, sbx)
+		if err != nil {
+			lb.logger.Error(
+				ctx,
+				"error updating envd",
+				logger.WithSandboxID(sbx.Runtime.SandboxID),
+				logger.WithExecutionID(sbx.Runtime.ExecutionID),
+				zap.Error(err),
+			)
 
-				return metadata.Template{}, fmt.Errorf("update envd: %w", err)
-			}
+			return metadata.Template{}, fmt.Errorf("update envd: %w", err)
 		}
 	}
 
@@ -138,15 +132,12 @@ func (lb *LayerExecutor) BuildLayer(
 		return metadata.Template{}, err
 	}
 
-	// Prepare metadata. Preserve OsType so later resumes use the same command
-	// and boot behavior instead of defaulting to Linux.
+	// Prepare metadata
 	meta = meta.NewVersionTemplate(metadata.TemplateMetadata{
 		BuildID:            cmd.CurrentLayer.Template.BuildID,
 		KernelVersion:      sbx.Config.VMMConfig.KernelVersion,
 		FirecrackerVersion: sbx.Config.VMMConfig.VMMVersion,
 		VMMType:            string(sbx.Config.VMMConfig.Backend()),
-		OsType:             meta.Template.OsType,
-		EnvdVersion:        meta.Template.EnvdVersion,
 	})
 	err = lb.PauseAndUpload(
 		ctx,
