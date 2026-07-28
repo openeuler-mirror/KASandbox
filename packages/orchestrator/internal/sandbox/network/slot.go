@@ -29,21 +29,14 @@ const (
 	vrtMask           = 31                  // 2 usable ips per block (vpeer and veth)
 	vrtAddressPerSlot = 1 << (32 - vrtMask) // vrt addresses per slot (vpeer and veth)
 
-	tapMask          = 30
-	tapInterfaceName = "tap0"
-	// cvdTapName replaces the legacy "tap1" extra tap. The Cuttlefish-style
-	// name aligns with modem_simulator and other ns-local companion
-	// processes that L2-attach to the guest's secondary interface.
-	cvdTapName = "cvd-mtap"
-
-	namespaceIp      = "169.254.0.21"
-	extraNamespaceIp = "192.168.97.2" // cvd-mtap guest side (matches modem_simulator config)
-	tapIp            = "169.254.0.22"
-	extraTapIp       = "192.168.97.1" // cvd-mtap ns-side host IP
-	// cvdTapNetwork is the source CIDR matched by the ns MASQUERADE rule
-	// for traffic leaving the sandbox via the cvd-mtap interface.
-	cvdTapNetwork = "192.168.97.0/30"
-	tapMAC        = "02:FC:00:00:00:05"
+	tapMask               = 30
+	tapInterfaceName      = "tap0"
+	extraTapInterfaceName = "tap1"
+	namespaceIp           = "169.254.0.21"
+	extraNamespaceIp      = "169.254.0.25"
+	tapIp                 = "169.254.0.22"
+	extraTapIp            = "169.254.0.26"
+	tapMAC                = "02:FC:00:00:00:05"
 )
 
 var (
@@ -289,7 +282,7 @@ func (s *Slot) TapName() string {
 	return tapInterfaceName
 }
 
-func (s *Slot) ExtraTapName() string { return cvdTapName }
+func (s *Slot) ExtraTapName() string { return extraTapInterfaceName }
 
 func (s *Slot) ExtraTapIP() net.IP { return s.extraTapIp }
 

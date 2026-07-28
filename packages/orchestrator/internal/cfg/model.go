@@ -27,7 +27,6 @@ type BuilderConfig struct {
 	TemplatesDir               string        `env:"TEMPLATES_DIR,expand"     envDefault:"${ORCHESTRATOR_BASE_PATH}/build-templates"`
 	FirmwareDir                string        `env:"FIRMWARE_DIR"             envDefault:"/uefi-firmware"`
 	AndroidBootloaderPath      string        `env:"ANDROID_BOOTLOADER_PATH"  envDefault:"/android-firmware/bootloader.qemu"`
-	CvdHostPackageDir          string        `env:"CVD_HOST_PACKAGE_DIR"     envDefault:"/cvd-host_package"`
 	DefaultCacheDir            string        `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
 
 	StorageConfig storage.Config
@@ -51,7 +50,6 @@ func makePathsAbsolute(c *BuilderConfig) error {
 		&c.TemplatesDir,
 		&c.FirmwareDir,
 		&c.AndroidBootloaderPath,
-		&c.CvdHostPackageDir,
 	} {
 		dir := *item
 

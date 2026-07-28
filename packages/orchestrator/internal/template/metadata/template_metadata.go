@@ -39,18 +39,6 @@ var blockToAccessType = map[block.AccessType]AccessType{
 	block.Prefetch: AccessPrefetch,
 }
 
-// OSType is the guest operating system family targeted by a template.
-// It is set explicitly by the caller at template creation time and stored in
-// template metadata; it must NOT be inferred from VMMType because a single
-// VMM backend (e.g. Stratovirt) may host multiple OS families.
-type OSType string
-
-const (
-	OSTypeLinux   OSType = "linux"
-	OSTypeAndroid OSType = "android"
-	OSTypeWindows OSType = "windows"
-)
-
 type Version struct {
 	Version any `json:"version"`
 }

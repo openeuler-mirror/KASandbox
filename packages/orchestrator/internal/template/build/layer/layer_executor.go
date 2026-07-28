@@ -84,11 +84,8 @@ func (lb *LayerExecutor) BuildLayer(
 	}
 	defer sbx.Close(ctx)
 
-	// New sandboxes are registered before their initial envd wait. Resumed
-	// sandboxes do not wait in their creator, so register them here.
-	if _, found := lb.sandboxes.Get(sbx.Runtime.SandboxID); !found {
-		lb.sandboxes.Insert(sbx)
-	}
+	// Add to proxy so we can call envd and route traffic from the sandbox
+	lb.sandboxes.Insert(sbx)
 	defer func() {
 		lb.sandboxes.Remove(sbx.Runtime.SandboxID)
 
