@@ -628,17 +628,7 @@ func (f *Factory) ResumeSandbox(
 	zap.L().Sugar().Infof("[ResumeSandbox] create cgroup cost: %.3f ms, traceID=%s", time.Since(tCgroup).Seconds()*1000, traceID)
 
 	t4 := time.Now()
-	metadataVMM := vmm.BackendType(meta.Template.VMMType).OrDefault()
-	metadataOS := vmm.OsType(meta.Template.OsType).OrDefault()
-	if config.VMMConfig.Backend() != metadataVMM || config.VMMConfig.OsType.OrDefault() != metadataOS {
-		return nil, fmt.Errorf(
-			"requested sandbox OS/VMM configuration %q/%q does not match template metadata %q/%q",
-			config.VMMConfig.OsType.OrDefault(),
-			config.VMMConfig.Backend(),
-			metadataOS,
-			metadataVMM,
-		)
-	}
+	config.VMMConfig.Type = vmm.BackendType(meta.Template.VMMType).OrDefault()
 	vmmFactory, vmmErr := newVMMFactory(config.VMMConfig.Backend())
 	if vmmErr != nil {
 		return nil, vmmErr
