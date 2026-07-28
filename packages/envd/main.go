@@ -21,7 +21,6 @@ import (
 	"github.com/e2b-dev/infra/packages/envd/internal/host"
 	"github.com/e2b-dev/infra/packages/envd/internal/logs"
 	"github.com/e2b-dev/infra/packages/envd/internal/permissions"
-	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 	publicport "github.com/e2b-dev/infra/packages/envd/internal/port"
 	"github.com/e2b-dev/infra/packages/envd/internal/services/cgroups"
 	filesystemRpc "github.com/e2b-dev/infra/packages/envd/internal/services/filesystem"
@@ -42,6 +41,9 @@ const (
 	// This is the default user used in the container if not specified otherwise.
 	// It should be always overridden by the user in /init when building the template.
 	defaultUser = "root"
+
+	kilobyte = 1024
+	megabyte = 1024 * kilobyte
 )
 
 var (
@@ -146,17 +148,17 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := os.MkdirAll(platform.E2BRunDir(), 0o755); err != nil {
+	if err := os.MkdirAll(host.E2BRunDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "error creating E2B run directory: %v\n", err)
 	}
 
 	defaults := &execcontext.Defaults{
-		User:    platform.DefaultUser(defaultUser),
+		User:    defaultUser,
 		EnvVars: utils.NewMap[string, string](),
 	}
 	isFCBoolStr := strconv.FormatBool(!isNotFC)
 	defaults.EnvVars.Store("E2B_SANDBOX", isFCBoolStr)
-	if err := os.WriteFile(filepath.Join(platform.E2BRunDir(), ".E2B_SANDBOX"), []byte(isFCBoolStr), 0o444); err != nil {
+	if err := os.WriteFile(filepath.Join(host.E2BRunDir, ".E2B_SANDBOX"), []byte(isFCBoolStr), 0o444); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing sandbox file: %v\n", err)
 	}
 
@@ -255,7 +257,29 @@ func createCgroupManager() (m cgroups.Manager) {
 		return nil
 	}
 
-	mgr, err := platform.NewDefaultCgroupManager(cgroupRoot, metrics.MemTotal)
+	// try to keep 1/8 of the memory free, but no more than 128 MB
+	maxMemoryReserved := uint64(float64(metrics.MemTotal) * .125)
+	maxMemoryReserved = min(maxMemoryReserved, uint64(128)*megabyte)
+
+	opts := []cgroups.Cgroup2ManagerOption{
+		cgroups.WithCgroup2ProcessType(cgroups.ProcessTypePTY, "ptys", map[string]string{
+			"cpu.weight": "200", // gets much preferred cpu access, to help keep these real time
+		}),
+		cgroups.WithCgroup2ProcessType(cgroups.ProcessTypeSocat, "socats", map[string]string{
+			"cpu.weight": "150", // gets slightly preferred cpu access
+			"memory.min": fmt.Sprintf("%d", 5*megabyte),
+			"memory.low": fmt.Sprintf("%d", 8*megabyte),
+		}),
+		cgroups.WithCgroup2ProcessType(cgroups.ProcessTypeUser, "user", map[string]string{
+			"memory.high": fmt.Sprintf("%d", metrics.MemTotal-maxMemoryReserved),
+			"cpu.weight":  "50", // less than envd, and less than core processes that default to 100
+		}),
+	}
+	if cgroupRoot != "" {
+		opts = append(opts, cgroups.WithCgroup2RootSysFSPath(cgroupRoot))
+	}
+
+	mgr, err := cgroups.NewCgroup2Manager(opts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create cgroup2 manager: %v\n", err)
 

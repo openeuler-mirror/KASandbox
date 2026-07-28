@@ -11,7 +11,6 @@ import (
 
 	"github.com/e2b-dev/infra/packages/envd/internal/logs"
 	"github.com/e2b-dev/infra/packages/envd/internal/permissions"
-	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 	rpc "github.com/e2b-dev/infra/packages/envd/internal/services/spec/filesystem"
 	"github.com/e2b-dev/infra/packages/envd/internal/utils"
 )
@@ -45,7 +44,7 @@ func (s Service) watchHandler(ctx context.Context, req *connect.Request[rpc.Watc
 	}
 
 	// Check if path is on a network filesystem mount
-	isNetworkMount, err := platform.IsPathOnNetworkMount(watchPath)
+	isNetworkMount, err := IsPathOnNetworkMount(watchPath)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("error checking mount status: %w", err))
 	}
