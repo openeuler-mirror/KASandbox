@@ -28,7 +28,7 @@ type Algorithm interface {
 	chooseNode(ctx context.Context, nodes []*nodemanager.Node, nodesExcluded map[string]struct{}, requested nodemanager.SandboxResources, buildMachineInfo machineinfo.MachineInfo) (*nodemanager.Node, error)
 }
 
-// logSandboxCreateRequest logs all SandboxCreateRequest fields in a structured format.
+// logSandboxCreateRequest 分层打印 SandboxCreateRequest 的所有字段
 func logSandboxCreateRequest(ctx context.Context, req *orchestrator.SandboxCreateRequest) {
 	if req == nil {
 		logger.L().Info(ctx, "Sandbox create request is nil")
