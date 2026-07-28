@@ -6,9 +6,9 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"slices"
 
 	"github.com/e2b-dev/infra/packages/envd/internal/execcontext"
+	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 )
 
 func expand(path, homedir string) (string, error) {
@@ -51,18 +51,7 @@ func ExpandAndResolve(path string, user *user.User, defaultPath *string) (string
 }
 
 func getSubpaths(path string) (subpaths []string) {
-	for {
-		subpaths = append(subpaths, path)
-
-		path = filepath.Dir(path)
-		if path == "/" {
-			break
-		}
-	}
-
-	slices.Reverse(subpaths)
-
-	return subpaths
+	return platform.GetSubpaths(path)
 }
 
 func EnsureDirs(path string, uid, gid int) error {
@@ -79,7 +68,7 @@ func EnsureDirs(path string, uid, gid int) error {
 				return fmt.Errorf("failed to create directory: %w", err)
 			}
 
-			err = os.Chown(subpath, uid, gid)
+			err = platform.Chown(subpath, uid, gid)
 			if err != nil {
 				return fmt.Errorf("failed to chown directory: %w", err)
 			}

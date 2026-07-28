@@ -6,7 +6,8 @@ import (
 
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/mem"
-	"golang.org/x/sys/unix"
+
+	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 )
 
 type Metrics struct {
@@ -55,7 +56,7 @@ func GetMetrics() (*Metrics, error) {
 		cpuUsedPctRounded = float32(math.Round(cpuUsedPct*100) / 100)
 	}
 
-	diskMetrics, err := diskStats("/")
+	diskMetrics, err := platform.DiskStats("/")
 	if err != nil {
 		return nil, err
 	}
@@ -71,25 +72,4 @@ func GetMetrics() (*Metrics, error) {
 		DiskUsed:       diskMetrics.Total - diskMetrics.Available,
 		DiskTotal:      diskMetrics.Total,
 	}, nil
-}
-
-type diskSpace struct {
-	Total     uint64
-	Available uint64
-}
-
-func diskStats(path string) (diskSpace, error) {
-	var st unix.Statfs_t
-	if err := unix.Statfs(path, &st); err != nil {
-		return diskSpace{}, err
-	}
-
-	block := uint64(st.Bsize)
-
-	// all data blocks
-	total := st.Blocks * block
-	// blocks available
-	available := st.Bavail * block
-
-	return diskSpace{Total: total, Available: available}, nil
 }

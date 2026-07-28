@@ -22,7 +22,7 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
 	"github.com/e2b-dev/infra/packages/shared/pkg/events"
 	featureflags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
@@ -115,6 +115,33 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		return nil, fmt.Errorf("failed to get template snapshot data: %w", err)
 	}
 
+	sandboxConfig := proto.CloneOf(req.GetSandbox())
+	templateMetadata, err := template.Metadata()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read template metadata: %w", err)
+	}
+	templateOS, err := vmm.ParseOsType(templateMetadata.Template.OsType)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "invalid template OS/VMM metadata: %s", err)
+	}
+	templateVMM := vmm.BackendType(templateMetadata.Template.VMMType).OrDefault()
+	if err := vmm.ValidateBackendForOS(templateOS, templateVMM); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "invalid template OS/VMM metadata: %s", err)
+	}
+
+	if templateVMM == vmm.BackendStratoVirt && sandboxConfig.GetHugePages() {
+		logger.L().Warn(ctx, "HugePages are not supported by StratoVirt; disabling HugePages",
+			logger.WithSandboxID(sandboxConfig.GetSandboxId()),
+			logger.WithTemplateID(sandboxConfig.GetTemplateId()),
+		)
+		sandboxConfig.HugePages = false
+	}
+	req.Sandbox = sandboxConfig
+
+	if len(req.GetSandbox().GetVolumeMounts()) > 0 && templateOS != vmm.OsLinux {
+		return nil, status.Errorf(codes.FailedPrecondition, "volume mounts are not supported on %s sandboxes", templateOS)
+	}
+
 	// Clone the network config to avoid modifying the original request
 	network := proto.CloneOf(req.GetSandbox().GetNetwork())
 
@@ -155,9 +182,11 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 				Vars:        req.GetSandbox().GetEnvVars(),
 			},
 
-			FirecrackerConfig: fc.Config{
-				KernelVersion:      req.GetSandbox().GetKernelVersion(),
-				FirecrackerVersion: req.GetSandbox().GetFirecrackerVersion(),
+			VMMConfig: vmm.VMMConfig{
+				Type:          templateVMM,
+				KernelVersion: req.GetSandbox().GetKernelVersion(),
+				VMMVersion:    req.GetSandbox().GetFirecrackerVersion(),
+				OsType:        templateOS,
 			},
 
 			VolumeMounts: createVolumeMountModelsFromAPI(req.GetSandbox().GetVolumeMounts()),
@@ -212,9 +241,16 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		},
 	)
 
+	ports := sbx.HostServicePorts()
 	return &orchestrator.SandboxCreateResponse{
 		ClientId: s.info.ClientId,
 		HostIp:   sbx.Slot.HostIPString(),
+		OsType:   string(templateOS),
+
+		AdbPort:             int32(ports.AdbPort),
+		ModemSimulatorPort:  int32(ports.ModemSimulatorPort),
+		WebrtcHttpPort:      int32(ports.WebrtcHttpPort),
+		WebrtcStreamingPort: int32(ports.WebrtcStreamingPort),
 	}, nil
 }
 
@@ -580,8 +616,10 @@ func (s *Server) snapshotAndCacheSandbox(
 
 	meta = meta.SameVersionTemplate(metadata.TemplateMetadata{
 		BuildID:            buildID,
-		KernelVersion:      sbx.Config.FirecrackerConfig.KernelVersion,
-		FirecrackerVersion: sbx.Config.FirecrackerConfig.FirecrackerVersion,
+		KernelVersion:      sbx.Config.VMMConfig.KernelVersion,
+		FirecrackerVersion: sbx.Config.VMMConfig.VMMVersion,
+		VMMType:            string(sbx.Config.VMMConfig.Backend()),
+		OsType:             meta.Template.OsType,
 	})
 
 	snapshot, err := sbx.Pause(ctx, meta)
@@ -593,11 +631,11 @@ func (s *Server) snapshotAndCacheSandbox(
 		ctx,
 		meta.Template.BuildID,
 		snapshot.MemfileDiffHeader,
-		snapshot.RootfsDiffHeader,
+		snapshot.RootfsDiffHeaders,
 		snapshot.Snapfile,
 		snapshot.Metafile,
 		snapshot.MemfileDiff,
-		snapshot.RootfsDiff,
+		snapshot.RootfsDiffs,
 	)
 	if err != nil {
 		return metadata.Template{}, nil, fmt.Errorf("error adding snapshot to template cache: %w", err)

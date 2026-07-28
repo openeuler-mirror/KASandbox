@@ -18,10 +18,17 @@ func (bb *BaseBuilder) Hash(ctx context.Context, _ phases.LayerResult) (string, 
 	defer span.End()
 
 	var baseSource string
-	if bb.Config.FromTemplate != nil {
+	switch {
+	case bb.Config.FromTemplate != nil:
 		// When building from template, use the base template metadata
 		baseSource = fmt.Sprintf("template:%s", bb.Config.FromTemplate.GetBuildID())
-	} else {
+	case bb.Config.UsesRawImage():
+		// Raw images have no FromImage; key on the raw URL.
+		baseSource = fmt.Sprintf("raw:%s", bb.Config.FromImageRaw)
+	case bb.Config.UsesMultiDisk():
+		d := bb.Config.FromImageMultiDisk
+		baseSource = fmt.Sprintf("multidisk:%s:%s:%s", d.OS, d.Persistent, d.SDCard)
+	default:
 		// Note: When "default" tag is used, the cached version might become ambiguous (not always default)
 		// To update it now, you need to force the rebuild of the template, which will update this layer for all templates
 		// in the team. This is okay for now, as the cache is not shared between teams, but it might need to be changed

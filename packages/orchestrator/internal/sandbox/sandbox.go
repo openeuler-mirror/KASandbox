@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/e2b-dev/infra/packages/clickhouse/pkg/hoststats"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
@@ -23,12 +24,15 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/build"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/cgroup"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/hostservice"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/rootfs"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/stratovirt"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/uffd"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/uffd/prefetch"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
 	featureflags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
@@ -76,7 +80,12 @@ type Config struct {
 
 	Envd EnvdMetadata
 
-	FirecrackerConfig fc.Config
+	VMMConfig vmm.VMMConfig
+
+	// OSType is the guest OS family. Used by CreateSandbox to decide whether
+	// to start host-side services (adb vsock proxy when OSType == OSTypeAndroid).
+	// ResumeSandbox ignores this field and reads OSType from template metadata.
+	// OSType metadata.OSType
 
 	VolumeMounts []VolumeMountConfig
 }
@@ -107,7 +116,7 @@ type RuntimeMetadata struct {
 
 type Resources struct {
 	Slot   *network.Slot
-	rootfs rootfs.Provider
+	rootfs []rootfs.Provider
 	memory uffd.MemoryBackend
 }
 
@@ -147,19 +156,23 @@ type Sandbox struct {
 	*Resources
 	*Metadata
 
-	// LifecycleID is a unique identifier for each Firecracker process.
+	// LifecycleID is a unique identifier for each VMM process.
 	// It is used internally by the orchestrator for map eviction guards
 	// and proxy connection pooling. Unlike ExecutionID (which is stable
 	// across checkpoints and shared with the API), LifecycleID changes
-	// every time a new Firecracker VM is started.
+	// every time a new VMM is started.
 	LifecycleID string
 
 	config  cfg.BuilderConfig
 	files   *storage.SandboxFiles
 	cleanup *Cleanup
 
-	process      *fc.Process
+	process      vmm.Process
 	cgroupHandle *cgroup.CgroupHandle
+	hostSvcMgr   *hostservice.Manager
+	// hostSvcPorts is zero-value for non-Android sandboxes. Propagated to
+	// the API via the gRPC SandboxCreateResponse.
+	hostSvcPorts hostservice.Ports
 
 	Template template.Template
 
@@ -182,6 +195,17 @@ func (s *Sandbox) LoggerMetadata() sbxlogger.SandboxMetadata {
 		TemplateID: s.Runtime.TemplateID,
 		TeamID:     s.Runtime.TeamID,
 	}
+}
+
+// HostServicePorts returns the host-side ports for this sandbox's Android
+// emulator services. Zero-value for non-Android sandboxes.
+func (s *Sandbox) HostServicePorts() hostservice.Ports {
+	return s.hostSvcPorts
+}
+
+type networkSlotRes struct {
+	slot *network.Slot
+	err  error
 }
 
 // GetStartedAt returns the sandbox start time in a thread-safe manner.
@@ -207,6 +231,7 @@ type Factory struct {
 	featureFlags      *featureflags.Client
 	hostStatsDelivery hoststats.Delivery
 	cgroupManager     cgroup.Manager
+	cidPool           *hostservice.CIDPool
 }
 
 func NewFactory(
@@ -224,6 +249,18 @@ func NewFactory(
 		featureFlags:      featureFlags,
 		hostStatsDelivery: hostStatsDelivery,
 		cgroupManager:     cgroupManager,
+		cidPool:           hostservice.NewCIDPool(1000),
+	}
+}
+
+func newVMMFactory(backend vmm.BackendType) (vmm.Factory, error) {
+	switch backend {
+	case vmm.BackendStratoVirt:
+		return stratovirt.NewDefaultFactory(), nil
+	case vmm.BackendFirecracker:
+		return fc.NewDefaultFactory(), nil
+	default:
+		return nil, fmt.Errorf("unsupported VMM type %q", backend)
 	}
 }
 
@@ -235,8 +272,8 @@ func (f *Factory) CreateSandbox(
 	runtime RuntimeMetadata,
 	template template.Template,
 	sandboxTimeout time.Duration,
-	rootfsCachePath string,
-	processOptions fc.ProcessOptions,
+	directDiskPaths map[string]string,
+	processOptions vmm.ProcessOptions,
 	apiConfigToStore *orchestrator.SandboxConfig,
 ) (s *Sandbox, e error) {
 	ctx, span := tracer.Start(ctx, "create sandbox")
@@ -262,39 +299,30 @@ func (f *Factory) CreateSandbox(
 	sandboxFiles := template.Files().NewSandboxFiles(runtime.SandboxID)
 	cleanup.Add(ctx, cleanupFiles(f.config, sandboxFiles))
 
-	rootFS, err := template.Rootfs()
+	disks, err := template.Disks(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get rootfs: %w", err)
+		return nil, fmt.Errorf("failed to get template disks: %w", err)
 	}
 
-	var rootfsProvider rootfs.Provider
-	if rootfsCachePath == "" {
-		rootfsProvider, err = rootfs.NewNBDProvider(
-			ctx,
-			rootFS,
-			sandboxFiles.SandboxCacheRootfsPath(f.config.StorageConfig),
-			f.devicePool,
-			f.featureFlags,
-		)
-	} else {
-		rootfsProvider, err = rootfs.NewDirectProvider(
-			ctx,
-			rootFS,
-			// Populate direct cache directly from the source file
-			// This is needed for marking all blocks as dirty and being able to read them directly
-			rootfsCachePath,
-		)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to create rootfs overlay: %w", err)
-	}
-	cleanup.Add(ctx, rootfsProvider.Close)
-	go func() {
-		runErr := rootfsProvider.Start(execCtx)
-		if runErr != nil {
-			logger.L().Error(ctx, "rootfs overlay error", zap.Error(runErr))
+	rootfsProviders := make([]rootfs.Provider, 0, len(disks))
+	for _, disk := range disks {
+		var provider rootfs.Provider
+		if directPath := directDiskPaths[disk.Name]; directPath != "" {
+			provider, err = rootfs.NewDirectProvider(ctx, disk.Device, directPath)
+		} else {
+			provider, err = rootfs.NewNBDProvider(ctx, disk.Device, sandboxFiles.SandboxCacheDiskPath(f.config.StorageConfig, disk.Name), f.devicePool, f.featureFlags)
 		}
-	}()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create %s disk provider: %w", disk.Name, err)
+		}
+		rootfsProviders = append(rootfsProviders, provider)
+		cleanup.Add(ctx, provider.Close)
+		go func(name string, p rootfs.Provider) {
+			if runErr := p.Start(execCtx); runErr != nil {
+				logger.L().Error(ctx, "disk overlay error", zap.String("disk", name), zap.Error(runErr))
+			}
+		}(disk.Name, provider)
+	}
 
 	memfile, err := template.Memfile(ctx)
 	if err != nil {
@@ -312,23 +340,72 @@ func (f *Factory) CreateSandbox(
 		return nil, err
 	}
 
-	fcHandle, err := fc.NewProcess(
+	vmmFactory, err := newVMMFactory(config.VMMConfig.Backend())
+	if err != nil {
+		return nil, err
+	}
+
+	vmmHandle, err := vmmFactory.NewProcess(
 		ctx,
 		execCtx,
 		f.config,
 		ips,
 		sandboxFiles,
-		config.FirecrackerConfig,
-		rootfsProvider,
-		fc.ConstantRootfsPaths,
+		config.VMMConfig,
+		rootfsProviders,
+		vmm.ConstantRootfsPaths,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to init FC: %w", err)
+		return nil, fmt.Errorf("failed to init VMM: %w", err)
 	}
 
-	telemetry.ReportEvent(ctx, "created fc client")
+	telemetry.ReportEvent(ctx, "created vmm client")
 
-	err = fcHandle.Create(
+	// Allocate CID and build Android host services BEFORE the VMM boots so
+	// the guest sees the right vsock CID. All four services share the
+	// per-sandbox CID.
+	var hostSvcMgr *hostservice.Manager
+	var hostSvcPorts hostservice.Ports
+	if metadata.OSType(config.VMMConfig.OsType) == metadata.OSTypeAndroid {
+		allocatedCID, cidErr := f.cidPool.Allocate(ctx)
+		if cidErr != nil {
+			return nil, fmt.Errorf("allocate vsock CID: %w", cidErr)
+		}
+		cleanup.Add(ctx, func(context.Context) error {
+			f.cidPool.Release(allocatedCID)
+			return nil
+		})
+
+		if svProc, ok := vmmHandle.(*stratovirt.Process); ok {
+			svProc.SetVsockConfig(allocatedCID)
+		}
+
+		var services []hostservice.Service
+		services, hostSvcPorts, err = buildAndroidHostServices(ctx, f.config, allocatedCID, runtime.SandboxID, sandboxFiles.SandboxHostDir())
+		if err != nil {
+			return nil, fmt.Errorf("build android host services: %w", err)
+		}
+		hostSvcMgr = hostservice.NewManager(services)
+
+		logger.L().Info(ctx, "android host services configured",
+			zap.Int64("cid", allocatedCID),
+			zap.Int("adb_port", hostSvcPorts.AdbPort),
+			zap.Int("modem_simulator_port", hostSvcPorts.ModemSimulatorPort),
+			zap.Int("webrtc_http_port", hostSvcPorts.WebrtcHttpPort),
+			zap.Int("webrtc_streaming_port", hostSvcPorts.WebrtcStreamingPort),
+			zap.String("sandbox_id", runtime.SandboxID),
+		)
+	}
+	if hostSvcMgr != nil {
+		if err := hostSvcMgr.StartAll(ctx); err != nil {
+			return nil, fmt.Errorf("failed to start android host services: %w", err)
+		}
+		cleanup.AddPriority(ctx, func(ctx context.Context) error {
+			return hostSvcMgr.StopAll(ctx)
+		})
+	}
+
+	err = vmmHandle.Create(
 		ctx,
 		sbxlogger.SandboxMetadata{
 			SandboxID:  runtime.SandboxID,
@@ -341,13 +418,20 @@ func (f *Factory) CreateSandbox(
 		processOptions,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create FC: %w", err)
+		return nil, fmt.Errorf("failed to create VMM: %w", err)
 	}
-	telemetry.ReportEvent(ctx, "created fc process")
+	telemetry.ReportEvent(ctx, "created vmm process")
+
+	if hostSvcMgr != nil && hostSvcPorts.AdbPort > 0 {
+		proxyAddr := fmt.Sprintf("127.0.0.1:%d", hostSvcPorts.AdbPort)
+		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, 30*time.Second); err != nil {
+			return nil, fmt.Errorf("vsock proxy not ready: %w", err)
+		}
+	}
 
 	resources := &Resources{
 		Slot:   ips,
-		rootfs: rootfsProvider,
+		rootfs: rootfsProviders,
 		memory: uffd.NewNoopMemory(memfileSize, memfile.BlockSize()),
 	}
 
@@ -372,7 +456,10 @@ func (f *Factory) CreateSandbox(
 		Template: template,
 		config:   f.config,
 		files:    sandboxFiles,
-		process:  fcHandle,
+		process:  vmmHandle,
+
+		hostSvcMgr:   hostSvcMgr,
+		hostSvcPorts: hostSvcPorts,
 
 		cleanup: cleanup,
 
@@ -393,10 +480,10 @@ func (f *Factory) CreateSandbox(
 		defer span.End()
 
 		// If the process exists, stop the sandbox properly
-		fcErr := fcHandle.Exit.Wait()
+		vmmErr := vmmHandle.Exit().Wait()
 		err := sbx.Stop(ctx)
 
-		exit.SetError(errors.Join(err, fcErr))
+		exit.SetError(errors.Join(err, vmmErr))
 	}()
 
 	return sbx, nil
@@ -506,42 +593,35 @@ func (f *Factory) ResumeSandbox(
 		}
 	}()
 
-	// Slot initialization
-	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork)
+	disks, err := t.Disks(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get template disks: %w", err)
+	}
 
-	// Rootfs initialization
-	overlayPromise := utils.NewPromise(func() (rootfs.Provider, error) {
-		readonlyRootfs, err := t.Rootfs()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get rootfs: %w", err)
-		}
-
-		telemetry.ReportEvent(ctx, "got template rootfs")
-
-		overlay, err := rootfs.NewNBDProvider(
+	rootfsProviders := make([]rootfs.Provider, 0, len(disks))
+	for _, disk := range disks {
+		provider, providerErr := rootfs.NewNBDProvider(
 			ctx,
-			readonlyRootfs,
-			sandboxFiles.SandboxCacheRootfsPath(f.config.StorageConfig),
+			disk.Device,
+			sandboxFiles.SandboxCacheDiskPath(f.config.StorageConfig, disk.Name),
 			f.devicePool,
 			f.featureFlags,
 		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create rootfs overlay: %w", err)
+		if providerErr != nil {
+			return nil, fmt.Errorf("failed to create %s disk overlay: %w", disk.Name, providerErr)
 		}
-
-		cleanup.Add(ctx, overlay.Close)
-
-		telemetry.ReportEvent(ctx, "created rootfs overlay")
-
-		go func() {
-			runErr := overlay.Start(execCtx)
-			if runErr != nil {
-				logger.L().Error(ctx, "rootfs overlay error", zap.Error(runErr))
+		rootfsProviders = append(rootfsProviders, provider)
+		cleanup.Add(ctx, provider.Close)
+		go func(name string, p rootfs.Provider) {
+			if runErr := p.Start(execCtx); runErr != nil {
+				logger.L().Error(ctx, "disk overlay error", zap.String("disk", name), zap.Error(runErr))
 			}
-		}()
+		}(disk.Name, provider)
+	}
+	telemetry.ReportEvent(ctx, "created disk overlays")
 
-		return overlay, nil
-	})
+	// Slot initialization
+	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork)
 
 	// Memory initialization
 	memoryPromise := utils.NewPromise(func() (struct{}, error) {
@@ -575,13 +655,6 @@ func (f *Factory) ResumeSandbox(
 
 	telemetry.ReportEvent(ctx, "got network slot")
 
-	tOverlay := time.Now()
-	overlay, err := overlayPromise.Wait(ctx)
-	if err != nil {
-		return nil, err
-	}
-	zap.L().Sugar().Infof("[ResumeSandbox] wait rootfs overlay cost: %.3f ms, traceID=%s", time.Since(tOverlay).Seconds()*1000, traceID)
-
 	tMemory := time.Now()
 	_, err = memoryPromise.Wait(ctx)
 	if err != nil {
@@ -610,27 +683,85 @@ func (f *Factory) ResumeSandbox(
 	zap.L().Sugar().Infof("[ResumeSandbox] create cgroup cost: %.3f ms, traceID=%s", time.Since(tCgroup).Seconds()*1000, traceID)
 
 	t4 := time.Now()
-	fcHandle, fcErr := fc.NewProcess(
+	metadataVMM := vmm.BackendType(meta.Template.VMMType).OrDefault()
+	metadataOS, err := vmm.ParseOsType(meta.Template.OsType)
+	if err != nil {
+		return nil, fmt.Errorf("invalid template OS/VMM metadata: %w", err)
+	}
+	if err := vmm.ValidateBackendForOS(metadataOS, metadataVMM); err != nil {
+		return nil, fmt.Errorf("invalid template OS/VMM metadata: %w", err)
+	}
+	config.VMMConfig.Type = metadataVMM
+	config.VMMConfig.OsType = metadataOS
+	vmmFactory, vmmErr := newVMMFactory(config.VMMConfig.Backend())
+	if vmmErr != nil {
+		return nil, vmmErr
+	}
+
+	vmmHandle, vmmErr := vmmFactory.NewProcess(
 		ctx,
 		execCtx,
 		f.config,
 		ips,
 		sandboxFiles,
-		// The versions need to base exactly the same as the paused sandbox template because of the FC compatibility.
-		config.FirecrackerConfig,
-		overlay,
-		fc.RootfsPaths{
+		config.VMMConfig,
+		rootfsProviders,
+		vmm.RootfsPaths{
 			TemplateVersion: meta.Version,
 			TemplateID:      config.BaseTemplateID,
 			BuildID:         rootfs.Header().Metadata.BaseBuildId.String(),
 		},
 	)
-	if fcErr != nil {
-		return nil, fmt.Errorf("failed to create FC: %w", fcErr)
+
+	if vmmErr != nil {
+		return nil, fmt.Errorf("failed to create VMM: %w", vmmErr)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.NewProcess cost: %.3f ms, traceID=%s", time.Since(t4).Seconds()*1000, traceID)
+
+	zap.L().Sugar().Infof("[ResumeSandbox] vmmFactory.NewProcess cost: %.3f ms, traceID=%s", time.Since(t4).Seconds()*1000, traceID)
+	var hostSvcMgr *hostservice.Manager
+	var hostSvcPorts hostservice.Ports
+	if metadata.OSType(meta.Template.OsType) == metadata.OSTypeAndroid {
+		allocatedCID, err := f.cidPool.Allocate(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("allocate vsock CID: %w", err)
+		}
+		cleanup.Add(ctx, func(context.Context) error {
+			f.cidPool.Release(allocatedCID)
+			return nil
+		})
+
+		if svProc, ok := vmmHandle.(*stratovirt.Process); ok {
+			svProc.SetVsockConfig(allocatedCID)
+		}
+
+		var services []hostservice.Service
+		services, hostSvcPorts, err = buildAndroidHostServices(ctx, f.config, allocatedCID, runtime.SandboxID, sandboxFiles.SandboxHostDir())
+		if err != nil {
+			return nil, fmt.Errorf("build android host services: %w", err)
+		}
+		hostSvcMgr = hostservice.NewManager(services)
+
+		logger.L().Info(ctx, "android host services configured",
+			zap.Int64("cid", allocatedCID),
+			zap.Int("adb_port", hostSvcPorts.AdbPort),
+			zap.Int("modem_simulator_port", hostSvcPorts.ModemSimulatorPort),
+			zap.Int("webrtc_http_port", hostSvcPorts.WebrtcHttpPort),
+			zap.Int("webrtc_streaming_port", hostSvcPorts.WebrtcStreamingPort),
+			zap.String("sandbox_id", runtime.SandboxID),
+		)
+	}
+	if hostSvcMgr != nil {
+		if err := hostSvcMgr.StartAll(ctx); err != nil {
+			return nil, fmt.Errorf("failed to start android host services: %w", err)
+		}
+		cleanup.AddPriority(ctx, func(ctx context.Context) error {
+			return hostSvcMgr.StopAll(ctx)
+		})
+	}
+
+	// ==================== 6. 恢复 VM ====================
 	phaseStart := time.Now()
-	telemetry.ReportEvent(ctx, "created FC process")
+	telemetry.ReportEvent(ctx, "created VMM process")
 
 	// todo: check if kernel, firecracker, and envd versions exist
 	tSnapfile := time.Now()
@@ -644,7 +775,7 @@ func (f *Factory) ResumeSandbox(
 	telemetry.ReportEvent(ctx, "got snapfile")
 
 	tUffd := time.Now()
-	fcUffd, err := uffdPromise.Wait(ctx)
+	vmmUffd, err := uffdPromise.Wait(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get uffd: %w", err)
 	}
@@ -653,23 +784,36 @@ func (f *Factory) ResumeSandbox(
 	uffdStartCtx, cancelUffdStartCtx := context.WithCancelCause(ctx)
 	defer cancelUffdStartCtx(fmt.Errorf("uffd finished starting"))
 	go func() {
-		uffdWaitErr := fcUffd.Exit().Wait()
+		uffdWaitErr := vmmUffd.Exit().Wait()
 
 		cancelUffdStartCtx(fmt.Errorf("uffd process exited: %w", errors.Join(uffdWaitErr, context.Cause(uffdStartCtx))))
 	}()
-	fcStartErr := fcHandle.Resume(
+	sandboxMetadata := sbxlogger.SandboxMetadata{
+		SandboxID:  runtime.SandboxID,
+		TemplateID: runtime.TemplateID,
+		TeamID:     runtime.TeamID,
+	}
+
+	resumeCgroupFD := cgroupFD
+	if metadata.OSType(meta.Template.OsType) == metadata.OSTypeAndroid {
+		// CLONE_INTO_CGROUP requires a cgroup v2 directory FD. The deployment
+		// runs cgroup v1, so attach accounting after launch rather than making
+		// fork/exec fail before StratoVirt starts.
+		resumeCgroupFD = cgroup.NoCgroupFD
+	}
+
+	vmmStartErr := vmmHandle.Resume(
 		uffdStartCtx,
-		sbxlogger.SandboxMetadata{
-			SandboxID:  runtime.SandboxID,
-			TemplateID: runtime.TemplateID,
-			TeamID:     runtime.TeamID,
-		},
+		sandboxMetadata,
 		fcUffdPath,
 		snapfile,
-		fcUffd.Ready(),
+		vmmUffd.Ready(),
 		config.Envd.AccessToken,
-		cgroupFD,
-		span.SpanContext().TraceID().String(),
+		config.RamMB,
+		config.Vcpu,
+		config.HugePages,
+		resumeCgroupFD,
+		traceID,
 	)
 
 	// Release the cgroup directory FD — the kernel already used it during clone
@@ -681,17 +825,27 @@ func (f *Factory) ResumeSandbox(
 		}
 	}
 
-	if fcStartErr != nil {
-		return nil, fmt.Errorf("failed to start FC: %w", fcStartErr)
+	if vmmStartErr != nil {
+		return nil, fmt.Errorf("failed to start VMM: %w", vmmStartErr)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] resume VM cost: %d ms, traceID=%s", time.Since(phaseStart).Milliseconds(), traceID)
+	if hostSvcMgr != nil && hostSvcPorts.AdbPort > 0 {
+		proxyAddr := fmt.Sprintf("127.0.0.1:%d", hostSvcPorts.AdbPort)
+		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, 30*time.Second); err != nil {
+			return nil, fmt.Errorf("vsock proxy not ready (guest adbd unreachable): %w", err)
+		}
+		logger.L().Info(ctx, "android host services ready",
+			zap.String("sandbox_id", runtime.SandboxID),
+			zap.String("proxy_addr", proxyAddr),
+		)
+	}
 
-	telemetry.ReportEvent(ctx, "initialized FC")
+	zap.L().Sugar().Infof("[ResumeSandbox] resume VM cost: %d ms, traceID=%s", time.Since(phaseStart).Milliseconds(), traceID)
+	telemetry.ReportEvent(ctx, "initialized VMM")
 
 	resources := &Resources{
 		Slot:   ips,
-		rootfs: overlay,
-		memory: fcUffd,
+		rootfs: rootfsProviders,
+		memory: vmmUffd,
 	}
 
 	metadata := &Metadata{
@@ -716,7 +870,10 @@ func (f *Factory) ResumeSandbox(
 		Template: t,
 		config:   f.config,
 		files:    sandboxFiles,
-		process:  fcHandle,
+		process:  vmmHandle,
+
+		hostSvcMgr:   hostSvcMgr,
+		hostSvcPorts: hostSvcPorts,
 
 		cleanup: cleanup,
 
@@ -750,7 +907,7 @@ func (f *Factory) ResumeSandbox(
 
 	if f.featureFlags.BoolFlag(execCtx, featureflags.HostStatsEnabled) {
 		samplingInterval := time.Duration(f.featureFlags.IntFlag(execCtx, featureflags.HostStatsSamplingInterval)) * time.Millisecond
-		initializeHostStatsCollector(execCtx, sbx, fcHandle, meta.Template.BuildID, runtime, config, f.hostStatsDelivery, samplingInterval)
+		initializeHostStatsCollector(execCtx, sbx, vmmHandle, meta.Template.BuildID, runtime, config, f.hostStatsDelivery, samplingInterval)
 	}
 
 	go sbx.Checks.Start(execCtx)
@@ -761,17 +918,17 @@ func (f *Factory) ResumeSandbox(
 		ctx, span := tracer.Start(execCtx, "sandbox-exit-wait")
 		defer span.End()
 
-		// Wait for either uffd or fc process to exit
+		// Wait for either uffd or VMM process to exit
 		select {
-		case <-fcUffd.Exit().Done():
-		case <-fcHandle.Exit.Done():
+		case <-vmmUffd.Exit().Done():
+		case <-vmmHandle.Exit().Done():
 		}
 
 		err := sbx.Stop(ctx)
 
-		uffdWaitErr := fcUffd.Exit().Wait()
-		fcErr := fcHandle.Exit.Wait()
-		exit.SetError(errors.Join(err, fcErr, uffdWaitErr))
+		uffdWaitErr := vmmUffd.Exit().Wait()
+		vmmErr := vmmHandle.Exit().Wait()
+		exit.SetError(errors.Join(err, vmmErr, uffdWaitErr))
 	}()
 
 	return sbx, nil
@@ -826,14 +983,20 @@ func (s *Sandbox) doStop(ctx context.Context) error {
 	// Stop the health checks before stopping the sandbox
 	s.Checks.Stop()
 
-	fcStopErr := s.process.Stop(ctx)
-	if fcStopErr != nil {
-		errs = append(errs, fmt.Errorf("failed to stop FC: %w", fcStopErr))
+	vmmStopErr := s.process.Stop(ctx)
+	if vmmStopErr != nil {
+		errs = append(errs, fmt.Errorf("failed to stop VMM: %w", vmmStopErr))
 	}
 
 	// The process exited, we can continue with the rest of the cleanup.
 	// We could use select with ctx.Done() to wait for cancellation, but if the process is not exited the whole cleanup will be in a bad state and will result in unexpected behavior.
-	<-s.process.Exit.Done()
+	<-s.process.Exit().Done()
+
+	if s.hostSvcMgr != nil {
+		if hostSvcErr := s.hostSvcMgr.StopAll(ctx); hostSvcErr != nil {
+			errs = append(errs, fmt.Errorf("failed to stop host services: %w", hostSvcErr))
+		}
+	}
 
 	// Remove cgroup after process has exited
 	if s.cgroupHandle != nil {
@@ -858,6 +1021,14 @@ func (s *Sandbox) Shutdown(ctx context.Context) error {
 
 	// Stop the health check before pausing the VM
 	s.Checks.Stop()
+
+	// Suspend host-side services (e.g. adb vsock proxy) before pausing the
+	// VMM so their connection state is consistent with the paused guest.
+	if s.hostSvcMgr != nil {
+		if err := s.hostSvcMgr.SuspendAll(); err != nil {
+			return fmt.Errorf("failed to suspend host services: %w", err)
+		}
+	}
 
 	if err := s.process.Pause(ctx); err != nil {
 		return fmt.Errorf("failed to pause VM: %w", err)
@@ -931,6 +1102,23 @@ func (s *Sandbox) Pause(
 	// Stop the health check before pausing the VM
 	s.Checks.Stop()
 
+	// Android host processes hold live vsock connections. Freezing those
+	// processes would persist host socket state that cannot be recreated by a
+	// new vhost-vsock backend on snapshot restore, leaving the restored guest's
+	// vsock device unusable. Template snapshots are terminal for this Sandbox,
+	// so fully stop the per-sandbox processes before pausing Android. Shared
+	// config/modem listeners remain host-wide and are not owned by this manager.
+	// Other guest types retain the existing suspend behavior.
+	if s.hostSvcMgr != nil {
+		if s.Config.VMMConfig.OsType.OrDefault() == vmm.OsAndroid {
+			if err := s.hostSvcMgr.StopAll(ctx); err != nil {
+				return nil, fmt.Errorf("failed to stop Android host services before snapshot: %w", err)
+			}
+		} else if err := s.hostSvcMgr.SuspendAll(); err != nil {
+			return nil, fmt.Errorf("failed to suspend host services: %w", err)
+		}
+	}
+
 	if err := s.process.Pause(ctx); err != nil {
 		return nil, fmt.Errorf("failed to pause VM: %w", err)
 	}
@@ -950,9 +1138,9 @@ func (s *Sandbox) Pause(
 		return nil, fmt.Errorf("failed to get original memfile: %w", err)
 	}
 
-	originalRootfs, err := s.Template.Rootfs()
+	originalDisks, err := s.Template.Disks(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get original rootfs: %w", err)
+		return nil, fmt.Errorf("failed to get original disks: %w", err)
 	}
 
 	memfileDiffMetadata, err := s.Resources.memory.DiffMetadata(ctx, s.process)
@@ -974,20 +1162,50 @@ func (s *Sandbox) Pause(
 	}
 	cleanup.AddNoContext(ctx, memfileDiff.Close)
 
-	rootfsDiff, rootfsDiffHeader, err := pauseProcessRootfs(
-		ctx,
-		buildID,
-		originalRootfs.Header(),
-		&RootfsDiffCreator{
-			rootfs:    s.rootfs,
-			closeHook: s.Close,
-		},
-		s.config.DefaultCacheDir,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("error while post processing: %w", err)
+	rootfsDiffs := make(map[build.DiffType]build.Diff, len(originalDisks))
+	rootfsDiffHeaders := make(map[build.DiffType]*header.Header, len(originalDisks))
+	var resultMu sync.Mutex
+	barrier := newDiskCloseBarrier(len(originalDisks), func() error {
+		return s.Close(ctx)
+	})
+	closeHook := func(closeCtx context.Context) error {
+		barrier.Arrive()
+		select {
+		case <-barrier.Done():
+			return barrier.Err()
+		case <-closeCtx.Done():
+			return closeCtx.Err()
+		}
 	}
-	cleanup.AddNoContext(ctx, rootfsDiff.Close)
+	group, groupCtx := errgroup.WithContext(ctx)
+	for i, disk := range originalDisks {
+		i, disk := i, disk
+		group.Go(func() error {
+			rootfsDiff, rootfsDiffHeader, err := pauseProcessRootfs(groupCtx, buildID, disk.DiffType, disk.Device.Header(), &RootfsDiffCreator{rootfs: s.rootfs[i], closeHook: closeHook}, s.config.DefaultCacheDir)
+			if err != nil {
+				barrier.Abort()
+				return fmt.Errorf("post processing %s disk: %w", disk.Name, err)
+			}
+			resultMu.Lock()
+			rootfsDiffs[disk.DiffType] = rootfsDiff
+			rootfsDiffHeaders[disk.DiffType] = rootfsDiffHeader
+			resultMu.Unlock()
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		barrier.Abort()
+		resultMu.Lock()
+		for _, rootfsDiff := range rootfsDiffs {
+			err = errors.Join(err, rootfsDiff.Close())
+		}
+		resultMu.Unlock()
+		err = errors.Join(err, barrier.Err())
+		return nil, fmt.Errorf("error while post processing disks: %w", err)
+	}
+	for _, rootfsDiff := range rootfsDiffs {
+		cleanup.AddNoContext(ctx, rootfsDiff.Close)
+	}
 
 	metadataFileLink := template.NewLocalFileLink(snapshotTemplateFiles.CacheMetadataPath())
 	cleanup.AddNoContext(ctx, metadataFileLink.Close)
@@ -1002,8 +1220,8 @@ func (s *Sandbox) Pause(
 		Metafile:          metadataFileLink,
 		MemfileDiff:       memfileDiff,
 		MemfileDiffHeader: memfileDiffHeader,
-		RootfsDiff:        rootfsDiff,
-		RootfsDiffHeader:  rootfsDiffHeader,
+		RootfsDiffs:       rootfsDiffs,
+		RootfsDiffHeaders: rootfsDiffHeaders,
 
 		cleanup: cleanup,
 	}, nil
@@ -1019,13 +1237,66 @@ func (s *Sandbox) MemoryPrefetchData(ctx context.Context) (block.PrefetchData, e
 	return prefetchData, nil
 }
 
+type diskCloseBarrier struct {
+	total int
+
+	mu      sync.Mutex
+	arrived int
+	err     error
+
+	once    sync.Once
+	done    chan struct{}
+	closeFn func() error
+}
+
+func newDiskCloseBarrier(total int, closeFn func() error) *diskCloseBarrier {
+	return &diskCloseBarrier{total: total, done: make(chan struct{}), closeFn: closeFn}
+}
+
+func (b *diskCloseBarrier) Arrive() {
+	b.mu.Lock()
+	b.arrived++
+	ready := b.arrived == b.total
+	b.mu.Unlock()
+
+	if ready {
+		b.close()
+	}
+}
+
+func (b *diskCloseBarrier) Abort() {
+	b.close()
+}
+
+func (b *diskCloseBarrier) close() {
+	b.once.Do(func() {
+		err := b.closeFn()
+		b.mu.Lock()
+		b.err = err
+		b.mu.Unlock()
+		close(b.done)
+	})
+}
+
+func (b *diskCloseBarrier) Done() <-chan struct{} {
+	return b.done
+}
+
+func (b *diskCloseBarrier) Err() error {
+	<-b.done
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.err
+}
+
 func pauseProcessMemory(
 	ctx context.Context,
 	buildID uuid.UUID,
 	originalHeader *header.Header,
 	diffMetadata *header.DiffMetadata,
 	cacheDir string,
-	fc *fc.Process,
+	process vmm.Process,
 ) (d build.Diff, h *header.Header, e error) {
 	ctx, span := tracer.Start(ctx, "process-memory")
 	defer span.End()
@@ -1037,7 +1308,7 @@ func pauseProcessMemory(
 
 	memfileDiffPath := build.GenerateDiffCachePath(cacheDir, buildID.String(), build.Memfile)
 
-	cache, err := fc.ExportMemory(
+	cache, err := process.ExportMemory(
 		ctx,
 		diffMetadata.Dirty,
 		memfileDiffPath,
@@ -1062,6 +1333,7 @@ func pauseProcessMemory(
 func pauseProcessRootfs(
 	ctx context.Context,
 	buildId uuid.UUID,
+	diffType build.DiffType,
 	originalHeader *header.Header,
 	diffCreator DiffCreator,
 	cacheDir string,
@@ -1069,7 +1341,7 @@ func pauseProcessRootfs(
 	ctx, span := tracer.Start(ctx, "process-rootfs")
 	defer span.End()
 
-	rootfsDiffFile, err := build.NewLocalDiffFile(cacheDir, buildId.String(), build.Rootfs)
+	rootfsDiffFile, err := build.NewLocalDiffFile(cacheDir, buildId.String(), diffType)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create rootfs diff: %w", err)
 	}
@@ -1103,7 +1375,7 @@ func pauseProcessRootfs(
 // the provided Cleanup so the cgroup is removed on error paths.
 //
 // Returns the CgroupHandle and the cgroup directory FD to pass to the
-// Firecracker process. If cgroup accounting is disabled, returns (nil, cgroup.NoCgroupFD).
+// VMM process. If cgroup accounting is disabled, returns (nil, cgroup.NoCgroupFD).
 func createCgroup(ctx context.Context, cgroupManager cgroup.Manager, sandboxID string, cleanup *Cleanup) (*cgroup.CgroupHandle, int) {
 	ctx, span := tracer.Start(ctx, "sandbox-create-cgroup", trace.WithAttributes(
 		telemetry.WithSandboxID(sandboxID),
@@ -1229,7 +1501,7 @@ func (s *Sandbox) WaitForExit(ctx context.Context) error {
 			return nil
 		}
 
-		return fmt.Errorf("fc process exited prematurely: %w", err)
+		return fmt.Errorf("vmm process exited prematurely: %w", err)
 	}
 }
 
@@ -1263,10 +1535,10 @@ func (s *Sandbox) WaitForEnvd(
 			cancel(fmt.Errorf("syncing took too long"))
 		case <-ctx.Done():
 			return
-		case <-s.process.Exit.Done():
-			err := s.process.Exit.Error()
+		case <-s.process.Exit().Done():
+			err := s.process.Exit().Error()
 
-			cancel(fmt.Errorf("fc process exited prematurely: %w", err))
+			cancel(fmt.Errorf("vmm process exited prematurely: %w", err))
 		}
 	}()
 

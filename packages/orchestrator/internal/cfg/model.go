@@ -18,14 +18,17 @@ type BuilderConfig struct {
 	EnvdTimeout                time.Duration `env:"ENVD_TIMEOUT"             envDefault:"10s"`
 	FirecrackerNetnsExecHelper string        `env:"E2B_FC_NETNS_EXEC_HELPER" envDefault:"/opt/e2b-infra/bin/fc-netns-exec"`
 	FirecrackerVersionsDir     string        `env:"FIRECRACKER_VERSIONS_DIR" envDefault:"/fc-versions"`
+	StratoVirtVersionsDir      string        `env:"STRATOVIRT_VERSIONS_DIR"  envDefault:"/stratovirt-versions"`
 	HostEnvdPath               string        `env:"HOST_ENVD_PATH"           envDefault:"/fc-envd/envd"`
 	HostKernelsDir             string        `env:"HOST_KERNELS_DIR"         envDefault:"/fc-kernels"`
 	OrchestratorBaseDir        string        `env:"ORCHESTRATOR_BASE_PATH"   envDefault:"/orchestrator"`
 	SandboxDir                 string        `env:"SANDBOX_DIR"              envDefault:"/fc-vm"`
 	SharedChunkCacheDir        string        `env:"SHARED_CHUNK_CACHE_PATH"`
 	TemplatesDir               string        `env:"TEMPLATES_DIR,expand"     envDefault:"${ORCHESTRATOR_BASE_PATH}/build-templates"`
-
-	DefaultCacheDir string `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
+	FirmwareDir                string        `env:"FIRMWARE_DIR"             envDefault:"/uefi-firmware"`
+	AndroidBootloaderPath      string        `env:"ANDROID_BOOTLOADER_PATH"  envDefault:"/android-firmware/bootloader.qemu"`
+	CvdHostPackageDir          string        `env:"CVD_HOST_PACKAGE_DIR"     envDefault:"/cvd-host_package"`
+	DefaultCacheDir            string        `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
 
 	StorageConfig storage.Config
 	NetworkConfig network.Config
@@ -36,6 +39,7 @@ func makePathsAbsolute(c *BuilderConfig) error {
 		&c.DefaultCacheDir,
 		&c.FirecrackerNetnsExecHelper,
 		&c.FirecrackerVersionsDir,
+		&c.StratoVirtVersionsDir,
 		&c.HostEnvdPath,
 		&c.HostKernelsDir,
 		&c.OrchestratorBaseDir,
@@ -45,6 +49,9 @@ func makePathsAbsolute(c *BuilderConfig) error {
 		&c.StorageConfig.SnapshotCacheDir,
 		&c.StorageConfig.TemplateCacheDir,
 		&c.TemplatesDir,
+		&c.FirmwareDir,
+		&c.AndroidBootloaderPath,
+		&c.CvdHostPackageDir,
 	} {
 		dir := *item
 

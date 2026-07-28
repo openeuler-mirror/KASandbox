@@ -15,7 +15,7 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/buildcontext"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/layer"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/metrics"
@@ -111,6 +111,9 @@ func (ppb *PostProcessingBuilder) Layer(
 		BuildID:            ppb.Template.BuildID,
 		KernelVersion:      ppb.Config.KernelVersion,
 		FirecrackerVersion: ppb.Config.FirecrackerVersion,
+		VMMType:            string(vmm.BackendType(ppb.Config.VMMType).OrDefault()),
+		OsType:             result.Template.OsType,
+		EnvdVersion:        result.Template.EnvdVersion,
 	}
 
 	return phases.LayerResult{
@@ -147,6 +150,26 @@ func (ppb *PostProcessingBuilder) Build(
 		defaultWorkdir = nil
 	}
 
+	// The final layer always restarts the sandbox, so carry forward the OS type
+	// recorded by the previous layer instead of falling back to the Linux
+	// default.
+	osType := vmm.OsType(sourceLayer.Metadata.Template.OsType).OrDefault()
+	if ppb.Config.IsWindows() {
+		osType = vmm.OsWindows
+	}
+	if ppb.Config.IsAndroid() {
+		osType = vmm.OsAndroid
+	}
+	if osType == vmm.OsWindows || osType == vmm.OsAndroid {
+		defaultUser = nil
+		defaultWorkdir = nil
+	}
+
+	envdVersion := ppb.EnvdVersion
+	if (ppb.Config.UsesRawImage() || ppb.Config.UsesMultiDisk()) && (osType == vmm.OsWindows || osType == vmm.OsAndroid) && sourceLayer.Metadata.Template.EnvdVersion != "" {
+		envdVersion = sourceLayer.Metadata.Template.EnvdVersion
+	}
+
 	// Configure sandbox for final layer
 	sbxConfig := sandbox.Config{
 		Vcpu:      ppb.Config.VCpuCount,
@@ -154,15 +177,19 @@ func (ppb *PostProcessingBuilder) Build(
 		HugePages: ppb.Config.HugePages,
 
 		Envd: sandbox.EnvdMetadata{
-			Version:        ppb.EnvdVersion,
+			Version:        envdVersion,
 			DefaultUser:    defaultUser,
 			DefaultWorkdir: defaultWorkdir,
 		},
 
-		FirecrackerConfig: fc.Config{
-			KernelVersion:      ppb.Config.KernelVersion,
-			FirecrackerVersion: ppb.Config.FirecrackerVersion,
+		VMMConfig: vmm.VMMConfig{
+			Type:          vmm.BackendType(ppb.Config.VMMType).OrDefault(),
+			KernelVersion: ppb.Config.KernelVersion,
+			VMMVersion:    ppb.Config.FirecrackerVersion,
+			OsType:        osType,
 		},
+
+		// OSType: metadata.OSType(ppb.Config.OSType),
 	}
 
 	// Select the IO Engine to use for the rootfs drive
@@ -182,7 +209,7 @@ func (ppb *PostProcessingBuilder) Build(
 		layer.WithIoEngine(ioEngine),
 	)
 
-	actionExecutor := layer.NewFunctionAction(ppb.postProcessingFn(userLogger))
+	actionExecutor := layer.NewFunctionAction(ppb.postProcessingFn(userLogger, osType))
 
 	templateProvider := layer.NewCacheSourceTemplateProvider(sourceLayer.Metadata.Template.BuildID)
 
@@ -209,7 +236,7 @@ func (ppb *PostProcessingBuilder) Build(
 	}, nil
 }
 
-func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger) layer.FunctionActionFn {
+func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger, osType vmm.OsType) layer.FunctionActionFn {
 	return func(ctx context.Context, sbx *sandbox.Sandbox, meta metadata.Template) (cm metadata.Template, e error) {
 		ctx, span := tracer.Start(ctx, "run postprocessing")
 		defer span.End()
@@ -219,11 +246,14 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger) lay
 				return
 			}
 
-			// Ensure all changes are synchronized to disk so the sandbox can be restarted
+			// Ensure all changes are synchronized to disk so the sandbox can be
+			// restarted. SyncChangesToDisk is OS-aware: Linux runs busybox sync,
+			// Windows runs Write-VolumeCache over powershell.
 			err := sandboxtools.SyncChangesToDisk(
 				ctx,
 				ppb.proxy,
 				sbx.Runtime.SandboxID,
+				osType,
 			)
 			if err != nil {
 				e = fmt.Errorf("error running sync command: %w", err)
@@ -241,14 +271,19 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger) lay
 			ppb.BuildContext,
 			ppb.proxy,
 			sbx.Runtime.SandboxID,
+			osType,
 		)
 		if err != nil {
 			return metadata.Template{}, phases.NewPhaseBuildError(ppb.Metadata(), fmt.Errorf("configuration script failed: %w", err))
 		}
 
+		meta = normalizeTemplateContext(meta, osType)
+
 		if meta.Start == nil {
 			return meta, nil
 		}
+
+		cmdCtx := meta.Start.Context
 
 		// Start command
 		commandsCtx, commandsCancel := context.WithCancel(ctx)
@@ -267,7 +302,7 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger) lay
 					"start",
 					sbx.Runtime.SandboxID,
 					meta.Start.StartCmd,
-					meta.Start.Context,
+					cmdCtx,
 					startCmdConfirm,
 				)
 				// If the ctx is canceled, the ready command succeeded and no start command await is necessary.
@@ -289,9 +324,9 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger) lay
 		readyCmd := meta.Start.ReadyCmd
 		if readyCmd == "" {
 			if meta.Start.StartCmd == "" {
-				readyCmd = "sleep 0"
+				readyCmd = noopReadyCommand(osType)
 			} else {
-				readyCmd = GetDefaultReadyCommand(ppb.Config.TemplateID)
+				readyCmd = GetDefaultReadyCommand(osType, ppb.Config.TemplateID)
 			}
 		}
 		err = ppb.runReadyCommand(
@@ -299,7 +334,7 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger) lay
 			userLogger,
 			sbx.Runtime.SandboxID,
 			readyCmd,
-			meta.Start.Context,
+			cmdCtx,
 		)
 		if err != nil {
 			return metadata.Template{}, phases.NewPhaseBuildError(ppb.Metadata(), fmt.Errorf("ready command failed: %w", err))

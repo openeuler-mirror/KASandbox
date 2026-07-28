@@ -295,7 +295,7 @@ func runBenchmark(b *testing.B, algorithm Algorithm, config BenchmarkConfig) *Be
 				wg.Go(func(sbx *LiveSandbox) func() {
 					return func() {
 						placementStart := time.Now()
-						node, err := PlaceSandbox(ctx, algorithm, nodes, nil, &orchestratorgrpc.SandboxCreateRequest{Sandbox: &orchestratorgrpc.SandboxConfig{
+						node, _, err := PlaceSandbox(ctx, algorithm, nodes, nil, &orchestratorgrpc.SandboxCreateRequest{Sandbox: &orchestratorgrpc.SandboxConfig{
 							Vcpu:  sbx.RequestedCPU,
 							RamMb: sbx.RequestedMemory,
 						}}, machineinfo.MachineInfo{})

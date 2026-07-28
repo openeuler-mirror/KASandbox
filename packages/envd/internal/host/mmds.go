@@ -11,18 +11,16 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 	"github.com/e2b-dev/infra/packages/envd/internal/utils"
 )
 
 const (
-	E2BRunDir = "/run/e2b" // store sandbox metadata files here
-
 	mmdsDefaultAddress  = "169.254.169.254"
 	mmdsTokenExpiration = 60 * time.Second
 
 	mmdsAccessTokenRequestClientTimeout = 10 * time.Second
 )
-
 
 var mmdsAccessTokenClient = &http.Client{
 	Timeout: mmdsAccessTokenRequestClientTimeout,
@@ -169,10 +167,10 @@ func PollForMMDSOpts(ctx context.Context, mmdsChan chan<- *MMDSOpts, envVars *ut
 			envVars.Store("E2B_SANDBOX_ID", mmdsOpts.SandboxID)
 			envVars.Store("E2B_TEMPLATE_ID", mmdsOpts.TemplateID)
 
-			if err := os.WriteFile(filepath.Join(E2BRunDir, ".E2B_SANDBOX_ID"), []byte(mmdsOpts.SandboxID), 0o666); err != nil {
+			if err := os.WriteFile(filepath.Join(platform.E2BRunDir(), ".E2B_SANDBOX_ID"), []byte(mmdsOpts.SandboxID), 0o666); err != nil {
 				fmt.Fprintf(os.Stderr, "error writing sandbox ID file: %v\n", err)
 			}
-			if err := os.WriteFile(filepath.Join(E2BRunDir, ".E2B_TEMPLATE_ID"), []byte(mmdsOpts.TemplateID), 0o666); err != nil {
+			if err := os.WriteFile(filepath.Join(platform.E2BRunDir(), ".E2B_TEMPLATE_ID"), []byte(mmdsOpts.TemplateID), 0o666); err != nil {
 				fmt.Fprintf(os.Stderr, "error writing template ID file: %v\n", err)
 			}
 

@@ -1,10 +1,17 @@
 package config
 
 import (
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/oci/auth"
 	templatemanager "github.com/e2b-dev/infra/packages/shared/pkg/grpc/template-manager"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
 )
+
+type MultiDiskConfig struct {
+	OS         string
+	Persistent string
+	SDCard     string
+}
 
 const (
 	InstanceBuildPrefix = "b"
@@ -47,6 +54,13 @@ type TemplateConfig struct {
 	// FromImage is the base image to use for building the template.
 	FromImage string
 
+	// FromImageRaw is a registry reference containing a raw disk image layer.
+	// A non-empty value registers the disk as the rootfs directly.
+	FromImageRaw string
+
+	// FromImageMultiDisk contains registry references for the Android disks.
+	FromImageMultiDisk *MultiDiskConfig
+
 	// FromTemplate is the base template to use for building the template.
 	FromTemplate *templatemanager.FromTemplateConfig
 
@@ -61,6 +75,12 @@ type TemplateConfig struct {
 
 	// Firecracker version to use
 	FirecrackerVersion string
+
+	// VMM type to use for building the template.
+	VMMType string
+
+	// OsType is the guest operating system family to use for the build.
+	OsType vmm.OsType
 
 	// Kernel version to use
 	KernelVersion string
@@ -77,3 +97,20 @@ func MemfilePageSize(hugePages bool) int64 {
 func (e TemplateConfig) RootfsBlockSize() int64 {
 	return header.RootfsBlockSize
 }
+
+func (e TemplateConfig) UsesRawImage() bool {
+	return e.FromImageRaw != ""
+}
+
+func (e TemplateConfig) UsesMultiDisk() bool { return e.FromImageMultiDisk != nil }
+
+func (e TemplateConfig) GuestOS() vmm.OsType {
+	return e.OsType.OrDefault()
+}
+
+// IsWindows reports whether the template build targets a Windows guest.
+func (e TemplateConfig) IsWindows() bool {
+	return e.GuestOS() == vmm.OsWindows
+}
+
+func (e TemplateConfig) IsAndroid() bool { return e.GuestOS() == vmm.OsAndroid }

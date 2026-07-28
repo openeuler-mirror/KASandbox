@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap/zapcore"
 
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/sandboxtools"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
@@ -72,13 +73,30 @@ func (ppb *PostProcessingBuilder) runReadyCommand(
 	}
 }
 
-func GetDefaultReadyCommand(templateID string) string {
+// noopReadyCommand returns a do-nothing ready command valid for the guest shell.
+// Used when a template defines neither a start nor a ready command.
+func noopReadyCommand(osType vmm.OsType) string {
+	if osType == vmm.OsWindows {
+		return "Start-Sleep -Seconds 0"
+	}
+
+	return "sleep 0"
+}
+
+func GetDefaultReadyCommand(osType vmm.OsType, templateID string) string {
+	wait := defaultReadyWait
 	// HACK: This is a temporary fix for a customer that needs a bigger time to start the command.
 	// TODO: Remove this after we can add customizable wait time for building templates.
 	// TODO: Make this user configurable, with health check too
 	if templateID == "zegbt9dl3l2ixqem82mm" || templateID == "ot5bidkk3j2so2j02uuz" || templateID == "0zeou1s7agaytqitvmzc" {
-		return fmt.Sprintf("sleep %d", int((120 * time.Second).Seconds()))
+		wait = 120 * time.Second
 	}
 
-	return fmt.Sprintf("sleep %d", int(defaultReadyWait.Seconds()))
+	// The command runs through the guest's shell (PowerShell on Windows), so the
+	// default wait must be expressed in a way that shell understands.
+	if osType == vmm.OsWindows {
+		return fmt.Sprintf("Start-Sleep -Seconds %d", int(wait.Seconds()))
+	}
+
+	return fmt.Sprintf("sleep %d", int(wait.Seconds()))
 }

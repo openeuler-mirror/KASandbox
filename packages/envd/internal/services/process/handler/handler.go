@@ -8,7 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"strconv"
+	"runtime"
 	"sync"
 	"syscall"
 
@@ -19,6 +19,7 @@ import (
 	"github.com/e2b-dev/infra/packages/envd/internal/execcontext"
 	"github.com/e2b-dev/infra/packages/envd/internal/logs"
 	"github.com/e2b-dev/infra/packages/envd/internal/permissions"
+	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 	"github.com/e2b-dev/infra/packages/envd/internal/services/cgroups"
 	rpc "github.com/e2b-dev/infra/packages/envd/internal/services/spec/process"
 )
@@ -72,34 +73,18 @@ func New(
 	cgroupManager cgroups.Manager,
 	cancel context.CancelFunc,
 ) (*Handler, error) {
+	if err := platform.ValidateProcessRequest(req); err != nil {
+		if errors.Is(err, platform.ErrUnsupportedPTY) {
+			return nil, connect.NewError(connect.CodeUnimplemented, err)
+		}
+
+		return nil, err
+	}
+
 	cmd := exec.CommandContext(ctx, req.GetProcess().GetCmd(), req.GetProcess().GetArgs()...)
 
-	uid, gid, err := permissions.GetUserIdUints(user)
-	if err != nil {
+	if err := platform.ConfigureProcessCredentials(cmd, user, cgroupManager, getProcType(req), logger); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	groups := []uint32{gid}
-	if gids, err := user.GroupIds(); err != nil {
-		logger.Warn().Err(err).Str("user", user.Username).Msg("failed to get supplementary groups")
-	} else {
-		for _, g := range gids {
-			if parsed, err := strconv.ParseUint(g, 10, 32); err == nil {
-				groups = append(groups, uint32(parsed))
-			}
-		}
-	}
-
-	cgroupFD, ok := cgroupManager.GetFileDescriptor(getProcType(req))
-
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		UseCgroupFD: ok,
-		CgroupFD:    cgroupFD,
-		Credential: &syscall.Credential{
-			Uid:    uid,
-			Gid:    gid,
-			Groups: groups,
-		},
 	}
 
 	resolvedPath, err := permissions.ExpandAndResolve(req.GetProcess().GetCwd(), user, defaults.Workdir)
@@ -114,30 +99,7 @@ func New(
 
 	cmd.Dir = resolvedPath
 
-	var formattedVars []string
-
-	// Take only 'PATH' variable from the current environment
-	// The 'PATH' should ideally be set in the environment
-	formattedVars = append(formattedVars, "PATH="+os.Getenv("PATH"))
-	formattedVars = append(formattedVars, "HOME="+user.HomeDir)
-	formattedVars = append(formattedVars, "USER="+user.Username)
-	formattedVars = append(formattedVars, "LOGNAME="+user.Username)
-
-	// Add the environment variables from the global environment
-	if defaults.EnvVars != nil {
-		defaults.EnvVars.Range(func(key string, value string) bool {
-			formattedVars = append(formattedVars, key+"="+value)
-
-			return true
-		})
-	}
-
-	// Only the last values of the env vars are used - this allows for overwriting defaults
-	for key, value := range req.GetProcess().GetEnvs() {
-		formattedVars = append(formattedVars, key+"="+value)
-	}
-
-	cmd.Env = formattedVars
+	platform.ConfigureProcessEnv(cmd, user, req.GetProcess(), defaults)
 
 	outMultiplex := NewMultiplexedChannel[rpc.ProcessEvent_Data](outputBufferSize)
 
@@ -324,7 +286,7 @@ func (p *Handler) SendSignal(signal syscall.Signal) error {
 		p.outCancel()
 	}
 
-	return p.cmd.Process.Signal(signal)
+	return platform.SendProcessSignal(p.cmd, signal)
 }
 
 func (p *Handler) ResizeTty(size *pty.Winsize) error {
@@ -399,9 +361,10 @@ func (p *Handler) Start() (uint32, error) {
 		}
 	}
 
-	adjustErr := adjustOomScore(p.cmd.Process.Pid, defaultOomScore)
-	if adjustErr != nil {
-		fmt.Fprintf(os.Stderr, "error adjusting oom score for process '%s': %s\n", p.cmd, adjustErr)
+	if runtime.GOOS == "linux" {
+		if adjustErr := adjustOomScore(p.cmd.Process.Pid, defaultOomScore); adjustErr != nil {
+			fmt.Fprintf(os.Stderr, "error adjusting oom score for process '%s': %s\n", p.cmd, adjustErr)
+		}
 	}
 
 	p.logger.
@@ -420,7 +383,9 @@ func (p *Handler) Wait() {
 
 	err := p.cmd.Wait()
 
-	p.tty.Close()
+	if p.tty != nil {
+		p.tty.Close()
+	}
 
 	var errMsg *string
 

@@ -56,6 +56,8 @@ message SandboxConfig {
   // This is separate from SandboxNetworkConfig, which describes product-level
   // ingress/egress policy.
   optional SandboxRuntimeNetworkConfig runtime_network = 25;
+  // Guest operating system family resolved from template metadata.
+  string os_type = 26;
 }
 
 message SandboxRuntimeNetworkConfig {
@@ -112,6 +114,17 @@ message SandboxCreateRequest {
 message SandboxCreateResponse {
   string client_id = 1;
   string host_ip = 2;
+  // Guest operating system family resolved from the template metadata.
+  string os_type = 3;
+
+  // Host-side Android emulator service ports. Populated only when the
+  // sandbox OS is Android; zero for Linux/Windows sandboxes. The ports are
+  // allocated dynamically on the orchestrator host (loopback) and are valid
+  // for the lifetime of the sandbox.
+  int32 adb_port = 4;
+  int32 modem_simulator_port = 5;
+  int32 webrtc_http_port = 6;
+  int32 webrtc_streaming_port = 7;
 }
 
 message SandboxUpdateRequest {

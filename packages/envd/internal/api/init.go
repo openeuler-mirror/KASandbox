@@ -7,17 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
-	"os/exec"
 	"time"
 
 	"github.com/awnumar/memguard"
 	"github.com/rs/zerolog"
-	"github.com/txn2/txeh"
-	"golang.org/x/sys/unix"
 
 	"github.com/e2b-dev/infra/packages/envd/internal/host"
 	"github.com/e2b-dev/infra/packages/envd/internal/logs"
+	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 	"github.com/e2b-dev/infra/packages/shared/pkg/keys"
 )
 
@@ -173,9 +170,7 @@ func (a *API) SetData(ctx context.Context, logger zerolog.Logger, data PostInitJ
 		// Check if current time differs significantly from the received timestamp
 		if shouldSetSystemTime(time.Now(), *data.Timestamp) {
 			logger.Debug().Msgf("Setting sandbox start time to: %v", *data.Timestamp)
-			ts := unix.NsecToTimespec(data.Timestamp.UnixNano())
-			err := unix.ClockSettime(unix.CLOCK_REALTIME, &ts)
-			if err != nil {
+			if err := platform.SetSystemTime(*data.Timestamp); err != nil {
 				logger.Error().Msgf("Failed to set system time: %v", err)
 			}
 		} else {
@@ -218,91 +213,21 @@ func (a *API) SetData(ctx context.Context, logger zerolog.Logger, data PostInitJ
 		for _, volume := range *data.VolumeMounts {
 			logger.Debug().Msgf("Mounting %s at %q", volume.NfsTarget, volume.Path)
 
-			go a.setupNfs(context.WithoutCancel(ctx), volume.NfsTarget, volume.Path)
+			go platform.SetupNFS(context.WithoutCancel(ctx), a.logger, volume.NfsTarget, volume.Path)
 		}
 	}
 
 	return nil
 }
 
-func (a *API) setupNfs(ctx context.Context, nfsTarget, path string) {
-	commands := [][]string{
-		{"mkdir", "-p", path},
-		{"mount", "-v", "-t", "nfs", "-o", "mountproto=tcp,mountport=2049,proto=tcp,port=2049,nfsvers=3,noacl", nfsTarget, path},
-	}
-
-	for _, command := range commands {
-		data, err := exec.CommandContext(ctx, command[0], command[1:]...).CombinedOutput()
-
-		logger := a.getLogger(err)
-
-		logger.
-			Strs("command", command).
-			Str("output", string(data)).
-			Msg("Mount NFS")
-
-		if err != nil {
-			return
-		}
-	}
-}
-
 func (a *API) SetupHyperloop(address string) {
 	a.hyperloopLock.Lock()
 	defer a.hyperloopLock.Unlock()
 
-	if err := rewriteHostsFile(address, "/etc/hosts"); err != nil {
+	if err := platform.RewriteHostsFile(address, "/etc/hosts"); err != nil {
 		a.logger.Error().Err(err).Msg("failed to modify hosts file")
 	} else {
 		a.defaults.EnvVars.Store("E2B_EVENTS_ADDRESS", fmt.Sprintf("http://%s", address))
-	}
-}
-
-const eventsHost = "events.e2b.local"
-
-func rewriteHostsFile(address, path string) error {
-	hosts, err := txeh.NewHosts(&txeh.HostsConfig{
-		ReadFilePath:  path,
-		WriteFilePath: path,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create hosts: %w", err)
-	}
-
-	// Update /etc/hosts to point events.e2b.local to the hyperloop IP
-	// This will remove any existing entries for events.e2b.local first
-	ipFamily, err := getIPFamily(address)
-	if err != nil {
-		return fmt.Errorf("failed to get ip family: %w", err)
-	}
-
-	if ok, current, _ := hosts.HostAddressLookup(eventsHost, ipFamily); ok && current == address {
-		return nil // nothing to be done
-	}
-
-	hosts.AddHost(address, eventsHost)
-
-	return hosts.Save()
-}
-
-var (
-	ErrInvalidAddress       = errors.New("invalid IP address")
-	ErrUnknownAddressFormat = errors.New("unknown IP address format")
-)
-
-func getIPFamily(address string) (txeh.IPFamily, error) {
-	addressIP, err := netip.ParseAddr(address)
-	if err != nil {
-		return txeh.IPFamilyV4, fmt.Errorf("failed to parse IP address: %w", err)
-	}
-
-	switch {
-	case addressIP.Is4():
-		return txeh.IPFamilyV4, nil
-	case addressIP.Is6():
-		return txeh.IPFamilyV6, nil
-	default:
-		return txeh.IPFamilyV4, fmt.Errorf("%w: %s", ErrUnknownAddressFormat, address)
 	}
 }
 
