@@ -47,10 +47,6 @@ func (s *SandboxFiles) SandboxCacheRootfsPath(config Config) string {
 	return filepath.Join(config.SandboxCacheDir, fmt.Sprintf("rootfs-%s-%s.cow", s.SandboxID, s.randomID))
 }
 
-func (s *SandboxFiles) SandboxRestoreDir(config Config) string {
-	return filepath.Join(config.SandboxCacheDir, fmt.Sprintf("restore-%s-%s", s.SandboxID, s.randomID))
-}
-
 func (s *SandboxFiles) SandboxFirecrackerSocketPath() string {
 	return filepath.Join(s.tmpDir, fmt.Sprintf("fc-%s-%s.sock", s.SandboxID, s.randomID))
 }
@@ -61,8 +57,4 @@ func (s *SandboxFiles) SandboxUffdSocketPath() string {
 
 func (s *SandboxFiles) SandboxCacheRootfsLinkPath(config Config) string {
 	return filepath.Join(config.SandboxCacheDir, fmt.Sprintf("rootfs-%s-%s.link", s.SandboxID, s.randomID))
-}
-
-func (s *SandboxFiles) SandboxSerialLogPath() string {
-	return filepath.Join(s.tmpDir, fmt.Sprintf("serial-%s-%s.log", s.SandboxID, s.randomID))
 }
