@@ -26,6 +26,7 @@ type BuilderConfig struct {
 	SharedChunkCacheDir        string        `env:"SHARED_CHUNK_CACHE_PATH"`
 	TemplatesDir               string        `env:"TEMPLATES_DIR,expand"     envDefault:"${ORCHESTRATOR_BASE_PATH}/build-templates"`
 	FirmwareDir                string        `env:"FIRMWARE_DIR"             envDefault:"/uefi-firmware"`
+	AndroidBootloaderPath      string        `env:"ANDROID_BOOTLOADER_PATH"  envDefault:"/android-firmware/bootloader.qemu"`
 	DefaultCacheDir            string        `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
 
 	StorageConfig storage.Config
@@ -48,6 +49,7 @@ func makePathsAbsolute(c *BuilderConfig) error {
 		&c.StorageConfig.TemplateCacheDir,
 		&c.TemplatesDir,
 		&c.FirmwareDir,
+		&c.AndroidBootloaderPath,
 	} {
 		dir := *item
 

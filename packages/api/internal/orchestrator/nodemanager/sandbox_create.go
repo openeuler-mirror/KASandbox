@@ -6,12 +6,12 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 )
 
-func (n *Node) SandboxCreate(ctx context.Context, sbxRequest *orchestrator.SandboxCreateRequest) error {
+func (n *Node) SandboxCreate(ctx context.Context, sbxRequest *orchestrator.SandboxCreateRequest) (*orchestrator.SandboxCreateResponse, error) {
 	client, ctx := n.GetSandboxCreateCtx(ctx, sbxRequest)
-	_, err := client.Sandbox.Create(ctx, sbxRequest)
+	res, err := client.Sandbox.Create(ctx, sbxRequest)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return res, nil
 }

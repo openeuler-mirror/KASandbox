@@ -267,7 +267,7 @@ func (o *Orchestrator) CreateSandbox(
 	nodeClusterID := clusters.WithClusterFallback(team.ClusterID)
 	clusterNodes := o.GetClusterNodes(nodeClusterID)
 
-	node, err = placement.PlaceSandbox(ctx, o.placementAlgorithm, clusterNodes, node, sbxRequest, builds.ToMachineInfo(build))
+	node, createRes, err := placement.PlaceSandbox(ctx, o.placementAlgorithm, clusterNodes, node, sbxRequest, builds.ToMachineInfo(build))
 	if err != nil {
 		return sandbox.Sandbox{}, &api.APIError{
 			Code:      http.StatusInternalServerError,
@@ -324,6 +324,7 @@ func (o *Orchestrator) CreateSandbox(
 		network,
 		trafficAccessToken,
 		nodemanager.ConvertOrchestratorMountsToDatabaseMounts(volumeMounts),
+		createRes.GetOsType(),
 	)
 
 	err = o.sandboxStore.Add(ctx, sbx, true)

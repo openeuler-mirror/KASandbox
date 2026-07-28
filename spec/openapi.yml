@@ -454,6 +454,8 @@ components:
           type: string
           nullable: true
           description: Base domain where the sandbox traffic is accessible
+        osType:
+          $ref: "#/components/schemas/OsType"
 
     OsType:
       type: string

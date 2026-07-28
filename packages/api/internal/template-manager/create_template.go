@@ -89,9 +89,19 @@ func (tm *TemplateManager) CreateTemplate(
 		}
 	}()
 
-	resolvedOsType, resolvedVMMType, err := resolveBuildVM(osType)
+	var resolvedOsType api.OsType
+	var resolvedVMMType BackendType
+	var err error
+	if fromTemplate == nil || *fromTemplate == "" {
+		resolvedOsType, resolvedVMMType, err = resolveBuildVM(osType)
+	} else if osType != nil {
+		// A template derived from another template inherits its VMM from the
+		// source metadata. Preserve an explicitly requested OS only so the
+		// orchestrator can verify that it matches the source template.
+		resolvedOsType, _, err = resolveBuildVM(osType)
+	}
 	if err != nil {
-		return &api.InvalidRequestError{Err: err}
+		return err
 	}
 
 	features, err := sandbox.NewVersionInfo(firecrackerVersion)
@@ -127,13 +137,13 @@ func (tm *TemplateManager) CreateTemplate(
 		DiskSizeMB:         int32(diskSizeMB),
 		KernelVersion:      kernelVersion,
 		FirecrackerVersion: firecrackerVersion,
-		HugePages:          features.HasHugePages() && resolvedOsType == api.Linux,
+		HugePages:          features.HasHugePages(),
 		StartCommand:       startCmd,
 		ReadyCommand:       readyCmd,
 		Force:              force,
 		Steps:              convertTemplateSteps(steps),
 		FromImageRegistry:  imageRegistry,
-		VmmType:            resolvedVMMType,
+		VmmType:            string(resolvedVMMType),
 		OsType:             string(resolvedOsType),
 	}
 
@@ -294,12 +304,14 @@ func convertImageRegistry(registry *api.FromImageRegistry) (*templatemanagergrpc
 	}
 }
 
+type BackendType string
+
 const (
-	defaultBuildVMMType = "firecracker"
-	windowsBuildVMMType = "stratovirt"
+	BackendFirecracker BackendType = "firecracker"
+	BackendStratoVirt  BackendType = "stratovirt"
 )
 
-func resolveBuildVM(osType *api.OsType) (api.OsType, string, error) {
+func resolveBuildVM(osType *api.OsType) (api.OsType, BackendType, error) {
 	resolvedOsType := api.Linux
 	if osType != nil {
 		switch *osType {
@@ -310,9 +322,9 @@ func resolveBuildVM(osType *api.OsType) (api.OsType, string, error) {
 		}
 	}
 
-	resolvedVMMType := defaultBuildVMMType
+	resolvedVMMType := BackendFirecracker
 	if resolvedOsType == api.Windows || resolvedOsType == api.Android {
-		resolvedVMMType = windowsBuildVMMType
+		resolvedVMMType = BackendStratoVirt
 	}
 
 	return resolvedOsType, resolvedVMMType, nil
@@ -333,7 +345,7 @@ func setTemplateSource(
 	// hasImage can be empty for v1 template builds
 	hasImage := fromImage != nil
 	hasRaw := fromImageRaw != nil
-	hasTemplate := fromTemplate != nil
+	hasTemplate := fromTemplate != nil && *fromTemplate != ""
 
 	// Validate input: exactly one source must be provided
 	sources := 0
@@ -343,20 +355,20 @@ func setTemplateSource(
 		}
 	}
 	if sources != 1 {
-		return &api.InvalidRequestError{Err: fmt.Errorf("must specify exactly one of fromImage, fromImageRaw or fromTemplate")}
+		return fmt.Errorf("must specify exactly one of fromImage, fromImageRaw or fromTemplate")
 	}
 
 	switch {
 	case hasRaw:
 		if strings.TrimSpace(fromImageRaw.Url) == "" {
-			return &api.InvalidRequestError{Err: fmt.Errorf("fromImageRaw.url must not be empty")}
+			return fmt.Errorf("fromImageRaw.url must not be empty")
 		}
 		template.Source = &templatemanagergrpc.TemplateConfig_FromImageRaw{
 			FromImageRaw: fromImageRaw.Url,
 		}
 	case hasTemplate:
 		if strings.TrimSpace(*fromTemplate) == "" {
-			return &api.InvalidRequestError{Err: fmt.Errorf("fromTemplate must not be empty")}
+			return fmt.Errorf("fromTemplate must not be empty")
 		}
 		identifier, tag, err := id.ParseName(*fromTemplate)
 		if err != nil {
@@ -407,7 +419,7 @@ func setTemplateSource(
 		}
 	default: // hasImage
 		if version != templates.TemplateV1Version && strings.TrimSpace(*fromImage) == "" {
-			return &api.InvalidRequestError{Err: fmt.Errorf("fromImage must not be empty")}
+			return fmt.Errorf("fromImage must not be empty")
 		}
 		template.Source = &templatemanagergrpc.TemplateConfig_FromImage{
 			FromImage: *fromImage,

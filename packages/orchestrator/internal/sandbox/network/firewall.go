@@ -29,12 +29,12 @@ type Firewall struct {
 	userDenySet  set.Set
 	userAllowSet set.Set
 
-	tapInterface string
+	tapInterfaces []string
 
 	allowedRanges []string
 }
 
-func NewFirewall(tapIf string, orchestratorInternalIP string) (*Firewall, error) {
+func NewFirewall(tapIf string, orchestratorInternalIP string, extraTapIfs ...string) (*Firewall, error) {
 	conn, err := nftables.New(nftables.AsLasting())
 	if err != nil {
 		return nil, fmt.Errorf("new nftables conn: %w", err)
@@ -76,6 +76,7 @@ func NewFirewall(tapIf string, orchestratorInternalIP string) (*Firewall, error)
 		return nil, fmt.Errorf("new allow set: %w", err)
 	}
 
+	tapInterfaces := append([]string{tapIf}, extraTapIfs...)
 	fw := &Firewall{
 		conn:               conn,
 		table:              table,
@@ -83,8 +84,8 @@ func NewFirewall(tapIf string, orchestratorInternalIP string) (*Firewall, error)
 		predefinedAllowSet: alwaysAllowSet,
 		userDenySet:        denySet,
 		userAllowSet:       allowSet,
-		tapInterface:       tapIf,
-		allowedRanges:      []string{fmt.Sprintf("%s/32", orchestratorInternalIP)},
+		tapInterfaces:      tapInterfaces,
+		allowedRanges:      []string{fmt.Sprintf("%s/32", orchestratorInternalIP), fmt.Sprintf("%s/32", tapIp), fmt.Sprintf("%s/32", extraTapIp)},
 		filterChain:        filterChain,
 	}
 
@@ -107,13 +108,13 @@ func (fw *Firewall) Close() error {
 }
 
 // tapIfaceMatch returns expressions that match packets from the tap interface.
-func (fw *Firewall) tapIfaceMatch() []expr.Any {
+func (fw *Firewall) tapIfaceMatch(tapInterface string) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
 		&expr.Cmp{
 			Register: 1,
 			Op:       expr.CmpOpEq,
-			Data:     append([]byte(fw.tapInterface), 0), // null-terminated interface name
+			Data:     append([]byte(tapInterface), 0), // null-terminated interface name
 		},
 	}
 }
@@ -136,15 +137,17 @@ func (fw *Firewall) addSetFilterRule(ipSet *nftables.Set, drop bool) {
 		verdict = accept()
 	}
 
-	fw.conn.AddRule(&nftables.Rule{
-		Table: fw.table,
-		Chain: fw.filterChain,
-		Exprs: append(append(fw.tapIfaceMatch(),
-			expressions.IPv4DestinationAddress(1),
-			expressions.IPSetLookUp(ipSet, 1)),
-			verdict...,
-		),
-	})
+	for _, tapInterface := range fw.tapInterfaces {
+		fw.conn.AddRule(&nftables.Rule{
+			Table: fw.table,
+			Chain: fw.filterChain,
+			Exprs: append(append(fw.tapIfaceMatch(tapInterface),
+				expressions.IPv4DestinationAddress(1),
+				expressions.IPSetLookUp(ipSet, 1)),
+				verdict...,
+			),
+		})
+	}
 }
 
 // addNonTCPSetFilterRule adds a filter rule that matches ONLY non-TCP traffic to destinations in a set.
@@ -158,23 +161,25 @@ func (fw *Firewall) addNonTCPSetFilterRule(ipSet *nftables.Set, drop bool) {
 		verdict = accept()
 	}
 
-	fw.conn.AddRule(&nftables.Rule{
-		Table: fw.table,
-		Chain: fw.filterChain,
-		Exprs: append(append(fw.tapIfaceMatch(),
-			// Match non-TCP protocol (protocol != TCP)
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-			&expr.Cmp{
-				Op:       expr.CmpOpNeq,
-				Register: 1,
-				Data:     []byte{unix.IPPROTO_TCP},
-			},
-			// Check dest in set
-			expressions.IPv4DestinationAddress(1),
-			expressions.IPSetLookUp(ipSet, 1)),
-			verdict...,
-		),
-	})
+	for _, tapInterface := range fw.tapInterfaces {
+		fw.conn.AddRule(&nftables.Rule{
+			Table: fw.table,
+			Chain: fw.filterChain,
+			Exprs: append(append(fw.tapIfaceMatch(tapInterface),
+				// Match non-TCP protocol (protocol != TCP)
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{
+					Op:       expr.CmpOpNeq,
+					Register: 1,
+					Data:     []byte{unix.IPPROTO_TCP},
+				},
+				// Check dest in set
+				expressions.IPv4DestinationAddress(1),
+				expressions.IPSetLookUp(ipSet, 1)),
+				verdict...,
+			),
+		})
+	}
 }
 
 func (fw *Firewall) installRules() error {
@@ -192,28 +197,30 @@ func (fw *Firewall) installRules() error {
 
 	// Rule 1: Allow ESTABLISHED/RELATED connections - all protocols
 	// This ensures response packets are allowed even if the source is in predefinedDenySet
-	fw.conn.AddRule(&nftables.Rule{
-		Table: fw.table,
-		Chain: fw.filterChain,
-		Exprs: append(append(fw.tapIfaceMatch(),
-			// Load CT state
-			&expr.Ct{Key: expr.CtKeySTATE, Register: 1},
-			// Check ESTABLISHED or RELATED
-			&expr.Bitwise{
-				SourceRegister: 1,
-				DestRegister:   1,
-				Len:            4,
-				Mask:           binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED),
-				Xor:            binaryutil.NativeEndian.PutUint32(0),
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpNeq,
-				Register: 1,
-				Data:     binaryutil.NativeEndian.PutUint32(0),
-			}),
-			accept()...,
-		),
-	})
+	for _, tapInterface := range fw.tapInterfaces {
+		fw.conn.AddRule(&nftables.Rule{
+			Table: fw.table,
+			Chain: fw.filterChain,
+			Exprs: append(append(fw.tapIfaceMatch(tapInterface),
+				// Load CT state
+				&expr.Ct{Key: expr.CtKeySTATE, Register: 1},
+				// Check ESTABLISHED or RELATED
+				&expr.Bitwise{
+					SourceRegister: 1,
+					DestRegister:   1,
+					Len:            4,
+					Mask:           binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED),
+					Xor:            binaryutil.NativeEndian.PutUint32(0),
+				},
+				&expr.Cmp{
+					Op:       expr.CmpOpNeq,
+					Register: 1,
+					Data:     binaryutil.NativeEndian.PutUint32(0),
+				}),
+				accept()...,
+			),
+		})
+	}
 
 	// Rule 2: predefinedAllowSet → accept (all protocols)
 	fw.addSetFilterRule(fw.predefinedAllowSet.Set(), false)

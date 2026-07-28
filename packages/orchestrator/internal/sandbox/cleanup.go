@@ -106,6 +106,8 @@ func cleanupFiles(config cfg.BuilderConfig, files *storage.SandboxFiles) func(co
 			files.SandboxFirecrackerSocketPath(),
 			files.SandboxUffdSocketPath(),
 			files.SandboxCacheRootfsLinkPath(config.StorageConfig),
+			files.SandboxCacheDiskLinkPath(config.StorageConfig, storage.PersistentName),
+			files.SandboxCacheDiskLinkPath(config.StorageConfig, storage.SDCardName),
 		} {
 			err := os.RemoveAll(p)
 			if err != nil {

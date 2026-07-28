@@ -27,7 +27,7 @@ func (f *Factory) NewProcess(
 	slot *network.Slot,
 	files *storage.SandboxFiles,
 	versions vmm.VMMConfig,
-	rootfsProvider rootfs.Provider,
+	rootfsProviders []rootfs.Provider,
 	rootfsPaths vmm.RootfsPaths,
 ) (vmm.Process, error) {
 	fcConfig := Config{
@@ -41,7 +41,7 @@ func (f *Factory) NewProcess(
 		slot,
 		files,
 		fcConfig,
-		rootfsProvider,
+		rootfsProviders[0],
 		rootfsPaths,
 	)
 	if err != nil {

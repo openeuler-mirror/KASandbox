@@ -32,9 +32,14 @@ import (
 
 var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/stratovirt")
 
-const windowsUEFIFirmwareFile = "QEMU_EFI-pflash.raw"
+const (
+	windowsUEFIFirmwareFile = "QEMU_EFI-pflash.raw"
+	androidBootloaderFile   = "bootloader.qemu"
+)
 
 var _ vmm.Process = (*Process)(nil)
+
+var androidDiskNames = []string{storage.RootfsName, storage.PersistentName, storage.SDCardName}
 
 type Process struct {
 	Versions Config
@@ -43,16 +48,37 @@ type Process struct {
 	qmpSocket string
 	qmpClient *qmpClient
 
-	config         cfg.BuilderConfig
-	slot           *network.Slot
-	rootfsProvider rootfs.Provider
-	rootfsPaths    vmm.RootfsPaths
-	rootfsPath     string
-	kernelPath     string
-	files          *storage.SandboxFiles
+	config          cfg.BuilderConfig
+	slot            *network.Slot
+	rootfsProviders []rootfs.Provider
+	rootfsPaths     vmm.RootfsPaths
+	rootfsPath      string
+	kernelPath      string
+	files           *storage.SandboxFiles
 
 	exitOnce *utils.ErrorOnce
 	execCtx  context.Context
+}
+
+func (p *Process) prepareDiskLinks() error {
+	for i, provider := range p.rootfsProviders {
+		name := storage.RootfsName
+		if i < len(androidDiskNames) {
+			name = androidDiskNames[i]
+		}
+		link := p.files.SandboxCacheDiskLinkPath(p.config.StorageConfig, name)
+		if err := utils.SymlinkForce("/dev/null", link); err != nil {
+			return fmt.Errorf("initialize %s disk link: %w", name, err)
+		}
+		path, err := provider.Path()
+		if err != nil {
+			return fmt.Errorf("get %s disk path: %w", name, err)
+		}
+		if err := utils.SymlinkForce(path, link); err != nil {
+			return fmt.Errorf("symlink %s disk: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func NewProcess(
@@ -62,7 +88,7 @@ func NewProcess(
 	slot *network.Slot,
 	files *storage.SandboxFiles,
 	versions Config,
-	rootfsProvider rootfs.Provider,
+	rootfsProviders []rootfs.Provider,
 	rootfsPaths vmm.RootfsPaths,
 ) (*Process, error) {
 	ctx, childSpan := tracer.Start(ctx, "initialize-stratovirt", trace.WithAttributes(
@@ -80,6 +106,11 @@ func NewProcess(
 		if err != nil {
 			return nil, fmt.Errorf("error stating UEFI firmware: %w", err)
 		}
+	} else if versions.OsType.OrDefault() == vmm.OsAndroid {
+		androidBootloaderPath := filepath.Join(config.FirmwareDir, androidBootloaderFile)
+		if _, err := os.Stat(androidBootloaderPath); err != nil {
+			return nil, fmt.Errorf("error stating Android bootloader %q: %w", androidBootloaderPath, err)
+		}
 	} else if versions.OsType.OrDefault() == vmm.OsLinux {
 		_, err := os.Stat(versions.HostKernelPath(config))
 		if err != nil {
@@ -88,16 +119,16 @@ func NewProcess(
 	}
 
 	return &Process{
-		Versions:       versions,
-		exitOnce:       utils.NewErrorOnce(),
-		execCtx:        execCtx,
-		config:         config,
-		qmpSocket:      files.SandboxFirecrackerSocketPath(),
-		qmpClient:      newQMPClient(files.SandboxFirecrackerSocketPath()),
-		rootfsProvider: rootfsProvider,
-		rootfsPaths:    rootfsPaths,
-		files:          files,
-		slot:           slot,
+		Versions:        versions,
+		exitOnce:        utils.NewErrorOnce(),
+		execCtx:         execCtx,
+		config:          config,
+		qmpSocket:       files.SandboxFirecrackerSocketPath(),
+		qmpClient:       newQMPClient(files.SandboxFirecrackerSocketPath()),
+		rootfsProviders: rootfsProviders,
+		rootfsPaths:     rootfsPaths,
+		files:           files,
+		slot:            slot,
 	}, nil
 }
 
@@ -112,21 +143,11 @@ func (p *Process) Create(
 	ctx, childSpan := tracer.Start(ctx, "create-stratovirt")
 	defer childSpan.End()
 
-	err := utils.SymlinkForce("/dev/null", p.files.SandboxCacheRootfsLinkPath(p.config.StorageConfig))
+	err := p.prepareDiskLinks()
 	if err != nil {
-		return fmt.Errorf("error symlinking rootfs: %w", err)
-	}
-
-	rootfsPath, err := p.rootfsProvider.Path()
-	if err != nil {
-		return fmt.Errorf("error getting rootfs path: %w", err)
+		return err
 	}
 	telemetry.ReportEvent(ctx, "got rootfs path")
-
-	err = utils.SymlinkForce(rootfsPath, p.files.SandboxCacheRootfsLinkPath(p.config.StorageConfig))
-	if err != nil {
-		return fmt.Errorf("error symlinking rootfs: %w", err)
-	}
 	telemetry.ReportEvent(ctx, "symlinked rootfs")
 
 	ipv4 := fmt.Sprintf("%s::%s:%s:instance:%s:off:%s",
@@ -194,8 +215,8 @@ func (p *Process) Resume(
 	ctx, span := tracer.Start(ctx, "resume-stratovirt")
 	defer span.End()
 
-	if err := utils.SymlinkForce("/dev/null", p.files.SandboxCacheRootfsLinkPath(p.config.StorageConfig)); err != nil {
-		return fmt.Errorf("error symlinking rootfs: %w", err)
+	if err := p.prepareDiskLinks(); err != nil {
+		return err
 	}
 
 	phaseStart := time.Now()
@@ -213,13 +234,6 @@ func (p *Process) Resume(
 	zap.L().Sugar().Infof("[ResumeSandbox] unpack snapshot cost: %.3f ms, traceID=%s", time.Since(phaseStart).Seconds()*1000, traceID)
 
 	phaseStart = time.Now()
-	rootfsPath, err := p.rootfsProvider.Path()
-	if err != nil {
-		return fmt.Errorf("error getting rootfs path: %w", err)
-	}
-	if err := utils.SymlinkForce(rootfsPath, p.files.SandboxCacheRootfsLinkPath(p.config.StorageConfig)); err != nil {
-		return fmt.Errorf("error symlinking rootfs: %w", err)
-	}
 	telemetry.ReportEvent(ctx, "symlinked rootfs")
 	zap.L().Sugar().Infof("[ResumeSandbox] get rootfs path cost: %.3f ms, traceID=%s", time.Since(phaseStart).Seconds()*1000, traceID)
 
