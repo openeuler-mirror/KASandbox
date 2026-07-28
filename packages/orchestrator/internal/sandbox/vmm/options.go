@@ -10,64 +10,10 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
 )
 
-// OsType identifies the guest operating system family a sandbox runs.
-type OsType string
-
-const (
-	OsLinux   OsType = "linux"
-	OsWindows OsType = "windows"
-	OsAndroid OsType = "android"
-)
-
-func ParseOsType(osType string) (OsType, error) {
-	normalized := OsType(strings.ToLower(strings.TrimSpace(osType)))
-	switch normalized {
-	case "":
-		return OsLinux, nil
-	case OsLinux, OsWindows, OsAndroid:
-		return normalized, nil
-	default:
-		return "", fmt.Errorf("unsupported os type %q", osType)
-	}
-}
-
-func ValidateBackendForOS(osType OsType, backend BackendType) error {
-	switch osType {
-	case OsLinux, OsWindows, OsAndroid:
-	default:
-		return fmt.Errorf("unsupported os type %q", osType)
-	}
-
-	switch backend {
-	case BackendFirecracker, BackendStratoVirt:
-	default:
-		return fmt.Errorf("unsupported VMM type %q", backend)
-	}
-
-	if (osType == OsWindows || osType == OsAndroid) && backend == BackendFirecracker {
-		return fmt.Errorf("unsupported OS/VMM combination %q/%q", osType, backend)
-	}
-
-	return nil
-}
-
-func (o OsType) OrDefault() OsType {
-	if o == "" {
-		return OsLinux
-	}
-
-	return o
-}
-
-func (o OsType) SupportsHugePages() bool {
-	return o.OrDefault() == OsLinux
-}
-
 type VMMConfig struct {
 	Type          BackendType
 	KernelVersion string
 	VMMVersion    string
-	OsType        OsType
 }
 
 func (c VMMConfig) Backend() BackendType {

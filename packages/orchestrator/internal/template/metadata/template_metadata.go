@@ -39,18 +39,6 @@ var blockToAccessType = map[block.AccessType]AccessType{
 	block.Prefetch: AccessPrefetch,
 }
 
-// OSType is the guest operating system family targeted by a template.
-// It is set explicitly by the caller at template creation time and stored in
-// template metadata; it must NOT be inferred from VMMType because a single
-// VMM backend (e.g. Stratovirt) may host multiple OS families.
-type OSType string
-
-const (
-	OSTypeLinux   OSType = "linux"
-	OSTypeAndroid OSType = "android"
-	OSTypeWindows OSType = "windows"
-)
-
 type Version struct {
 	Version any `json:"version"`
 }
@@ -59,11 +47,6 @@ type Context struct {
 	User    string            `json:"user,omitempty"`
 	WorkDir *string           `json:"workdir,omitempty"`
 	EnvVars map[string]string `json:"env_vars,omitempty"`
-	// OsType is the guest OS family ("linux"/"windows") the command runs on.
-	// Empty means linux. It drives the shell selection at command dispatch time
-	// (mirroring the SDK), so a Windows guest runs commands via powershell.exe
-	// instead of /bin/bash. omitempty keeps Linux metadata byte-for-byte stable.
-	OsType string `json:"os_type,omitempty"`
 }
 
 func (c Context) WithUser(user string) Context {
@@ -72,21 +55,9 @@ func (c Context) WithUser(user string) Context {
 	return c
 }
 
-func (c Context) WithOsType(osType string) Context {
-	c.OsType = osType
-
-	return c
-}
-
 type FromTemplate struct {
 	Alias   string `json:"alias"`
 	BuildID string `json:"build_id"`
-}
-
-type MultiDiskSpec struct {
-	OS         string `json:"os"`
-	Persistent string `json:"persistent"`
-	SDCard     string `json:"sdcard"`
 }
 
 type Start struct {
@@ -100,8 +71,6 @@ type TemplateMetadata struct {
 	KernelVersion      string `json:"kernel_version"`
 	FirecrackerVersion string `json:"firecracker_version"`
 	VMMType            string `json:"vmm_type,omitempty"`
-	OsType             string `json:"os_type,omitempty"`
-	EnvdVersion        string `json:"envd_version,omitempty"`
 }
 
 // MemoryPrefetchMapping stores block offsets that should be prefetched when starting a sandbox.
@@ -134,16 +103,13 @@ type Prefetch struct {
 }
 
 type Template struct {
-	Version  uint64           `json:"version"`
-	Template TemplateMetadata `json:"template"`
-	Context  Context          `json:"context"`
-	Start    *Start           `json:"start,omitempty"`
-	// FromImage, FromImageRaw, FromImageMultiDisk and FromTemplate are mutually exclusive.
-	FromImage          *string        `json:"from_image,omitempty"`
-	FromImageRaw       *string        `json:"from_image_raw,omitempty"`
-	FromImageMultiDisk *MultiDiskSpec `json:"from_image_multi_disk,omitempty"`
-	FromTemplate       *FromTemplate  `json:"from_template,omitempty"`
-	Prefetch           *Prefetch      `json:"prefetch,omitempty"`
+	Version      uint64           `json:"version"`
+	Template     TemplateMetadata `json:"template"`
+	Context      Context          `json:"context"`
+	Start        *Start           `json:"start,omitempty"`
+	FromImage    *string          `json:"from_image,omitempty"`
+	FromTemplate *FromTemplate    `json:"from_template,omitempty"`
+	Prefetch     *Prefetch        `json:"prefetch,omitempty"`
 }
 
 func V1TemplateVersion() Template {
@@ -167,27 +133,23 @@ func (t Template) BasedOn(
 
 func (t Template) NewVersionTemplate(metadata TemplateMetadata) Template {
 	return Template{
-		Version:            CurrentVersion,
-		Template:           metadata,
-		Context:            t.Context,
-		Start:              t.Start,
-		FromTemplate:       t.FromTemplate,
-		FromImage:          t.FromImage,
-		FromImageRaw:       t.FromImageRaw,
-		FromImageMultiDisk: t.FromImageMultiDisk,
+		Version:      CurrentVersion,
+		Template:     metadata,
+		Context:      t.Context,
+		Start:        t.Start,
+		FromTemplate: t.FromTemplate,
+		FromImage:    t.FromImage,
 	}
 }
 
 func (t Template) SameVersionTemplate(metadata TemplateMetadata) Template {
 	return Template{
-		Version:            t.Version,
-		Template:           metadata,
-		Context:            t.Context,
-		Start:              t.Start,
-		FromTemplate:       t.FromTemplate,
-		FromImage:          t.FromImage,
-		FromImageRaw:       t.FromImageRaw,
-		FromImageMultiDisk: t.FromImageMultiDisk,
+		Version:      t.Version,
+		Template:     metadata,
+		Context:      t.Context,
+		Start:        t.Start,
+		FromTemplate: t.FromTemplate,
+		FromImage:    t.FromImage,
 	}
 }
 

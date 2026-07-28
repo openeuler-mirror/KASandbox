@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
@@ -21,7 +20,6 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/id"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
-	"github.com/e2b-dev/infra/packages/shared/pkg/templates"
 	ut "github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
 
@@ -52,11 +50,8 @@ func (tm *TemplateManager) CreateTemplate(
 	memoryMB int64,
 	readyCommand *string,
 	fromImage *string,
-	fromImageRaw *api.FromImageRaw,
-	fromImageMultiDisk *api.FromImageMultiDisk,
 	fromTemplate *string,
 	fromImageRegistry *api.FromImageRegistry,
-	osType *api.OsType,
 	force *bool,
 	steps *[]api.TemplateStep,
 	clusterID uuid.UUID,
@@ -89,21 +84,6 @@ func (tm *TemplateManager) CreateTemplate(
 			e = errors.Join(e, fmt.Errorf("failed to set build status to failed: %w", err))
 		}
 	}()
-
-	var resolvedOsType api.OsType
-	var resolvedVMMType BackendType
-	var err error
-	if fromTemplate == nil || *fromTemplate == "" {
-		resolvedOsType, resolvedVMMType, err = resolveBuildVM(osType)
-	} else if osType != nil {
-		// A template derived from another template inherits its VMM from the
-		// source metadata. Preserve an explicitly requested OS only so the
-		// orchestrator can verify that it matches the source template.
-		resolvedOsType, _, err = resolveBuildVM(osType)
-	}
-	if err != nil {
-		return err
-	}
 
 	features, err := sandbox.NewVersionInfo(firecrackerVersion)
 	if err != nil {
@@ -144,11 +124,9 @@ func (tm *TemplateManager) CreateTemplate(
 		Force:              force,
 		Steps:              convertTemplateSteps(steps),
 		FromImageRegistry:  imageRegistry,
-		VmmType:            string(resolvedVMMType),
-		OsType:             string(resolvedOsType),
 	}
 
-	err = setTemplateSource(ctx, tm, teamID, teamSlug, template, fromImage, fromImageRaw, fromImageMultiDisk, fromTemplate, version)
+	err = setTemplateSource(ctx, tm, teamID, teamSlug, template, fromImage, fromTemplate)
 	if err != nil {
 		// If the error is related to fromTemplate, set the build status to failed with the appropriate message
 		// This is to unify the error handling with fromImage errors
@@ -305,82 +283,19 @@ func convertImageRegistry(registry *api.FromImageRegistry) (*templatemanagergrpc
 	}
 }
 
-type BackendType string
-
-const (
-	BackendFirecracker BackendType = "firecracker"
-	BackendStratoVirt  BackendType = "stratovirt"
-)
-
-func resolveBuildVM(osType *api.OsType) (api.OsType, BackendType, error) {
-	resolvedOsType := api.Linux
-	if osType != nil {
-		switch *osType {
-		case api.Linux, api.Windows, api.Android:
-			resolvedOsType = *osType
-		default:
-			return "", "", fmt.Errorf("unsupported osType %q", *osType)
-		}
-	}
-
-	resolvedVMMType := BackendFirecracker
-	if resolvedOsType == api.Windows || resolvedOsType == api.Android {
-		resolvedVMMType = BackendStratoVirt
-	}
-
-	return resolvedOsType, resolvedVMMType, nil
-}
-
-// setTemplateSource sets the template image source.
-func setTemplateSource(
-	ctx context.Context,
-	tm *TemplateManager,
-	teamID uuid.UUID,
-	teamSlug string,
-	template *templatemanagergrpc.TemplateConfig,
-	fromImage *string,
-	fromImageRaw *api.FromImageRaw,
-	fromImageMultiDisk *api.FromImageMultiDisk,
-	fromTemplate *string,
-	version string,
-) error {
+// setTemplateSource sets the source (either fromImage or fromTemplate)
+func setTemplateSource(ctx context.Context, tm *TemplateManager, teamID uuid.UUID, teamSlug string, template *templatemanagergrpc.TemplateConfig, fromImage *string, fromTemplate *string) error {
 	// hasImage can be empty for v1 template builds
 	hasImage := fromImage != nil
-	hasRaw := fromImageRaw != nil
 	hasTemplate := fromTemplate != nil && *fromTemplate != ""
-	hasMultiDisk := fromImageMultiDisk != nil
 
 	// Validate input: exactly one source must be provided
-	sources := 0
-	for _, has := range []bool{hasImage, hasRaw, hasMultiDisk, hasTemplate} {
-		if has {
-			sources++
-		}
-	}
-	if sources != 1 {
-		return fmt.Errorf("must specify exactly one of fromImage, fromImageRaw, fromImageMultiDisk or fromTemplate")
-	}
-
 	switch {
-	case hasRaw:
-		if strings.TrimSpace(fromImageRaw.Url) == "" {
-			return fmt.Errorf("fromImageRaw.url must not be empty")
-		}
-		template.Source = &templatemanagergrpc.TemplateConfig_FromImageRaw{
-			FromImageRaw: fromImageRaw.Url,
-		}
-	case hasMultiDisk:
-		template.Source = &templatemanagergrpc.TemplateConfig_FromImageMultiDisk{
-			FromImageMultiDisk: &templatemanagergrpc.FromImageMultiDisk{
-				Os:         fromImageMultiDisk.Os,
-				Persistent: fromImageMultiDisk.Persistent,
-				Sdcard:     fromImageMultiDisk.Sdcard,
-			},
-		}
+	case hasImage && hasTemplate:
+		return fmt.Errorf("cannot specify both fromImage and fromTemplate")
+	case !hasImage && !hasTemplate:
+		return fmt.Errorf("must specify either fromImage or fromTemplate")
 	case hasTemplate:
-		if strings.TrimSpace(*fromTemplate) == "" {
-			return fmt.Errorf("fromTemplate must not be empty")
-		}
 		identifier, tag, err := id.ParseName(*fromTemplate)
 		if err != nil {
 			return &FromTemplateError{
@@ -429,9 +344,6 @@ func setTemplateSource(
 			},
 		}
 	default: // hasImage
-		if version != templates.TemplateV1Version && strings.TrimSpace(*fromImage) == "" {
-			return fmt.Errorf("fromImage must not be empty")
-		}
 		template.Source = &templatemanagergrpc.TemplateConfig_FromImage{
 			FromImage: *fromImage,
 		}

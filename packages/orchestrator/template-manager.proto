@@ -31,14 +31,6 @@ message FromTemplateConfig {
   string buildID = 2;
 }
 
-// Android data disks. Firmware and writable pflash vars are node-local
-// orchestrator configuration and intentionally are not part of this API.
-message FromImageMultiDisk {
-  string os = 1;
-  string persistent = 2;
-  string sdcard = 3;
-}
-
 // AWS ECR registry authentication
 message AWSRegistry {
   string awsAccessKeyId = 1;
@@ -87,16 +79,12 @@ message TemplateConfig {
   oneof source {
      string fromImage = 11;
      FromTemplateConfig fromTemplate = 14;
-     // Registry reference containing a raw disk image layer.
-     string fromImageRaw = 18;
-     FromImageMultiDisk fromImageMultiDisk = 20;
    }
 
   optional FromImageRegistry fromImageRegistry = 15;
 
   string teamID = 16;
   string vmmType = 17;
-  string osType = 19;
 }
 
 message TemplateCreateRequest {

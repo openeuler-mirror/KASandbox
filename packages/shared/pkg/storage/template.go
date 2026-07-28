@@ -7,12 +7,10 @@ import (
 const (
 	GuestEnvdPath = "/usr/bin/envd"
 
-	MemfileName    = "memfile"
-	RootfsName     = "rootfs.ext4"
-	PersistentName = "persistent.img"
-	SDCardName     = "sdcard.img"
-	SnapfileName   = "snapfile"
-	MetadataName   = "metadata.json"
+	MemfileName  = "memfile"
+	RootfsName   = "rootfs.ext4"
+	SnapfileName = "snapfile"
+	MetadataName = "metadata.json"
 
 	HeaderSuffix = ".header"
 )
@@ -44,14 +42,6 @@ func (t TemplateFiles) StorageRootfsPath() string {
 
 func (t TemplateFiles) StorageRootfsHeaderPath() string {
 	return fmt.Sprintf("%s/%s%s", t.StorageDir(), RootfsName, HeaderSuffix)
-}
-
-func (t TemplateFiles) StorageDiskPath(name string) string {
-	return fmt.Sprintf("%s/%s", t.StorageDir(), name)
-}
-
-func (t TemplateFiles) StorageDiskHeaderPath(name string) string {
-	return fmt.Sprintf("%s/%s%s", t.StorageDir(), name, HeaderSuffix)
 }
 
 func (t TemplateFiles) StorageSnapfilePath() string {

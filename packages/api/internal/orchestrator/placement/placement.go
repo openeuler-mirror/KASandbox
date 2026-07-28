@@ -28,7 +28,7 @@ type Algorithm interface {
 	chooseNode(ctx context.Context, nodes []*nodemanager.Node, nodesExcluded map[string]struct{}, requested nodemanager.SandboxResources, buildMachineInfo machineinfo.MachineInfo) (*nodemanager.Node, error)
 }
 
-// logSandboxCreateRequest logs all SandboxCreateRequest fields in a structured format.
+// logSandboxCreateRequest 分层打印 SandboxCreateRequest 的所有字段
 func logSandboxCreateRequest(ctx context.Context, req *orchestrator.SandboxCreateRequest) {
 	if req == nil {
 		logger.L().Info(ctx, "Sandbox create request is nil")
@@ -140,7 +140,7 @@ func logSandboxCreateRequest(ctx context.Context, req *orchestrator.SandboxCreat
 	logger.L().Info(ctx, "Sandbox create request details", fields...)
 }
 
-func PlaceSandbox(ctx context.Context, algorithm Algorithm, clusterNodes []*nodemanager.Node, preferredNode *nodemanager.Node, sbxRequest *orchestrator.SandboxCreateRequest, buildMachineInfo machineinfo.MachineInfo) (*nodemanager.Node, *orchestrator.SandboxCreateResponse, error) {
+func PlaceSandbox(ctx context.Context, algorithm Algorithm, clusterNodes []*nodemanager.Node, preferredNode *nodemanager.Node, sbxRequest *orchestrator.SandboxCreateRequest, buildMachineInfo machineinfo.MachineInfo) (*nodemanager.Node, error) {
 	ctx, span := tracer.Start(ctx, "place-sandbox")
 	defer span.End()
 	logSandboxCreateRequest(ctx, sbxRequest)
@@ -157,7 +157,7 @@ func PlaceSandbox(ctx context.Context, algorithm Algorithm, clusterNodes []*node
 	for attempt < maxRetries {
 		select {
 		case <-ctx.Done():
-			return nil, nil, fmt.Errorf("request timed out during %d. attempt", attempt+1)
+			return nil, fmt.Errorf("request timed out during %d. attempt", attempt+1)
 		default:
 			// Continue
 		}
@@ -166,12 +166,12 @@ func PlaceSandbox(ctx context.Context, algorithm Algorithm, clusterNodes []*node
 			telemetry.ReportEvent(ctx, "Placing sandbox on the preferred node", telemetry.WithNodeID(node.ID))
 		} else {
 			if len(nodesExcluded) >= len(clusterNodes) {
-				return nil, nil, fmt.Errorf("no nodes available")
+				return nil, fmt.Errorf("no nodes available")
 			}
 
 			node, err = algorithm.chooseNode(ctx, clusterNodes, nodesExcluded, nodemanager.SandboxResources{CPUs: sbxRequest.GetSandbox().GetVcpu(), MiBMemory: sbxRequest.GetSandbox().GetRamMb()}, buildMachineInfo)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 
 			telemetry.ReportEvent(ctx, "Placing sandbox on the node", telemetry.WithNodeID(node.ID))
@@ -187,12 +187,12 @@ func PlaceSandbox(ctx context.Context, algorithm Algorithm, clusterNodes []*node
 			telemetry.WithNodeID(node.ID),
 			telemetry.WithClusterID(node.ClusterID),
 		)
-		createRes, err := node.SandboxCreate(ctx, sbxRequest)
+		err = node.SandboxCreate(ctx, sbxRequest)
 		span.End()
 		if err == nil {
 			node.PlacementMetrics.Success(sbxRequest.GetSandbox().GetSandboxId())
 
-			return node, createRes, nil
+			return node, nil
 		}
 
 		failedNode := node
@@ -216,5 +216,5 @@ func PlaceSandbox(ctx context.Context, algorithm Algorithm, clusterNodes []*node
 		}
 	}
 
-	return nil, nil, errSandboxCreateFailed
+	return nil, errSandboxCreateFailed
 }

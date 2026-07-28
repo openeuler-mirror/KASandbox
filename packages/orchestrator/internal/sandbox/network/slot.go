@@ -31,19 +31,8 @@ const (
 
 	tapMask          = 30
 	tapInterfaceName = "tap0"
-	// cvdTapName replaces the legacy "tap1" extra tap. The Cuttlefish-style
-	// name aligns with modem_simulator and other ns-local companion
-	// processes that L2-attach to the guest's secondary interface.
-	cvdTapName = "cvd-mtap"
-
-	namespaceIp      = "169.254.0.21"
-	extraNamespaceIp = "192.168.97.2" // cvd-mtap guest side (matches modem_simulator config)
 	tapIp            = "169.254.0.22"
-	extraTapIp       = "192.168.97.1" // cvd-mtap ns-side host IP
-	// cvdTapNetwork is the source CIDR matched by the ns MASQUERADE rule
-	// for traffic leaving the sandbox via the cvd-mtap interface.
-	cvdTapNetwork = "192.168.97.0/30"
-	tapMAC        = "02:FC:00:00:00:05"
+	tapMAC           = "02:FC:00:00:00:05"
 )
 
 var (
@@ -86,9 +75,6 @@ type Slot struct {
 
 	tapIp   net.IP
 	tapMask net.IPMask
-
-	extraTapIp   net.IP
-	extraTapMask net.IPMask
 
 	// HostIP is IP address for the sandbox from the host machine.
 	// You can use it to make requests to the sandbox.
@@ -144,12 +130,6 @@ func NewSlot(key string, idx int, config Config) (*Slot, error) {
 		return nil, fmt.Errorf("failed to parse tap CIDR: %w", err)
 	}
 
-	extraTapCIDR := fmt.Sprintf("%s/%d", extraTapIp, tapMask)
-	extraTapIp, extraTapNet, err := net.ParseCIDR(extraTapCIDR)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse extra tap CIDR: %w", err)
-	}
-
 	slot := &Slot{
 		Key: key,
 		Idx: idx,
@@ -160,9 +140,6 @@ func NewSlot(key string, idx int, config Config) (*Slot, error) {
 
 		tapIp:   tapIp,
 		tapMask: tapNet.Mask,
-
-		extraTapIp:   extraTapIp,
-		extraTapMask: extraTapNet.Mask,
 
 		HostIP:   hostIp,
 		hostNet:  hostNet,
@@ -273,10 +250,8 @@ func (s *Slot) HostCIDR() string {
 }
 
 func (s *Slot) NamespaceIP() string {
-	return namespaceIp
+	return "169.254.0.21"
 }
-
-func (s *Slot) ExtraNamespaceIP() string { return extraNamespaceIp }
 
 func (s *Slot) NamespaceID() string {
 	if s.ExternalNetNS && s.NetNSPath != "" {
@@ -288,18 +263,6 @@ func (s *Slot) NamespaceID() string {
 func (s *Slot) TapName() string {
 	return tapInterfaceName
 }
-
-func (s *Slot) ExtraTapName() string { return cvdTapName }
-
-func (s *Slot) ExtraTapIP() net.IP { return s.extraTapIp }
-
-func (s *Slot) ExtraTapIPString() string { return s.extraTapIp.String() }
-
-func (s *Slot) ExtraTapCIDR() net.IPMask { return s.extraTapMask }
-
-// VsockCID is stable for the lifetime of an allocated slot and unique among
-// concurrently running sandboxes because slots themselves are exclusive.
-func (s *Slot) VsockCID() uint32 { return uint32(s.Idx + 3) }
 
 func (s *Slot) TapIP() net.IP {
 	return s.tapIp
@@ -332,7 +295,7 @@ func (s *Slot) InitializeFirewall() error {
 		return fmt.Errorf("firewall is already initialized for slot %s", s.Key)
 	}
 
-	fw, err := NewFirewall(s.TapName(), s.config.OrchestratorInSandboxIPAddress, s.ExtraTapName())
+	fw, err := NewFirewall(s.TapName(), s.config.OrchestratorInSandboxIPAddress)
 	if err != nil {
 		return fmt.Errorf("error initializing firewall: %w", err)
 	}
