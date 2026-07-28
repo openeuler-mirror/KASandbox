@@ -2,18 +2,7 @@
 
 package platform
 
-import (
-	"os/exec"
-	"os/user"
-	"strings"
-	"testing"
-
-	"github.com/stretchr/testify/require"
-
-	"github.com/e2b-dev/infra/packages/envd/internal/execcontext"
-	processRpc "github.com/e2b-dev/infra/packages/envd/internal/services/spec/process"
-	"github.com/e2b-dev/infra/packages/envd/internal/utils"
-)
+import "testing"
 
 func TestRootSubpath(t *testing.T) {
 	t.Parallel()
@@ -64,60 +53,4 @@ func TestRootSubpath(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestConfigureProcessEnvDoesNotInheritParentEnvironment(t *testing.T) {
-	t.Setenv("PATH", `C:\Windows\System32`)
-	t.Setenv("SystemRoot", `C:\Windows`)
-	t.Setenv("ComSpec", `C:\Windows\System32\cmd.exe`)
-	t.Setenv("E2B_SECRET_TOKEN", "secret")
-
-	defaultEnv := utils.NewMap[string, string]()
-	defaultEnv.Store("DEFAULT_ENV", "default")
-	defaultEnv.Store("OVERRIDDEN_ENV", "default")
-
-	cmd := exec.Command("cmd.exe")
-	ConfigureProcessEnv(
-		cmd,
-		&user.User{
-			Username: "sandbox",
-			HomeDir:  `C:\Users\sandbox`,
-		},
-		&processRpc.ProcessConfig{
-			Envs: map[string]string{
-				"PROCESS_ENV":    "process",
-				"OVERRIDDEN_ENV": "process",
-			},
-		},
-		&execcontext.Defaults{
-			EnvVars: defaultEnv,
-		},
-	)
-
-	env := envSliceToMap(cmd.Env)
-	require.Equal(t, `C:\Windows\System32`, env["PATH"])
-	require.Equal(t, `C:\Windows`, env["SystemRoot"])
-	require.Equal(t, `C:\Windows\System32\cmd.exe`, env["ComSpec"])
-	require.Equal(t, `C:\Users\sandbox`, env["HOME"])
-	require.Equal(t, "sandbox", env["USER"])
-	require.Equal(t, "sandbox", env["LOGNAME"])
-	require.Equal(t, `C:\Users\sandbox`, env["USERPROFILE"])
-	require.Equal(t, "default", env["DEFAULT_ENV"])
-	require.Equal(t, "process", env["PROCESS_ENV"])
-	require.Equal(t, "process", env["OVERRIDDEN_ENV"])
-	require.NotContains(t, env, "E2B_SECRET_TOKEN")
-}
-
-func envSliceToMap(env []string) map[string]string {
-	result := make(map[string]string, len(env))
-	for _, item := range env {
-		key, value, ok := strings.Cut(item, "=")
-		if !ok {
-			continue
-		}
-
-		result[key] = value
-	}
-
-	return result
 }

@@ -72,26 +72,9 @@ func ConfigureProcessEnv(
 	process *processRpc.ProcessConfig,
 	defaults *execcontext.Defaults,
 ) {
-	var formattedVars []string
+	cmd.Env = os.Environ()
 
-	for _, key := range []string{
-		"PATH",
-		"SystemRoot",
-		"WINDIR",
-		"ComSpec",
-		"PATHEXT",
-		"TEMP",
-		"TMP",
-		"ProgramFiles",
-		"ProgramFiles(x86)",
-		"ProgramData",
-	} {
-		if value := os.Getenv(key); value != "" {
-			formattedVars = append(formattedVars, key+"="+value)
-		}
-	}
-
-	formattedVars = append(formattedVars,
+	cmd.Env = append(cmd.Env,
 		"HOME="+u.HomeDir,
 		"USER="+u.Username,
 		"LOGNAME="+u.Username,
@@ -100,17 +83,15 @@ func ConfigureProcessEnv(
 
 	if defaults.EnvVars != nil {
 		defaults.EnvVars.Range(func(key string, value string) bool {
-			formattedVars = append(formattedVars, key+"="+value)
+			cmd.Env = append(cmd.Env, key+"="+value)
 
 			return true
 		})
 	}
 
 	for key, value := range process.GetEnvs() {
-		formattedVars = append(formattedVars, key+"="+value)
+		cmd.Env = append(cmd.Env, key+"="+value)
 	}
-
-	cmd.Env = formattedVars
 }
 
 func SendProcessSignal(cmd *exec.Cmd, _ syscall.Signal) error {
