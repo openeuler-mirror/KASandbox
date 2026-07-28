@@ -147,13 +147,7 @@ func (b *Builder) Build(ctx context.Context, template storage.TemplateFiles, cfg
 
 	cacheScope := cfg.CacheScope
 
-	// Validate Android-specific source and build-step invariants
-	// before doing any work, so the build fails fast with a clear user error.
-	if err := cfg.Validate(); err != nil {
-		return nil, phases.NewPhaseBuildError(phases.PhaseMeta{StepType: "base"}, err)
-	}
-
-	isV1Build := utils.IsVersion(cfg.Version, templates.TemplateV1Version) || (cfg.FromImage == "" && cfg.FromImageRaw == "" && cfg.FromImageMultiDisk == nil && cfg.FromTemplate == nil)
+	isV1Build := utils.IsVersion(cfg.Version, templates.TemplateV1Version) || (cfg.FromImage == "" && cfg.FromImageRaw == "" && cfg.FromTemplate == nil)
 
 	l := logger.NewTracedLoggerFromCore(logsCore)
 	defer func(ctx context.Context) {

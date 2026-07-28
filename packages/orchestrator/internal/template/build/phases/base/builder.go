@@ -16,7 +16,6 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
 	sbxtemplate "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/buildcontext"
@@ -113,8 +112,6 @@ func (bb *BaseBuilder) String(ctx context.Context) (string, error) {
 		baseSource = "FROM TEMPLATE " + bb.Config.FromTemplate.GetAlias()
 	} else if bb.Config.UsesRawImage() {
 		baseSource = "FROM RAW " + bb.Config.FromImageRaw
-	} else if bb.Config.UsesMultiDisk() {
-		baseSource = "FROM ANDROID MULTI DISK"
 	} else {
 		fromImage := bb.Config.FromImage
 		if fromImage == "" {
@@ -140,31 +137,13 @@ func (bb *BaseBuilder) Metadata() phases.PhaseMeta {
 func (bb *BaseBuilder) ValidateSourceCapability(ctx context.Context, userLogger logger.Logger) error {
 	var err error
 	switch {
-	case bb.Config.FromTemplate != nil:
-		// Derived templates inherit the source template runtime.
-		return nil
 	case bb.Config.UsesRawImage():
 		if bb.Config.GuestOS() != vmm.OsWindows {
 			err = fmt.Errorf("the current raw-image build implementation only supports Windows guests, got %q", bb.Config.GuestOS())
 		} else if _, parseErr := coreraw.ParseSource(bb.Config.FromImageRaw); parseErr != nil {
 			err = parseErr
 		}
-	case bb.Config.UsesMultiDisk():
-		if bb.Config.GuestOS() != vmm.OsAndroid {
-			err = fmt.Errorf("the current multi-disk build implementation only supports Android guests, got %q", bb.Config.GuestOS())
-			break
-		}
-		for name, ref := range map[string]string{
-			"os":         bb.Config.FromImageMultiDisk.OS,
-			"persistent": bb.Config.FromImageMultiDisk.Persistent,
-			"sdcard":     bb.Config.FromImageMultiDisk.SDCard,
-		} {
-			if _, parseErr := coreraw.ParseSource(ref); parseErr != nil {
-				err = fmt.Errorf("invalid Android %s disk source: %w", name, parseErr)
-				break
-			}
-		}
-	case bb.Config.GuestOS() != vmm.OsLinux:
+	case !bb.Config.UsesRawImage() && bb.Config.FromTemplate == nil && bb.Config.GuestOS() != vmm.OsLinux:
 		err = fmt.Errorf("the current OCI build implementation only supports Linux guests, got %q", bb.Config.GuestOS())
 	}
 
@@ -198,9 +177,6 @@ func (bb *BaseBuilder) Build(
 	if bb.Config.UsesRawImage() {
 		// Raw images skip OCI conversion; the disk is registered as the rootfs
 		// as-is.
-		build = bb.buildLayerFromRaw
-	}
-	if bb.Config.UsesMultiDisk() {
 		build = bb.buildLayerFromRaw
 	}
 
@@ -246,35 +222,9 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 
 	// Created here to be able to pass it to CreateSandbox for populating COW cache
 	rootfsPath := filepath.Join(templateBuildDir, rootfsBuildFileName)
-	directDiskPaths := map[string]string{storage.RootfsName: rootfsPath}
 
-	var rootfs block.ReadonlyDevice
-	var disks []sbxtemplate.Disk
-	var memfile block.ReadonlyDevice
-	if bb.Config.UsesMultiDisk() {
-		disks, memfile, err = constructLayerFilesFromMultiDisk(ctx, userLogger, bb.BuildContext, baseMetadata.Template.BuildID, bb.Config.FromImageMultiDisk, templateBuildDir, bb.Config.RegistryAuthProvider)
-		if err == nil {
-			rootDisk, rootErr := sbxtemplate.RootDisk(disks)
-			if rootErr != nil {
-				err = rootErr
-			} else {
-				rootfs = rootDisk.Device
-			}
-			rootfsPath = filepath.Join(templateBuildDir, storage.RootfsName)
-			directDiskPaths = localDiskPaths(templateBuildDir, disks)
-		}
-	} else {
-		rootfs, memfile, _, err = constructLayerFilesFromRaw(ctx, userLogger, bb.BuildContext, baseMetadata.Template.BuildID, bb.Config.FromImageRaw, rootfsPath, bb.Config.RegistryAuthProvider)
-	}
+	rootfs, memfile, _, err := constructLayerFilesFromRaw(ctx, userLogger, bb.BuildContext, baseMetadata.Template.BuildID, bb.Config.FromImageRaw, rootfsPath, bb.Config.RegistryAuthProvider)
 	if err != nil {
-		if memfile != nil {
-			err = errors.Join(err, memfile.Close())
-		}
-		for _, disk := range disks {
-			if disk.Device != nil {
-				err = errors.Join(err, disk.Device.Close())
-			}
-		}
 		return metadata.Template{}, fmt.Errorf("error building environment from raw image: %w", err)
 	}
 
@@ -284,19 +234,11 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 
 		return metadata.Template{}, fmt.Errorf("error creating template files: %w", err)
 	}
-	var localTemplate sbxtemplate.Template
-	if bb.Config.UsesMultiDisk() {
-		localTemplate, err = sbxtemplate.NewLocalMultiDiskTemplate(cacheFiles, disks, memfile)
-		if err != nil {
-			return metadata.Template{}, errors.Join(err, rootfs.Close(), memfile.Close())
-		}
-	} else {
-		localTemplate = sbxtemplate.NewLocalTemplate(cacheFiles, rootfs, memfile)
-	}
+	localTemplate := sbxtemplate.NewLocalTemplate(cacheFiles, rootfs, memfile)
 	defer localTemplate.Close(ctx)
 
 	envdVersion := bb.EnvdVersion
-	if bb.Config.IsWindows() || bb.Config.IsAndroid() {
+	if bb.Config.IsWindows() {
 		envdVersion = rawWindowsInitialEnvdVersion
 	}
 
@@ -325,7 +267,7 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 		baseSbxConfig,
 		bb.sandboxFactory,
 		baseLayerTimeout,
-		layer.WithDirectDiskPaths(directDiskPaths),
+		layer.WithRootfsCachePath(rootfsPath),
 	)
 
 	// Flush the guest page cache to disk. The base raw layer is later cold-booted
@@ -378,15 +320,6 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 	}
 
 	return baseLayer, nil
-}
-
-func localDiskPaths(dir string, disks []sbxtemplate.Disk) map[string]string {
-	paths := make(map[string]string, len(disks))
-	for _, disk := range disks {
-		paths[disk.Name] = filepath.Join(dir, disk.Name)
-	}
-
-	return paths
 }
 
 func (bb *BaseBuilder) buildLayerFromOCI(
@@ -591,8 +524,6 @@ func (bb *BaseBuilder) Layer(
 
 		if bb.Config.UsesRawImage() {
 			meta.FromImageRaw = &bb.Config.FromImageRaw
-		} else if bb.Config.UsesMultiDisk() {
-			meta.FromImageMultiDisk = &metadata.MultiDiskSpec{OS: bb.Config.FromImageMultiDisk.OS, Persistent: bb.Config.FromImageMultiDisk.Persistent, SDCard: bb.Config.FromImageMultiDisk.SDCard}
 		} else {
 			meta.FromImage = &bb.Config.FromImage
 		}
@@ -600,12 +531,6 @@ func (bb *BaseBuilder) Layer(
 			meta.Context.User = ""
 			meta.Context.WorkDir = nil
 			meta.Context.OsType = string(vmm.OsWindows)
-		}
-		if bb.Config.IsAndroid() {
-			meta.Context.User = ""
-			meta.Context.WorkDir = nil
-			meta.Context.OsType = string(vmm.OsAndroid)
-			meta.Template.OsType = string(vmm.OsAndroid)
 		}
 
 		notCachedResult := phases.LayerResult{

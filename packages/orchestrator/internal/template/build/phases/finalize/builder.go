@@ -157,16 +157,13 @@ func (ppb *PostProcessingBuilder) Build(
 	if ppb.Config.IsWindows() {
 		osType = vmm.OsWindows
 	}
-	if ppb.Config.IsAndroid() {
-		osType = vmm.OsAndroid
-	}
-	if osType == vmm.OsWindows || osType == vmm.OsAndroid {
+	if osType == vmm.OsWindows {
 		defaultUser = nil
 		defaultWorkdir = nil
 	}
 
 	envdVersion := ppb.EnvdVersion
-	if (ppb.Config.UsesRawImage() || ppb.Config.UsesMultiDisk()) && (osType == vmm.OsWindows || osType == vmm.OsAndroid) && sourceLayer.Metadata.Template.EnvdVersion != "" {
+	if ppb.Config.UsesRawImage() && osType == vmm.OsWindows && sourceLayer.Metadata.Template.EnvdVersion != "" {
 		envdVersion = sourceLayer.Metadata.Template.EnvdVersion
 	}
 

@@ -16,7 +16,6 @@ type OsType string
 const (
 	OsLinux   OsType = "linux"
 	OsWindows OsType = "windows"
-	OsAndroid OsType = "android"
 )
 
 func ParseOsType(osType string) (OsType, error) {
@@ -24,7 +23,7 @@ func ParseOsType(osType string) (OsType, error) {
 	switch normalized {
 	case "":
 		return OsLinux, nil
-	case OsLinux, OsWindows, OsAndroid:
+	case OsLinux, OsWindows:
 		return normalized, nil
 	default:
 		return "", fmt.Errorf("unsupported os type %q", osType)
@@ -33,7 +32,7 @@ func ParseOsType(osType string) (OsType, error) {
 
 func ValidateBackendForOS(osType OsType, backend BackendType) error {
 	switch osType {
-	case OsLinux, OsWindows, OsAndroid:
+	case OsLinux, OsWindows:
 	default:
 		return fmt.Errorf("unsupported os type %q", osType)
 	}
@@ -44,7 +43,7 @@ func ValidateBackendForOS(osType OsType, backend BackendType) error {
 		return fmt.Errorf("unsupported VMM type %q", backend)
 	}
 
-	if (osType == OsWindows || osType == OsAndroid) && backend == BackendFirecracker {
+	if osType == OsWindows && backend == BackendFirecracker {
 		return fmt.Errorf("unsupported OS/VMM combination %q/%q", osType, backend)
 	}
 
@@ -57,10 +56,6 @@ func (o OsType) OrDefault() OsType {
 	}
 
 	return o
-}
-
-func (o OsType) SupportsHugePages() bool {
-	return o.OrDefault() == OsLinux
 }
 
 type VMMConfig struct {

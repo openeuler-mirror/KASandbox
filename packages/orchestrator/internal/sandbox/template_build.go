@@ -8,7 +8,6 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/build"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 	headers "github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
 )
@@ -18,16 +17,16 @@ type TemplateBuild struct {
 	persistence storage.StorageProvider
 
 	memfileHeader *headers.Header
-	rootfsHeaders map[build.DiffType]*headers.Header
+	rootfsHeader  *headers.Header
 }
 
-func NewTemplateBuild(memfileHeader *headers.Header, rootfsHeaders map[build.DiffType]*headers.Header, persistence storage.StorageProvider, files storage.TemplateFiles) *TemplateBuild {
+func NewTemplateBuild(memfileHeader *headers.Header, rootfsHeader *headers.Header, persistence storage.StorageProvider, files storage.TemplateFiles) *TemplateBuild {
 	return &TemplateBuild{
 		persistence: persistence,
 		files:       files,
 
 		memfileHeader: memfileHeader,
-		rootfsHeaders: rootfsHeaders,
+		rootfsHeader:  rootfsHeader,
 	}
 }
 
@@ -73,8 +72,8 @@ func (t *TemplateBuild) uploadMemfile(ctx context.Context, memfilePath string) e
 	return nil
 }
 
-func (t *TemplateBuild) uploadRootfsHeader(ctx context.Context, diffType build.DiffType, h *headers.Header) error {
-	object, err := t.persistence.OpenBlob(ctx, t.files.StorageDiskHeaderPath(string(diffType)), storage.RootFSHeaderObjectType)
+func (t *TemplateBuild) uploadRootfsHeader(ctx context.Context, h *headers.Header) error {
+	object, err := t.persistence.OpenBlob(ctx, t.files.StorageRootfsHeaderPath(), storage.RootFSHeaderObjectType)
 	if err != nil {
 		return err
 	}
@@ -92,8 +91,8 @@ func (t *TemplateBuild) uploadRootfsHeader(ctx context.Context, diffType build.D
 	return nil
 }
 
-func (t *TemplateBuild) uploadRootfs(ctx context.Context, diffType build.DiffType, rootfsPath string) error {
-	object, err := t.persistence.OpenSeekable(ctx, t.files.StorageDiskPath(string(diffType)), storage.RootFSObjectType)
+func (t *TemplateBuild) uploadRootfs(ctx context.Context, rootfsPath string) error {
+	object, err := t.persistence.OpenSeekable(ctx, t.files.StorageRootfsPath(), storage.RootFSObjectType)
 	if err != nil {
 		return err
 	}
@@ -154,17 +153,34 @@ func uploadFileAsBlob(ctx context.Context, b storage.Blob, path string) error {
 	return nil
 }
 
-func (t *TemplateBuild) Upload(ctx context.Context, metadataPath string, fcSnapfilePath string, memfilePath *string, rootfsPaths map[build.DiffType]string) chan error {
+func (t *TemplateBuild) Upload(ctx context.Context, metadataPath string, fcSnapfilePath string, memfilePath *string, rootfsPath *string) chan error {
 	eg, ctx := errgroup.WithContext(ctx)
 
-	for diffType, h := range t.rootfsHeaders {
-		diffType, h := diffType, h
-		eg.Go(func() error { return t.uploadRootfsHeader(ctx, diffType, h) })
-	}
-	for diffType, path := range rootfsPaths {
-		diffType, path := diffType, path
-		eg.Go(func() error { return t.uploadRootfs(ctx, diffType, path) })
-	}
+	eg.Go(func() error {
+		if t.rootfsHeader == nil {
+			return nil
+		}
+
+		err := t.uploadRootfsHeader(ctx, t.rootfsHeader)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	eg.Go(func() error {
+		if rootfsPath == nil {
+			return nil
+		}
+
+		err := t.uploadRootfs(ctx, *rootfsPath)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
 
 	eg.Go(func() error {
 		if t.memfileHeader == nil {
