@@ -52,10 +52,13 @@ message SandboxConfig {
   // Auto-resume policy for paused sandboxes.
   optional SandboxAutoResumeConfig auto_resume = 24;
 
+  // Guest operating system family resolved from the template metadata.
+  string os_type = 25;
+
   // Runtime network facts supplied by the CRI shim.
   // This is separate from SandboxNetworkConfig, which describes product-level
   // ingress/egress policy.
-  optional SandboxRuntimeNetworkConfig runtime_network = 25;
+  optional SandboxRuntimeNetworkConfig runtime_network = 26;
 }
 
 message SandboxRuntimeNetworkConfig {
@@ -76,8 +79,6 @@ message SandboxRuntimeNetworkConfig {
 message SandboxAutoResumeConfig {
   // Policy values are owned by the API layer today (e.g. "off", "any").
   string policy = 1;
-  // Timeout requested on initial sandbox create (seconds).
-  uint64 timeout_seconds = 2;
 }
 
 message SandboxVolumeMount {
@@ -92,23 +93,11 @@ message SandboxNetworkConfig {
   optional SandboxNetworkIngressConfig ingress = 2;
 }
 
-message SandboxNetworkTransform {
-  map<string, string> headers = 1;
-}
-
-message SandboxNetworkRule {
-  optional SandboxNetworkTransform transform = 1;
-}
-
-message SandboxNetworkDomainRules {
-  repeated SandboxNetworkRule rules = 1;
-}
-
 message SandboxNetworkEgressConfig {
   repeated string allowed_cidrs = 1;
   repeated string denied_cidrs = 2;
+
   repeated string allowed_domains = 3;
-  map<string, SandboxNetworkDomainRules> rules = 4;
 }
 
 message SandboxNetworkIngressConfig {
@@ -126,14 +115,23 @@ message SandboxCreateRequest {
 message SandboxCreateResponse {
   string client_id = 1;
   string host_ip = 2;
+  // Guest operating system family resolved from the template metadata.
+  string os_type = 3;
+
+  // Host-side Android emulator service ports. Populated only when the
+  // sandbox OS is Android; zero for Linux/Windows sandboxes. The ports are
+  // allocated dynamically on the orchestrator host (loopback) and are valid
+  // for the lifetime of the sandbox.
+  int32 adb_port = 4;
+  int32 modem_simulator_port = 5;
+  int32 webrtc_http_port = 6;
+  int32 webrtc_streaming_port = 7;
 }
 
 message SandboxUpdateRequest {
   string sandbox_id = 1;
 
-  // All fields are optional — only set fields are applied.
-  optional google.protobuf.Timestamp end_time = 2;
-  optional SandboxNetworkEgressConfig egress = 3;
+  google.protobuf.Timestamp end_time = 2;
 }
 
 message SandboxDeleteRequest {
@@ -184,4 +182,25 @@ service SandboxService {
   rpc Checkpoint(SandboxCheckpointRequest) returns (SandboxCheckpointResponse);
 
   rpc ListCachedBuilds(google.protobuf.Empty) returns (SandboxListCachedBuildsResponse);
+}
+
+message VolumeCreateRequest {
+  string volume_id = 1;
+  string volume_type = 2;
+  string team_id = 3;
+}
+
+message VolumeCreateResponse {}
+
+message VolumeDeleteRequest {
+  string volume_id = 1;
+  string volume_type = 2;
+  string team_id = 3;
+}
+
+message VolumeDeleteResponse {}
+
+service VolumeService {
+  rpc Create(VolumeCreateRequest) returns (VolumeCreateResponse);
+  rpc Delete(VolumeDeleteRequest) returns (VolumeDeleteResponse);
 }
