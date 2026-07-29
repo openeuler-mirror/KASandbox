@@ -12,6 +12,10 @@ echo "Version name: $version_name"
 echo "Starting to build Firecracker version: $version_name"
 tools/devtool -y build --release
 
+# 架构自适应：devtool 按主机架构构建，产物路径含 $(uname -m)
+arch=$(uname -m)
+target="${arch}-unknown-linux-musl"
+
 mkdir -p "./build/fc/${version_name}"
-cp ./build/cargo_target/x86_64-unknown-linux-musl/release/firecracker "./build/fc/${version_name}/firecracker"
-echo "Finished building Firecracker version: $version_name and copied to ./build/fc/${version_name}/firecracker"
+cp "./build/cargo_target/${target}/release/firecracker" "./build/fc/${version_name}/firecracker"
+echo "Finished building Firecracker version: $version_name (${arch}) and copied to ./build/fc/${version_name}/firecracker"
