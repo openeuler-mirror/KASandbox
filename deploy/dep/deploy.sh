@@ -89,22 +89,6 @@ push_prebuilt_images() {
     done
 }
 
-# 推送 webhook 镜像到 Harbor（受 ENABLE_WEBHOOK 开关控制）
-# helm 模板期望镜像格式为 ${REGISTRY_URL}/${WEBHOOK_DOCKER_IMAGE}（不带版本标签）
-push_webhook_image() {
-    if [ "${ENABLE_WEBHOOK:-false}" != "true" ]; then
-        return
-    fi
-    local webhook_tag="${REGISTRY_URL}/${WEBHOOK_DOCKER_IMAGE}"
-    step2 "${WEBHOOK_DOCKER_IMAGE}  ->  ${webhook_tag}"
-    if docker image inspect "$WEBHOOK_DOCKER_IMAGE" >/dev/null 2>&1; then
-        docker tag "$WEBHOOK_DOCKER_IMAGE" "$webhook_tag"
-        docker push "$webhook_tag"
-    else
-        warn "webhook 镜像 ${WEBHOOK_DOCKER_IMAGE} 本地不存在，跳过推送"
-    fi
-}
-
 # ===================== K8S 部署 =====================
 render_helm_values() {
     info "rendering helm values.yaml ..."
@@ -336,7 +320,6 @@ main() {
     load_env
     build_and_push_dockerfiles
     push_prebuilt_images
-    push_webhook_image
 
     case "$DEPLOY_TYPE" in
         k8s)   deploy_k8s ;;
@@ -348,6 +331,21 @@ main() {
     esac
 
     init_database
+
+    # init_database 生成了 teamApiKey → 更新 Secret 并重启 webhook 使其生效
+    if [ "$DEPLOY_TYPE" = "k8s" ] && [ "${ENABLE_WEBHOOK:-false}" = "true" ]; then
+        info "updating e2b-api-key secret and restarting webhook ..."
+        local api_key
+        api_key=$(python3 -c "import json; print(json.load(open('/root/.e2b/config.json')).get('teamApiKey',''))" 2>/dev/null || true)
+        if [ -n "$api_key" ]; then
+            kubectl -n e2b delete secret e2b-api-key --ignore-not-found=true >/dev/null 2>&1 || true
+            kubectl -n e2b create secret generic e2b-api-key \
+                --from-literal=api-key="$api_key" >/dev/null
+            kubectl -n e2b rollout restart deployment e2b-webhook >/dev/null
+            info "webhook restarted with new API key"
+        fi
+    fi
+
     info "E2B Local deploy complete!"
 }
 
