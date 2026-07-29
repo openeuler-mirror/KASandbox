@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	admissionv1 "k8s.io/api/admission/v1"
@@ -141,28 +144,29 @@ func admitPod(ar *admissionv1.AdmissionReview, transformer annotationTransformer
 
 	klog.V(2).Infof("handling pod %s/%s", pod.Namespace, pod.Name)
 
-	// ANDROID_SANDBOX=true: 仅注入 runtimeClassName=android 后直接返回, 不调用 API 也不注入 e2b 注解
+	// 根据 ANDROID_SANDBOX 环境变量决定 runtimeClassName:
+	//   - android: 跳过 e2b API 调用与注解注入
+	//   - e2b:     调用 e2b API 获取注解
+	runtimeClass := "e2b"
+	var patches []patchOperation
 	if hasAndroidSandboxEnv(&pod) {
-		klog.V(2).Infof("injecting runtimeClassName=android for pod %s/%s (skip e2b)", pod.Namespace, pod.Name)
-		return patchResponse(ar.Request.UID, []patchOperation{{
-			Op: "add", Path: "/spec/runtimeClassName", Value: "android",
-		}})
+		runtimeClass = "android"
+		klog.V(2).Infof("pod %s/%s marked as android sandbox (skip e2b annotations)", pod.Namespace, pod.Name)
+	} else {
+		// 从 e2b API 动态获取注解 (带容错, 失败时返回空注解)
+		e2bAnnotations, err := transformer.FetchForPod(&pod)
+		if err != nil {
+			klog.Warningf("fetch annotations with error (using fallback): %v", err)
+		}
+		patches = buildPatch(pod.Annotations, e2bAnnotations, "/metadata/annotations")
 	}
 
-	// 从 e2b API 动态获取注解 (带容错, 失败时返回空注解)
-	e2bAnnotations, err := transformer.FetchForPod(&pod)
-	if err != nil {
-		klog.Warningf("fetch annotations with error (using fallback): %v", err)
-	}
-
-	patches := buildPatch(pod.Annotations, e2bAnnotations, "/metadata/annotations")
-
-	// 注入 runtimeClassName: e2b (若未设置)
+	// 注入 runtimeClassName (若未设置)
 	if pod.Spec.RuntimeClassName == nil {
 		patches = append(patches, patchOperation{
-			Op: "add", Path: "/spec/runtimeClassName", Value: "e2b",
+			Op: "add", Path: "/spec/runtimeClassName", Value: runtimeClass,
 		})
-		klog.V(2).Infof("injecting runtimeClassName=e2b for pod %s/%s", pod.Namespace, pod.Name)
+		klog.V(2).Infof("injecting runtimeClassName=%s for pod %s/%s", runtimeClass, pod.Namespace, pod.Name)
 	}
 
 	if len(patches) == 0 {
@@ -316,14 +320,44 @@ func main() {
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},
+		// 超时配置：防止慢速攻击与连接泄漏
+		ReadTimeout:  10 * time.Second, // 读取请求体（AdmissionReview 较小）
+		WriteTimeout: 15 * time.Second, // 写响应（含调用 e2b API 的处理时间）
+		IdleTimeout:  60 * time.Second, // keep-alive 空闲连接
 	}
 
 	klog.Infof("starting e2b-webhook server on :%s (cert=%s key=%s)", port, certFile, keyFile)
 	klog.Infof("transform API: %s/sandboxes/transform (timeout=%s)",
 		apiURL, apiTimeout)
 
-	if err := server.ListenAndServeTLS(certFile, keyFile); err != nil {
-		klog.Fatalf("server failed: %v", err)
+	// 监听 SIGINT/SIGTERM 信号，触发优雅退出
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// 在后台启动 HTTP server
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := server.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+		close(serverErr)
+	}()
+
+	// 等待退出信号或服务器错误
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			klog.Fatalf("server failed: %v", err)
+		}
+	case <-ctx.Done():
+		klog.Infof("received shutdown signal, draining connections (timeout=10s) ...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			klog.Errorf("graceful shutdown failed: %v", err)
+			_ = server.Close()
+		}
+		klog.Infof("server stopped")
 	}
 }
 

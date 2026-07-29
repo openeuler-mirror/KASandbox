@@ -13,7 +13,7 @@ NOMAD_PORT=4646
 # Harbor 登录凭证（根据实际情况修改）
 HARBOR_USER="admin"
 HARBOR_PASSWORD="${HARBOR_PASSWORD:-}"
-source "$DEP_DIR/.env"
+source ".env"
 # Harbor 协议: http, https, both
 HARBOR_PROTOCOL="${HARBOR_PROTOCOL:-both}"
 # Nomad/Consul 健康检查端口
@@ -301,10 +301,6 @@ dnsmasq_add_address() {
     fi
 }
 
-modify_nomad() {
-    cp "$DEP_DIR/template-manager.hcl" "$E2B_DIR/nomad/" || error "复制 template-manager.hcl 失败"
-}
-
 # 兼容 yum/dnf 安装 e2b-infra
 install_e2b() {
     info "开始安装 e2b-infra..."
@@ -316,7 +312,6 @@ install_e2b() {
         "install-nomad.sh"
         "install-consul.sh"
         "uninstall-nomad.sh"
-        ".env"
         "start-client.sh"
         "start-server.sh"
         "init-client.sh"
@@ -329,8 +324,7 @@ install_e2b() {
     for f in "${files[@]}"; do
         cp -fv "$DEP_DIR/$f" "$e2b_dir/$f"
     done
-
-    modify_nomad
+    
     # helm 目录随 RPM 包安装到 /opt/e2b-infra/helm，无需在此拷贝
     python3 "$e2b_dir/patch_e2b.py"
     cp -fv "$e2b_dir/bin/orchestrator" /usr/bin/orchestrator
@@ -435,6 +429,27 @@ uninstall_e2b() {
     modprobe -r nbd
 }
 
+# 清理 Firecracker 运行时目录（由 init-client.sh 创建）
+uninstall_fc_directories() {
+    info "开始清理 Firecracker 运行时目录..."
+    local fc_dirs=(
+        "/fc-envd"
+        "/fc-kernels"
+        "/fc-versions"
+        "/fc-vm"
+    )
+    local d
+    for d in "${fc_dirs[@]}"; do
+        if [ -d "$d" ]; then
+            info "删除目录: $d"
+            rm -rf "$d" || warn "删除 $d 失败（可能权限不足）"
+        else
+            info "目录不存在，跳过: $d"
+        fi
+    done
+    success "Firecracker 运行时目录清理完成"
+}
+
 # ===================== 主函数 =====================
 install() {
     info "===== 开始批量安装组件（本机IP：$HOST_IP）====="
@@ -467,7 +482,6 @@ install_client() {
     pip install e2b_code_interpreter==2.4.1
     python3 $E2B_DIR/patch_e2b.py
     
-    cp -fv "$DEP_DIR/.env" "$E2B_DIR/.env"
     cp -fv "$DEP_DIR/init-client.sh" "$E2B_DIR/init-client.sh"
     success "===== 所有客户端组件安装完成 ====="
 }
@@ -593,6 +607,7 @@ uninstall() {
     info "===== 开始批量卸载组件 ====="
     stop
     uninstall_e2b
+    uninstall_fc_directories
     uninstall_harbor
     # uninstall_minio
     uninstall_postgres
@@ -995,7 +1010,6 @@ start() {
 
     # 检查关键目录/文件
     [ ! -d "$E2B_DIR" ] && error "e2b-infra 目录不存在：$E2B_DIR"
-    [ ! -f "$DEP_DIR/.env" ] && error "env 文件缺失：$DEP_DIR/.env"
 
     cd "$E2B_DIR" || error "进入 $E2B_DIR 目录失败"
 

@@ -16,10 +16,11 @@ E2B 是一个基于 Firecracker 微虚拟机的沙箱执行平台，支持在隔
 | **Harbor** | 本地镜像仓库，存储沙箱镜像 |
 | **PostgreSQL** | 元数据存储（团队、用户、模板、沙箱配额） |
 | **e2b-webhook** | K8S 准入控制器，拦截沙箱 Pod 创建（可选） |
+| **cri-multiplex** | CRI 多路复用器，让 K8S 原生调度 E2B 沙箱 Pod（可选） |
 
 ### 目录结构
 
-#### 项目目录（`/root/e2b-deploy/`）
+#### 项目目录
 
 ```
 e2b-deploy/
@@ -59,29 +60,85 @@ e2b-deploy/
 
 #### 部署目标目录（`/opt/e2b-infra/`）
 
-`--install` 时自动将文件复制到此目录：
+通过 RPM 包安装（`rpm -ivh KASandbox-*.aarch64.rpm`），目录结构如下：
 
 ```
 /opt/e2b-infra/
-├── .env                      # 环境变量（从 dep/.env 复制）
-├── bin/                      # E2B 二进制文件
-├── patch_e2b.py              # E2B 补丁脚本
-├── nomad/
-│   └── template-manager.hcl  # Nomad 任务定义
-├── helm/
-│   ├── values-template.yaml  # Helm values 模板
-│   └── templates/
-│       └── template-manager.yaml  # K8S DaemonSet 定义
+├── .env                      # 环境变量配置（必须修改 SERVER_IP）
+├── build.sh                  # 主部署脚本（安装/启动/停止/卸载）
+├── deploy.sh                 # K8S 部署执行脚本
+├── deploy-worker.sh          # K8S Worker 节点部署脚本
+├── deploy-e2b-plugin.sh      # E2B 插件部署脚本
+├── k8s-deploy.sh             # K8S 集群部署脚本（KubeKey）
+├── create_sandbox.py         # 沙箱创建脚本
+├── create_template.py        # 模板创建脚本
+├── main.py                   # 辅助脚本
+├── init-client.sh            # 客户端初始化脚本
 ├── install-nomad.sh          # Nomad 安装脚本
 ├── install-consul.sh         # Consul 安装脚本
 ├── uninstall-nomad.sh        # Nomad 卸载脚本
-├── start-server.sh           # Server 启动脚本
-├── start-client.sh           # Client 启动脚本
-├── init-client.sh            # 客户端初始化脚本
+├── uninstall-consul.sh       # Consul 卸载脚本
+├── start-server.sh           # Nomad Server 启动脚本
+├── start-client.sh           # Nomad Client 启动脚本
 ├── run-nomad.sh              # Nomad 运行脚本
 ├── run-consul.sh             # Consul 运行脚本
-├── deploy.sh                 # K8S 部署脚本
-└── deploy-e2b-plugin.sh      # E2B 插件部署脚本
+├── harbor.cnf                # Harbor SSL 证书配置模板
+├── nginx.conf                # Nginx 配置模板
+├── openclaw.yaml             # OpenClaw 配置
+├── ingress-nginx.yaml        # Nginx Ingress Controller 离线部署清单
+├── wildcard-ingress.yaml     # K8S Ingress 规则（*.e2b.app 域名）
+├── README.md                 # 项目说明
+├── USAGE.md                  # 使用文档（本文件）
+├── DEPLOY_DESIGN.md          # 部署设计文档
+├── bin/                      # 构建产物与 Dockerfile
+│   ├── api.Dockerfile        # API 服务镜像构建文件
+│   ├── client-proxy.Dockerfile
+│   ├── orchestrator.Dockerfile
+│   ├── e2b-webhook.Dockerfile
+│   ├── db-migrator.Dockerfile
+│   ├── migrations/           # 数据库迁移 SQL 文件
+│   ├── api                   # API 服务二进制（构建后生成）
+│   ├── orchestrator          # Orchestrator 二进制（构建后生成）
+│   ├── client-proxy          # Client Proxy 二进制（构建后生成）
+│   ├── envd                  # envd 二进制（构建后生成）
+│   ├── e2b-webhook           # Webhook 二进制（构建后生成）
+│   ├── migrator              # 数据库迁移工具（构建后生成）
+│   ├── seed-db               # 数据库种子工具（构建后生成）
+│   ├── fc-netns-exec         # 网络命名空间工具（构建后生成）
+│   └── cri-multiplex         # CRI 多路复用器二进制（构建后生成）
+├── dep/                      # 部署依赖脚本（install 时拷贝到 /opt/e2b-infra/）
+│   ├── deploy.sh
+│   ├── deploy-e2b-plugin.sh
+│   ├── init-client.sh
+│   ├── install-nomad.sh
+│   ├── install-consul.sh
+│   ├── uninstall-nomad.sh
+│   ├── uninstall-consul.sh
+│   ├── start-server.sh
+│   ├── start-client.sh
+│   ├── run-nomad.sh
+│   ├── run-consul.sh
+│   ├── harbor.cnf
+│   ├── nginx.conf
+│   ├── openclaw.yaml
+│   ├── ingress-nginx.yaml
+│   ├── wildcard-ingress.yaml
+│   └── main.py
+├── helm/                     # Helm 部署模板
+│   ├── Chart.yaml            # Helm Chart 定义
+│   ├── values-template.yaml  # Helm values 模板
+│   └── templates/
+│       ├── api.yaml          # API 服务 Deployment
+│       ├── edge.yaml         # Edge/Client-Proxy Deployment
+│       ├── postgres.yaml     # PostgreSQL Deployment
+│       ├── redis.yaml        # Redis Deployment
+│       ├── template-manager.yaml  # Template Manager DaemonSet
+│       └── rbac-orchestrator.yaml # Orchestrator RBAC
+└── nomad/                    # Nomad 任务定义
+    ├── api.hcl               # API 服务任务
+    ├── edge.hcl              # Edge 服务任务
+    ├── redis.hcl             # Redis 任务
+    └── template-manager.hcl  # Template Manager 任务
 ```
 
 ---
@@ -668,6 +725,199 @@ kubectl get mutatingwebhookconfiguration e2b-webhook -o jsonpath='{.webhooks[0].
 # 检查 Secret
 kubectl -n e2b get secret e2b-webhook-tls e2b-api-key
 ```
+
+---
+
+### 3.5 cri-multiplex 部署（K8S 模式可选）
+
+cri-multiplex 是 CRI gRPC 多路复用器，让 kubelet 通过单一 Unix socket 调度 **containerd**（普通 Pod）和 **E2B orchestrator**（沙箱 Pod）。
+
+#### 架构
+
+```
+Kubelet ──Unix socket──▶ cri-multiplex
+                           ├── RuntimeHandler != "e2b" ──▶ ContainerEngine ──▶ containerd
+                           └── RuntimeHandler == "e2b" ──▶ E2BEngine ──▶ orchestrator:5008 (SandboxService)
+```
+
+- `ContainerEngine`：将所有非 e2b 的 CRI 调用直接代理到 containerd（与原生 kubelet 行为一致）
+- `E2BEngine`：将 RuntimeHandler 为 `e2b` 的 Pod 操作转发到 orchestrator gRPC SandboxService
+
+#### 适用场景
+
+- K8S 模式下，希望用 K8S 原生调度（Deployment/DaemonSet 等）管理 E2B 沙箱 Pod
+- 需要在同一集群中混合运行普通容器 Pod 和 E2B 沙箱 Pod
+- 通过 `RuntimeClass` 选择后端，Pod 声明 `runtimeClassName: e2b` 即路由到 orchestrator
+
+#### 前置条件
+
+- K8S 集群已就绪（通过 [k8s-deploy.sh](k8s-deploy.sh) 部署）
+- kubelet 已通过 kubeadm 初始化（存在 `/var/lib/kubelet/kubeadm-flags.env`）
+- containerd 已运行（`/run/containerd/containerd.sock` 存在）
+- orchestrator 服务可达（默认 `localhost:5008`）
+- cri-multiplex 二进制已存在（RPM 包安装后位于 `/opt/e2b-infra/bin/cri-multiplex`）
+
+#### 安装二进制
+
+cri-multiplex 二进制随 RPM 包安装，位于 `/opt/e2b-infra/bin/cri-multiplex`。如需从源码重新构建：
+
+```bash
+# 在 KASandbox 源码目录构建
+./build.sh --cri-multiplex
+
+# 拷贝到所有 K8S 节点（每个节点都需要）
+scp bin/<arch>/cri-multiplex root@<node>:/opt/e2b-infra/bin/cri-multiplex
+ssh root@<node> chmod +x /opt/e2b-infra/bin/cri-multiplex
+```
+
+#### 部署
+
+**每个 K8S 节点**执行一次（节点级操作，非集群级）：
+
+```bash
+./k8s-deploy.sh cri-multiplex
+```
+
+部署流程：
+
+| 步骤 | 操作 | 说明 |
+|------|------|------|
+| ① 检查二进制 | `/opt/e2b-infra/bin/cri-multiplex` | 不存在则跳过，可通过 `CRI_MULTIPLEX_BIN` 指定路径 |
+| ② 创建 systemd 服务 | `/etc/systemd/system/cri-multiplex.service` | 开机自启 + 崩溃自动重启（RestartSec=3s） |
+| ③ 切换 kubelet endpoint | `containerd.sock` → `cri-multiplex.sock` | 修改 `/var/lib/kubelet/kubeadm-flags.env`，自动备份原文件 |
+| ④ 重启 kubelet | `systemctl restart kubelet` | 使新 endpoint 生效 |
+| ⑤ 创建 RuntimeClass | `android`、`e2b` | kubectl apply，Pod 通过 `runtimeClassName` 选择后端 |
+
+#### 配置参数
+
+通过环境变量覆盖默认值：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `CRI_MULTIPLEX_BIN` | `/opt/e2b-infra/bin/cri-multiplex` | 二进制路径 |
+| `CRI_MULTIPLEX_ORCHESTRATOR` | `localhost:5008` | orchestrator SandboxService 地址 |
+
+示例：
+
+```bash
+# 指定自定义二进制路径和 orchestrator 地址
+CRI_MULTIPLEX_BIN=/opt/bin/cri-multiplex \
+CRI_MULTIPLEX_ORCHESTRATOR=10.0.0.5:5008 \
+./k8s-deploy.sh cri-multiplex
+```
+
+#### systemd 服务配置
+
+部署生成的服务单元 `/etc/systemd/system/cri-multiplex.service`：
+
+```ini
+[Unit]
+Description=cri-multiplex (CRI multi-runtime multiplexer)
+After=containerd.service
+Wants=containerd.service
+
+[Service]
+ExecStart=/opt/e2b-infra/bin/cri-multiplex \
+    -socket /run/cri-multiplex.sock \
+    -containerd-socket /run/containerd/containerd.sock \
+    -orchestrator-address localhost:5008
+Restart=always
+RestartSec=3
+RuntimeDirectory=cri-multiplex
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### RuntimeClass
+
+部署会创建两个 RuntimeClass：
+
+```bash
+$ kubectl get runtimeclass
+NAME       HANDLER    AGE
+android    android    1m
+e2b        e2b        1m
+```
+
+| RuntimeClass | handler | 路由目标 | 用途 |
+|--------------|---------|---------|------|
+| `android` | android | （自定义 runtime） | Android 容器（如需扩展） |
+| `e2b` | e2b | orchestrator SandboxService | E2B 沙箱 Pod |
+
+Pod 声明 `runtimeClassName: e2b` 即可路由到 orchestrator：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-sandbox
+spec:
+  runtimeClassName: e2b
+  containers:
+  - name: app
+    image: debian:bookworm-slim
+```
+
+#### Pod 注解控制沙箱参数
+
+通过 Pod 注解（`metadata.annotations`）控制 E2B 沙箱参数：
+
+| 注解 | 默认值 | 说明 |
+|------|--------|------|
+| `e2b.dev/template-id` | `default` | 模板 ID |
+| `e2b.dev/build-id` | `latest` | 构建版本 |
+| `e2b.dev/team-id` | `cri-multiplex` | 团队 ID |
+| `e2b.dev/vcpu` | `1` | vCPU 数量 |
+| `e2b.dev/ram-mb` | `2048` | 内存（MB） |
+| `e2b.dev/allow-internet` | `false` | 是否允许访问外网 |
+
+#### 验证
+
+```bash
+# 1. 检查 cri-multiplex 服务状态
+systemctl status cri-multiplex
+
+# 2. 检查 socket 是否就绪
+ls -l /run/cri-multiplex.sock
+
+# 3. 检查 kubelet 是否使用 cri-multiplex endpoint
+grep "cri-multiplex" /var/lib/kubelet/kubeadm-flags.env
+# 预期输出包含: --container-runtime-endpoint=unix:///run/cri-multiplex.sock
+
+# 4. 检查 kubelet 运行状态
+systemctl status kubelet
+
+# 5. 检查 RuntimeClass
+kubectl get runtimeclass
+
+# 6. 检查节点 Ready（切换 endpoint 后节点应保持 Ready）
+kubectl get nodes
+```
+
+#### 故障排查
+
+```bash
+# 查看 cri-multiplex 日志
+journalctl -u cri-multiplex -f
+
+# 查看 kubelet 日志（endpoint 切换后异常时）
+journalctl -u kubelet -n 50
+
+# 回滚 endpoint 到 containerd（紧急恢复）
+sed -i 's#unix:///run/cri-multiplex.sock#unix:///run/containerd/containerd.sock#g' \
+    /var/lib/kubelet/kubeadm-flags.env
+systemctl restart kubelet
+
+# 停止 cri-multiplex 服务
+systemctl stop cri-multiplex
+systemctl disable cri-multiplex
+```
+
+> **注意**：
+> - cri-multiplex 部署是**节点级操作**，需在**每个**需要运行 E2B 沙箱的节点上执行
+> - 切换 kubelet endpoint 会短暂影响节点上所有 Pod 的调度，建议在维护窗口操作
+> - 回滚时只需将 `kubeadm-flags.env` 中的 endpoint 改回 `containerd.sock` 并重启 kubelet
 
 ---
 

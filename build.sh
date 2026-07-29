@@ -86,6 +86,8 @@ ENABLE_FIRECRACKER=false
 ENABLE_CRI_MUX=false
 ENABLE_IMAGES=false
 ENABLE_PACKAGE=false
+ENABLE_PACKAGE_SLIM=false
+PACKAGE_OUTPUT_NAME=""
 BUILD_TAGS=""
 
 # 镜像构建配置
@@ -107,7 +109,9 @@ show_usage() {
   -f, --firecracker      构建 Firecracker 微虚拟机 (需要 Docker)
   -c, --cri-multiplex    构建 CRI 多路复用器
   -i, --images           构建 Docker 镜像 (api/orchestrator/webhook/client-proxy)
-  -p, --package          打包源码 (排除 doc、test、firecracker 等)
+  -p, --package          打包源码 (包含所有源代码，15MB)
+  --package-slim         打包最小化构建包 (仅构建所需文件，< 5MB)
+  -n, --package-name NAME 指定打包输出文件名 (不含扩展名，自动追加 .tar.*)
   -h, --help             显示此帮助信息
 
 示例:
@@ -115,23 +119,35 @@ show_usage() {
   ./build.sh -m -i                        # 使用 Mooncake + 构建镜像
   ./build.sh -f                           # 构建 Firecracker
   ./build.sh -c -p                        # 构建 CRI 多路复用 + 打包源码
+  ./build.sh --package-slim               # 打包最小化构建包（推荐）
+  ./build.sh --package-slim -n my-release # 指定输出名为 my-release.tar.xz
 EOF
     exit 0
 }
 
-for arg in "$@"; do
-    case "$arg" in
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         -m|--mooncake)      ENABLE_MOONCAKE=true ;;
         -f|--firecracker)   ENABLE_FIRECRACKER=true ;;
         -c|--cri-multiplex) ENABLE_CRI_MUX=true ;;
         -i|--images)        ENABLE_IMAGES=true ;;
         -p|--package)       ENABLE_PACKAGE=true ;;
+        --package-slim)     ENABLE_PACKAGE_SLIM=true ;;
+        -n|--package-name)
+            if [[ $# -lt 2 ]]; then
+                log_error "--package-name 需要指定文件名"
+                exit 1
+            fi
+            PACKAGE_OUTPUT_NAME="$2"
+            shift
+            ;;
         -h|--help)          show_usage ;;
         *)
-            log_error "未知参数: $arg"
+            log_error "未知参数: $1"
             show_usage
             ;;
     esac
+    shift
 done
 
 # ============================================================================
@@ -214,8 +230,10 @@ setup_go_dependencies() {
         trap "restore_mooncake_src '$mooncake_src'" EXIT
     fi
     
-    # 执行 go mod tidy 和 vendor
+    # 执行 go mod tidy 和 vendor（并行执行）
     local dir
+    local pids=()
+    
     for dir in "${tidy_dirs[@]}"; do
         if ! check_dir "$dir"; then
             continue
@@ -226,8 +244,15 @@ setup_go_dependencies() {
             cd "$dir"
             GOWORK="off" go mod tidy
             GOWORK="off" go mod vendor
-        )
-        log_info "✓ $dir 完成"
+            log_info "✓ $dir 完成"
+        ) &
+        pids+=($!)
+    done
+    
+    # 等待所有后台任务完成
+    local pid
+    for pid in "${pids[@]}"; do
+        wait "$pid" || log_error "进程 $pid 执行失败"
     done
     
     # 恢复 mooncake 源文件
@@ -243,9 +268,6 @@ restore_mooncake_src() {
         log_warn "已恢复 mooncake 源文件"
     fi
 }
-
-# 初始化 Go 依赖
-setup_go_dependencies
 
 # ============================================================================
 # 架构和输出目录设置
@@ -264,9 +286,6 @@ detect_architecture() {
 GOARCH=$(detect_architecture)
 readonly BIN_DIR="bin/${GOARCH}"
 
-log_section "构建二进制文件 ${BUILD_TAGS:+($BUILD_TAGS)} [${GOARCH}]"
-mkdir -p "$BIN_DIR"
-
 # ============================================================================
 # 二进制构建
 # ============================================================================
@@ -284,12 +303,14 @@ build_go_module() {
     log_warn "→ 构建 $module_dir -> $output"
     (
         cd "$module_dir"
-        go build $BUILD_TAGS -o "$output" $build_args
+        # 使用 GOWORK=off：部分模块（如 e2b-webhook）不在 go.work 中，
+        # 必须脱离 workspace 才能按各自 go.mod 构建
+        GOWORK=off go build $BUILD_TAGS -o "$output" $build_args
     )
     log_info "✓ $output 构建完成"
 }
 
-# 构建主要二进制文件
+# 构建主要二进制文件（并行）
 build_main_binaries() {
     local tasks=(
         "packages/api:../../${BIN_DIR}/api:."
@@ -299,14 +320,24 @@ build_main_binaries() {
         "e2b-webhook:../${BIN_DIR}/e2b-webhook:."
     )
     
+    local pids=()
     local task
     for task in "${tasks[@]}"; do
         IFS=':' read -r dir output args <<< "$task"
-        build_go_module "$dir" "$output" "$args"
+        (
+            build_go_module "$dir" "$output" "$args"
+        ) &
+        pids+=($!)
+    done
+    
+    # 等待所有构建完成
+    local pid
+    for pid in "${pids[@]}"; do
+        wait "$pid" || log_error "构建进程 $pid 失败"
     done
 }
 
-# 构建数据库相关工具
+# 构建数据库相关工具（并行）
 build_db_tools() {
     local db_dir="packages/db"
     
@@ -314,19 +345,31 @@ build_db_tools() {
         return
     fi
     
-    log_warn "→ 构建 $db_dir 的 migrator"
+    local pids=()
+    
+    # migrator 后台构建
     (
+        log_warn "→ 构建 $db_dir 的 migrator"
         cd "$db_dir"
         go build $BUILD_TAGS -o "../../${BIN_DIR}/migrator" ./scripts/migrator.go
-    )
-    log_info "✓ ${BIN_DIR}/migrator 构建完成"
+        log_info "✓ ${BIN_DIR}/migrator 构建完成"
+    ) &
+    pids+=($!)
     
-    log_warn "→ 构建 $db_dir 的 seed-db"
+    # seed-db 后台构建
     (
+        log_warn "→ 构建 $db_dir 的 seed-db"
         cd "$db_dir"
         go build $BUILD_TAGS -o "../../${BIN_DIR}/seed-db" ./scripts/seed/postgres/seed-db.go
-    )
-    log_info "✓ ${BIN_DIR}/seed-db 构建完成"
+        log_info "✓ ${BIN_DIR}/seed-db 构建完成"
+    ) &
+    pids+=($!)
+    
+    # 等待两个构建完成
+    local pid
+    for pid in "${pids[@]}"; do
+        wait "$pid" || log_error "DB 工具构建进程 $pid 失败"
+    done
 }
 
 # 构建 fc-netns-exec（不需要 CGO）
@@ -374,12 +417,6 @@ build_cri_multiplex() {
     log_info "✓ ${BIN_DIR}/cri-multiplex 构建完成"
 }
 
-# 执行所有二进制构建
-build_main_binaries
-build_db_tools
-build_fc_netns_exec
-build_cri_multiplex
-
 # ============================================================================
 # Docker 镜像构建
 # ============================================================================
@@ -407,9 +444,19 @@ build_docker_images() {
         "${WEBHOOK_IMAGE_NAME}|e2b-webhook/Dockerfile.scratch|e2b-webhook|e2b-webhook"
     )
     
+    local pids=()
     local task
     for task in "${image_tasks[@]}"; do
-        build_docker_image "$task"
+        (
+            build_docker_image "$task"
+        ) &
+        pids+=($!)
+    done
+    
+    # 等待所有镜像构建完成
+    local pid
+    for pid in "${pids[@]}"; do
+        wait "$pid" || log_error "镜像构建进程 $pid 失败"
     done
     
     # 显示已构建的镜像
@@ -501,8 +548,6 @@ cleanup_binaries_from_context() {
     done
 }
 
-build_docker_images
-
 # ============================================================================
 # Firecracker 构建
 # ============================================================================
@@ -532,12 +577,21 @@ build_firecracker() {
     )
     log_info "✓ Firecracker 构建完成"
 }
-
-build_firecracker
-
 # ============================================================================
 # 源码打包
 # ============================================================================
+
+# 检查压缩工具可用性
+detect_compression() {
+    # 优先使用 xz（最高压缩率），其次 bzip2，最后 gzip
+    if command -v xz >/dev/null 2>&1; then
+        echo "xz"
+    elif command -v bzip2 >/dev/null 2>&1; then
+        echo "bzip2"
+    else
+        echo "gzip"
+    fi
+}
 
 package_source_code() {
     if ! $ENABLE_PACKAGE; then
@@ -548,31 +602,66 @@ package_source_code() {
     
     local project_version=$(cat VERSION 2>/dev/null || echo "latest")
     local timestamp=$(date +%Y%m%d_%H%M%S)
-    local package_name="KASandbox-${project_version}-${timestamp}.tar.gz"
-    local package_dir_name="KASandbox-${project_version}"
+    local compression=$(detect_compression)
+    
+    # 根据压缩方式设置文件扩展名和 tar 选项
+    local compress_flag=""
+    local compress_ext=""
+    case "$compression" in
+        xz)
+            compress_flag="-J"
+            compress_ext=".tar.xz"
+            ;;
+        bzip2)
+            compress_flag="-j"
+            compress_ext=".tar.bz2"
+            ;;
+        *)
+            compress_flag="-z"
+            compress_ext=".tar.gz"
+            ;;
+    esac
+    
+    local package_name package_dir_name
+    if [ -n "$PACKAGE_OUTPUT_NAME" ]; then
+        package_name="${PACKAGE_OUTPUT_NAME}${compress_ext}"
+        package_dir_name="${PACKAGE_OUTPUT_NAME}"
+    else
+        package_name="KASandbox-${project_version}-${timestamp}${compress_ext}"
+        package_dir_name="KASandbox-${project_version}"
+    fi
     
     log_warn "→ 创建源码压缩包: $package_name"
-    log_warn "  排除目录: doc, tests, firecracker, .git, bin, vendor 等"
+    log_warn "  压缩算法: $compression"
+    log_warn "  排除项: vendor/、.cache/、.local/、生成文件等"
     
     # 从父目录执行 tar，避免打包时新生成的文件
     (
         cd "$(dirname "$SCRIPT_DIR")"
-        tar --exclude=doc \
+        tar $compress_flag \
+            --exclude=doc \
             --exclude=tests \
             --exclude=firecracker \
             --exclude=.git \
             --exclude=bin \
             --exclude=.opencode \
             --exclude=node_modules \
-            --exclude=vendor \
+            --exclude='*/vendor' \
+            --exclude='*/.cache' \
+            --exclude='*/.local' \
+            --exclude='*/.pytest_cache' \
+            --exclude='*.pb.go' \
+            --exclude='*_gen.go' \
+            --exclude='*.o' \
+            --exclude='*.a' \
             --exclude=.DS_Store \
             --exclude='*.log' \
             --exclude=.env \
             --exclude=.env.* \
-            --exclude='KASandbox-*.tar.gz' \
+            --exclude='KASandbox-*.tar.*' \
             --warning=no-file-changed \
             --transform "s,^KASandbox,$package_dir_name," \
-            -czf "$SCRIPT_DIR/$package_name" \
+            -cf "$SCRIPT_DIR/$package_name" \
             "$(basename "$SCRIPT_DIR")"
     )
     
@@ -582,18 +671,205 @@ package_source_code() {
         log_info "  文件名: $package_name"
         log_info "  大小: $package_size"
         log_info "  位置: $SCRIPT_DIR/$package_name"
+        log_info "  压缩算法: $compression"
     else
         log_error "✗ 源码打包失败"
+        return 1
     fi
 }
 
-package_source_code
+# ============================================================================
+# 最小化打包（仅构建所需文件）
+# ============================================================================
+
+package_source_code_slim() {
+    if ! $ENABLE_PACKAGE_SLIM; then
+        return
+    fi
+    
+    log_section "打包最小化构建包"
+    
+    local project_version=$(cat VERSION 2>/dev/null || echo "latest")
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    local compression=$(detect_compression)
+    
+    # 根据压缩方式设置文件扩展名和 tar 选项
+    local compress_flag=""
+    local compress_ext=""
+    case "$compression" in
+        xz)
+            compress_flag="-J"
+            compress_ext=".tar.xz"
+            ;;
+        bzip2)
+            compress_flag="-j"
+            compress_ext=".tar.bz2"
+            ;;
+        *)
+            compress_flag="-z"
+            compress_ext=".tar.gz"
+            ;;
+    esac
+    
+    local package_name package_dir_name
+    local repo_dir="$(basename "$SCRIPT_DIR")"
+    if [ -n "$PACKAGE_OUTPUT_NAME" ]; then
+        package_name="${PACKAGE_OUTPUT_NAME}${compress_ext}"
+        package_dir_name="${PACKAGE_OUTPUT_NAME}"
+    else
+        package_name="KASandbox-build-${project_version}-${timestamp}${compress_ext}"
+        package_dir_name="KASandbox-build-${project_version}"
+    fi
+    
+    log_warn "→ 创建最小化构建包: $package_name"
+    log_warn "  压缩算法: $compression"
+    log_warn "  包含: build.sh、cri-multiplex、e2b-webhook、deploy、packages/{api,client-proxy,envd,orchestrator,shared}"
+    
+    # 显式指定打包内容（而非排除法），仅包含构建与部署所需文件
+    # 同时排除各目录内的 vendor、缓存、生成文件等
+    (
+        cd "$(dirname "$SCRIPT_DIR")"
+        tar $compress_flag \
+            --exclude='*/vendor' \
+            --exclude='*/.cache' \
+            --exclude='*/.local' \
+            --exclude='*/.pytest_cache' \
+            --exclude='*.o' \
+            --exclude='*.a' \
+            --exclude=.DS_Store \
+            --exclude='*.log' \
+            --exclude=.env \
+            --exclude=.env.* \
+            --exclude='KASandbox-*.tar.*' \
+            --exclude='*/bin' \
+            --warning=no-file-changed \
+            --transform "s,^$repo_dir,$package_dir_name," \
+            -cf "$SCRIPT_DIR/$package_name" \
+            "$repo_dir/build.sh" \
+            "$repo_dir/cri-multiplex" \
+            "$repo_dir/e2b-webhook" \
+            "$repo_dir/deploy" \
+            "$repo_dir/packages/api" \
+            "$repo_dir/packages/client-proxy" \
+            "$repo_dir/packages/envd" \
+            "$repo_dir/packages/orchestrator" \
+            "$repo_dir/packages/db" \
+            "$repo_dir/packages/auth" \
+            "$repo_dir/packages/clickhouse" \
+            "$repo_dir/packages/shared"
+    )
+    
+    if [ -f "$SCRIPT_DIR/$package_name" ]; then
+        local package_size=$(du -h "$SCRIPT_DIR/$package_name" | cut -f1)
+        log_info "✓ 最小化打包完成"
+        log_info "  文件名: $package_name"
+        log_info "  大小: $package_size"
+        log_info "  位置: $SCRIPT_DIR/$package_name"
+        log_info "  压缩算法: $compression"
+        log_info "  用途: 构建与部署用源码包"
+    else
+        log_error "✗ 最小化打包失败"
+        return 1
+    fi
+}
+
+# ============================================================================
+# 主执行逻辑：各命令独立并行
+# ============================================================================
+
+# 执行选项对应的任务（并行）
+run_tasks() {
+    local pids=()
+    
+    # -i 选项：仅构建 Docker 镜像（不构建二进制）
+    if $ENABLE_IMAGES; then
+        (
+            log_section "Docker 镜像构建流程"
+            build_docker_images
+        ) &
+        pids+=($!)
+    fi
+
+    # -c 选项：仅构建 CRI 多路复用器
+    if $ENABLE_CRI_MUX; then
+        (
+            log_section "CRI 多路复用器构建流程"
+            build_cri_multiplex
+        ) &
+        pids+=($!)
+    fi
+
+    # -f 选项：仅构建 Firecracker
+    if $ENABLE_FIRECRACKER; then
+        (
+            log_section "Firecracker 构建流程"
+            build_firecracker
+        ) &
+        pids+=($!)
+    fi
+
+    # -p 选项：仅打包源码
+    if $ENABLE_PACKAGE; then
+        (
+            log_section "源码打包流程"
+            package_source_code
+        ) &
+        pids+=($!)
+    fi
+
+    # --package-slim 选项：仅打包最小化构建包
+    if $ENABLE_PACKAGE_SLIM; then
+        (
+            log_section "最小化打包流程"
+            package_source_code_slim
+        ) &
+        pids+=($!)
+    fi
+
+    # 等待所有后台任务完成
+    if [ ${#pids[@]} -gt 0 ]; then
+        local pid
+        for pid in "${pids[@]}"; do
+            if wait "$pid"; then
+                : # 成功
+            else
+                log_warn "⚠️  任务进程 $pid 返回非零状态"
+            fi
+        done
+    fi
+}
+
+# 检查是否指定了任何执行选项（除 -m/--mooncake 外）
+check_has_execute_options() {
+    if $ENABLE_IMAGES || $ENABLE_CRI_MUX || $ENABLE_FIRECRACKER || \
+       $ENABLE_PACKAGE || $ENABLE_PACKAGE_SLIM; then
+        return 0  # 有执行选项
+    fi
+    return 1  # 没有执行选项
+}
+
+# 主逻辑判断
+if check_has_execute_options "$@"; then
+    # 有指定特定任务，并行执行这些任务
+    run_tasks "$@"
+else
+    # 没有指定特定任务，执行标准构建流程
+    log_section "标准构建流程"
+    setup_go_dependencies
+    mkdir -p "$BIN_DIR"
+    log_section "构建二进制文件 ${BUILD_TAGS:+($BUILD_TAGS)} [${GOARCH}]"
+    build_main_binaries
+    build_db_tools
+    build_fc_netns_exec
+fi
 
 # ============================================================================
 # 总结
 # ============================================================================
 
 log_section "所有任务执行完毕"
-log_info "生成的二进制文件位于: ${BIN_DIR}/"
-ls -lh "${BIN_DIR}/" 2>/dev/null || log_error "目录为空或不存在"
+if [ -d "$BIN_DIR" ]; then
+    log_info "生成的二进制文件位于: ${BIN_DIR}/"
+    ls -lh "${BIN_DIR}/" 2>/dev/null || log_error "目录为空或不存在"
+fi
 print_elapsed_time

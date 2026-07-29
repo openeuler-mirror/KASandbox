@@ -79,6 +79,16 @@ func envVar(name, value string) map[string]interface{} {
 	return map[string]interface{}{"name": name, "value": value}
 }
 
+// copyMap 返回 m 的浅拷贝; 若 m 为 nil 则返回空 map。
+// 用于 mockTransformer 避免返回内部状态引用被调用方修改。
+func copyMap(m map[string]string) map[string]string {
+	cp := make(map[string]string, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
 // mockTransformer 实现 annotationTransformer 接口, 用于测试 admitPod / admitBatchSandbox。
 type mockTransformer struct {
 	mu             sync.Mutex
@@ -875,7 +885,11 @@ func TestSandboxConfig_ToE2BAnnotations(t *testing.T) {
 		FirecrackerVersion:  "1.0",
 		ExecutionID:         "exec-1",
 		EnvdAccessToken:     &token,
-		Network:             json.RawMessage(`{"egress":{"a":1}}`),
+		Network: &sandboxNetworkConfig{
+			Egress: &sandboxNetworkEgressConfig{
+				AllowedCidrs: []string{"10.0.0.0/8"},
+			},
+		},
 	}
 
 	annos := cfg.toE2BAnnotations()
@@ -898,7 +912,7 @@ func TestSandboxConfig_ToE2BAnnotations(t *testing.T) {
 		"e2b.dev/execution-id":        "exec-1",
 		"e2b.dev/allow-internet":      "true",
 		"e2b.dev/envd-access-token":   "secret-token",
-		"e2b.dev/network":             `{"egress":{"a":1}}`,
+		"e2b.dev/network":             `{"egress":{"allowedCidrs":["10.0.0.0/8"]}}`,
 		"e2b.dev/env-vars":            "{}",
 		"e2b.dev/volume-mounts":       "[]",
 		"e2b.dev/auto-resume":         `{"policy":"off"}`,

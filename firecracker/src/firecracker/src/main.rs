@@ -319,18 +319,18 @@ fn main_exec() -> Result<(), MainError> {
     #[cfg(target_arch = "aarch64")]
     enable_ssbd_mitigation();
 
-    if let Err(err) = resize_fdtable() {
-        match err {
-            // These errors are non-critical: In the worst case we have worse snapshot restore
-            // performance.
-            ResizeFdTableError::GetRlimit | ResizeFdTableError::Dup2(_) => {
-                debug!("Failed to resize fdtable: {err}")
-            }
-            // This error means that we now have a random file descriptor lying around, abort to be
-            // cautious.
-            ResizeFdTableError::Close(_) => return Err(MainError::ResizeFdtable(err)),
-        }
-    }
+    // if let Err(err) = resize_fdtable() {
+    //     match err {
+    //         // These errors are non-critical: In the worst case we have worse snapshot restore
+    //         // performance.
+    //         ResizeFdTableError::GetRlimit | ResizeFdTableError::Dup2(_) => {
+    //             debug!("Failed to resize fdtable: {err}")
+    //         }
+    //         // This error means that we now have a random file descriptor lying around, abort to be
+    //         // cautious.
+    //         ResizeFdTableError::Close(_) => return Err(MainError::ResizeFdtable(err)),
+    //     }
+    // }
 
     // Display warnings for any used deprecated parameters.
     // Currently unused since there are no deprecated parameters. Uncomment the line when

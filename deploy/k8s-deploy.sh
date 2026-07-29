@@ -303,7 +303,7 @@ configure_domain_access() {
 # 部署 cri-multiplex（多 runtime 复用器，让 kubelet 通过单一 socket 调度 containerd / 自定义 runtime）
 # 流程: 创建 systemd 服务 -> 启动 cri-multiplex -> 切换 kubelet endpoint -> 重启 kubelet -> 创建 RuntimeClass
 deploy_cri_multiplex() {
-    local bin="${CRI_MULTIPLEX_BIN:-/usr/local/bin/cri-multiplex}"
+    local bin="${CRI_MULTIPLEX_BIN:-/opt/e2b-infra/bin/cri-multiplex}"
     local mux_socket="/run/cri-multiplex.sock"
     local containerd_socket="/run/containerd/containerd.sock"
     local orchestrator_addr="${CRI_MULTIPLEX_ORCHESTRATOR:-localhost:5008}"
@@ -458,7 +458,7 @@ main() {
             echo "  CONFIG_FILE      指定配置文件路径（create/all 使用）"
             echo "  HOST_IP          本机 IP（默认自动探测，prep 生成配置时使用）"
             echo "  NODE_PASSWORD    节点 SSH 密码（必须通过环境变量提供）"
-            echo "  CRI_MULTIPLEX_BIN       cri-multiplex 二进制路径（默认 /usr/local/bin/cri-multiplex）"
+            echo "  CRI_MULTIPLEX_BIN       cri-multiplex 二进制路径（默认 /opt/e2b-infra/bin/cri-multiplex）"
             echo "  CRI_MULTIPLEX_ORCHESTRATOR  orchestrator 地址（默认 localhost:5008）"
             echo ""
             echo "示例:"

@@ -33,28 +33,61 @@ type sandboxTransformResponse struct {
 }
 
 // sandboxConfig 是 API 返回的沙箱配置。
-// JSON tag 为驼峰, 与 e2b API 实际返回字段对齐。
+// JSON tag 为驼峰, 与 e2b API 实际返回字段对齐 (api.SandboxConfigGrpc)。
 type sandboxConfig struct {
-	Alias               string          `json:"alias,omitempty"`
-	BaseTemplateID      string          `json:"baseTemplateId"`
-	TemplateID          string          `json:"templateId"`
-	BuildID             string          `json:"buildId"`
-	TeamID              string          `json:"teamId"`
-	SandboxID           string          `json:"sandboxId,omitempty"`
-	Vcpu                int             `json:"vcpu"`
-	RAMMB               int             `json:"ramMb"`
-	TotalDiskSizeMB     int             `json:"totalDiskSizeMb"`
-	MaxSandboxLength    int             `json:"maxSandboxLength"`
-	HugePages           bool            `json:"hugePages"`
-	AutoPause           bool            `json:"autoPause"`
-	Snapshot            bool            `json:"snapshot"`
-	AllowInternetAccess *bool           `json:"allowInternetAccess,omitempty"`
-	EnvdVersion         string          `json:"envdVersion"`
-	KernelVersion       string          `json:"kernelVersion"`
-	FirecrackerVersion  string          `json:"firecrackerVersion"`
-	ExecutionID         string          `json:"executionId"`
-	EnvdAccessToken     *string         `json:"envdAccessToken,omitempty"`
-	Network             json.RawMessage `json:"network"`
+	Alias               string                     `json:"alias,omitempty"`
+	AllowInternetAccess *bool                      `json:"allowInternetAccess,omitempty"`
+	AutoPause           bool                       `json:"autoPause"`
+	AutoResume          *sandboxAutoResumeConfig   `json:"autoResume,omitempty"`
+	BaseTemplateID      string                     `json:"baseTemplateId"`
+	BuildID             string                     `json:"buildId"`
+	EnvVars             map[string]string          `json:"envVars,omitempty"`
+	EnvdAccessToken     *string                    `json:"envdAccessToken,omitempty"`
+	EnvdVersion         string                     `json:"envdVersion"`
+	ExecutionID         string                     `json:"executionId"`
+	FirecrackerVersion  string                     `json:"firecrackerVersion"`
+	HugePages           bool                       `json:"hugePages"`
+	KernelVersion       string                     `json:"kernelVersion"`
+	MaxSandboxLength    int                        `json:"maxSandboxLength"`
+	Metadata            map[string]string          `json:"metadata,omitempty"`
+	Network             *sandboxNetworkConfig      `json:"network,omitempty"`
+	RAMMB               int                        `json:"ramMb"`
+	SandboxID           string                     `json:"sandboxId,omitempty"`
+	Snapshot            bool                       `json:"snapshot"`
+	TeamID              string                     `json:"teamId"`
+	TemplateID          string                     `json:"templateId"`
+	TotalDiskSizeMB     int                        `json:"totalDiskSizeMb"`
+	Vcpu                int                        `json:"vcpu"`
+	VolumeMounts        []sandboxVolumeMount       `json:"volumeMounts,omitempty"`
+}
+
+// sandboxAutoResumeConfig 镜像 api.SandboxAutoResumeConfigGrpc。
+type sandboxAutoResumeConfig struct {
+	Policy string `json:"policy,omitempty"`
+}
+
+// sandboxNetworkConfig 镜像 api.SandboxNetworkConfigGrpc。
+type sandboxNetworkConfig struct {
+	Egress  *sandboxNetworkEgressConfig  `json:"egress,omitempty"`
+	Ingress *sandboxNetworkIngressConfig `json:"ingress,omitempty"`
+}
+
+type sandboxNetworkEgressConfig struct {
+	AllowedCidrs   []string `json:"allowedCidrs,omitempty"`
+	AllowedDomains []string `json:"allowedDomains,omitempty"`
+	DeniedCidrs    []string `json:"deniedCidrs,omitempty"`
+}
+
+type sandboxNetworkIngressConfig struct {
+	MaskRequestHost    *string `json:"maskRequestHost,omitempty"`
+	TrafficAccessToken *string `json:"trafficAccessToken,omitempty"`
+}
+
+// sandboxVolumeMount 镜像 api.SandboxVolumeMountGrpc。
+type sandboxVolumeMount struct {
+	MountPath *string `json:"mountPath,omitempty"`
+	ReadOnly  *bool   `json:"readOnly,omitempty"`
+	VolumeID  *string `json:"volumeId,omitempty"`
 }
 
 // toE2BAnnotations 将 API 返回的沙箱配置转换为 e2b 注解 map。
@@ -91,17 +124,52 @@ func (cfg *sandboxConfig) toE2BAnnotations() map[string]string {
 		annos["e2b.dev/envd-access-token"] = ""
 	}
 
-	// network: JSON marshal
-	if len(cfg.Network) > 0 {
-		annos["e2b.dev/network"] = string(cfg.Network)
+	// network: 优先使用 API 返回值, 为空时 fallback 到空结构
+	if cfg.Network != nil {
+		if netBytes, err := json.Marshal(cfg.Network); err == nil {
+			annos["e2b.dev/network"] = string(netBytes)
+		} else {
+			annos["e2b.dev/network"] = `{"egress":{},"ingress":{}}`
+		}
 	} else {
 		annos["e2b.dev/network"] = `{"egress":{},"ingress":{}}`
 	}
 
-	// 不在 API 响应中的字段, 使用默认值
-	annos["e2b.dev/env-vars"] = "{}"
-	annos["e2b.dev/volume-mounts"] = "[]"
-	annos["e2b.dev/auto-resume"] = `{"policy":"off"}`
+	// env-vars: 优先使用 API 返回值, 为空时 fallback 到 "{}"
+	if len(cfg.EnvVars) > 0 {
+		if envBytes, err := json.Marshal(cfg.EnvVars); err == nil {
+			annos["e2b.dev/env-vars"] = string(envBytes)
+		} else {
+			annos["e2b.dev/env-vars"] = "{}"
+		}
+	} else {
+		annos["e2b.dev/env-vars"] = "{}"
+	}
+
+	// volume-mounts: 优先使用 API 返回值, 为空时 fallback 到 "[]"
+	if len(cfg.VolumeMounts) > 0 {
+		if mountBytes, err := json.Marshal(cfg.VolumeMounts); err == nil {
+			annos["e2b.dev/volume-mounts"] = string(mountBytes)
+		} else {
+			annos["e2b.dev/volume-mounts"] = "[]"
+		}
+	} else {
+		annos["e2b.dev/volume-mounts"] = "[]"
+	}
+
+	// auto-resume: 优先使用 API 返回值, 为空时 fallback 到 {"policy":"off"}
+	if cfg.AutoResume != nil && cfg.AutoResume.Policy != "" {
+		annos["e2b.dev/auto-resume"] = fmt.Sprintf(`{"policy":%q}`, cfg.AutoResume.Policy)
+	} else {
+		annos["e2b.dev/auto-resume"] = `{"policy":"off"}`
+	}
+
+	// metadata: 优先使用 API 返回值, 为空时不设置注解
+	if len(cfg.Metadata) > 0 {
+		if metaBytes, err := json.Marshal(cfg.Metadata); err == nil {
+			annos["e2b.dev/metadata"] = string(metaBytes)
+		}
+	}
 
 	return annos
 }
@@ -294,13 +362,4 @@ func (s *SandboxTransformer) callTransformAPI(templateID, sandboxID string) (map
 	klog.V(2).Infof("transform returned %d annotations for templateID=%s",
 		len(annos), templateID)
 	return annos, nil
-}
-
-// copyMap 返回 map 的浅拷贝, 避免调用方修改原始数据。
-func copyMap(m map[string]string) map[string]string {
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
 }
