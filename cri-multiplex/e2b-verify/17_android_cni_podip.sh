@@ -7,7 +7,10 @@
 #   2. PodSandboxStatus 返回 PodIP / cni-netns / adb-url
 #   3. launch_cvd 在 Android Pod netns 内监听
 #   4. ADB 端口可通过 PodIP 访问
-#   5. 删除 Pod 后 netns 清理
+#   5. Android guest eth1 通过 Cuttlefish tap 接入 Pod netns
+#   6. Android guest 可通过 CNI eth0 出公网 IP
+#   7. PodIP 可通过 DNAT 访问 Android guest 内服务
+#   8. 删除 Pod 后 netns 清理
 ###############################################################################
 set -euo pipefail
 
@@ -25,6 +28,9 @@ ANDROID_BASE_INSTANCE_NUM="${ANDROID_BASE_INSTANCE_NUM:-1}"
 ANDROID_WAIT_TIMEOUT="${ANDROID_WAIT_TIMEOUT:-240s}"
 ANDROID_ADB_WAIT_TIMEOUT="${ANDROID_ADB_WAIT_TIMEOUT:-30}"
 ANDROID_CLEANUP_WAIT_TIMEOUT="${ANDROID_CLEANUP_WAIT_TIMEOUT:-150}"
+ANDROID_GUEST_SERVICE_PORT="${ANDROID_GUEST_SERVICE_PORT:-18080}"
+ANDROID_DNS_TEST_HOST="${ANDROID_DNS_TEST_HOST:-example.com}"
+ADB_BIN="${ADB_BIN:-${ANDROID_ARTIFACTS_DIR}/bin/adb}"
 
 cleanup() {
     kubectl delete pod "${POD_NAME}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
@@ -76,6 +82,7 @@ metadata:
   annotations:
     android.dev/adb-port: "${ANDROID_ADB_PORT}"
     android.dev/base-instance-num: "${ANDROID_BASE_INSTANCE_NUM}"
+    android.dev/guest-service-ports: "${ANDROID_GUEST_SERVICE_PORT}"
 spec:
   runtimeClassName: android
   restartPolicy: Never
@@ -120,6 +127,9 @@ if grep -q "\"ip\": \"${POD_IP}\"" <<< "${INSPECT_OUTPUT}" &&
    grep -q '"android.dev/cni-enabled": "true"' <<< "${INSPECT_OUTPUT}" &&
    grep -q "\"android.dev/pod-ip\": \"${POD_IP}\"" <<< "${INSPECT_OUTPUT}" &&
    grep -q "\"android.dev/cni-netns\": \"${NETNS_PATH}\"" <<< "${INSPECT_OUTPUT}" &&
+   grep -q '"android.dev/guest-ip":' <<< "${INSPECT_OUTPUT}" &&
+   grep -q '"android.dev/guest-gateway":' <<< "${INSPECT_OUTPUT}" &&
+   grep -q '"android.dev/guest-tap":' <<< "${INSPECT_OUTPUT}" &&
    grep -q "\"android.dev/adb-url\": \"${POD_IP}:${ANDROID_ADB_PORT}\"" <<< "${INSPECT_OUTPUT}"; then
     log_pass "CRI status 返回 Android CNI 关键信息"
 else
@@ -155,16 +165,76 @@ else
 fi
 
 ADB_URL="${POD_IP}:${ANDROID_ADB_PORT}"
-if command -v adb >/dev/null 2>&1; then
+if [ -x "${ADB_BIN}" ]; then
     log_info "执行 adb connect ${ADB_URL}"
-    if adb connect "${ADB_URL}" >&2; then
+    if "${ADB_BIN}" connect "${ADB_URL}" >&2; then
         log_pass "adb connect 成功: ${ADB_URL}"
     else
         log_fail "adb connect 失败: ${ADB_URL}"
         exit 1
     fi
 else
-    log_skip "adb 命令不存在，跳过 adb connect"
+    log_fail "adb 命令不存在或不可执行: ${ADB_BIN}"
+    exit 1
+fi
+
+log_step "3.5 验证 Android guest 原生网络配置"
+GUEST_IP=$(grep -oP '"android.dev/guest-ip":\s*"\K[^"]+' <<< "${INSPECT_OUTPUT}" | head -1 || true)
+GUEST_GW=$(grep -oP '"android.dev/guest-gateway":\s*"\K[^"]+' <<< "${INSPECT_OUTPUT}" | head -1 || true)
+GUEST_TAP=$(grep -oP '"android.dev/guest-tap":\s*"\K[^"]+' <<< "${INSPECT_OUTPUT}" | head -1 || true)
+if [ -z "${GUEST_IP}" ] || [ -z "${GUEST_GW}" ] || [ -z "${GUEST_TAP}" ]; then
+    log_fail "无法提取 guest 网络状态: guest_ip=${GUEST_IP}, gateway=${GUEST_GW}, tap=${GUEST_TAP}"
+    exit 1
+fi
+if ip netns exec "${NETNS_NAME}" ip addr show "${GUEST_TAP}" | grep -q "${GUEST_GW}/30"; then
+    log_pass "Pod netns tap 已配置: ${GUEST_TAP} ${GUEST_GW}/30"
+else
+    log_fail "Pod netns tap 未正确配置: ${GUEST_TAP}"
+    ip netns exec "${NETNS_NAME}" ip addr show "${GUEST_TAP}" >&2 || true
+    exit 1
+fi
+if "${ADB_BIN}" -s "${ADB_URL}" shell "su 0 ip addr show eth1" | grep -q "${GUEST_IP}/30"; then
+    log_pass "Android guest eth1 已配置: ${GUEST_IP}/30"
+else
+    log_fail "Android guest eth1 未正确配置: ${GUEST_IP}/30"
+    "${ADB_BIN}" -s "${ADB_URL}" shell "su 0 ip addr show eth1" >&2 || true
+    exit 1
+fi
+
+log_step "3.6 验证 Android guest 通过 CNI 出公网 IP"
+if "${ADB_BIN}" -s "${ADB_URL}" shell "su 0 ping -c 1 -W 5 8.8.8.8" >&2; then
+    log_pass "Android guest 可经 Pod netns/CNI eth0 访问公网 IP"
+else
+    log_fail "Android guest 无法经 CNI 访问公网 IP"
+    "${ADB_BIN}" -s "${ADB_URL}" shell "su 0 ip route show table local_network; su 0 ip rule show" >&2 || true
+    ip netns exec "${NETNS_NAME}" iptables -t nat -S >&2 || true
+    exit 1
+fi
+
+log_step "3.7 验证 PodIP 到 Android guest 内服务"
+"${ADB_BIN}" -s "${ADB_URL}" shell "su 0 pkill -f 'toybox nc.*${ANDROID_GUEST_SERVICE_PORT}' 2>/dev/null || true" >&2 || true
+"${ADB_BIN}" -s "${ADB_URL}" shell "su 0 sh -c 'toybox nc -L -p ${ANDROID_GUEST_SERVICE_PORT} sh -c '\''printf \"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\nANDROID-CNI-OK\n\"'\'' >/data/local/tmp/cni-guest-http.log 2>&1 &'" >&2
+HTTP_BODY=$(curl -sS --max-time 5 "http://${POD_IP}:${ANDROID_GUEST_SERVICE_PORT}/" 2>/tmp/android-cni-guest-curl.err || true)
+if grep -q "ANDROID-CNI-OK" <<< "${HTTP_BODY}"; then
+    log_pass "PodIP:${ANDROID_GUEST_SERVICE_PORT} 可访问 Android guest 内服务"
+else
+    log_fail "PodIP:${ANDROID_GUEST_SERVICE_PORT} 无法访问 Android guest 内服务"
+    cat /tmp/android-cni-guest-curl.err >&2 || true
+    echo "${HTTP_BODY}" >&2
+    ip netns exec "${NETNS_NAME}" iptables -t nat -S >&2 || true
+    ip netns exec "${NETNS_NAME}" iptables -S >&2 || true
+    exit 1
+fi
+
+log_step "3.8 验证 Android guest DNS 当前状态"
+DNS_OUTPUT=$("${ADB_BIN}" -s "${ADB_URL}" shell "getent hosts ${ANDROID_DNS_TEST_HOST} 2>/dev/null || ping -c 1 -W 1 ${ANDROID_DNS_TEST_HOST} 2>&1 | head -n 1" 2>&1 || true)
+echo "${DNS_OUTPUT}" >&2
+if grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}[[:space:]]|^([0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}[[:space:]]|PING .*\(([0-9]{1,3}\.){3}[0-9]{1,3}\)|PING .*\(([0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}\)' <<< "${DNS_OUTPUT}"; then
+    log_pass "Android guest hostname DNS 解析可用: ${ANDROID_DNS_TEST_HOST}"
+else
+    log_fail "Android guest hostname DNS 解析不可用: ${ANDROID_DNS_TEST_HOST}"
+    "${ADB_BIN}" -s "${ADB_URL}" shell "su 0 dumpsys ethernet | sed -n '1,120p'; su 0 dumpsys dnsresolver | sed -n '1,180p'" >&2 || true
+    exit 1
 fi
 
 log_step "4.1 删除 Pod 验证清理"

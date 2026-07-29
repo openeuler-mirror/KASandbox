@@ -67,13 +67,26 @@ func androidRunReq(uid string) *runtime.RunPodSandboxRequest {
 		Labels:   map[string]string{"app": "android"},
 		Annotations: map[string]string{
 			annAndroidBaseInst: "2",
-			annAndroidADBPort:  "6620",
+			annAndroidADBPort:  "6521",
 		},
 	}}
 }
 
 func TestAndroidRunStartStopRemoveLifecycleWithMocks(t *testing.T) {
 	e, startCalls, stopCalls := newEnabledCNIMockAndroidEngine(t, nil, nil)
+	configureCalls := 0
+	cleanupCalls := 0
+	e.ops.configureGuestNetwork = func(e *AndroidEngine, ctx context.Context, rec *AndroidSandboxRecord) error {
+		configureCalls++
+		rec.GuestIP = "192.168.240.2"
+		rec.GuestGateway = "192.168.240.1"
+		rec.GuestPrefix = "30"
+		rec.TapName = "cvd-etap-02"
+		return nil
+	}
+	e.ops.cleanupGuestNetwork = func(e *AndroidEngine, ctx context.Context, rec *AndroidSandboxRecord) {
+		cleanupCalls++
+	}
 	fakeCNI := &fakeCNIManager{addRecord: &CNIRecord{
 		SandboxID: "android-uid",
 		Network:   "calico",
@@ -114,6 +127,9 @@ func TestAndroidRunStartStopRemoveLifecycleWithMocks(t *testing.T) {
 	if *startCalls != 1 {
 		t.Fatalf("start calls = %d, want 1", *startCalls)
 	}
+	if configureCalls != 1 {
+		t.Fatalf("configure guest network calls = %d, want 1", configureCalls)
+	}
 
 	podStatus, err := e.PodSandboxStatus(context.Background(), &runtime.PodSandboxStatusRequest{PodSandboxId: "android-uid"})
 	if err != nil {
@@ -121,6 +137,10 @@ func TestAndroidRunStartStopRemoveLifecycleWithMocks(t *testing.T) {
 	}
 	if podStatus.Status.Network.Ip != "10.0.0.30" || podStatus.Status.Annotations["android.dev/pod-ip"] != "10.0.0.30" {
 		t.Fatalf("pod status mismatch: %+v", podStatus.Status)
+	}
+	if podStatus.Status.Annotations["android.dev/guest-ip"] != "192.168.240.2" ||
+		podStatus.Status.Annotations["android.dev/guest-tap"] != "cvd-etap-02" {
+		t.Fatalf("guest network annotations mismatch: %+v", podStatus.Status.Annotations)
 	}
 
 	containerStatus, err := e.ContainerStatus(context.Background(), &runtime.ContainerStatusRequest{ContainerId: "android-uid-c"})
@@ -136,6 +156,9 @@ func TestAndroidRunStartStopRemoveLifecycleWithMocks(t *testing.T) {
 	}
 	if *stopCalls != 1 {
 		t.Fatalf("stop calls = %d, want 1", *stopCalls)
+	}
+	if cleanupCalls != 1 {
+		t.Fatalf("cleanup guest network calls after stop = %d, want 1", cleanupCalls)
 	}
 	if _, err := e.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "android-uid"}); err != nil {
 		t.Fatalf("RemovePodSandbox: %v", err)
@@ -170,6 +193,19 @@ func TestAndroidRunPodSandboxIdempotentAndRollback(t *testing.T) {
 	}
 	if len(cniEngine.portOwners) != 0 || len(cniEngine.instanceOwners) != 0 {
 		t.Fatalf("CNI failure should rollback allocations: ports=%v instances=%v", cniEngine.portOwners, cniEngine.instanceOwners)
+	}
+}
+
+func TestAndroidRunPodSandboxRejectsADBPortThatDoesNotMatchBaseInstance(t *testing.T) {
+	e, _, _ := newEnabledMockAndroidEngine(t, nil, nil)
+	req := androidRunReq("android-uid")
+	req.Config.Annotations[annAndroidBaseInst] = "10"
+	req.Config.Annotations[annAndroidADBPort] = "6530"
+	if _, err := e.RunPodSandbox(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("RunPodSandbox code = %v, want InvalidArgument", status.Code(err))
+	}
+	if len(e.portOwners) != 0 || len(e.instanceOwners) != 0 {
+		t.Fatalf("invalid adb port should rollback allocations: ports=%v instances=%v", e.portOwners, e.instanceOwners)
 	}
 }
 
