@@ -20,93 +20,92 @@ E2B 是一个基于 Firecracker 微虚拟机的沙箱执行平台，支持在隔
 
 ### 目录结构
 
-#### 项目目录
+#### 项目目录（源码仓库 `deploy/`）
 
 ```
-e2b-deploy/
+deploy/
+├── .env                      # 环境变量配置（必须修改 SERVER_IP）
 ├── build.sh                  # 主部署脚本（安装/启动/停止/卸载）
+├── k8s-deploy.sh             # K8S 集群部署脚本（KubeKey）
 ├── deploy-worker.sh          # K8S Worker 节点部署脚本
-├── template-ubuntu.py        # 模板构建脚本
 ├── create_sandbox.py         # 沙箱创建脚本
-├── build_prod.py             # 快速构建模板脚本
 ├── create_template.py        # 模板创建脚本
-├── dep/                      # 部署依赖文件
-│   ├── .env                  # 环境变量配置（必须修改 SERVER_IP）
-│   ├── template-manager.hcl  # Nomad 任务定义（Template Manager）
-│   ├── template-manager.yaml # K8S DaemonSet 定义（Template Manager）
-│   ├── postgres.yaml         # K8S PostgreSQL Deployment 定义
-│   ├── webhook.yaml          # K8S e2b-webhook Deployment/Service/Webhook 定义
-│   ├── values-template.yaml  # Helm values 模板（K8S 部署配置）
+├── README.md                 # 项目说明
+├── USAGE.md                  # 使用文档（本文件）
+├── DEPLOY_DESIGN.md          # 部署设计文档
+├── dep/                      # 部署依赖脚本
 │   ├── deploy.sh             # K8S 部署执行脚本
+│   ├── deploy-e2b-plugin.sh  # E2B 插件部署脚本
 │   ├── ingress-nginx.yaml    # Nginx Ingress Controller 离线部署清单
 │   ├── wildcard-ingress.yaml # K8S Ingress 规则（*.e2b.app 域名）
 │   ├── install-nomad.sh      # Nomad 安装脚本
 │   ├── install-consul.sh     # Consul 安装脚本
 │   ├── uninstall-nomad.sh    # Nomad 卸载脚本
+│   ├── uninstall-consul.sh   # Consul 卸载脚本
 │   ├── start-server.sh       # Nomad Server 启动脚本
 │   ├── start-client.sh       # Nomad Client 启动脚本
 │   ├── init-client.sh        # 客户端初始化脚本
 │   ├── run-nomad.sh          # Nomad 运行脚本
 │   ├── run-consul.sh         # Consul 运行脚本
-│   ├── deploy-e2b-plugin.sh  # E2B 插件部署脚本
-│   ├── daemon.json           # Docker daemon 配置模板
-│   ├── harbor.cnf            # Harbor 配置模板
-│   ├── nginx.conf            # Nginx 配置模板
-│   ├── default.hcl           # Nomad 默认配置
-│   ├── openclaw.yaml         # OpenClaw 配置
-│   └── main.py               # 辅助脚本
-└── test_build.sh             # 部署脚本测试用例
+│   ├── harbor.cnf            # Harbor SSL 证书配置模板
+│   └── openclaw.yaml         # OpenClaw 配置
+└── nomad/                    # Nomad 任务定义
+    ├── api.hcl               # API 服务任务
+    ├── edge.hcl              # Edge 服务任务
+    ├── redis.hcl             # Redis 任务
+    └── template-manager.hcl  # Template Manager 任务
 ```
+
+> **说明**：Helm 模板（`helm/`）、二进制与 Dockerfile（`bin/`）不在 `deploy/` 源码目录中，由根目录 `build.sh` 从 `helm/` 与 `packages/*/Dockerfile` 打包进 RPM，安装后落在 `/opt/e2b-infra/` 下（见下文）。
 
 #### 部署目标目录（`/opt/e2b-infra/`）
 
-通过 RPM 包安装（`rpm -ivh KASandbox-*.aarch64.rpm`），目录结构如下：
+通过 RPM 包安装（`rpm -ivh KASandbox-*.aarch64.rpm`），目录结构如下（以 `rpm -qlp KASandbox-1.0.0-1.aarch64.rpm` 实际内容为准）：
 
 ```
 /opt/e2b-infra/
 ├── .env                      # 环境变量配置（必须修改 SERVER_IP）
 ├── build.sh                  # 主部署脚本（安装/启动/停止/卸载）
-├── deploy.sh                 # K8S 部署执行脚本
-├── deploy-worker.sh          # K8S Worker 节点部署脚本
-├── deploy-e2b-plugin.sh      # E2B 插件部署脚本
 ├── k8s-deploy.sh             # K8S 集群部署脚本（KubeKey）
+├── deploy.sh                 # K8S 部署执行脚本（dep/deploy.sh 的副本）
+├── deploy-worker.sh          # K8S Worker 节点部署脚本
+├── deploy-e2b-plugin.sh      # E2B 插件部署脚本（dep/ 副本）
 ├── create_sandbox.py         # 沙箱创建脚本
 ├── create_template.py        # 模板创建脚本
-├── main.py                   # 辅助脚本
-├── init-client.sh            # 客户端初始化脚本
-├── install-nomad.sh          # Nomad 安装脚本
-├── install-consul.sh         # Consul 安装脚本
-├── uninstall-nomad.sh        # Nomad 卸载脚本
-├── uninstall-consul.sh       # Consul 卸载脚本
-├── start-server.sh           # Nomad Server 启动脚本
-├── start-client.sh           # Nomad Client 启动脚本
-├── run-nomad.sh              # Nomad 运行脚本
-├── run-consul.sh             # Consul 运行脚本
-├── harbor.cnf                # Harbor SSL 证书配置模板
-├── nginx.conf                # Nginx 配置模板
-├── openclaw.yaml             # OpenClaw 配置
-├── ingress-nginx.yaml        # Nginx Ingress Controller 离线部署清单
-├── wildcard-ingress.yaml     # K8S Ingress 规则（*.e2b.app 域名）
+├── init-client.sh            # 客户端初始化脚本（dep/ 副本）
+├── install-nomad.sh          # Nomad 安装脚本（dep/ 副本）
+├── install-consul.sh         # Consul 安装脚本（dep/ 副本）
+├── uninstall-nomad.sh        # Nomad 卸载脚本（dep/ 副本）
+├── uninstall-consul.sh       # Consul 卸载脚本（dep/ 副本）
+├── start-server.sh           # Nomad Server 启动脚本（dep/ 副本）
+├── start-client.sh           # Nomad Client 启动脚本（dep/ 副本）
+├── run-nomad.sh              # Nomad 运行脚本（dep/ 副本）
+├── run-consul.sh             # Consul 运行脚本（dep/ 副本）
+├── harbor.cnf                # Harbor SSL 证书配置模板（dep/ 副本）
+├── openclaw.yaml             # OpenClaw 配置（dep/ 副本）
+├── ingress-nginx.yaml        # Nginx Ingress Controller 离线部署清单（dep/ 副本）
+├── wildcard-ingress.yaml     # K8S Ingress 规则（*.e2b.app 域名，dep/ 副本）
 ├── README.md                 # 项目说明
 ├── USAGE.md                  # 使用文档（本文件）
 ├── DEPLOY_DESIGN.md          # 部署设计文档
-├── bin/                      # 构建产物与 Dockerfile
+├── bin/                      # 二进制与 Dockerfile（根 build.sh 构建后打包）
 │   ├── api.Dockerfile        # API 服务镜像构建文件
 │   ├── client-proxy.Dockerfile
 │   ├── orchestrator.Dockerfile
 │   ├── e2b-webhook.Dockerfile
 │   ├── db-migrator.Dockerfile
-│   ├── migrations/           # 数据库迁移 SQL 文件
-│   ├── api                   # API 服务二进制（构建后生成）
-│   ├── orchestrator          # Orchestrator 二进制（构建后生成）
-│   ├── client-proxy          # Client Proxy 二进制（构建后生成）
-│   ├── envd                  # envd 二进制（构建后生成）
-│   ├── e2b-webhook           # Webhook 二进制（构建后生成）
-│   ├── migrator              # 数据库迁移工具（构建后生成）
-│   ├── seed-db               # 数据库种子工具（构建后生成）
-│   ├── fc-netns-exec         # 网络命名空间工具（构建后生成）
-│   └── cri-multiplex         # CRI 多路复用器二进制（构建后生成）
-├── dep/                      # 部署依赖脚本（install 时拷贝到 /opt/e2b-infra/）
+│   ├── migrations/           # PostgreSQL 迁移 SQL 文件
+│   ├── migrations-clickhouse/ # ClickHouse 迁移 SQL 文件
+│   ├── api                   # API 服务二进制
+│   ├── orchestrator          # Orchestrator 二进制
+│   ├── client-proxy          # Client Proxy 二进制
+│   ├── envd                  # envd 二进制
+│   ├── e2b-webhook           # Webhook 二进制
+│   ├── migrator              # 数据库迁移工具
+│   ├── seed-db               # 数据库种子工具
+│   ├── fc-netns-exec         # 网络命名空间工具
+│   └── cri-multiplex         # CRI 多路复用器二进制
+├── dep/                      # 部署依赖脚本（原始副本，build.sh 引用此目录）
 │   ├── deploy.sh
 │   ├── deploy-e2b-plugin.sh
 │   ├── init-client.sh
@@ -141,6 +140,8 @@ e2b-deploy/
     └── template-manager.hcl  # Template Manager 任务
 ```
 
+> **说明**：根目录下的 `deploy.sh`、`main.py`、`nginx.conf` 等与 `dep/` 下同名文件内容一致，为方便顶层脚本直接调用而放置在根目录；`dep/` 保留原始副本供 `build.sh --install` 引用。
+
 ---
 
 ## 2. 环境准备
@@ -157,10 +158,10 @@ e2b-deploy/
 
 ### 2.2 修改配置文件
 
-编辑 `dep/.env`，将 `SERVER_IP` 修改为本机 IP 地址：
+编辑 `.env`，将 `SERVER_IP` 修改为本机 IP 地址：
 
 ```bash
-vi dep/.env
+vi .env
 ```
 
 ```bash
@@ -211,7 +212,7 @@ K8S 模式包含 Nomad 模式的全部组件（除 Docker/Docker Compose 外）�
 | 组件 | 说明 | 安装方式 |
 |------|------|----------|
 | Kubernetes | K8S 集群（kubelet, kubectl, kubeadm） | 需预先安装，脚本不负责部署 |
-| Nginx Ingress Controller | Ingress 路由控制器 | 内置清单 `dep/ingress-nginx.yaml`，未安装时手动 apply（见 [3.2.1](#321-前置条件)） |
+| Nginx Ingress Controller | Ingress 路由控制器 | 内置清单 `dep/ingress-nginx.yaml`，未安装时手动 apply（见 [3.2.3](#323-前置条件)） |
 | containerd | 容器运行时 | K8S 节点自带 |
 | nerdctl | containerd CLI | 替代 Docker 命令 |
 | helm | K8S 包管理器 | 用于卸载 e2b-api |
@@ -244,7 +245,7 @@ K8S 模式包含 Nomad 模式的全部组件（除 Docker/Docker Compose 外）�
 > **说明**：
 > - 下载后保存为 `dep/e2b-webhook.tar`，`pull_docker_images` 会自动通过 `docker load -i` 导入为本地镜像 `e2b-webhook`
 > - 仅 K8S 模式下载（nomad 模式不需要）
-> - 部署时由 `deploy.sh` 推送到 Harbor，详见 [3.4 e2b-webhook 部署](#34-e2b-webhook-部署可选)
+> - 部署时由 `deploy.sh` 推送到 Harbor，详见 [3.2.2 e2b-webhook](#322-e2b-webhook可选组件)
 
 #### 2.4.2.5 Python 依赖
 
@@ -268,11 +269,11 @@ K8S 模式包含 Nomad 模式的全部组件（除 Docker/Docker Compose 外）�
 | socat | 端口转发 | `yum install -y socat` |
 | websocat | WebSocket 代理 | https://github.com/vi/websocat/releases/latest/download/websocat.aarch64-unknown-linux-musl |
 
-### 2.5 Mooncake 配置
+### 2.5 Mooncake 配置（可选组件）
 
 Mooncake 是分布式内存语义层组件，用于加速跨节点内存共享。**仅当 `STORAGE_PROVIDER=MooncakeBucket` 时需要配置**，其他存储后端可跳过本节。
 
-在 `dep/.env` 中设置：
+在 `.env` 中设置：
 
 ```bash
 export STORAGE_PROVIDER=MooncakeBucket
@@ -317,8 +318,8 @@ export STORAGE_PROVIDER=MooncakeBucket
 #### 2.5.4 配置示例
 
 ```bash
-# 编辑 dep/.env，修改 Master 地址和元数据服务地址
-vi dep/.env
+# 编辑 .env，修改 Master 地址和元数据服务地址
+vi .env
 
 # --- Mooncake ---
 export MOONCAKE_MASTER_ADDR="10.10.10.10:50055"       # 改为 Master 节点 IP
@@ -421,7 +422,85 @@ HTTP 模式下需配置 Docker 信任（脚本自动完成）：
 
 适用于多节点/生产环境，使用 Kubernetes + containerd + nerdctl。
 
-#### 3.2.1 前置条件
+> **可选组件**：cri-multiplex 是 K8S 模式下的可选组件。如需让 K8S 原生调度 DaemonSet/Deployment 管理 E2B 沙箱 Pod，请在集群就绪后、部署业务服务前完成本节操作；否则可直接跳过。
+
+#### 3.2.1 cri-multiplex（可选组件）
+
+cri-multiplex 是 CRI gRPC 多路复用器，让 kubelet 通过单一 Unix socket 调度 **containerd**（普通 Pod）和 **E2B orchestrator**（沙箱 Pod）。
+
+```
+Kubelet ──Unix socket──▶ cri-multiplex
+                           ├── RuntimeHandler != "e2b" ──▶ ContainerEngine ──▶ containerd
+                           └── RuntimeHandler == "e2b" ──▶ E2BEngine ──▶ orchestrator:5008
+```
+
+**前置条件**：K8S 集群已就绪、kubelet 通过 kubeadm 初始化、containerd 运行中、orchestrator 可达（默认 `localhost:5008`）、二进制已随 RPM 安装至 `/opt/e2b-infra/bin/cri-multiplex`。
+
+**部署**（每个节点执行一次）：
+
+```bash
+./k8s-deploy.sh cri-multiplex
+```
+
+| 步骤 | 操作 |
+|------|------|
+| ① 检查二进制 | `/opt/e2b-infra/bin/cri-multiplex`，不存在则跳过 |
+| ② 创建 systemd 服务 | 开机自启 + 崩溃自动重启 |
+| ③ 切换 kubelet endpoint | `containerd.sock` → `cri-multiplex.sock`，自动备份原文件 |
+| ④ 重启 kubelet | 使新 endpoint 生效 |
+| ⑤ 创建 RuntimeClass | `android`、`e2b`，Pod 通过 `runtimeClassName` 选择后端 |
+
+**验证**：
+
+```bash
+systemctl status cri-multiplex
+ls -l /run/cri-multiplex.sock
+grep "cri-multiplex" /var/lib/kubelet/kubeadm-flags.env
+kubectl get runtimeclass
+```
+
+**故障恢复**：
+
+```bash
+# 紧急回滚到 containerd
+sed -i 's#unix:///run/cri-multiplex.sock#unix:///run/containerd/containerd.sock#g' \
+    /var/lib/kubelet/kubeadm-flags.env
+systemctl restart kubelet
+```
+
+> **注意**：切换 kubelet endpoint 会短暂影响节点上所有 Pod，建议在维护窗口操作；回滚只需改回 `containerd.sock` 并重启 kubelet。
+
+
+#### 3.2.2 e2b-webhook（可选组件）
+
+> **可选组件**：e2b-webhook 是 K8S 模式下的可选准入控制器。用于拦截 BatchSandbox CR 和特定 Pod 的创建请求，自动注入沙箱配置注解。默认关闭，通过 `ENABLE_WEBHOOK` 控制。
+
+在 `.env` 中设置：
+
+```bash
+export ENABLE_WEBHOOK=true
+```
+
+启用后，部署脚本自动完成：
+
+| 步骤 | 操作 |
+|------|------|
+| ① 镜像推送 | 将本地 `e2b-webhook` 镜像推送到 Harbor |
+| ② Helm 安装 | Deployment（2 副本）、Service（443→8443）、MutatingWebhookConfiguration（pod + batchsandbox） |
+| ③ TLS 证书 | 自签证书（10 年有效），创建 Secret `e2b-webhook-tls` 并注入 caBundle |
+| ④ API Key | 从 `/root/.e2b/config.json` 读取 `teamApiKey`，创建 Secret `e2b-api-key` |
+
+**验证**：
+
+```bash
+kubectl get pods -n e2b -l app.kubernetes.io/name=e2b-webhook
+kubectl get mutatingwebhookconfiguration e2b-webhook -o jsonpath='{.webhooks[0].clientConfig.caBundle}' | base64 -d | openssl x509 -text -noout
+kubectl -n e2b get secret e2b-webhook-tls e2b-api-key
+```
+
+> **注意**：关闭时（`ENABLE_WEBHOOK=false`），部署脚本自动清理 Secret 和 MutatingWebhookConfiguration，Helm 资源由 `.Values.webhook.enabled` 同步控制。
+
+#### 3.2.3 前置条件
 
 - K8S 集群已就绪
 - kubectl 可正常访问集群
@@ -467,16 +546,16 @@ kubectl get svc -n ingress-nginx ingress-nginx-controller
 
 > **注意**：
 > - 该清单中 Service 类型为 `LoadBalancer`。裸金属环境若无外部 LB，可改为 `NodePort` 或配合 MetalLB 使用
-> - 默认监听 80/443 端口，与 [3.2.6 配置域名访问](#326-配置域名访问) 中要求的 80 端口监听一致
+> - 默认监听 80/443 端口，与 [3.2.8 配置域名访问](#328-配置域名访问) 中要求的 80 端口监听一致
 > - 镜像需从 `k8s.dockerproxy.net` 拉取，离线环境请预先导入镜像
 
-#### 3.2.2 下载组件
+#### 3.2.4 下载组件
 
 ```bash
 ./build.sh --download
 ```
 
-#### 3.2.3 Master 节点安装
+#### 3.2.5 Master 节点安装
 
 ```bash
 ./build.sh --k8s <节点名> --install
@@ -488,7 +567,7 @@ kubectl get svc -n ingress-nginx ingress-nginx-controller
 ./build.sh --k8s --install
 ```
 
-#### 3.2.4 Master 节点启动
+#### 3.2.6 Master 节点启动
 
 ```bash
 ./build.sh --k8s <节点名> --start
@@ -501,7 +580,7 @@ kubectl get svc -n ingress-nginx ingress-nginx-controller
 - 节点标签设置（sandbox=true, api=）
 - K8S Deployment 部署
 
-#### 3.2.5 Worker 节点部署
+#### 3.2.7 Worker 节点部署
 
 ```bash
 # 单节点部署
@@ -521,7 +600,7 @@ Worker 节点部署内容：
 - 远程执行安装和初始化
 - 设置节点标签
 
-#### 3.2.6 配置域名访问
+#### 3.2.8 配置域名访问
 
 K8S 模式下需配置三层域名解析，确保宿主机和集群内部 Pod 均可通过 `*.e2b.app` 访问 API。
 
@@ -541,24 +620,7 @@ kubectl edit configmap coredns -n kube-system
 kubectl rollout restart deployment coredns -n kube-system
 ```
 
-**③ 创建 Ingress**
-
-```bash
-kubectl apply -f dep/wildcard-ingress.yaml
-kubectl describe ingress wildcard-e2b-app -n e2b
-```
-
-**④ 宿主机 DNS 配置**
-
-```bash
-# init-client.sh 会自动完成，也可手动配置
-DNS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
-    -o jsonpath='{.spec.clusterIP}')
-echo "address=/.e2b.app/$DNS_IP" >> /etc/dnsmasq.conf
-systemctl restart dnsmasq
-```
-
-#### 3.2.6 验证
+#### 3.2.9 验证
 
 ```bash
 # 检查 K8S 节点状态
@@ -573,351 +635,6 @@ kubectl get pods -n e2b
 # 检查域名解析
 dig *.e2b.app @127.0.0.1
 ```
-
----
-
-### 3.3 PostgreSQL 数据库部署
-
-PostgreSQL 是 E2B 的核心元数据存储（团队、用户、模板、沙箱配额等），两种部署模式下均由 `build.sh` 自动管理。
-
-#### 3.3.1 相关环境变量
-
-在 `dep/.env` 中配置：
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `POSTGRES_PORT` | 监听端口 | `5432` |
-| `POSTGRES_USER` | 数据库用户 | `postgres` |
-| `POSTGRES_PASSWORD` | 数据库密码 | `local` |
-| `POSTGRES_DOCKER_IMAGE` | 镜像名 | `postgres` |
-| `POSTGRES_CONNECTION_STRING` | API/edge 连接串 | `postgresql://postgres:local@$SERVER_IP:5432/mydatabase?sslmode=disable` |
-| `POSTGRES_RESOURCES_CPU_COUNT` | (K8S) CPU 请求（m） | `2000` |
-| `POSTGRES_RESOURCES_MEMORY_MB` | (K8S) 内存请求（Mi） | `2048` |
-| `POSTGRES_LIMITS_CPU_COUNT` | (K8S) CPU 上限（m） | `4000` |
-| `POSTGRES_LIMITS_MEMORY_MB` | (K8S) 内存上限（Mi） | `4096` |
-
-#### 3.3.2 Nomad 模式（Docker 容器）
-
-通过 `install_postgres()` 启动一个 Docker 容器：
-
-- 容器名：`postgres`
-- 数据库：`mydatabase`
-- 端口：宿主机 `5432` 映射到容器 `5432`
-- `--restart=always` 保证开机自启
-- 数据存储在容器内（**容器删除后数据丢失**，生产环境建议挂载 volume）
-
-```bash
-# 等价的手动启动命令
-docker run -d --name postgres \
-    -e POSTGRES_USER=postgres \
-    -e POSTGRES_PASSWORD=local \
-    -e POSTGRES_DB=mydatabase \
-    -p 5432:5432 \
-    --restart=always \
-    postgres:latest
-```
-
-#### 3.3.3 K8S 模式（Helm 部署）
-
-由 [postgres.yaml](dep/postgres.yaml) 模板渲染，通过 helm 安装到 `e2b` 命名空间：
-
-- **网络**：`hostNetwork: true` + `dnsPolicy: ClusterFirstWithHostNet`，直接使用宿主机网络（与 edge 节点一致）
-- **调度**：节点亲和 `node-role.kubernetes.io/<api.pool>`，调度到 API 节点池
-- **持久化**：`hostPath` 挂载到 `/data/postgres`（`type: DirectoryOrCreate`，宿主机目录不存在时自动创建）
-- **Service**：`clusterIP: None`（Headless Service），集群内通过 `postgres.e2b.svc.cluster.local` 访问
-- **健康检查**：`pg_isready` 探针（liveness 30s 后启动，readiness 20s 后启动）
-
-#### 3.3.4 数据库初始化
-
-首次启动后，`deploy.sh` 的 `init_database()` 会自动完成：
-
-1. 检查 `teams` 表中是否存在名为 `E2B` 的团队
-2. 不存在时，写入默认 `config.json` 到 `/root/.e2b/`
-3. 执行 `seed-db` 初始化用户、团队、API Key
-4. 将 `tiers` 表中 `base_v1` 配额调整为：
-   - `max_length_hours = 10000`（沙箱超时时间）
-   - `concurrent_instances = 10000`（最大并发数）
-
-#### 3.3.5 运维操作
-
-```bash
-# 单独部署/重装 PostgreSQL
-./build.sh --deploy postgres
-
-# 卸载 PostgreSQL
-./build.sh --remove postgres
-
-# 手动连接数据库
-docker exec -it postgres psql -U postgres -d mydatabase
-
-# 调整沙箱配额（修改超时/并发）
-docker exec postgres psql -U postgres -d mydatabase \
-    -c "UPDATE tiers SET max_length_hours = 24 WHERE id = 'base_v1';"
-```
-
-> **注意**：K8S 模式下 PostgreSQL 数据持久化在宿主机 `/data/postgres`，卸载 helm release 不会删除该目录，重新部署可保留数据。
-
----
-
-### 3.4 e2b-webhook 部署（可选）
-
-e2b-webhook 是一个 Kubernetes 准入控制器（Mutating Webhook），用于拦截 BatchSandbox CR 和特定 Pod 的创建请求，自动注入沙箱相关配置。**默认关闭**，通过 `ENABLE_WEBHOOK` 开关控制。
-
-#### 3.4.1 相关环境变量
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `ENABLE_WEBHOOK` | 是否部署 webhook（`true`/`false`） | `false` |
-| `WEBHOOK_DOCKER_IMAGE` | webhook 镜像名（推送到 Harbor 的标签） | `e2b-webhook` |
-
-#### 3.4.2 启用 webhook
-
-在 `dep/.env` 中设置：
-
-```bash
-export ENABLE_WEBHOOK=true
-```
-
-启用后，部署流程会自动完成：
-
-**① 镜像推送**（`deploy.sh`）
-- 将本地 `e2b-webhook` 镜像 tag 并推送到 Harbor：`<REGISTRY_URL>/e2b-webhook`
-- 本地不存在镜像时输出 WARN 并跳过（需预先 `docker build` 或 `docker pull`）
-
-**② Helm 资源安装**
-由 [webhook.yaml](dep/webhook.yaml) 模板渲染（受 `.Values.webhook.enabled` 控制），安装以下资源：
-
-| 资源 | 说明 |
-|------|------|
-| `ServiceAccount` | `e2b-webhook`，命名空间 `e2b` |
-| `Deployment` | 2 副本，端口 `8443`，反亲和避免同节点调度 |
-| `Service` | 端口 `443` → `8443` |
-| `MutatingWebhookConfiguration` | 2 个 webhook（pod / batchsandbox） |
-
-**③ 证书与 caBundle 注入**（`deploy.sh` 的 `setup_webhook_certificates`）
-
-- 生成自签 TLS 证书（CN=`e2b-webhook.e2b`，SAN 含 `*.svc`/`*.cluster.local`，10 年有效期）
-- 创建 Secret `e2b-webhook-tls`（先删后建，幂等）
-- 创建 Secret `e2b-api-key`（从 `/root/.e2b/config.json` 读取 `teamApiKey` 注入）
-- 将 `tls.crt` 作为 `caBundle` patch 到 `MutatingWebhookConfiguration` 的两个 webhook
-
-**④ 关闭时的清理**
-
-`ENABLE_WEBHOOK=false` 时，部署脚本会清理遗留资源：
-
-```bash
-kubectl -n e2b delete secret e2b-webhook-tls --ignore-not-found=true
-kubectl -n e2b delete secret e2b-api-key --ignore-not-found=true
-kubectl delete mutatingwebhookconfiguration e2b-webhook --ignore-not-found=true
-```
-
-> **注意**：helm 模板资源（Deployment/Service/MutatingWebhookConfiguration）由 `.Values.webhook.enabled` 控制，与 `ENABLE_WEBHOOK` 应保持一致。
-
-#### 3.4.3 验证
-
-```bash
-# 检查 webhook Pod
-kubectl get pods -n e2b -l app.kubernetes.io/name=e2b-webhook
-
-# 检查 MutatingWebhookConfiguration 的 caBundle 是否已注入
-kubectl get mutatingwebhookconfiguration e2b-webhook -o jsonpath='{.webhooks[0].clientConfig.caBundle}' | base64 -d | openssl x509 -text -noout
-
-# 检查 Secret
-kubectl -n e2b get secret e2b-webhook-tls e2b-api-key
-```
-
----
-
-### 3.5 cri-multiplex 部署（K8S 模式可选）
-
-cri-multiplex 是 CRI gRPC 多路复用器，让 kubelet 通过单一 Unix socket 调度 **containerd**（普通 Pod）和 **E2B orchestrator**（沙箱 Pod）。
-
-#### 架构
-
-```
-Kubelet ──Unix socket──▶ cri-multiplex
-                           ├── RuntimeHandler != "e2b" ──▶ ContainerEngine ──▶ containerd
-                           └── RuntimeHandler == "e2b" ──▶ E2BEngine ──▶ orchestrator:5008 (SandboxService)
-```
-
-- `ContainerEngine`：将所有非 e2b 的 CRI 调用直接代理到 containerd（与原生 kubelet 行为一致）
-- `E2BEngine`：将 RuntimeHandler 为 `e2b` 的 Pod 操作转发到 orchestrator gRPC SandboxService
-
-#### 适用场景
-
-- K8S 模式下，希望用 K8S 原生调度（Deployment/DaemonSet 等）管理 E2B 沙箱 Pod
-- 需要在同一集群中混合运行普通容器 Pod 和 E2B 沙箱 Pod
-- 通过 `RuntimeClass` 选择后端，Pod 声明 `runtimeClassName: e2b` 即路由到 orchestrator
-
-#### 前置条件
-
-- K8S 集群已就绪（通过 [k8s-deploy.sh](k8s-deploy.sh) 部署）
-- kubelet 已通过 kubeadm 初始化（存在 `/var/lib/kubelet/kubeadm-flags.env`）
-- containerd 已运行（`/run/containerd/containerd.sock` 存在）
-- orchestrator 服务可达（默认 `localhost:5008`）
-- cri-multiplex 二进制已存在（RPM 包安装后位于 `/opt/e2b-infra/bin/cri-multiplex`）
-
-#### 安装二进制
-
-cri-multiplex 二进制随 RPM 包安装，位于 `/opt/e2b-infra/bin/cri-multiplex`。如需从源码重新构建：
-
-```bash
-# 在 KASandbox 源码目录构建
-./build.sh --cri-multiplex
-
-# 拷贝到所有 K8S 节点（每个节点都需要）
-scp bin/<arch>/cri-multiplex root@<node>:/opt/e2b-infra/bin/cri-multiplex
-ssh root@<node> chmod +x /opt/e2b-infra/bin/cri-multiplex
-```
-
-#### 部署
-
-**每个 K8S 节点**执行一次（节点级操作，非集群级）：
-
-```bash
-./k8s-deploy.sh cri-multiplex
-```
-
-部署流程：
-
-| 步骤 | 操作 | 说明 |
-|------|------|------|
-| ① 检查二进制 | `/opt/e2b-infra/bin/cri-multiplex` | 不存在则跳过，可通过 `CRI_MULTIPLEX_BIN` 指定路径 |
-| ② 创建 systemd 服务 | `/etc/systemd/system/cri-multiplex.service` | 开机自启 + 崩溃自动重启（RestartSec=3s） |
-| ③ 切换 kubelet endpoint | `containerd.sock` → `cri-multiplex.sock` | 修改 `/var/lib/kubelet/kubeadm-flags.env`，自动备份原文件 |
-| ④ 重启 kubelet | `systemctl restart kubelet` | 使新 endpoint 生效 |
-| ⑤ 创建 RuntimeClass | `android`、`e2b` | kubectl apply，Pod 通过 `runtimeClassName` 选择后端 |
-
-#### 配置参数
-
-通过环境变量覆盖默认值：
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `CRI_MULTIPLEX_BIN` | `/opt/e2b-infra/bin/cri-multiplex` | 二进制路径 |
-| `CRI_MULTIPLEX_ORCHESTRATOR` | `localhost:5008` | orchestrator SandboxService 地址 |
-
-示例：
-
-```bash
-# 指定自定义二进制路径和 orchestrator 地址
-CRI_MULTIPLEX_BIN=/opt/bin/cri-multiplex \
-CRI_MULTIPLEX_ORCHESTRATOR=10.0.0.5:5008 \
-./k8s-deploy.sh cri-multiplex
-```
-
-#### systemd 服务配置
-
-部署生成的服务单元 `/etc/systemd/system/cri-multiplex.service`：
-
-```ini
-[Unit]
-Description=cri-multiplex (CRI multi-runtime multiplexer)
-After=containerd.service
-Wants=containerd.service
-
-[Service]
-ExecStart=/opt/e2b-infra/bin/cri-multiplex \
-    -socket /run/cri-multiplex.sock \
-    -containerd-socket /run/containerd/containerd.sock \
-    -orchestrator-address localhost:5008
-Restart=always
-RestartSec=3
-RuntimeDirectory=cri-multiplex
-
-[Install]
-WantedBy=multi-user.target
-```
-
-#### RuntimeClass
-
-部署会创建两个 RuntimeClass：
-
-```bash
-$ kubectl get runtimeclass
-NAME       HANDLER    AGE
-android    android    1m
-e2b        e2b        1m
-```
-
-| RuntimeClass | handler | 路由目标 | 用途 |
-|--------------|---------|---------|------|
-| `android` | android | （自定义 runtime） | Android 容器（如需扩展） |
-| `e2b` | e2b | orchestrator SandboxService | E2B 沙箱 Pod |
-
-Pod 声明 `runtimeClassName: e2b` 即可路由到 orchestrator：
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: my-sandbox
-spec:
-  runtimeClassName: e2b
-  containers:
-  - name: app
-    image: debian:bookworm-slim
-```
-
-#### Pod 注解控制沙箱参数
-
-通过 Pod 注解（`metadata.annotations`）控制 E2B 沙箱参数：
-
-| 注解 | 默认值 | 说明 |
-|------|--------|------|
-| `e2b.dev/template-id` | `default` | 模板 ID |
-| `e2b.dev/build-id` | `latest` | 构建版本 |
-| `e2b.dev/team-id` | `cri-multiplex` | 团队 ID |
-| `e2b.dev/vcpu` | `1` | vCPU 数量 |
-| `e2b.dev/ram-mb` | `2048` | 内存（MB） |
-| `e2b.dev/allow-internet` | `false` | 是否允许访问外网 |
-
-#### 验证
-
-```bash
-# 1. 检查 cri-multiplex 服务状态
-systemctl status cri-multiplex
-
-# 2. 检查 socket 是否就绪
-ls -l /run/cri-multiplex.sock
-
-# 3. 检查 kubelet 是否使用 cri-multiplex endpoint
-grep "cri-multiplex" /var/lib/kubelet/kubeadm-flags.env
-# 预期输出包含: --container-runtime-endpoint=unix:///run/cri-multiplex.sock
-
-# 4. 检查 kubelet 运行状态
-systemctl status kubelet
-
-# 5. 检查 RuntimeClass
-kubectl get runtimeclass
-
-# 6. 检查节点 Ready（切换 endpoint 后节点应保持 Ready）
-kubectl get nodes
-```
-
-#### 故障排查
-
-```bash
-# 查看 cri-multiplex 日志
-journalctl -u cri-multiplex -f
-
-# 查看 kubelet 日志（endpoint 切换后异常时）
-journalctl -u kubelet -n 50
-
-# 回滚 endpoint 到 containerd（紧急恢复）
-sed -i 's#unix:///run/cri-multiplex.sock#unix:///run/containerd/containerd.sock#g' \
-    /var/lib/kubelet/kubeadm-flags.env
-systemctl restart kubelet
-
-# 停止 cri-multiplex 服务
-systemctl stop cri-multiplex
-systemctl disable cri-multiplex
-```
-
-> **注意**：
-> - cri-multiplex 部署是**节点级操作**，需在**每个**需要运行 E2B 沙箱的节点上执行
-> - 切换 kubelet endpoint 会短暂影响节点上所有 Pod 的调度，建议在维护窗口操作
-> - 回滚时只需将 `kubeadm-flags.env` 中的 endpoint 改回 `containerd.sock` 并重启 kubelet
 
 ---
 
@@ -1090,10 +807,10 @@ docker pull <SERVER_IP>:30443/e2b-orchestration/ubuntu:22.04-custom
 
 ```bash
 # Nomad 模式
-python3 template-ubuntu.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
+python3 create_template.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
 
 # K8S 模式（使用 HTTPS 端口）
-python3 template-ubuntu.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
+python3 create_template.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
 ```
 
 脚本内部流程：
@@ -1137,12 +854,19 @@ Template.build(
 )
 ```
 
-### 4.3 快速构建模板（build_prod.py）
+### 4.3 快速构建模板
+
+`create_template.py` 默认构建别名为 `openclaw` 的模板（固定从 `<HARBOR_IP>:30443/e2b-orchestration/ubuntu:22.04-custom` 镜像构建）：
 
 ```bash
-# 传入模板别名
-python3 build_prod.py <模板名>
+# 使用默认 IP（10.10.10.10），适用于本地快速验证
+python3 create_template.py
+
+# 指定 SERVER_IP 和 HARBOR_IP
+python3 create_template.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
 ```
+
+如需修改模板别名、镜像或资源配置，直接编辑 [create_template.py](create_template.py) 中的 `Template.build()` 调用。
 
 ---
 
@@ -1545,7 +1269,7 @@ kubectl get svc ingress-nginx-controller -n ingress-nginx
 | 启动 | `./build.sh --start` | `./build.sh --k8s <node> --start` |
 | 停止 | `./build.sh --stop` | `./build.sh --stop` |
 | 部署 Worker | - | `./deploy-worker.sh worker1` |
-| 构建模板 | `python3 template-ubuntu.py` | `python3 template-ubuntu.py` |
+| 构建模板 | `python3 create_template.py` | `python3 create_template.py` |
 | 创建沙箱 | `python3 create_sandbox.py` | `python3 create_sandbox.py` |
 | 部署插件 | `./build.sh --deploy-plugin` | `./build.sh --deploy-plugin` |
 | 部署 E2B 服务 | `./build.sh --deploy services` | `./build.sh --deploy services` |
