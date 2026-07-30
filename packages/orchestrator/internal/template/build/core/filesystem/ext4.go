@@ -3,6 +3,7 @@ package filesystem
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -263,9 +264,11 @@ func RemoveFile(ctx context.Context, rootfsPath string, filePath string) error {
 	return nil
 }
 
+type overlayMountFunc func(layers []string, mountPoint string) error
+
 // MountOverlayFS mounts an overlay filesystem with the specified layers at the given mount point.
-// It requires kernel version 6.8 or later to use the fsconfig interface for overlayfs.
-// Older mount syscall is not used because it has lowerdirs character limit (4096 characters).
+// Linux 4.19 uses the legacy mount syscall. Newer supported kernels use the modern mount API,
+// which supports long lowerdir lists.
 func MountOverlayFS(ctx context.Context, layers []string, mountPoint string) error {
 	_, mountSpan := tracer.Start(ctx, "mount-overlay-fs", trace.WithAttributes(
 		attribute.String("mount", mountPoint),
@@ -273,6 +276,63 @@ func MountOverlayFS(ctx context.Context, layers []string, mountPoint string) err
 	))
 	defer mountSpan.End()
 
+	release, err := hostKernelRelease()
+	if err != nil {
+		return err
+	}
+
+	return mountOverlayFSForKernel(ctx, release, layers, mountPoint, mountOverlayFSModern, mountOverlayFSLegacy)
+}
+
+func hostKernelRelease() (string, error) {
+	var uts unix.Utsname
+	if err := unix.Uname(&uts); err != nil {
+		return "", fmt.Errorf("get host kernel release: %w", err)
+	}
+
+	releaseBytes := make([]byte, 0, len(uts.Release))
+	for _, value := range uts.Release {
+		if value == 0 {
+			break
+		}
+		releaseBytes = append(releaseBytes, byte(value))
+	}
+	if len(releaseBytes) == 0 {
+		return "", errors.New("host kernel release is empty")
+	}
+
+	return string(releaseBytes), nil
+}
+
+func requiresLegacyOverlayMount(release string) bool {
+	return release == "4.19" || strings.HasPrefix(release, "4.19.") || strings.HasPrefix(release, "4.19-")
+}
+
+func mountOverlayFSForKernel(
+	ctx context.Context,
+	release string,
+	layers []string,
+	mountPoint string,
+	modern overlayMountFunc,
+	legacy overlayMountFunc,
+) error {
+	if len(layers) == 0 {
+		return errors.New("overlay mount requires at least one lower layer")
+	}
+
+	if requiresLegacyOverlayMount(release) {
+		logger.L().Info(ctx, "Using legacy overlay mount API for Linux 4.19",
+			zap.String("kernel_release", release),
+			zap.Int("layer_count", len(layers)),
+		)
+
+		return legacy(layers, mountPoint)
+	}
+
+	return modern(layers, mountPoint)
+}
+
+func mountOverlayFSModern(layers []string, mountPoint string) error {
 	// Open the filesystem for configuration
 	fsfd, err := unix.Fsopen("overlay", unix.FSOPEN_CLOEXEC)
 	if err != nil {
@@ -303,6 +363,46 @@ func MountOverlayFS(ctx context.Context, layers []string, mountPoint string) err
 	// Mount to target
 	if err := unix.MoveMount(mfd, "", -1, mountPoint, unix.MOVE_MOUNT_F_EMPTY_PATH); err != nil {
 		return fmt.Errorf("move mount failed: %w", err)
+	}
+
+	return nil
+}
+
+func legacyOverlayMountOptions(layers []string) (string, error) {
+	if len(layers) == 0 {
+		return "", errors.New("overlay mount requires at least one lower layer")
+	}
+
+	for _, layer := range layers {
+		if layer == "" {
+			return "", errors.New("overlay lower layer path cannot be empty")
+		}
+		if strings.ContainsAny(layer, ",:") {
+			return "", fmt.Errorf("overlay lower layer path contains a legacy mount separator: %q", layer)
+		}
+	}
+
+	options := "lowerdir=" + strings.Join(layers, ":")
+	if len(options)+1 > os.Getpagesize() {
+		return "", fmt.Errorf(
+			"legacy overlay mount options exceed page size: size=%d limit=%d layers=%d",
+			len(options)+1,
+			os.Getpagesize(),
+			len(layers),
+		)
+	}
+
+	return options, nil
+}
+
+func mountOverlayFSLegacy(layers []string, mountPoint string) error {
+	options, err := legacyOverlayMountOptions(layers)
+	if err != nil {
+		return err
+	}
+
+	if err := unix.Mount("overlay", mountPoint, "overlay", uintptr(unix.MS_RDONLY), options); err != nil {
+		return fmt.Errorf("legacy overlay mount failed: %w", err)
 	}
 
 	return nil
