@@ -1,6 +1,6 @@
 module github.com/cri-multiplex
 
-go 1.26.3
+go 1.25.4
 
 require (
 	github.com/containernetworking/cni v1.3.0
