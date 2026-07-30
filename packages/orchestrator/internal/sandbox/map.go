@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -101,4 +103,33 @@ func (m *Map) RemoveByLifecycleID(sandboxID, lifecycleID string) {
 
 func NewSandboxesMap() *Map {
 	return &Map{sandboxes: smap.New[*Sandbox]()}
+}
+
+// CloseAll stops and cleans up every sandbox currently in the map.
+func (m *Map) CloseAll(ctx context.Context) error {
+	items := m.Items()
+	if len(items) == 0 {
+		return nil
+	}
+
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs error
+	)
+	for sandboxID, sbx := range items {
+		wg.Add(1)
+		go func(sandboxID string, sbx *Sandbox) {
+			defer wg.Done()
+			if err := sbx.Close(ctx); err != nil {
+				mu.Lock()
+				errs = errors.Join(errs, fmt.Errorf("close sandbox %s: %w", sandboxID, err))
+				mu.Unlock()
+			}
+			m.Remove(sandboxID)
+		}(sandboxID, sbx)
+	}
+	wg.Wait()
+
+	return errs
 }
