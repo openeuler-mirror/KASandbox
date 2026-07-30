@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -654,7 +655,9 @@ func TestMultipartUploader_BoundaryConditions_ExactChunkSize(t *testing.T) {
 	err := os.WriteFile(testFile, []byte(testContent), 0o644)
 	require.NoError(t, err)
 
-	var partSizes []int
+	// Pre-sized so concurrent handlers write distinct indices without locking.
+	partSizes := make([]int, 2)
+	var partsReceived atomic.Int32
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -670,10 +673,17 @@ func TestMultipartUploader_BoundaryConditions_ExactChunkSize(t *testing.T) {
 
 		case strings.Contains(r.URL.RawQuery, "partNumber"):
 			body, _ := io.ReadAll(r.Body)
-			partSizes = append(partSizes, len(body))
+			partNumStr := strings.Split(strings.Split(r.URL.RawQuery, "partNumber=")[1], "&")[0]
+			partNum, parseErr := strconv.Atoi(partNumStr)
+			if parseErr != nil || partNum < 1 || partNum > len(partSizes) {
+				w.WriteHeader(http.StatusBadRequest)
 
-			partNum := strings.Split(strings.Split(r.URL.RawQuery, "partNumber=")[1], "&")[0]
-			w.Header().Set("ETag", fmt.Sprintf(`"boundary-etag-%s"`, partNum))
+				return
+			}
+			partSizes[partNum-1] = len(body)
+			partsReceived.Add(1)
+
+			w.Header().Set("ETag", fmt.Sprintf(`"boundary-etag-%s"`, partNumStr))
 			w.WriteHeader(http.StatusOK)
 
 		case strings.Contains(r.URL.RawQuery, "uploadId"):
@@ -686,7 +696,7 @@ func TestMultipartUploader_BoundaryConditions_ExactChunkSize(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should have exactly 2 parts, each of ChunkSize
-	require.Len(t, partSizes, 2)
+	require.Equal(t, int32(2), partsReceived.Load())
 	require.Equal(t, gcpMultipartUploadChunkSize, partSizes[0])
 	require.Equal(t, gcpMultipartUploadChunkSize, partSizes[1])
 }

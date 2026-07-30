@@ -37,6 +37,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	blockmetrics "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block/metrics"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/cgroup"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
@@ -419,6 +420,8 @@ func run(config cfg.Config) (success bool) {
 	if err != nil {
 		logger.L().Fatal(ctx, "failed to create device pool", zap.Error(err))
 	}
+	fc.KillOrphanedProcesses(ctx, config.FirecrackerVersionsDir)
+	devicePool.ReclaimOrphanedDevices(ctx)
 	startService("nbd device pool", func() error {
 		devicePool.Populate(ctx)
 
@@ -634,6 +637,12 @@ func run(config cfg.Config) (success bool) {
 			success = false
 		}
 	}
+
+	if err := sandboxes.CloseAll(closeCtx); err != nil {
+		logger.L().Error(ctx, "error while closing sandboxes during shutdown", zap.Error(err))
+		success = false
+	}
+	fc.KillOrphanedProcesses(closeCtx, config.FirecrackerVersionsDir)
 
 	slices.Reverse(closers)
 	for _, closer := range closers {

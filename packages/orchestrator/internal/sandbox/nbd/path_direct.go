@@ -28,6 +28,8 @@ const (
 
 	// disconnectTimeout should not be necessary if the disconnect is reliable
 	disconnectTimeout = 30 * time.Second
+
+	mountReleaseTimeout = 2 * time.Minute
 )
 
 var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd")
@@ -37,9 +39,11 @@ type DirectPathMount struct {
 	devicePool   *DevicePool
 	featureFlags *featureflags.Client
 
-	Backend     block.Device
+	Backend   block.Device
+	blockSize uint64
+
+	mu          sync.Mutex
 	deviceIndex uint32
-	blockSize   uint64
 
 	dispatchers []*Dispatch
 	socksClient []*os.File
@@ -60,15 +64,28 @@ func NewDirectPathMount(b block.Device, devicePool *DevicePool, featureFlags *fe
 	}
 }
 
+func (d *DirectPathMount) setDeviceIndex(idx uint32) {
+	d.mu.Lock()
+	d.deviceIndex = idx
+	d.mu.Unlock()
+}
+
+func (d *DirectPathMount) getDeviceIndex() uint32 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.deviceIndex
+}
+
 func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err error) {
 	ctx, d.cancelfn = context.WithCancel(ctx)
 
 	openStart := time.Now()
 	defer func() {
 		// Set the device index to the one returned, correctly capture error values
-		d.deviceIndex = retDeviceIndex
+		d.setDeviceIndex(retDeviceIndex)
 		logger.L().Info(ctx, "[NBD-Open] open completed",
-			zap.Uint32("device_index", d.deviceIndex),
+			zap.Uint32("device_index", retDeviceIndex),
 			zap.Duration("total_ms", time.Since(openStart)),
 			zap.Error(err),
 		)
@@ -97,6 +114,7 @@ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err 
 		if err != nil {
 			return math.MaxUint32, err
 		}
+		d.setDeviceIndex(deviceIndex)
 		logger.L().Info(ctx, "[NBD-Open] got device from pool",
 			zap.Uint32("device_index", deviceIndex),
 			zap.Duration("phase_ms", time.Since(phaseStart)),
@@ -170,6 +188,7 @@ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err 
 			// The idx should be the same as deviceIndex, because we are connecting to it,
 			// but we will use the one returned by nbdnl
 			deviceIndex = idx
+			d.setDeviceIndex(deviceIndex)
 			logger.L().Info(ctx, "[NBD-Open] nbdnl.Connect succeeded",
 				zap.Uint32("device_index", deviceIndex),
 				zap.Duration("phase_ms", connectCost),
@@ -197,6 +216,7 @@ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err 
 		if err != nil {
 			logger.L().Error(ctx, "[NBD-Open] error opening NBD, error releasing device", zap.Error(err), zap.Uint32("device_index", deviceIndex))
 		}
+		d.setDeviceIndex(math.MaxUint32)
 
 		if strings.Contains(connectErr.Error(), "invalid argument") {
 			return math.MaxUint32, connectErr
@@ -215,6 +235,14 @@ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err 
 	for {
 		select {
 		case <-ctx.Done():
+			cleanupCtx := context.WithoutCancel(ctx)
+			if cleanupErr := d.cleanupConnectedDevice(cleanupCtx, deviceIndex); cleanupErr != nil {
+				logger.L().Error(ctx, "[NBD-Open] cleanup after cancel failed",
+					zap.Uint32("device_index", deviceIndex),
+					zap.Error(cleanupErr),
+				)
+			}
+
 			return math.MaxUint32, ctx.Err()
 		default:
 		}
@@ -244,63 +272,81 @@ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err 
 	return retDeviceIndex, nil
 }
 
+func (d *DirectPathMount) cleanupConnectedDevice(ctx context.Context, idx uint32) error {
+	var errs []error
+	if d.cancelfn != nil {
+		d.cancelfn()
+	}
+	if err := closeSocketPairs(d.socksClient, d.socksServer); err != nil {
+		errs = append(errs, err)
+	}
+	d.handlersWg.Wait()
+	if err := ForceDisconnect(ctx, idx); err != nil {
+		errs = append(errs, err)
+	}
+	if err := d.devicePool.ReleaseDevice(ctx, idx,
+		WithInfiniteRetry(),
+		WithTimeout(mountReleaseTimeout),
+		WithForceDisconnect(),
+	); err != nil {
+		errs = append(errs, err)
+	}
+	d.setDeviceIndex(math.MaxUint32)
+
+	return errors.Join(errs...)
+}
+
 func (d *DirectPathMount) Close(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "direct-path-mount-close")
 	defer span.End()
 
 	var errs []error
+	idx := d.getDeviceIndex()
 
-	idx := d.deviceIndex
+	// Disconnect while sockets are still alive to avoid kernel EPIPE (-32).
+	if idx != math.MaxUint32 {
+		if err := disconnectNBDWithTimeout(ctx, idx, disconnectTimeout); err != nil {
+			if ferr := ForceDisconnect(ctx, idx); ferr != nil {
+				errs = append(errs, fmt.Errorf("error disconnecting NBD: %w", errors.Join(err, ferr)))
+			} else {
+				logger.L().Warn(ctx, "NBD disconnect failed, force disconnect succeeded",
+					zap.Uint32("device_index", idx),
+					zap.Error(err),
+				)
+			}
+		}
+	}
 
-	// First cancel the context, which will stop waiting on pending readAt/writeAt...
-	telemetry.ReportEvent(ctx, "canceling context")
 	if d.cancelfn != nil {
 		d.cancelfn()
 	}
 
-	// Close all server socket pairs...
-	telemetry.ReportEvent(ctx, "closing socket pairs server")
 	for _, v := range d.socksServer {
-		err := v.Close()
-		if err != nil {
+		if err := v.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("error closing server pair: %w", err))
 		}
 	}
 
-	// Now wait until the handlers return
-	telemetry.ReportEvent(ctx, "await handlers return")
 	d.handlersWg.Wait()
-
-	// Now wait for any pending responses to be sent
-	telemetry.ReportEvent(ctx, "waiting for pending responses")
-	for _, d := range d.dispatchers {
-		d.Drain()
+	for _, dispatcher := range d.dispatchers {
+		dispatcher.Drain()
 	}
 
-	// Disconnect NBD
-	if idx != math.MaxUint32 {
-		err := disconnectNBDWithTimeout(ctx, idx, disconnectTimeout)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("error disconnecting NBD: %w", err))
-		}
-	}
-
-	// Close all client socket pairs...
-	telemetry.ReportEvent(ctx, "closing socket pairs client")
 	for _, v := range d.socksClient {
-		err := v.Close()
-		if err != nil {
+		if err := v.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("error closing socket pair client: %w", err))
 		}
 	}
 
-	// Release the device back to the pool, retry if it is in use
 	if idx != math.MaxUint32 {
-		telemetry.ReportEvent(ctx, "releasing device to the pool")
-		err := d.devicePool.ReleaseDevice(ctx, idx, WithInfiniteRetry())
-		if err != nil {
+		if err := d.devicePool.ReleaseDevice(ctx, idx,
+			WithInfiniteRetry(),
+			WithTimeout(mountReleaseTimeout),
+			WithForceDisconnect(),
+		); err != nil {
 			errs = append(errs, fmt.Errorf("error releasing overlay device: %w", err))
 		}
+		d.setDeviceIndex(math.MaxUint32)
 	}
 
 	return errors.Join(errs...)

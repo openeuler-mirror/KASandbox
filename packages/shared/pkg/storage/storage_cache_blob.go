@@ -63,14 +63,15 @@ func (b *cachedBlob) WriteTo(ctx context.Context, dst io.Writer) (n int64, e err
 		return count, err
 	}
 
-	// store the byte slice before calling `buffer.Read`, which moves the offset.
+	// Snapshot the unread bytes before the async cache write. Do not pass `buffer`
+	// itself: its Read would race with returning/using these bytes to the caller.
 	data := buffer.Bytes()
 
 	b.goCtxWithoutCancel(ctx, func(ctx context.Context) {
 		ctx, span := b.tracer.Start(ctx, "write file back to cache")
 		defer span.End()
 
-		count, err := b.writeFileToCache(ctx, buffer)
+		count, err := b.writeFileToCache(ctx, bytes.NewReader(data))
 		if err != nil {
 			recordCacheWriteError(ctx, cacheTypeObject, cacheOpWriteTo, err)
 			recordError(span, err)
