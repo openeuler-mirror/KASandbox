@@ -18,6 +18,20 @@ type RouteRecord struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
+type CleanupTask struct {
+	ID           string     `json:"id"`
+	Runtime      EngineType `json:"runtime"`
+	SandboxID    string     `json:"sandbox_id"`
+	ResourceType string     `json:"resource_type"`
+	ResourceID   string     `json:"resource_id,omitempty"`
+	Reason       string     `json:"reason"`
+	Attempts     int        `json:"attempts"`
+	LastError    string     `json:"last_error,omitempty"`
+	NextRetryAt  time.Time  `json:"next_retry_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
 type E2BPodState struct {
 	SandboxID       string            `json:"sandbox_id"`
 	E2BSandboxID    string            `json:"e2b_sandbox_id"`
@@ -117,10 +131,11 @@ type persistedAndroidState struct {
 }
 
 type persistedState struct {
-	Version int                   `json:"version"`
-	Routes  []RouteRecord         `json:"routes,omitempty"`
-	E2B     persistedE2BState     `json:"e2b"`
-	Android persistedAndroidState `json:"android"`
+	Version      int                   `json:"version"`
+	Routes       []RouteRecord         `json:"routes,omitempty"`
+	E2B          persistedE2BState     `json:"e2b"`
+	Android      persistedAndroidState `json:"android"`
+	CleanupTasks []CleanupTask         `json:"cleanup_tasks,omitempty"`
 }
 
 type StateStore interface {
@@ -139,6 +154,10 @@ type StateStore interface {
 	SaveAndroidPod(AndroidPodState) error
 	DeleteAndroidPod(sandboxID string) error
 	LoadAndroidPods() ([]AndroidPodState, error)
+
+	SaveCleanupTask(CleanupTask) error
+	DeleteCleanupTask(id string) error
+	LoadCleanupTasks() ([]CleanupTask, error)
 }
 
 type JSONStateStore struct {
@@ -303,6 +322,42 @@ func (s *JSONStateStore) LoadAndroidPods() ([]AndroidPodState, error) {
 	return cloneAndroidPodStates(s.state.Android.Pods), nil
 }
 
+func (s *JSONStateStore) SaveCleanupTask(task CleanupTask) error {
+	if s == nil || s.disabled || task.ID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = now
+	}
+	task.UpdatedAt = now
+	s.state.CleanupTasks = upsertCleanupTask(s.state.CleanupTasks, task)
+	return s.flushLocked()
+}
+
+func (s *JSONStateStore) DeleteCleanupTask(id string) error {
+	if s == nil || s.disabled || id == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.CleanupTasks = deleteCleanupTask(s.state.CleanupTasks, id)
+	return s.flushLocked()
+}
+
+func (s *JSONStateStore) LoadCleanupTasks() ([]CleanupTask, error) {
+	if s == nil || s.disabled {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]CleanupTask, len(s.state.CleanupTasks))
+	copy(out, s.state.CleanupTasks)
+	return out, nil
+}
+
 func (s *JSONStateStore) flushLocked() error {
 	if s == nil || s.disabled {
 		return nil
@@ -422,6 +477,36 @@ func deleteAndroidPodState(records []AndroidPodState, sandboxID string) []Androi
 			continue
 		}
 		out = append(out, item)
+	}
+	return out
+}
+
+func upsertCleanupTask(tasks []CleanupTask, task CleanupTask) []CleanupTask {
+	out := make([]CleanupTask, 0, len(tasks)+1)
+	replaced := false
+	for _, item := range tasks {
+		if item.ID == task.ID {
+			if task.CreatedAt.IsZero() {
+				task.CreatedAt = item.CreatedAt
+			}
+			out = append(out, task)
+			replaced = true
+			continue
+		}
+		out = append(out, item)
+	}
+	if !replaced {
+		out = append(out, task)
+	}
+	return out
+}
+
+func deleteCleanupTask(tasks []CleanupTask, id string) []CleanupTask {
+	out := make([]CleanupTask, 0, len(tasks))
+	for _, task := range tasks {
+		if task.ID != id {
+			out = append(out, task)
+		}
 	}
 	return out
 }

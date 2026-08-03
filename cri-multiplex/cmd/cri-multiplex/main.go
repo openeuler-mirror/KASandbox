@@ -78,7 +78,7 @@ func main() {
 	orchestratorProxyAddr := flag.String("orchestrator-proxy-address", defaultOrchestratorProxyAddr, "E2B orchestrator HTTP proxy address (for envd interaction)")
 	nodeIP := flag.String("node-ip", "", "Node IP for host network mode (auto-detected if empty)")
 	stateDir := flag.String("state-dir", defaultStateDir, "cri-multiplex persistent state directory")
-	e2bCNIEnabled := flag.Bool("e2b-cni-enabled", false, "Enable CNI networking for E2B pod sandboxes")
+	cniEnabled := flag.Bool("cni-enabled", false, "Enable CNI networking for E2B and Android pod sandboxes")
 	cniConfDir := flag.String("cni-conf-dir", "/etc/cni/net.d", "CNI configuration directory")
 	cniBinDir := flag.String("cni-bin-dir", "/opt/cni/bin", "CNI plugin binary directory")
 	cniIfName := flag.String("cni-ifname", "eth0", "CNI interface name inside the pod netns")
@@ -91,13 +91,12 @@ func main() {
 	androidWebRTCPortStart := flag.Int("android-webrtc-port-start", 0, "Android WebRTC host port start (0 disables allocation)")
 	androidLaunchTimeout := flag.Duration("android-launch-timeout", 30*time.Second, "Android launch readiness timeout")
 	androidStateDir := flag.String("android-state-dir", "/var/lib/cri-multiplex/android", "Android runtime state directory")
-	androidCVDGroup := flag.String("android-cvd-group", "cvdnetwork", "Supplementary group for Android Cuttlefish commands")
-	androidCNIEnabled := flag.Bool("android-cni-enabled", false, "Enable CNI networking for Android pods")
-	androidCNIConfDir := flag.String("android-cni-conf-dir", "/etc/cni/net.d", "Android CNI configuration directory")
-	androidCNIBinDir := flag.String("android-cni-bin-dir", "/opt/cni/bin", "Android CNI plugin binary directory")
-	androidCNIIfName := flag.String("android-cni-ifname", "eth0", "Android CNI interface name inside the pod netns")
-	androidCNINetNSDir := flag.String("android-cni-netns-dir", "/var/run/netns", "Android CNI netns directory")
 	androidCNINetNSPrefix := flag.String("android-cni-netns-prefix", "android-", "Android CNI netns name prefix")
+	orphanReconcileEnabled := flag.Bool("orphan-reconcile-enabled", true, "Enable orphan resource reconciliation")
+	orphanReconcileInterval := flag.Duration("orphan-reconcile-interval", 60*time.Second, "Orphan reconciliation interval")
+	orphanGracePeriod := flag.Duration("orphan-grace-period", 120*time.Second, "Grace period before reclaiming orphan resources")
+	cleanupMaxRetries := flag.Int("cleanup-max-retries", 10, "Maximum cleanup retry attempts")
+	cleanupDryRun := flag.Bool("cleanup-dry-run", false, "Log orphan cleanup actions without deleting resources")
 	flag.Parse()
 
 	stateStore, err := engine.NewJSONStateStore(*stateDir)
@@ -121,7 +120,7 @@ func main() {
 		OrchestratorProxyAddr: *orchestratorProxyAddr,
 		NodeIP:                *nodeIP,
 		CNI: engine.CNIConfig{
-			Enabled:  *e2bCNIEnabled,
+			Enabled:  *cniEnabled,
 			ConfDir:  *cniConfDir,
 			BinDir:   *cniBinDir,
 			IfName:   *cniIfName,
@@ -132,7 +131,7 @@ func main() {
 	e2bEng := engine.NewE2BEngine(cfg)
 	defer e2bEng.Close()
 
-	if *androidEnabled && *androidNodeIP == "" && !*androidCNIEnabled {
+	if *androidEnabled && *androidNodeIP == "" && !*cniEnabled {
 		*androidNodeIP = autoNodeIP()
 		if *androidNodeIP == "" {
 			log.Fatal("--android-node-ip is required when --android-enabled is set (auto-detection failed)")
@@ -148,18 +147,25 @@ func main() {
 		WebRTCPortStart:      *androidWebRTCPortStart,
 		LaunchTimeout:        *androidLaunchTimeout,
 		StateDir:             *androidStateDir,
-		CVDGroup:             *androidCVDGroup,
 		CNI: engine.CNIConfig{
-			Enabled:     *androidCNIEnabled,
-			ConfDir:     *androidCNIConfDir,
-			BinDir:      *androidCNIBinDir,
-			IfName:      *androidCNIIfName,
-			NetNSDir:    *androidCNINetNSDir,
+			Enabled:     *cniEnabled,
+			ConfDir:     *cniConfDir,
+			BinDir:      *cniBinDir,
+			IfName:      *cniIfName,
+			NetNSDir:    *cniNetNSDir,
 			NetNSPrefix: *androidCNINetNSPrefix,
 		},
 		StateStore: stateStore,
 	})
 	defer androidEng.Close()
+	cleanupManager := engine.NewCleanupManager(stateStore, e2bEng, androidEng, engine.CleanupConfig{
+		Enabled:     *orphanReconcileEnabled,
+		Interval:    *orphanReconcileInterval,
+		GracePeriod: *orphanGracePeriod,
+		MaxRetries:  *cleanupMaxRetries,
+		DryRun:      *cleanupDryRun,
+	})
+	defer cleanupManager.Close()
 
 	restoreCtx, cancelRestore := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelRestore()
@@ -171,11 +177,17 @@ func main() {
 	if err := androidEng.RestoreState(restoreCtx); err != nil {
 		log.Fatalf("restore android state: %v", err)
 	}
+	if *orphanReconcileEnabled {
+		if err := cleanupManager.Reconcile(restoreCtx); err != nil {
+			log.Printf("startup orphan reconcile warning: %v", err)
+		}
+	}
 
 	mux := server.NewMuxServer(containerEng, e2bEng, androidEng, stateStore)
 	if err := mux.RestoreState(); err != nil {
 		log.Fatalf("restore mux state: %v", err)
 	}
+	cleanupManager.Start(context.Background())
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -185,8 +197,8 @@ func main() {
 		mux.Stop()
 	}()
 
-	log.Printf("starting cri-multiplex on %s (containerd: %s, orchestrator: %s, node-ip: %s, proxy: %s, state-dir: %s, android-enabled: %v, android-cni-enabled: %v, android-node-ip: %s)",
-		*socketPath, *containerdSocket, cfg.OrchestratorAddr, cfg.NodeIP, cfg.OrchestratorProxyAddr, *stateDir, *androidEnabled, *androidCNIEnabled, *androidNodeIP)
+	log.Printf("starting cri-multiplex on %s (containerd: %s, orchestrator: %s, node-ip: %s, proxy: %s, state-dir: %s, android-enabled: %v, cni-enabled: %v, android-node-ip: %s)",
+		*socketPath, *containerdSocket, cfg.OrchestratorAddr, cfg.NodeIP, cfg.OrchestratorProxyAddr, *stateDir, *androidEnabled, *cniEnabled, *androidNodeIP)
 	if err := mux.Start(*socketPath); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}

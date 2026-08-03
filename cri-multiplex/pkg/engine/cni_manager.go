@@ -182,7 +182,20 @@ func (m *CNIManager) Del(ctx context.Context, rec *CNIRecord, podCfg *runtime.Po
 
 	rt := m.runtimeConf(rec.SandboxID, rec.NetNSPath, podCfg)
 	err := m.cniConfig.DelNetworkList(ctx, m.netConfig, rt)
-	unmountErr := netns.DeleteNamed(filepath.Base(rec.NetNSPath))
+	if isCleanupNotFound(err) {
+		err = nil
+	}
+	netnsName := rec.NetNSName
+	if netnsName == "" {
+		netnsName = filepath.Base(rec.NetNSPath)
+	}
+	var unmountErr error
+	if netnsName != "" && netnsName != "." {
+		unmountErr = netns.DeleteNamed(netnsName)
+	}
+	if isCleanupNotFound(unmountErr) {
+		unmountErr = nil
+	}
 	if unmountErr != nil && !os.IsNotExist(unmountErr) {
 		if err != nil {
 			return fmt.Errorf("cni del %s: %w; unmount netns: %v", rec.SandboxID, err, unmountErr)

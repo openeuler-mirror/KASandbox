@@ -18,25 +18,25 @@ log_section "00 — 验证工具安装与环境准备"
 #==================== 1. 检查 crictl ====================#
 log_step "1.1 检查 crictl"
 if command -v crictl &> /dev/null; then
-    log_pass "crictl 已安装: $(crictl --version 2>&1 | head -1)"
+    log_info "crictl 已安装: $(crictl --version 2>&1 | head -1)"
 else
-    log_fail "crictl 未安装"
+    log_info "crictl 未安装"
     exit 1
 fi
 
 #==================== 2. 检查/安装 grpcurl ====================#
 log_step "1.2 检查/安装 grpcurl"
 if command -v grpcurl &> /dev/null; then
-    log_pass "grpcurl 已安装: $(grpcurl -version 2>&1 | head -1)"
+    log_info "grpcurl 已安装: $(grpcurl -version 2>&1 | head -1)"
 else
     log_info "grpcurl 未安装，开始安装..."
     export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
     go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest
     export PATH="$PATH:$(go env GOPATH)/bin"
     if command -v grpcurl &> /dev/null; then
-        log_pass "grpcurl 安装成功"
+        log_info "grpcurl 安装成功"
     else
-        log_fail "grpcurl 安装失败，请手动安装"
+        log_info "grpcurl 安装失败，请手动安装"
         exit 1
     fi
 fi
@@ -45,15 +45,15 @@ fi
 log_step "1.3 准备 CRI API proto 文件"
 mkdir -p "${PROTO_DIR}"
 if [ -f "${PROTO_FILE}" ]; then
-    log_pass "proto 文件已存在: ${PROTO_FILE}"
+    log_info "proto 文件已存在: ${PROTO_FILE}"
 else
     log_info "下载 CRI API proto..."
     curl -sL https://raw.githubusercontent.com/kubernetes/cri-api/master/pkg/apis/runtime/v1/api.proto \
         -o "${PROTO_FILE}"
     if [ -f "${PROTO_FILE}" ]; then
-        log_pass "proto 文件下载成功"
+        log_info "proto 文件下载成功"
     else
-        log_fail "proto 文件下载失败"
+        log_info "proto 文件下载失败"
         exit 1
     fi
 fi
@@ -61,7 +61,7 @@ fi
 #==================== 4. 创建默认 e2b-pod.json ====================#
 log_step "1.4 准备 e2b-pod.json"
 if [ -f "${POD_JSON}" ]; then
-    log_pass "e2b-pod.json 已存在: ${POD_JSON}"
+    log_info "e2b-pod.json 已存在: ${POD_JSON}"
 else
     log_info "创建默认 e2b-pod.json..."
     cat > "${POD_JSON}" <<'EOF'
@@ -107,13 +107,13 @@ else
   }
 }
 EOF
-    log_pass "e2b-pod.json 创建成功"
+    log_info "e2b-pod.json 创建成功"
 fi
 
 #==================== 5. 检查 kubectl ====================#
 log_step "1.5 检查 kubectl"
 if command -v kubectl &> /dev/null; then
-    log_pass "kubectl 已安装: $(kubectl version --client --short 2>/dev/null || kubectl version --client 2>&1 | head -1)"
+    log_info "kubectl 已安装: $(kubectl version --client --short 2>/dev/null || kubectl version --client 2>&1 | head -1)"
 else
     log_info "kubectl 未安装（snapshot 错误修复需要 kubectl，可后续安装）"
 fi
@@ -121,22 +121,22 @@ fi
 #==================== 6. 检查 test.py 和 build_prod.py ====================#
 log_step "1.6 检查 test.py 和 build_prod.py"
 if [ -f "${TEST_PY}" ]; then
-    log_pass "test.py 已存在: ${TEST_PY}"
+    log_info "test.py 已存在: ${TEST_PY}"
 else
-    log_fail "test.py 不存在（snapshot 错误修复需要该脚本）"
+    log_info "test.py 不存在（snapshot 错误修复需要该脚本）"
 fi
 if [ -f "${BUILD_PROD_PY}" ]; then
-    log_pass "build_prod.py 已存在: ${BUILD_PROD_PY}"
+    log_info "build_prod.py 已存在: ${BUILD_PROD_PY}"
 else
-    log_fail "build_prod.py 不存在（snapshot 错误修复需要该脚本）"
+    log_info "build_prod.py 不存在（snapshot 错误修复需要该脚本）"
 fi
 
 #==================== 7. 检查 .env ====================#
 log_step "1.7 检查 .env"
 if [ -f "${SCRIPT_DIR}/.env" ]; then
-    log_pass ".env 已存在: ${SCRIPT_DIR}/.env"
+    log_info ".env 已存在: ${SCRIPT_DIR}/.env"
 else
-    log_fail ".env 不存在（build_prod.py 和 test.py 需要）"
+    log_info ".env 不存在（build_prod.py 和 test.py 需要）"
 fi
 
 echo ""

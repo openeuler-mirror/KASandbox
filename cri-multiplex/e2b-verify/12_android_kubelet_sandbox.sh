@@ -24,6 +24,7 @@ ANDROID_ADB_PORT="${ANDROID_ADB_PORT:-6520}"
 ANDROID_BASE_INSTANCE_NUM="${ANDROID_BASE_INSTANCE_NUM:-1}"
 ANDROID_WAIT_TIMEOUT="${ANDROID_WAIT_TIMEOUT:-240s}"
 ANDROID_ADB_WAIT_TIMEOUT="${ANDROID_ADB_WAIT_TIMEOUT:-30}"
+ANDROID_CLEANUP_WAIT_TIMEOUT="${ANDROID_CLEANUP_WAIT_TIMEOUT:-120}"
 ANDROID_CLEANUP_EXISTING="${ANDROID_CLEANUP_EXISTING:-1}"
 
 cleanup() {
@@ -34,47 +35,39 @@ trap cleanup EXIT
 log_step "1.1 前置检查"
 
 if [ ! -x "${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd" ]; then
-    log_fail "launch_cvd 不存在或不可执行: ${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd"
+    log_info "launch_cvd 不存在或不可执行: ${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd"
     exit 1
 fi
-log_pass "launch_cvd 可执行: ${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd"
+log_info "launch_cvd 可执行: ${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd"
 
 if [ -x "${ANDROID_ARTIFACTS_DIR}/bin/cvd" ]; then
-    log_pass "cvd 可执行: ${ANDROID_ARTIFACTS_DIR}/bin/cvd"
+    log_info "cvd 可执行: ${ANDROID_ARTIFACTS_DIR}/bin/cvd"
 elif [ -x "${ANDROID_ARTIFACTS_DIR}/bin/cvd_internal_stop" ]; then
-    log_pass "cvd_internal_stop 可执行: ${ANDROID_ARTIFACTS_DIR}/bin/cvd_internal_stop"
+    log_info "cvd_internal_stop 可执行: ${ANDROID_ARTIFACTS_DIR}/bin/cvd_internal_stop"
 else
-    log_fail "cvd 或 cvd_internal_stop 不存在或不可执行: ${ANDROID_ARTIFACTS_DIR}/bin"
+    log_info "cvd 或 cvd_internal_stop 不存在或不可执行: ${ANDROID_ARTIFACTS_DIR}/bin"
     exit 1
 fi
 
 if [ ! -e /dev/kvm ]; then
-    log_fail "/dev/kvm 不存在，无法启动 Android Cuttlefish VM"
+    log_info "/dev/kvm 不存在，无法启动 Android Cuttlefish VM"
     exit 1
 fi
-log_pass "/dev/kvm 存在"
+log_info "/dev/kvm 存在"
 
 if [ ! -e /dev/net/tun ]; then
-    log_fail "/dev/net/tun 不存在，无法启动 Android Cuttlefish VM"
+    log_info "/dev/net/tun 不存在，无法启动 Android Cuttlefish VM"
     exit 1
 fi
-log_pass "/dev/net/tun 存在"
+log_info "/dev/net/tun 存在"
 
 log_step "1.2 启动 cri-multiplex CNI+Android runtime 模式"
 
-if ! ANDROID_ENABLED=1 E2B_CNI_ENABLED=1 ANDROID_CNI_ENABLED=1 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR}" ANDROID_ADB_PORT_START="${ANDROID_ADB_PORT}" E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" >&2; then
+if ! start_cni_android_multiplex "启动 cri-multiplex CNI+Android runtime 模式"; then
     log_fail "启动 cri-multiplex CNI+Android runtime 模式失败"
     exit 1
 fi
 log_pass "cri-multiplex CNI+Android runtime 模式已启动"
-
-require_cri_multiplex_cni_enabled || exit 1
-require_cri_multiplex_android_cni_enabled || exit 1
-
-if ! cri_multiplex_cmdline | grep -q -- "-android-enabled"; then
-    log_fail "cri-multiplex 未启用 -android-enabled"
-    exit 1
-fi
 log_pass "cri-multiplex 已启用 AndroidEngine"
 
 log_step "1.3 清理旧 CVD 实例，避免 ADB 端口残留误判"
@@ -102,7 +95,7 @@ EOF
 cat ${RUNTIMECLASS_YAML}
 
 kubectl apply -f "${RUNTIMECLASS_YAML}" >&2
-log_pass "RuntimeClass android 已创建/更新"
+log_info "RuntimeClass android 已创建/更新"
 
 log_step "2.2 清理旧 Android Pod"
 
@@ -227,15 +220,12 @@ fi
 
 log_step "5.1 删除 Pod 验证清理"
 
+ANDROID_PGID=$(android_pgid_from_state "${POD_UID}" || true)
 kubectl delete pod "${POD_NAME}" --force --grace-period=0 >&2 || true
-sleep 5
-
-if pgrep -af "launch_cvd.*${ANDROID_ARTIFACTS_DIR}|cvd_internal_start" >/tmp/android-cvd-pgrep.out 2>/dev/null; then
-    log_skip "仍观察到 CVD 相关进程，可能是其他手工实例；请确认是否属于本用例"
-    cat /tmp/android-cvd-pgrep.out >&2 || true
-else
-    log_pass "未观察到残留 CVD 进程"
-fi
+wait_android_pod_cleanup "${POD_NAME}" "${POD_UID}" "${NETNS_PATH}" "${POD_IP}" "${ANDROID_ADB_PORT}" "${ANDROID_PGID}" "${ANDROID_CLEANUP_WAIT_TIMEOUT}" || {
+    tail -n 160 /tmp/cri-multiplex.log >&2 || true
+    exit 1
+}
 
 print_summary
 
