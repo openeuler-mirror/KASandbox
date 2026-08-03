@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	"github.com/cri-multiplex/pkg/engine"
@@ -115,6 +117,23 @@ func (s *MuxServer) deleteRoute(kind, id string) {
 	if err := s.stateStore.DeleteRoute(kind, id); err != nil {
 		log.Printf("[MuxServer] WARNING: delete route failed kind=%s id=%s: %v", kind, id, err)
 	}
+}
+
+func (s *MuxServer) cleanupPending(sandboxID string) bool {
+	if s == nil || s.stateStore == nil || sandboxID == "" {
+		return false
+	}
+	tasks, err := s.stateStore.LoadCleanupTasks()
+	if err != nil {
+		log.Printf("[MuxServer] WARNING: load cleanup tasks for sandbox=%s: %v", sandboxID, err)
+		return true
+	}
+	for _, task := range tasks {
+		if task.SandboxID == sandboxID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *MuxServer) Start(socketPath string) error {
@@ -282,18 +301,26 @@ func (s *MuxServer) StopPodSandbox(ctx context.Context, req *runtime.StopPodSand
 }
 
 func (s *MuxServer) RemovePodSandbox(ctx context.Context, req *runtime.RemovePodSandboxRequest) (*runtime.RemovePodSandboxResponse, error) {
+	_, routed := s.podRoutes.Load(req.PodSandboxId)
 	eng, err := s.resolveEngineByPod(req.PodSandboxId)
 	if err != nil {
 		return nil, err
 	}
 
 	resp, err := eng.RemovePodSandbox(ctx, req)
-	if err == nil {
+	if !routed && status.Code(err) == codes.NotFound {
+		log.Printf("[MuxServer] RemovePodSandbox: sandbox %s already absent, treating as success", req.PodSandboxId)
+		return &runtime.RemovePodSandboxResponse{}, nil
+	}
+	if err == nil && !s.cleanupPending(req.PodSandboxId) {
 		s.podRoutes.Delete(req.PodSandboxId)
 		s.deleteRoute("pod", req.PodSandboxId)
 		defaultContainerID := req.PodSandboxId + "-c"
 		s.containerRoutes.Delete(defaultContainerID)
 		s.deleteRoute("container", defaultContainerID)
+	}
+	if err == nil && s.cleanupPending(req.PodSandboxId) {
+		log.Printf("[MuxServer] retaining routes while cleanup is pending sandbox=%s", req.PodSandboxId)
 	}
 	return resp, err
 }

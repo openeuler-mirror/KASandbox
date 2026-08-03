@@ -14,9 +14,12 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "01 — 启动 cri-multiplex"
 
-E2B_CNI_ENABLED="${E2B_CNI_ENABLED:-1}"
+CNI_ENABLED="${CNI_ENABLED:-1}"
 E2B_FORCE_RESTART="${E2B_FORCE_RESTART:-0}"
+E2B_FORCE_BUILD="${E2B_FORCE_BUILD:-0}"
+E2B_SKIP_BUILD="${E2B_SKIP_BUILD:-0}"
 STATE_DIR="${STATE_DIR:-/var/lib/cri-multiplex/state}"
+NODE_IP="${NODE_IP:-}"
 ANDROID_ENABLED="${ANDROID_ENABLED:-0}"
 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}"
 ANDROID_NODE_IP="${ANDROID_NODE_IP:-}"
@@ -24,31 +27,43 @@ ANDROID_ADB_PORT_START="${ANDROID_ADB_PORT_START:-6520}"
 ANDROID_BASE_INSTANCE_NUM_START="${ANDROID_BASE_INSTANCE_NUM_START:-1}"
 ANDROID_LAUNCH_TIMEOUT="${ANDROID_LAUNCH_TIMEOUT:-30s}"
 ANDROID_STATE_DIR="${ANDROID_STATE_DIR:-/var/lib/cri-multiplex/android}"
-ANDROID_CVD_GROUP="${ANDROID_CVD_GROUP:-cvdnetwork}"
-ANDROID_CNI_ENABLED="${ANDROID_CNI_ENABLED:-1}"
-ANDROID_CNI_CONF_DIR="${ANDROID_CNI_CONF_DIR:-/etc/cni/net.d}"
-ANDROID_CNI_BIN_DIR="${ANDROID_CNI_BIN_DIR:-/opt/cni/bin}"
-ANDROID_CNI_IFNAME="${ANDROID_CNI_IFNAME:-eth0}"
-ANDROID_CNI_NETNS_DIR="${ANDROID_CNI_NETNS_DIR:-/var/run/netns}"
 ANDROID_CNI_NETNS_PREFIX="${ANDROID_CNI_NETNS_PREFIX:-android-}"
-if [ "${E2B_CNI_ENABLED}" != "0" ] && [ "${E2B_CNI_ENABLED}" != "1" ]; then
-    log_fail "E2B_CNI_ENABLED 必须是 0 或 1，当前值: ${E2B_CNI_ENABLED}"
+ORPHAN_RECONCILE_ENABLED="${ORPHAN_RECONCILE_ENABLED:-1}"
+ORPHAN_RECONCILE_INTERVAL="${ORPHAN_RECONCILE_INTERVAL:-60s}"
+ORPHAN_GRACE_PERIOD="${ORPHAN_GRACE_PERIOD:-120s}"
+CLEANUP_MAX_RETRIES="${CLEANUP_MAX_RETRIES:-10}"
+E2B_NON_VALIDATION_STARTUP="${E2B_NON_VALIDATION_STARTUP:-0}"
+
+startup_pass() {
+    if [ "${E2B_NON_VALIDATION_STARTUP}" = "1" ]; then
+        log_info "$*"
+    else
+        log_pass "$*"
+    fi
+}
+
+startup_fail() {
+    if [ "${E2B_NON_VALIDATION_STARTUP}" = "1" ]; then
+        log_info "$*"
+    else
+        log_fail "$*"
+    fi
+}
+
+if [ "${CNI_ENABLED}" != "0" ] && [ "${CNI_ENABLED}" != "1" ]; then
+    startup_fail "CNI_ENABLED 必须是 0 或 1，当前值: ${CNI_ENABLED}"
     exit 1
 fi
 if [ "${E2B_FORCE_RESTART}" != "0" ] && [ "${E2B_FORCE_RESTART}" != "1" ]; then
-	log_fail "E2B_FORCE_RESTART 必须是 0 或 1，当前值: ${E2B_FORCE_RESTART}"
+	startup_fail "E2B_FORCE_RESTART 必须是 0 或 1，当前值: ${E2B_FORCE_RESTART}"
 	exit 1
 fi
 if [ "${ANDROID_ENABLED}" != "0" ] && [ "${ANDROID_ENABLED}" != "1" ]; then
-    log_fail "ANDROID_ENABLED 必须是 0 或 1，当前值: ${ANDROID_ENABLED}"
-    exit 1
-fi
-if [ "${ANDROID_CNI_ENABLED}" != "0" ] && [ "${ANDROID_CNI_ENABLED}" != "1" ]; then
-    log_fail "ANDROID_CNI_ENABLED 必须是 0 或 1，当前值: ${ANDROID_CNI_ENABLED}"
+    startup_fail "ANDROID_ENABLED 必须是 0 或 1，当前值: ${ANDROID_ENABLED}"
     exit 1
 fi
 MODE_DESC="非 CNI"
-if [ "${E2B_CNI_ENABLED}" = "1" ]; then
+if [ "${CNI_ENABLED}" = "1" ]; then
 	MODE_DESC="CNI"
 fi
 if [ "${ANDROID_ENABLED}" = "1" ]; then
@@ -63,13 +78,13 @@ if cri_multiplex_ready && [ "${E2B_FORCE_RESTART}" != "1" ]; then
     if cri_multiplex_cni_enabled; then
         current_cni=1
     fi
-    if [ "${current_cni}" = "${E2B_CNI_ENABLED}" ]; then
+    if [ "${current_cni}" = "${CNI_ENABLED}" ]; then
         current_android=0
         if cri_multiplex_cmdline | grep -q -- "-android-enabled"; then
             current_android=1
         fi
         if [ "${current_android}" = "${ANDROID_ENABLED}" ]; then
-            log_pass "cri-multiplex 已在运行且模式匹配，socket: ${SOCKET}, mode=${MODE_DESC}"
+            log_info "cri-multiplex 已在运行且模式匹配，socket: ${SOCKET}, mode=${MODE_DESC}"
             exit 0
         fi
         log_info "cri-multiplex 已运行但 Android 模式不匹配，准备重启为 ${MODE_DESC} 模式"
@@ -92,16 +107,25 @@ if [ -n "${old_pids}" ]; then
 fi
 rm -f "${SOCKET}"
 
-#==================== 2. 构建 ====================#
-log_step "构建 cri-multiplex"
-if [ ! -f "${MULTIPLEX_DIR}/cri-multiplex" ]; then
-    log_info "执行 go build..."
-    (cd "${MULTIPLEX_DIR}" && go build ./cmd/cri-multiplex) || {
-        log_fail "构建 cri-multiplex 失败"
+#==================== 2. 准备二进制 ====================#
+if [ "${E2B_SKIP_BUILD}" = "1" ]; then
+    log_step "检查 cri-multiplex 二进制"
+    if [ ! -x "${MULTIPLEX_DIR}/cri-multiplex" ]; then
+        log_info "E2B_SKIP_BUILD=1，但可执行文件不存在: ${MULTIPLEX_DIR}/cri-multiplex"
         exit 1
-    }
+    fi
+    log_info "E2B_SKIP_BUILD=1，跳过构建"
+else
+    log_step "构建 cri-multiplex"
+    if [ ! -f "${MULTIPLEX_DIR}/cri-multiplex" ] || [ "${E2B_FORCE_BUILD}" = "1" ]; then
+        log_info "执行 go build..."
+        (cd "${MULTIPLEX_DIR}" && go build ./cmd/cri-multiplex) || {
+            log_info "构建 cri-multiplex 失败"
+            exit 1
+        }
+    fi
 fi
-log_pass "cri-multiplex 二进制已就绪"
+log_info "cri-multiplex 二进制已就绪"
 
 #==================== 3. 启动 ====================#
 log_step "启动 cri-multiplex（${MODE_DESC} 模式）"
@@ -114,10 +138,17 @@ args=(
     -orchestrator-address "${ORCHESTRATOR_ADDRESS}"
     -orchestrator-proxy-address "${ORCHESTRATOR_PROXY_ADDRESS}"
     -state-dir "${STATE_DIR}"
+	-orphan-reconcile-enabled="${ORPHAN_RECONCILE_ENABLED}"
+	-orphan-reconcile-interval "${ORPHAN_RECONCILE_INTERVAL}"
+	-orphan-grace-period "${ORPHAN_GRACE_PERIOD}"
+	-cleanup-max-retries "${CLEANUP_MAX_RETRIES}"
 )
-if [ "${E2B_CNI_ENABLED}" = "1" ]; then
+if [ -n "${NODE_IP}" ]; then
+    args+=(-node-ip "${NODE_IP}")
+fi
+if [ "${CNI_ENABLED}" = "1" ]; then
     args+=(
-        -e2b-cni-enabled
+        -cni-enabled
         -cni-conf-dir "${CNI_CONF_DIR}"
         -cni-bin-dir "${CNI_BIN_DIR}"
         -cni-ifname "${CNI_IFNAME}"
@@ -132,15 +163,9 @@ if [ "${ANDROID_ENABLED}" = "1" ]; then
         -android-base-instance-num-start "${ANDROID_BASE_INSTANCE_NUM_START}"
         -android-launch-timeout "${ANDROID_LAUNCH_TIMEOUT}"
         -android-state-dir "${ANDROID_STATE_DIR}"
-        -android-cvd-group "${ANDROID_CVD_GROUP}"
     )
-    if [ "${ANDROID_CNI_ENABLED}" = "1" ]; then
+    if [ "${CNI_ENABLED}" = "1" ]; then
         args+=(
-            -android-cni-enabled
-            -android-cni-conf-dir "${ANDROID_CNI_CONF_DIR}"
-            -android-cni-bin-dir "${ANDROID_CNI_BIN_DIR}"
-            -android-cni-ifname "${ANDROID_CNI_IFNAME}"
-            -android-cni-netns-dir "${ANDROID_CNI_NETNS_DIR}"
             -android-cni-netns-prefix "${ANDROID_CNI_NETNS_PREFIX}"
         )
     fi
@@ -156,7 +181,7 @@ setsid ./cri-multiplex "${args[@]}" > /tmp/cri-multiplex.log 2>&1 < /dev/null &
 retries=10
 while [ $retries -gt 0 ]; do
     if cri_multiplex_ready; then
-        log_pass "cri-multiplex 已启动，socket: ${SOCKET}, mode=${MODE_DESC}"
+        startup_pass "cri-multiplex 已启动，socket: ${SOCKET}, mode=${MODE_DESC}"
         log_info "日志: /tmp/cri-multiplex.log"
         exit 0
     fi
@@ -164,7 +189,7 @@ while [ $retries -gt 0 ]; do
     retries=$((retries-1))
 done
 
-log_fail "cri-multiplex 启动超时"
+startup_fail "cri-multiplex 启动超时"
 log_info "日志内容:"
 cat /tmp/cri-multiplex.log 2>/dev/null || true
 exit 1

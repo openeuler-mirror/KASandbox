@@ -17,7 +17,7 @@ POD_JSON="/tmp/e2b-pod.json"
 TEST_PY="${TEST_PY:-${SCRIPT_DIR_COMMON}/test.py}"
 BUILD_PROD_PY="${BUILD_PROD_PY:-${SCRIPT_DIR_COMMON}/build_prod.py}"
 BUILD_IMAGE_NAME="${BUILD_IMAGE_NAME:-ubuntu:22.04-custom}"
-MULTIPLEX_DIR="${MULTIPLEX_DIR:-/home/zrj/cri-multiplex}"
+MULTIPLEX_DIR="${MULTIPLEX_DIR:-$(cd "${SCRIPT_DIR_COMMON}/.." && pwd)}"
 CONTAINERD_SOCKET="${CONTAINERD_SOCKET:-/run/containerd/containerd.sock}"
 ORCHESTRATOR_ADDRESS="${ORCHESTRATOR_ADDRESS:-localhost:5008}"
 ORCHESTRATOR_PROXY_ADDRESS="${ORCHESTRATOR_PROXY_ADDRESS:-localhost:5007}"
@@ -97,11 +97,11 @@ cri_multiplex_cmdline() {
 }
 
 cri_multiplex_cni_enabled() {
-    cri_multiplex_cmdline | grep -q -- "-e2b-cni-enabled"
+    cri_multiplex_cmdline | grep -q -- "-cni-enabled"
 }
 
 cri_multiplex_android_cni_enabled() {
-    cri_multiplex_cmdline | grep -q -- "-android-cni-enabled"
+    cri_multiplex_cni_enabled && cri_multiplex_cmdline | grep -q -- "-android-enabled"
 }
 
 require_cri_multiplex_ready() {
@@ -112,49 +112,93 @@ require_cri_multiplex_ready() {
     log_pass "cri-multiplex 已运行且 socket 可连通"
 }
 
+require_cri_multiplex_ready_quiet() {
+    if ! cri_multiplex_ready; then
+        log_info "cri-multiplex 未运行或 socket 不可连通: ${SOCKET}"
+        return 1
+    fi
+    log_info "cri-multiplex 已运行且 socket 可连通"
+}
+
 require_cri_multiplex_cni_enabled() {
     require_cri_multiplex_ready || return 1
     if ! cri_multiplex_cni_enabled; then
-        log_fail "cri-multiplex 未启用 -e2b-cni-enabled，无法验证 CNI 链路"
+        log_fail "cri-multiplex 未启用 -cni-enabled，无法验证 CNI 链路"
         return 1
     fi
     log_pass "cri-multiplex 已启用 CNI 模式"
 }
 
+require_cri_multiplex_cni_enabled_quiet() {
+    require_cri_multiplex_ready_quiet || return 1
+    if ! cri_multiplex_cni_enabled; then
+        log_info "cri-multiplex 未启用 -cni-enabled，无法验证 CNI 链路"
+        return 1
+    fi
+    log_info "cri-multiplex 已启用 CNI 模式"
+}
+
 require_cri_multiplex_android_cni_enabled() {
     require_cri_multiplex_ready || return 1
     if ! cri_multiplex_android_cni_enabled; then
-        log_fail "cri-multiplex 未启用 -android-cni-enabled，无法验证 Android CNI 链路"
+        log_fail "cri-multiplex 未启用 -cni-enabled 或 -android-enabled，无法验证 Android CNI 链路"
         return 1
     fi
     log_pass "cri-multiplex 已启用 Android CNI 模式"
+}
+
+require_cri_multiplex_android_cni_enabled_quiet() {
+    require_cri_multiplex_ready_quiet || return 1
+    if ! cri_multiplex_android_cni_enabled; then
+        log_info "cri-multiplex 未启用 -cni-enabled 或 -android-enabled，无法验证 Android CNI 链路"
+        return 1
+    fi
+    log_info "cri-multiplex 已启用 Android CNI 模式"
 }
 
 start_cni_android_multiplex() {
     local desc="${1:-启动 cri-multiplex CNI+Android runtime 模式}"
     local adb_port_start="${ANDROID_ADB_PORT_START:-${ANDROID_ADB_PORT:-6520}}"
     local base_instance_start="${ANDROID_BASE_INSTANCE_NUM_START:-${ANDROID_BASE_INSTANCE_NUM:-1}}"
+    local count_startup="${START_CNI_ANDROID_COUNT:-1}"
 
     log_info "${desc} ..."
     if ! STATE_DIR="${STATE_DIR:-/var/lib/cri-multiplex/state}" \
         ANDROID_ENABLED=1 \
-        E2B_CNI_ENABLED=1 \
-        ANDROID_CNI_ENABLED=1 \
+        CNI_ENABLED=1 \
         ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}" \
         ANDROID_ADB_PORT_START="${adb_port_start}" \
         ANDROID_BASE_INSTANCE_NUM_START="${base_instance_start}" \
         E2B_FORCE_RESTART=1 \
+        E2B_NON_VALIDATION_STARTUP="$([ "${count_startup}" = "0" ] && echo 1 || echo 0)" \
         "${SCRIPT_DIR_COMMON}/01_start_multiplex.sh" >&2; then
-        log_fail "${desc} 失败"
+        if [ "${count_startup}" = "0" ]; then
+            log_info "${desc} 失败"
+        else
+            log_fail "${desc} 失败"
+        fi
         return 1
     fi
-    require_cri_multiplex_cni_enabled || return 1
-    require_cri_multiplex_android_cni_enabled || return 1
+    if [ "${count_startup}" = "0" ]; then
+        require_cri_multiplex_cni_enabled_quiet || return 1
+        require_cri_multiplex_android_cni_enabled_quiet || return 1
+    else
+        require_cri_multiplex_cni_enabled || return 1
+        require_cri_multiplex_android_cni_enabled || return 1
+    fi
     if ! cri_multiplex_cmdline | grep -q -- "-android-enabled"; then
-        log_fail "cri-multiplex 未启用 -android-enabled"
+        if [ "${count_startup}" = "0" ]; then
+            log_info "cri-multiplex 未启用 -android-enabled"
+        else
+            log_fail "cri-multiplex 未启用 -android-enabled"
+        fi
         return 1
     fi
-    log_pass "cri-multiplex 已启用 CNI+Android runtime 模式"
+    if [ "${count_startup}" = "0" ]; then
+        log_info "cri-multiplex 已启用 CNI+Android runtime 模式"
+    else
+        log_pass "cri-multiplex 已启用 CNI+Android runtime 模式"
+    fi
 }
 
 require_refresh_script() {
@@ -164,6 +208,15 @@ require_refresh_script() {
         return 1
     fi
     log_pass "刷新脚本存在: ${refresh_script}"
+}
+
+require_refresh_script_quiet() {
+    local refresh_script="$1"
+    if [ ! -f "${refresh_script}" ]; then
+        log_info "刷新脚本不存在: ${refresh_script}"
+        return 1
+    fi
+    log_info "刷新脚本存在: ${refresh_script}"
 }
 
 validate_reusable_e2b_yaml() {
@@ -177,6 +230,21 @@ validate_reusable_e2b_yaml() {
        ! grep -q 'e2b.dev/execution-id:' "${yaml}" ||
        ! grep -q 'e2b.dev/envd-access-token:' "${yaml}"; then
         log_fail "${yaml} 缺少 build-id/execution-id/envd-access-token，不能复用"
+        return 1
+    fi
+}
+
+validate_reusable_e2b_yaml_quiet() {
+    local yaml="$1"
+
+    if [ ! -f "${yaml}" ]; then
+        log_info "可复用 Pod YAML 不存在: ${yaml}"
+        return 1
+    fi
+    if ! grep -q 'e2b.dev/build-id:' "${yaml}" ||
+       ! grep -q 'e2b.dev/execution-id:' "${yaml}" ||
+       ! grep -q 'e2b.dev/envd-access-token:' "${yaml}"; then
+        log_info "${yaml} 缺少 build-id/execution-id/envd-access-token，不能复用"
         return 1
     fi
 }
@@ -218,17 +286,46 @@ refresh_or_reuse_e2b_yaml() {
     local refresh_script="$1"
     local pod_name="$2"
     local yaml="$3"
+    local count_yaml="${E2B_YAML_COUNT:-1}"
+
+    if [ "${E2B_SKIP_BUILD:-0}" = "1" ]; then
+        log_info "E2B_SKIP_BUILD=1，跳过 build_id 刷新并复用已有 Pod YAML"
+        if [ "${count_yaml}" = "0" ]; then
+            validate_reusable_e2b_yaml_quiet "${yaml}" || return 1
+        else
+            validate_reusable_e2b_yaml "${yaml}" || return 1
+        fi
+        reset_e2b_yaml_metadata "${pod_name}" "${yaml}"
+        if [ "${count_yaml}" = "0" ]; then
+            log_info "复用已有 Pod YAML: ${yaml}"
+        else
+            log_pass "复用已有 Pod YAML: ${yaml}"
+        fi
+        return 0
+    fi
 
     log_info "执行: bash ${refresh_script} ${pod_name}"
     if bash "${refresh_script}" "${pod_name}" >&2; then
-        log_pass "build_id 刷新成功"
+        if [ "${count_yaml}" = "0" ]; then
+            log_info "build_id 刷新成功"
+        else
+            log_pass "build_id 刷新成功"
+        fi
         return 0
     fi
 
     log_info "刷新 build_id 失败，尝试复用已有 ${yaml}"
-    validate_reusable_e2b_yaml "${yaml}" || return 1
+    if [ "${count_yaml}" = "0" ]; then
+        validate_reusable_e2b_yaml_quiet "${yaml}" || return 1
+    else
+        validate_reusable_e2b_yaml "${yaml}" || return 1
+    fi
     reset_e2b_yaml_metadata "${pod_name}" "${yaml}"
-    log_pass "复用已有 Pod YAML: ${yaml}"
+    if [ "${count_yaml}" = "0" ]; then
+        log_info "复用已有 Pod YAML: ${yaml}"
+    else
+        log_pass "复用已有 Pod YAML: ${yaml}"
+    fi
 }
 
 wait_tcp_connect() {
@@ -249,6 +346,98 @@ wait_tcp_connect() {
     return 1
 }
 
+kubectl_exec_output_with_retry() {
+    local pod_name="$1"
+    local timeout_seconds="${2:-45}"
+    shift 2
+
+    local deadline output
+    deadline=$(( $(date +%s) + timeout_seconds ))
+    while true; do
+        output=$(kubectl exec "${pod_name}" -- "$@" 2>&1) && {
+            printf '%s\n' "${output}"
+            return 0
+        }
+        if ! grep -qiE 'dial unix .*cri-multiplex.*no such file|unable to upgrade connection|connection error|transport: Error while dialing|Unavailable' <<< "${output}"; then
+            printf '%s\n' "${output}"
+            return 1
+        fi
+        if [ "$(date +%s)" -ge "${deadline}" ]; then
+            printf '%s\n' "${output}"
+            return 1
+        fi
+        sleep 1
+    done
+}
+
+android_pgid_from_state() {
+    local sandbox_id="$1"
+    local state_file="${2:-${STATE_DIR:-/var/lib/cri-multiplex/state}/state.json}"
+
+    python3 - "${state_file}" "${sandbox_id}" <<'PY' 2>/dev/null || true
+import json
+import sys
+
+path, sandbox_id = sys.argv[1:3]
+try:
+    with open(path, encoding="utf-8") as source:
+        state = json.load(source)
+except (FileNotFoundError, json.JSONDecodeError):
+    raise SystemExit(0)
+
+for pod in (state.get("android") or {}).get("pods") or []:
+    if pod.get("sandbox_id") == sandbox_id:
+        pgid = int(pod.get("launch_pgid") or 0)
+        if pgid > 0:
+            print(pgid)
+        break
+PY
+}
+
+wait_android_pod_cleanup() {
+    local pod_name="$1"
+    local sandbox_id="$2"
+    local netns_path="$3"
+    local adb_host="$4"
+    local adb_port="$5"
+    local pgid="${6:-}"
+    local timeout_seconds="${7:-120}"
+
+    local deadline pod_gone cri_gone netns_gone port_closed pgid_gone
+    deadline=$(( $(date +%s) + timeout_seconds ))
+    while true; do
+        pod_gone=0
+        cri_gone=0
+        netns_gone=0
+        port_closed=0
+        pgid_gone=0
+
+        kubectl get pod "${pod_name}" >/dev/null 2>&1 || pod_gone=1
+        ${CRICTL} inspectp "${sandbox_id}" >/dev/null 2>&1 || cri_gone=1
+        [ -z "${netns_path}" ] || [ ! -e "${netns_path}" ] && netns_gone=1
+        if [ -z "${adb_host}" ] || [ -z "${adb_port}" ] ||
+           ! timeout 2 bash -c "cat < /dev/null > /dev/tcp/${adb_host}/${adb_port}" 2>/dev/null; then
+            port_closed=1
+        fi
+        if [ -z "${pgid}" ] || ! kill -0 -- "-${pgid}" 2>/dev/null; then
+            pgid_gone=1
+        fi
+
+        if [ "${pod_gone}" = "1" ] && [ "${cri_gone}" = "1" ] &&
+           [ "${netns_gone}" = "1" ] && [ "${port_closed}" = "1" ] &&
+           [ "${pgid_gone}" = "1" ]; then
+            log_pass "Android Pod 资源已清理: ${pod_name}"
+            return 0
+        fi
+
+        if [ "$(date +%s)" -ge "${deadline}" ]; then
+            log_fail "Android Pod 资源未在 ${timeout_seconds}s 内清理: pod=${pod_name} sandbox=${sandbox_id} netns=${netns_path} adb=${adb_host}:${adb_port} pgid=${pgid}"
+            return 1
+        fi
+        sleep 1
+    done
+}
+
 sync_e2b_pod_json_from_kubelet_yaml() {
     local yaml="${1:-/tmp/e2b-kubelet-pod.yaml}"
     local json="${2:-${POD_JSON}}"
@@ -257,29 +446,77 @@ sync_e2b_pod_json_from_kubelet_yaml() {
         return 1
     fi
 
-    local template_id build_id execution_id token image_ref
-    template_id=$(grep -oP 'e2b\.dev/template-id:\s*"\K[^"]+' "${yaml}" | head -1 || true)
-    build_id=$(grep -oP 'e2b\.dev/build-id:\s*"\K[^"]+' "${yaml}" | head -1 || true)
-    execution_id=$(grep -oP 'e2b\.dev/execution-id:\s*"\K[^"]+' "${yaml}" | head -1 || true)
-    token=$(grep -oP 'e2b\.dev/envd-access-token:\s*"\K[^"]+' "${yaml}" | head -1 || true)
+    local image_ref
+    image_ref=$(python3 - "${yaml}" "${json}" <<'PY'
+import json
+import re
+import sys
 
-    if [ -z "${template_id}" ] || [ -z "${build_id}" ]; then
-        return 1
-    fi
+yaml_path, json_path = sys.argv[1:]
+annotations = {}
+in_annotations = False
+annotations_indent = -1
 
-    sed -i \
-        -e "s|\"e2b.dev/template-id\":\\s*\"[^\"]*\"|\"e2b.dev/template-id\": \"${template_id}\"|" \
-        -e "s|\"e2b.dev/build-id\":\\s*\"[^\"]*\"|\"e2b.dev/build-id\": \"${build_id}\"|" \
-        "${json}"
+with open(yaml_path, encoding="utf-8") as source:
+    for raw_line in source:
+        line = raw_line.rstrip("\r\n")
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        if not in_annotations:
+            if stripped == "annotations:":
+                in_annotations = True
+                annotations_indent = indent
+            continue
+        if stripped and indent <= annotations_indent:
+            break
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = re.match(r"\s*(e2b\.dev/[A-Za-z0-9_.-]+):\s*(.*?)\s*$", line)
+        if not match:
+            continue
+        key, encoded = match.groups()
+        if encoded.startswith('"'):
+            try:
+                value = json.loads(encoded)
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"invalid quoted annotation {key}: {exc}")
+        elif len(encoded) >= 2 and encoded[0] == encoded[-1] == "'":
+            value = encoded[1:-1].replace("''", "'")
+        else:
+            value = encoded.split(" #", 1)[0].strip()
+        annotations[key] = str(value)
 
-    if [ -n "${execution_id}" ]; then
-        sed -i "s|\"e2b.dev/execution-id\":\\s*\"[^\"]*\"|\"e2b.dev/execution-id\": \"${execution_id}\"|" "${json}"
-    fi
-    if [ -n "${token}" ]; then
-        sed -i "s|\"e2b.dev/envd-access-token\":\\s*\"[^\"]*\"|\"e2b.dev/envd-access-token\": \"${token}\"|" "${json}"
-    fi
+required = (
+    "e2b.dev/template-id",
+    "e2b.dev/build-id",
+    "e2b.dev/team-id",
+    "e2b.dev/execution-id",
+    "e2b.dev/envd-access-token",
+)
+missing = [key for key in required if not annotations.get(key)]
+if missing:
+    raise SystemExit("missing E2B annotations: " + ", ".join(missing))
 
-    image_ref="e2b.dev/${template_id}:${build_id}"
+with open(json_path, encoding="utf-8") as source:
+    pod = json.load(source)
+pod_annotations = pod.setdefault("annotations", {})
+# The kubelet fixture owns credentials and runtime parameters, while the base
+# CRI fixture may carry scenario-specific annotations such as expose-ports.
+pod_annotations.update(annotations)
+
+tmp_path = json_path + ".sync-tmp"
+with open(tmp_path, "w", encoding="utf-8") as target:
+    json.dump(pod, target, indent=2, ensure_ascii=True)
+    target.write("\n")
+import os
+os.replace(tmp_path, json_path)
+print("e2b.dev/%s:%s" % (
+    annotations["e2b.dev/template-id"], annotations["e2b.dev/build-id"]
+))
+PY
+    ) || return 1
+
+    [ -n "${image_ref}" ] || return 1
     export IMAGE_E2B="${image_ref}"
     return 0
 }

@@ -19,6 +19,7 @@ log_section "13 — Android 多实例 kubelet 沙箱创建验证"
 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}"
 ANDROID_WAIT_TIMEOUT="${ANDROID_WAIT_TIMEOUT:-360s}"
 ANDROID_ADB_WAIT_TIMEOUT="${ANDROID_ADB_WAIT_TIMEOUT:-30}"
+ANDROID_CLEANUP_WAIT_TIMEOUT="${ANDROID_CLEANUP_WAIT_TIMEOUT:-120}"
 POD1="${POD1:-android-cvd-multi-1}"
 POD2="${POD2:-android-cvd-multi-2}"
 YAML1="/tmp/${POD1}.yaml"
@@ -33,10 +34,10 @@ trap cleanup EXIT
 require_file_exec() {
     local path="$1"
     if [ ! -x "${path}" ]; then
-        log_fail "文件不存在或不可执行: ${path}"
+        log_info "文件不存在或不可执行: ${path}"
         exit 1
     fi
-    log_pass "文件可执行: ${path}"
+    log_info "文件可执行: ${path}"
 }
 
 create_android_pod_yaml() {
@@ -123,23 +124,17 @@ verify_android_status() {
 log_step "1.1 前置检查"
 require_file_exec "${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd"
 if [ -x "${ANDROID_ARTIFACTS_DIR}/bin/cvd_internal_stop" ]; then
-    log_pass "cvd_internal_stop 可执行: ${ANDROID_ARTIFACTS_DIR}/bin/cvd_internal_stop"
+    log_info "cvd_internal_stop 可执行: ${ANDROID_ARTIFACTS_DIR}/bin/cvd_internal_stop"
 else
-    log_skip "cvd_internal_stop 不存在，清理将依赖进程组 kill"
+    log_info "cvd_internal_stop 不存在，清理将依赖进程组 kill"
 fi
 
 log_step "1.2 启动 cri-multiplex CNI+Android runtime 模式"
-if ! ANDROID_ENABLED=1 E2B_CNI_ENABLED=1 ANDROID_CNI_ENABLED=1 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR}" ANDROID_ADB_PORT_START=6520 ANDROID_BASE_INSTANCE_NUM_START=1 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" >&2; then
-    log_fail "启动 cri-multiplex CNI+Android runtime 模式失败"
+if ! START_CNI_ANDROID_COUNT=0 start_cni_android_multiplex "启动 cri-multiplex CNI+Android runtime 模式"; then
+    log_info "启动 cri-multiplex CNI+Android runtime 模式失败"
     exit 1
 fi
-require_cri_multiplex_cni_enabled || exit 1
-require_cri_multiplex_android_cni_enabled || exit 1
-if ! cri_multiplex_cmdline | grep -q -- "-android-enabled"; then
-    log_fail "cri-multiplex 未启用 -android-enabled"
-    exit 1
-fi
-log_pass "cri-multiplex 已启用 AndroidEngine"
+log_info "cri-multiplex 已启用 AndroidEngine"
 
 log_step "1.3 清理旧 Pod"
 cleanup
@@ -171,11 +166,26 @@ wait_ready "${POD2}"
 log_step "4.1 验证两个 Android sandbox 的 CRI status 和 ADB 端口"
 verify_android_status "${POD1}" 1 6520
 verify_android_status "${POD2}" 2 6521
+POD1_UID=$(kubectl get pod "${POD1}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+POD1_IP=$(kubectl get pod "${POD1}" -o jsonpath='{.status.podIP}' 2>/dev/null || true)
+POD1_NETNS="/var/run/netns/android-${POD1_UID:0:12}"
+POD1_PGID=$(android_pgid_from_state "${POD1_UID}" || true)
+POD2_UID=$(kubectl get pod "${POD2}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+POD2_IP=$(kubectl get pod "${POD2}" -o jsonpath='{.status.podIP}' 2>/dev/null || true)
+POD2_NETNS="/var/run/netns/android-${POD2_UID:0:12}"
+POD2_PGID=$(android_pgid_from_state "${POD2_UID}" || true)
 
 log_step "5.1 删除 Pod 验证清理"
 cleanup
-sleep 5
 log_pass "删除请求已提交"
+wait_android_pod_cleanup "${POD1}" "${POD1_UID}" "${POD1_NETNS}" "${POD1_IP}" 6520 "${POD1_PGID}" "${ANDROID_CLEANUP_WAIT_TIMEOUT}" || {
+    tail -n 160 /tmp/cri-multiplex.log >&2 || true
+    exit 1
+}
+wait_android_pod_cleanup "${POD2}" "${POD2_UID}" "${POD2_NETNS}" "${POD2_IP}" 6521 "${POD2_PGID}" "${ANDROID_CLEANUP_WAIT_TIMEOUT}" || {
+    tail -n 160 /tmp/cri-multiplex.log >&2 || true
+    exit 1
+}
 
 print_summary
 if [ "${FAIL_COUNT}" -eq 0 ]; then

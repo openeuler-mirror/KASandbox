@@ -83,7 +83,7 @@ assert_kubectl_exec() {
     shift 2
 
     local output
-    output=$(kubectl exec "${pod_name}" -- "$@" 2>&1) || true
+    output=$(kubectl_exec_output_with_retry "${pod_name}" 45 "$@" 2>&1) || true
     if echo "${output}" | grep -q "${expected}"; then
         log_pass "kubectl exec 成功，输出包含 ${expected}"
         return 0
@@ -169,7 +169,7 @@ kubectl delete pod "${POD_NAME}" --force --grace-period=0 --ignore-not-found >/d
 wait_pod_deleted "${POD_NAME}" || true
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
-start_cni_android_multiplex "启动 cri-multiplex CNI+Android runtime 模式" || exit 1
+START_CNI_ANDROID_COUNT=0 start_cni_android_multiplex "启动 cri-multiplex CNI+Android runtime 模式" || exit 1
 
 log_step "2.1 刷新 build_id 并准备 Kubernetes Pod YAML"
 if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${POD_NAME}" "${POD_YAML}"; then
