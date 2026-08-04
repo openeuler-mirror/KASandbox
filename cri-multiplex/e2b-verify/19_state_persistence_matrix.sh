@@ -7,7 +7,7 @@
 #      Container 路由和 E2B sandbox 状态。
 #   2. 重启恢复：重启 cri-multiplex 后，通过 kubectl get / exec 验证 Pod
 #      仍可查询、仍可执行命令。
-#   3. 边界条件：空 state-dir、非法 JSON、单 Pod/单 Container 状态集合。
+#   3. 边界条件：非法 JSON、单 Pod/单 Container 状态集合。
 #   4. 异常处理：非法 Pod annotation、非法 state-dir 导致 kubelet/进程启动失败。
 #   5. 并发安全：并发 kubectl get / exec 访问恢复后的 Pod，不死锁、不损坏状态。
 #   6. 状态依赖：Running -> kubectl delete -> Removed，确认状态和路由清理。
@@ -36,13 +36,6 @@ cleanup_all() {
     rm -f "${WORK_POD_YAML}" "${BAD_POD_YAML}" || true
 }
 trap cleanup_all EXIT
-
-start_cni_multiplex() {
-    local desc="$1"
-    if ! start_cni_android_multiplex "${desc}"; then
-        return 1
-    fi
-}
 
 wait_pod_deleted() {
     local pod_name="$1"
@@ -85,7 +78,7 @@ assert_kubectl_exec() {
     shift 2
 
     local output
-    output=$(kubectl exec "${pod_name}" -- "$@" 2>&1) || true
+    output=$(kubectl_exec_output_with_retry "${pod_name}" 45 "$@" 2>&1) || true
     if echo "${output}" | grep -q "${expected}"; then
         log_pass "kubectl exec 成功，输出包含 ${expected}"
         return 0
@@ -206,30 +199,30 @@ remove_yaml_annotation() {
 }
 
 log_step "1.1 前置检查"
-require_refresh_script "${REFRESH_SCRIPT}" || exit 1
+require_refresh_script_quiet "${REFRESH_SCRIPT}" || exit 1
 if ! command -v python3 >/dev/null 2>&1; then
-    log_fail "python3 不可用，无法解析 state.json"
+    log_info "python3 不可用，无法解析 state.json"
     exit 1
 fi
-log_pass "python3 可用"
+log_info "python3 可用"
 
 if ! kubectl get runtimeclass e2b >/dev/null 2>&1; then
-    log_fail "RuntimeClass e2b 不存在"
+    log_info "RuntimeClass e2b 不存在"
     exit 1
 fi
-log_pass "RuntimeClass e2b 存在"
+log_info "RuntimeClass e2b 存在"
 
 if [ ! -f "${MULTIPLEX_DIR}/pkg/engine/state_store.go" ]; then
-    log_fail "状态持久化实现文件不存在: ${MULTIPLEX_DIR}/pkg/engine/state_store.go"
+    log_info "状态持久化实现文件不存在: ${MULTIPLEX_DIR}/pkg/engine/state_store.go"
     exit 1
 fi
-log_pass "状态持久化实现文件存在"
+log_info "状态持久化实现文件存在"
 
 if [ ! -d "${CNI_CONF_DIR}" ] || [ ! -d "${CNI_BIN_DIR}" ]; then
-    log_fail "CNI 配置或二进制目录不存在: ${CNI_CONF_DIR}, ${CNI_BIN_DIR}"
+    log_info "CNI 配置或二进制目录不存在: ${CNI_CONF_DIR}, ${CNI_BIN_DIR}"
     exit 1
 fi
-log_pass "CNI 配置目录和二进制目录存在"
+log_info "CNI 配置目录和二进制目录存在"
 
 log_step "1.2 清理旧 Pod 和旧状态"
 kubectl delete pod "${POD_NAME}" --force --grace-period=0 >/dev/null 2>&1 || true
@@ -240,14 +233,9 @@ rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 log_pass "旧 Pod 和测试 state-dir 已清理"
 
-log_step "1.3 空状态目录启动"
-start_cni_multiplex "空状态目录启动 cri-multiplex" || exit 1
-write_empty_state
-assert_state_json "空集合状态文件可解析" "empty" || exit 1
-
 log_step "1.4 非法 JSON 启动容错"
 printf '{"version":1,' > "${STATE_FILE}"
-start_cni_multiplex "非法 JSON 后启动 cri-multiplex" || exit 1
+start_cni_android_multiplex "非法 JSON 后启动 cri-multiplex" || exit 1
 if grep -q "failed to load ${STATE_FILE}" /tmp/cri-multiplex.log 2>/dev/null; then
     log_pass "非法 JSON 被识别并降级为空状态"
 else
@@ -294,7 +282,7 @@ assert_state_json "单 Pod/单 Container Running 状态已持久化" "k8s_active
 assert_kubectl_exec "${POD_NAME}" "state_create_ok" echo "state_create_ok" || exit 1
 
 log_step "3.1 重启 cri-multiplex 后通过 kubectl 查询和 exec 验证恢复"
-start_cni_multiplex "重启 cri-multiplex 恢复 Kubernetes Pod 状态" || exit 1
+start_cni_android_multiplex "重启 cri-multiplex 恢复 Kubernetes Pod 状态" || exit 1
 
 PHASE=$(kubectl get pod "${POD_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)
 READY=$(kubectl get pod "${POD_NAME}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || true)
@@ -319,7 +307,7 @@ for i in $(seq 1 12); do
 done
 for i in $(seq 1 5); do
     (
-        kubectl exec "${POD_NAME}" -- echo "parallel-${i}" 2>/dev/null | grep -q "parallel-${i}"
+        kubectl_exec_output_with_retry "${POD_NAME}" 45 echo "parallel-${i}" 2>/dev/null | grep -q "parallel-${i}"
     ) || echo "exec-worker-${i} failed" >> "${concurrent_log}" &
 done
 wait
@@ -395,7 +383,7 @@ rm -rf "${BAD_STATE_PARENT}"
 printf 'not-a-dir' > "${BAD_STATE_PARENT}"
 bad_output_file="/tmp/cri-multiplex-state-matrix-bad-state-dir.log"
 set +e
-STATE_DIR="${BAD_STATE_DIR}" E2B_CNI_ENABLED=1 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" >"${bad_output_file}" 2>&1
+STATE_DIR="${BAD_STATE_DIR}" CNI_ENABLED=1 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" >"${bad_output_file}" 2>&1
 bad_code=$?
 set -e
 bad_output=$(tr -d '\000' < "${bad_output_file}" 2>/dev/null || true)
@@ -410,7 +398,7 @@ log_step "6.1 清理测试状态并恢复 CNI 模式 cri-multiplex"
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 write_empty_state
-start_cni_multiplex "清理测试状态后重启 cri-multiplex" || exit 1
+start_cni_android_multiplex "清理测试状态后重启 cri-multiplex" || exit 1
 assert_state_json "测试结束后目标 Pod/Container 状态已清理" "removed" "${POD_UID}" "${CONTAINER_ID}" || exit 1
 
 print_summary

@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/coreos/go-iptables/iptables"
@@ -16,8 +18,8 @@ type HostPortManager struct {
 }
 
 type PortMapping struct {
-	HostPort    int
-	SandboxPort int
+	HostPort    int `json:"host_port"`
+	SandboxPort int `json:"sandbox_port"`
 }
 
 type hostPortMappingOps struct {
@@ -128,6 +130,7 @@ func SetupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandbox
 		return fmt.Errorf("init iptables: %w", err)
 	}
 
+	comment := hostPortRuleComment(nodeIP, hostPort, sandboxIP, sandboxPort)
 	// PREROUTING
 	appendRuleIfMissing := func(table, chain string, rulespec ...string) error {
 		exists, err := tables.Exists(table, chain, rulespec...)
@@ -144,6 +147,7 @@ func SetupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandbox
 		"-p", "tcp",
 		"-d", nodeIP,
 		"--dport", fmt.Sprintf("%d", hostPort),
+		"-m", "comment", "--comment", comment,
 		"-j", "DNAT",
 		"--to-destination", fmt.Sprintf("%s:%d", sandboxIP, sandboxPort),
 	); err != nil {
@@ -155,6 +159,7 @@ func SetupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandbox
 		"-p", "tcp",
 		"-d", nodeIP,
 		"--dport", fmt.Sprintf("%d", hostPort),
+		"-m", "comment", "--comment", comment,
 		"-j", "DNAT",
 		"--to-destination", fmt.Sprintf("%s:%d", sandboxIP, sandboxPort),
 	); err != nil {
@@ -166,6 +171,7 @@ func SetupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandbox
 		"-p", "tcp",
 		"-d", sandboxIP,
 		"--dport", fmt.Sprintf("%d", sandboxPort),
+		"-m", "comment", "--comment", comment,
 		"-j", "MASQUERADE",
 	); err != nil {
 		return fmt.Errorf("append nat POSTROUTING rule: %w", err)
@@ -176,6 +182,7 @@ func SetupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandbox
 		"-p", "tcp",
 		"-d", sandboxIP,
 		"--dport", fmt.Sprintf("%d", sandboxPort),
+		"-m", "comment", "--comment", comment,
 		"-j", "ACCEPT",
 	); err != nil {
 		return fmt.Errorf("append filter FORWARD dst rule: %w", err)
@@ -184,6 +191,7 @@ func SetupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandbox
 		"-p", "tcp",
 		"-s", sandboxIP,
 		"--sport", fmt.Sprintf("%d", sandboxPort),
+		"-m", "comment", "--comment", comment,
 		"-j", "ACCEPT",
 	); err != nil {
 		return fmt.Errorf("append filter FORWARD src rule: %w", err)
@@ -198,26 +206,52 @@ func CleanupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandb
 		return fmt.Errorf("init iptables: %w", err)
 	}
 
-	_ = tables.Delete("nat", "PREROUTING",
+	comment := hostPortRuleComment(nodeIP, hostPort, sandboxIP, sandboxPort)
+	var errs []error
+	deleteBoth := func(table, chain string, legacy []string) {
+		tagged := append([]string(nil), legacy...)
+		insertAt := len(tagged)
+		for i, arg := range tagged {
+			if arg == "-j" {
+				insertAt = i
+				break
+			}
+		}
+		tagged = append(tagged[:insertAt], append([]string{"-m", "comment", "--comment", comment}, tagged[insertAt:]...)...)
+		if err := tables.Delete(table, chain, tagged...); err != nil && !isCleanupNotFound(err) {
+			errs = append(errs, err)
+		}
+		if err := tables.Delete(table, chain, legacy...); err != nil && !isCleanupNotFound(err) {
+			errs = append(errs, err)
+		}
+	}
+
+	deleteBoth("nat", "PREROUTING", []string{
 		"-p", "tcp", "-d", nodeIP, "--dport", fmt.Sprintf("%d", hostPort),
 		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", sandboxIP, sandboxPort),
-	)
-	_ = tables.Delete("nat", "OUTPUT",
+	})
+	deleteBoth("nat", "OUTPUT", []string{
 		"-p", "tcp", "-d", nodeIP, "--dport", fmt.Sprintf("%d", hostPort),
 		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", sandboxIP, sandboxPort),
-	)
-	_ = tables.Delete("nat", "POSTROUTING",
+	})
+	deleteBoth("nat", "POSTROUTING", []string{
 		"-p", "tcp", "-d", sandboxIP, "--dport", fmt.Sprintf("%d", sandboxPort),
 		"-j", "MASQUERADE",
-	)
-	_ = tables.Delete("filter", "FORWARD",
+	})
+	deleteBoth("filter", "FORWARD", []string{
 		"-p", "tcp", "-d", sandboxIP, "--dport", fmt.Sprintf("%d", sandboxPort),
 		"-j", "ACCEPT",
-	)
-	_ = tables.Delete("filter", "FORWARD",
+	})
+	deleteBoth("filter", "FORWARD", []string{
 		"-p", "tcp", "-s", sandboxIP, "--sport", fmt.Sprintf("%d", sandboxPort),
 		"-j", "ACCEPT",
-	)
+	})
 
-	return nil
+	return errors.Join(errs...)
+}
+
+func hostPortRuleComment(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) string {
+	replacer := strings.NewReplacer(":", "_", " ", "_")
+	return fmt.Sprintf("cri-multiplex:hostport:%s:%d:%s:%d",
+		replacer.Replace(nodeIP), hostPort, replacer.Replace(sandboxIP), sandboxPort)
 }

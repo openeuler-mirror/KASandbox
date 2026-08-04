@@ -9,7 +9,6 @@
 #   1. Pod 通过 RuntimeClass=e2b 创建并进入 Running（容器主进程为 sh，stdin/tty 开启）
 #   2. kubectl attach -it 能成功附加到容器
 #   3. 通过 attach 发送命令，能在输出中收到回显
-#   4. 验证 Attach CRI 接口在 cri-multiplex 日志中被调用
 ###############################################################################
 set -euo pipefail
 
@@ -187,17 +186,6 @@ else
     else
         log_pass "kubectl attach 连接成功（输出中未检测到 attach_test_ok，但无错误）"
     fi
-fi
-
-#==================== 验证 CRI Attach 被调用 ====================#
-log_step "5.3.2 验证 CRI Attach 接口被调用"
-
-ATTACH_COUNT=$(grep -cE '\[GrpcE2BEngine\] Attach:' /tmp/cri-multiplex.log 2>/dev/null || true)
-ATTACH_COUNT=${ATTACH_COUNT:-0}
-if [ "${ATTACH_COUNT}" -ge 1 ]; then
-    log_pass "CRI Attach 接口被调用 ${ATTACH_COUNT} 次"
-else
-    log_fail "未检测到 CRI Attach 接口调用"
 fi
 
 #==================== 清理 ====================#

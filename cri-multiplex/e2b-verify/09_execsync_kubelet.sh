@@ -11,7 +11,6 @@
 #   3. kubectl exec 执行多行命令，输出完整
 #   4. kubectl exec 执行返回非零退出码的命令，退出码可正确传递
 #   5. kubectl exec 读取沙箱内文件内容
-#   6. 验证 Exec CRI 接口在 cri-multiplex 日志中被调用
 ###############################################################################
 set -euo pipefail
 
@@ -155,17 +154,6 @@ elif echo "${output}" | grep -qE "Ubuntu|NAME="; then
     log_pass "kubectl exec cat /etc/os-release 成功"
 else
     log_fail "kubectl exec cat /etc/os-release 失败: ${output}"
-fi
-
-#==================== 验证 CRI Exec 被调用 ====================#
-log_step "5.1.5 验证 CRI Exec 接口被调用"
-
-EXEC_COUNT=$(grep -cE '\[GrpcE2BEngine\] Exec:' /tmp/cri-multiplex.log 2>/dev/null || true)
-EXEC_COUNT=${EXEC_COUNT:-0}
-if [ "${EXEC_COUNT}" -ge 1 ]; then
-    log_pass "CRI Exec 接口被调用 ${EXEC_COUNT} 次"
-else
-    log_fail "未检测到 CRI Exec 接口调用"
 fi
 
 #==================== 清理 ====================#

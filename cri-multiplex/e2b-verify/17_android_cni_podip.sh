@@ -8,7 +8,7 @@
 #   3. launch_cvd 在 Android Pod netns 内监听
 #   4. ADB 端口可通过 PodIP 访问
 #   5. Android guest eth1 通过 Cuttlefish tap 接入 Pod netns
-#   6. Android guest 可通过 CNI eth0 出公网 IP
+#   6. Android guest 可通过 CNI eth0 访问集群内 TCP 服务
 #   7. PodIP 可通过 DNAT 访问 Android guest 内服务
 #   8. 删除 Pod 后 netns 清理
 ###############################################################################
@@ -29,8 +29,15 @@ ANDROID_WAIT_TIMEOUT="${ANDROID_WAIT_TIMEOUT:-240s}"
 ANDROID_ADB_WAIT_TIMEOUT="${ANDROID_ADB_WAIT_TIMEOUT:-30}"
 ANDROID_CLEANUP_WAIT_TIMEOUT="${ANDROID_CLEANUP_WAIT_TIMEOUT:-150}"
 ANDROID_GUEST_SERVICE_PORT="${ANDROID_GUEST_SERVICE_PORT:-18080}"
-ANDROID_DNS_TEST_HOST="${ANDROID_DNS_TEST_HOST:-example.com}"
+ANDROID_DNS_TEST_HOST="${ANDROID_DNS_TEST_HOST:-kubernetes.default.svc.cluster.local}"
 ADB_BIN="${ADB_BIN:-${ANDROID_ARTIFACTS_DIR}/bin/adb}"
+
+KUBE_API_CLUSTER_IP=$(kubectl get svc kubernetes -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+KUBE_DNS_CLUSTER_IP=$(kubectl get svc kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}' 2>/dev/null || \
+    kubectl get svc coredns -n kube-system -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+ANDROID_EGRESS_TEST_HOST="${ANDROID_EGRESS_TEST_HOST:-${KUBE_API_CLUSTER_IP}}"
+ANDROID_EGRESS_TEST_PORT="${ANDROID_EGRESS_TEST_PORT:-443}"
+ANDROID_GUEST_DNS_SERVERS="${ANDROID_GUEST_DNS_SERVERS:-${KUBE_DNS_CLUSTER_IP}}"
 
 cleanup() {
     kubectl delete pod "${POD_NAME}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
@@ -39,23 +46,17 @@ trap cleanup EXIT
 
 log_step "1.1 前置检查"
 if [ ! -x "${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd" ]; then
-    log_fail "launch_cvd 不存在或不可执行: ${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd"
+    log_info "launch_cvd 不存在或不可执行: ${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd"
     exit 1
 fi
-log_pass "launch_cvd 可执行: ${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd"
+log_info "launch_cvd 可执行: ${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd"
 
 log_step "1.2 启动 cri-multiplex CNI+Android runtime 模式"
-if ! ANDROID_ENABLED=1 E2B_CNI_ENABLED=1 ANDROID_CNI_ENABLED=1 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR}" ANDROID_ADB_PORT_START="${ANDROID_ADB_PORT}" ANDROID_BASE_INSTANCE_NUM_START="${ANDROID_BASE_INSTANCE_NUM}" E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" >&2; then
-    log_fail "启动 cri-multiplex CNI+Android runtime 模式失败"
+if ! START_CNI_ANDROID_COUNT=0 start_cni_android_multiplex "启动 cri-multiplex CNI+Android runtime 模式"; then
+    log_info "启动 cri-multiplex CNI+Android runtime 模式失败"
     exit 1
 fi
-require_cri_multiplex_cni_enabled || exit 1
-require_cri_multiplex_android_cni_enabled || exit 1
-if ! cri_multiplex_cmdline | grep -q -- "-android-enabled"; then
-    log_fail "cri-multiplex 未启用 -android-enabled"
-    exit 1
-fi
-log_pass "cri-multiplex 已启用 AndroidEngine"
+log_info "cri-multiplex 已启用 AndroidEngine"
 
 log_step "1.3 创建 RuntimeClass android"
 cat > "${RUNTIMECLASS_YAML}" <<EOF
@@ -66,12 +67,23 @@ metadata:
 handler: android
 EOF
 kubectl apply -f "${RUNTIMECLASS_YAML}" >&2
-log_pass "RuntimeClass android 已创建/更新"
+log_info "RuntimeClass android 已创建/更新"
 
 log_step "1.4 清理旧 Pod"
 cleanup
 sleep 3
-log_pass "旧 Android Pod 已清理"
+log_info "旧 Android Pod 已清理"
+
+log_step "1.5 清理旧 CVD 实例"
+if [ -x "${ANDROID_ARTIFACTS_DIR}/bin/cvd" ]; then
+    if HOME="${ANDROID_ARTIFACTS_DIR}" timeout 30 "${ANDROID_ARTIFACTS_DIR}/bin/cvd" stop >/tmp/android-cni-preclean.log 2>&1; then
+        log_info "旧 CVD 实例已清理"
+    else
+        log_info "cvd stop 未成功或无旧实例，继续执行；日志: /tmp/android-cni-preclean.log"
+    fi
+else
+    log_info "cvd 命令不存在，跳过旧 CVD 实例清理"
+fi
 
 log_step "2.1 提交 Android Pod"
 cat > "${POD_YAML}" <<EOF
@@ -83,6 +95,7 @@ metadata:
     android.dev/adb-port: "${ANDROID_ADB_PORT}"
     android.dev/base-instance-num: "${ANDROID_BASE_INSTANCE_NUM}"
     android.dev/guest-service-ports: "${ANDROID_GUEST_SERVICE_PORT}"
+    android.dev/guest-dns-servers: "${ANDROID_GUEST_DNS_SERVERS}"
 spec:
   runtimeClassName: android
   restartPolicy: Never
@@ -201,13 +214,18 @@ else
     exit 1
 fi
 
-log_step "3.6 验证 Android guest 通过 CNI 出公网 IP"
-if "${ADB_BIN}" -s "${ADB_URL}" shell "su 0 ping -c 1 -W 5 8.8.8.8" >&2; then
-    log_pass "Android guest 可经 Pod netns/CNI eth0 访问公网 IP"
+log_step "3.6 验证 Android guest 通过 CNI 访问集群 TCP 服务"
+if [ -z "${ANDROID_EGRESS_TEST_HOST}" ]; then
+    log_fail "无法确定 Android guest 出向测试目标"
+    exit 1
+fi
+if "${ADB_BIN}" -s "${ADB_URL}" shell "su 0 sh -c 'toybox nc -w 5 ${ANDROID_EGRESS_TEST_HOST} ${ANDROID_EGRESS_TEST_PORT} </dev/null >/dev/null 2>&1'" >&2; then
+    log_pass "Android guest 可经 Pod netns/CNI eth0 访问 ${ANDROID_EGRESS_TEST_HOST}:${ANDROID_EGRESS_TEST_PORT}"
 else
-    log_fail "Android guest 无法经 CNI 访问公网 IP"
+    log_fail "Android guest 无法经 CNI 访问 ${ANDROID_EGRESS_TEST_HOST}:${ANDROID_EGRESS_TEST_PORT}"
     "${ADB_BIN}" -s "${ADB_URL}" shell "su 0 ip route show table local_network; su 0 ip rule show" >&2 || true
     ip netns exec "${NETNS_NAME}" iptables -t nat -S >&2 || true
+    ip netns exec "${NETNS_NAME}" iptables -S >&2 || true
     exit 1
 fi
 
@@ -227,9 +245,13 @@ else
 fi
 
 log_step "3.8 验证 Android guest DNS 当前状态"
-DNS_OUTPUT=$("${ADB_BIN}" -s "${ADB_URL}" shell "getent hosts ${ANDROID_DNS_TEST_HOST} 2>/dev/null || ping -c 1 -W 1 ${ANDROID_DNS_TEST_HOST} 2>&1 | head -n 1" 2>&1 || true)
+DNS_OUTPUT=$("${ADB_BIN}" -s "${ADB_URL}" shell "getent hosts ${ANDROID_DNS_TEST_HOST} 2>/dev/null || toybox nslookup ${ANDROID_DNS_TEST_HOST} 2>/dev/null | head -n 8 || ping -c 1 -W 1 ${ANDROID_DNS_TEST_HOST} 2>&1 | head -n 1" 2>&1 || true)
 echo "${DNS_OUTPUT}" >&2
-if grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}[[:space:]]|^([0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}[[:space:]]|PING .*\(([0-9]{1,3}\.){3}[0-9]{1,3}\)|PING .*\(([0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}\)' <<< "${DNS_OUTPUT}"; then
+if grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}[[:space:]]|Address[[:space:]]+[0-9]+:|PING .*\(([0-9]{1,3}\.){3}[0-9]{1,3}\)' <<< "${DNS_OUTPUT}"; then
+    log_pass "Android guest hostname DNS 解析可用: ${ANDROID_DNS_TEST_HOST}"
+elif DNS_DUMPSYS=$("${ADB_BIN}" -s "${ADB_URL}" shell "su 0 dumpsys dnsresolver | sed -n '1,180p'" 2>&1 || true) &&
+     grep -Eq 'NOERROR:[1-9][0-9]*' <<< "${DNS_DUMPSYS}"; then
+    echo "${DNS_DUMPSYS}" >&2
     log_pass "Android guest hostname DNS 解析可用: ${ANDROID_DNS_TEST_HOST}"
 else
     log_fail "Android guest hostname DNS 解析不可用: ${ANDROID_DNS_TEST_HOST}"

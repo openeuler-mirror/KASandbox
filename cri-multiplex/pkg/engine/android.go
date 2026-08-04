@@ -24,6 +24,7 @@ const (
 	androidRuntimeHandler = "android"
 	androidDefaultImage   = "android.dev/cvd:local"
 	androidCVDADBBasePort = 6520
+	androidCVDGroup       = "cvdnetwork"
 
 	annAndroidADBPort    = "android.dev/adb-port"
 	annAndroidWebRTCPort = "android.dev/webrtc-port"
@@ -43,7 +44,6 @@ type AndroidConfig struct {
 	WebRTCPortStart      int
 	LaunchTimeout        time.Duration
 	StateDir             string
-	CVDGroup             string
 	CNI                  CNIConfig
 	StateStore           StateStore
 }
@@ -121,15 +121,20 @@ type AndroidContainerRecord struct {
 }
 
 type AndroidEngine struct {
-	cfg            AndroidConfig
-	ops            androidRuntimeOps
-	stateStore     StateStore
-	mu             sync.Mutex
-	pods           map[string]*AndroidSandboxRecord
-	containers     map[string]*AndroidContainerRecord
-	portOwners     map[int]string
-	instanceOwners map[int]string
-	cniManager     cniNetworkManager
+	cfg              AndroidConfig
+	ops              androidRuntimeOps
+	stateStore       StateStore
+	mu               sync.Mutex
+	pods             map[string]*AndroidSandboxRecord
+	containers       map[string]*AndroidContainerRecord
+	portOwners       map[int]string
+	instanceOwners   map[int]string
+	cniManager       cniNetworkManager
+	cleanupManager   *CleanupManager
+	expectedStops    map[string]bool
+	pendingMu        sync.RWMutex
+	pendingSandboxes map[string]struct{}
+	pendingNetNS     map[string]struct{}
 }
 
 type androidRuntimeOps struct {
@@ -166,9 +171,6 @@ func NewAndroidEngine(cfg AndroidConfig) *AndroidEngine {
 	if cfg.StateDir == "" {
 		cfg.StateDir = "/var/lib/cri-multiplex/android"
 	}
-	if cfg.CVDGroup == "" {
-		cfg.CVDGroup = "cvdnetwork"
-	}
 	if cfg.CNI.NetNSPrefix == "" {
 		cfg.CNI.NetNSPrefix = "android-"
 	}
@@ -176,14 +178,63 @@ func NewAndroidEngine(cfg AndroidConfig) *AndroidEngine {
 		cfg.CNI.IfName = "eth0"
 	}
 	return &AndroidEngine{
-		cfg:            cfg,
-		ops:            defaultAndroidRuntimeOps(),
-		stateStore:     cfg.StateStore,
-		pods:           make(map[string]*AndroidSandboxRecord),
-		containers:     make(map[string]*AndroidContainerRecord),
-		portOwners:     make(map[int]string),
-		instanceOwners: make(map[int]string),
+		cfg:              cfg,
+		ops:              defaultAndroidRuntimeOps(),
+		stateStore:       cfg.StateStore,
+		pods:             make(map[string]*AndroidSandboxRecord),
+		containers:       make(map[string]*AndroidContainerRecord),
+		portOwners:       make(map[int]string),
+		instanceOwners:   make(map[int]string),
+		expectedStops:    make(map[string]bool),
+		pendingSandboxes: make(map[string]struct{}),
+		pendingNetNS:     make(map[string]struct{}),
 	}
+}
+
+func (e *AndroidEngine) markPendingSandbox(sandboxID string) {
+	if e == nil || sandboxID == "" {
+		return
+	}
+	e.pendingMu.Lock()
+	e.pendingSandboxes[sandboxID] = struct{}{}
+	if e.cfg.CNI.Enabled {
+		prefix := defaultString(e.cfg.CNI.NetNSPrefix, "android-")
+		e.pendingNetNS[prefix+shortID(sandboxID)] = struct{}{}
+	}
+	e.pendingMu.Unlock()
+}
+
+func (e *AndroidEngine) unmarkPendingSandbox(sandboxID string) {
+	if e == nil || sandboxID == "" {
+		return
+	}
+	e.pendingMu.Lock()
+	delete(e.pendingSandboxes, sandboxID)
+	if e.cfg.CNI.Enabled {
+		prefix := defaultString(e.cfg.CNI.NetNSPrefix, "android-")
+		delete(e.pendingNetNS, prefix+shortID(sandboxID))
+	}
+	e.pendingMu.Unlock()
+}
+
+func (e *AndroidEngine) isPendingSandbox(sandboxID string) bool {
+	if e == nil || sandboxID == "" {
+		return false
+	}
+	e.pendingMu.RLock()
+	_, ok := e.pendingSandboxes[sandboxID]
+	e.pendingMu.RUnlock()
+	return ok
+}
+
+func (e *AndroidEngine) isPendingNetNS(name string) bool {
+	if e == nil || name == "" {
+		return false
+	}
+	e.pendingMu.RLock()
+	_, ok := e.pendingNetNS[name]
+	e.pendingMu.RUnlock()
+	return ok
 }
 
 func (e *AndroidEngine) Type() EngineType { return EngineTypeAndroid }
@@ -306,8 +357,8 @@ func (e *AndroidEngine) validateHostPrerequisites() error {
 			return status.Errorf(codes.FailedPrecondition, "ip command is required for android CNI runtime: %v", err)
 		}
 	}
-	if _, err := lookupGroupID(e.cfg.CVDGroup); err != nil {
-		return status.Errorf(codes.FailedPrecondition, "android CVD group %q is required: %v", e.cfg.CVDGroup, err)
+	if _, err := lookupGroupID(androidCVDGroup); err != nil {
+		return status.Errorf(codes.FailedPrecondition, "android CVD group %q is required: %v", androidCVDGroup, err)
 	}
 	return nil
 }
@@ -330,6 +381,8 @@ func (e *AndroidEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 	if sandboxID == "" {
 		return nil, status.Error(codes.InvalidArgument, "missing pod UID")
 	}
+	e.markPendingSandbox(sandboxID)
+	defer e.unmarkPendingSandbox(sandboxID)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -385,6 +438,14 @@ func (e *AndroidEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		}
 		return nil, err
 	}
+	if err := e.writeOwnerFiles(rec); err != nil {
+		delete(e.portOwners, adbPort)
+		delete(e.instanceOwners, baseInstanceNum)
+		if webrtcPort > 0 {
+			delete(e.portOwners, webrtcPort)
+		}
+		return nil, status.Errorf(codes.Internal, "write android owner files: %v", err)
+	}
 	if e.cfg.CNI.Enabled {
 		cniRecord, err := e.cniManager.Add(ctx, sandboxID, req.Config)
 		if err != nil {
@@ -417,6 +478,14 @@ func (e *AndroidEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 	if !ok {
 		return &runtime.StopPodSandboxResponse{}, nil
 	}
+	e.mu.Lock()
+	e.expectedStops[req.PodSandboxId] = true
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.expectedStops, req.PodSandboxId)
+		e.mu.Unlock()
+	}()
 	if e.ops.cleanupGuestNetwork != nil {
 		e.ops.cleanupGuestNetwork(e, ctx, rec)
 	}
@@ -444,45 +513,16 @@ func (e *AndroidEngine) RemovePodSandbox(ctx context.Context, req *runtime.Remov
 	if err := e.ensureEnabled(); err != nil {
 		return nil, err
 	}
-	e.mu.Lock()
-	rec, ok := e.pods[req.PodSandboxId]
-	e.mu.Unlock()
-	if !ok {
+	if e.cleanupManager != nil {
+		result := e.cleanupManager.CleanupAndroidSandbox(ctx, req.PodSandboxId, "remove")
+		if result.Err != nil {
+			log.Printf("[AndroidEngine] RemovePodSandbox cleanup pending: sandbox=%s err=%v", req.PodSandboxId, result.Err)
+		}
 		return &runtime.RemovePodSandboxResponse{}, nil
 	}
-	if e.ops.cleanupGuestNetwork != nil {
-		e.ops.cleanupGuestNetwork(e, ctx, rec)
+	if err := e.cleanupSandboxResources(ctx, req.PodSandboxId); err != nil {
+		return nil, status.Errorf(codes.Internal, "cleanup android sandbox %s: %v", req.PodSandboxId, err)
 	}
-	if err := e.ops.stopCVD(e, ctx, rec); err != nil {
-		log.Printf("[AndroidEngine] RemovePodSandbox warning: sandbox=%s stop failed: %v", req.PodSandboxId, err)
-	}
-	var cniRecord *CNIRecord
-	var podCfg *runtime.PodSandboxConfig
-	if e.cfg.CNI.Enabled && rec.CNIRecord != nil {
-		cniRecord = rec.CNIRecord
-		podCfg = rec.toPodSandboxConfig()
-	}
-	e.mu.Lock()
-	delete(e.portOwners, rec.ADBPort)
-	if rec.WebRTCPort > 0 {
-		delete(e.portOwners, rec.WebRTCPort)
-	}
-	delete(e.instanceOwners, rec.BaseInstanceNum)
-	for id, c := range e.containers {
-		if c.CRISandboxID == req.PodSandboxId {
-			c.State = androidContainerRemoved
-			delete(e.containers, id)
-		}
-	}
-	rec.State = androidSandboxRemoved
-	delete(e.pods, req.PodSandboxId)
-	e.mu.Unlock()
-	if cniRecord != nil && podCfg != nil && e.cniManager != nil {
-		if err := e.cniManager.Del(ctx, cniRecord, podCfg); err != nil {
-			log.Printf("[AndroidEngine] RemovePodSandbox warning: sandbox=%s cni del failed: %v", req.PodSandboxId, err)
-		}
-	}
-	e.deletePodState(req.PodSandboxId)
 	log.Printf("[AndroidEngine] sandbox removed: cri_id=%s", req.PodSandboxId)
 	return &runtime.RemovePodSandboxResponse{}, nil
 }
@@ -665,6 +705,14 @@ func (e *AndroidEngine) StopContainer(ctx context.Context, req *runtime.StopCont
 	container := e.containers[req.ContainerId]
 	e.mu.Unlock()
 	if pod != nil {
+		e.mu.Lock()
+		e.expectedStops[sandboxID] = true
+		e.mu.Unlock()
+		defer func() {
+			e.mu.Lock()
+			delete(e.expectedStops, sandboxID)
+			e.mu.Unlock()
+		}()
 		if e.ops.cleanupGuestNetwork != nil {
 			e.ops.cleanupGuestNetwork(e, ctx, pod)
 		}
@@ -974,6 +1022,19 @@ func (e *AndroidEngine) ensureArtifactsDir(rec *AndroidSandboxRecord) error {
 	return nil
 }
 
+func (e *AndroidEngine) writeOwnerFiles(rec *AndroidSandboxRecord) error {
+	owner := androidResourceOwner(rec)
+	if err := writeResourceOwner(rec.WorkDir, owner); err != nil {
+		return err
+	}
+	if filepathClean(rec.ArtifactsDir) != filepathClean(e.cfg.ArtifactsDir) {
+		if err := writeResourceOwner(rec.ArtifactsDir, owner); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func skipAndroidArtifactsCopyEntry(name string) bool {
 	if name == ".cuttlefish_config.json" || strings.HasPrefix(name, "cuttlefish_runtime") {
 		return true
@@ -1055,7 +1116,11 @@ func (e *AndroidEngine) startCVD(ctx context.Context, rec *AndroidSandboxRecord)
 	}
 	cmd := exec.CommandContext(commandCtx, "ip", cmdArgs...)
 	cmd.Dir = rec.ArtifactsDir
-	cmd.Env = append(os.Environ(), "HOME="+rec.ArtifactsDir)
+	cmd.Env = append(os.Environ(),
+		"HOME="+rec.ArtifactsDir,
+		"CRI_MULTIPLEX_SANDBOX_ID="+rec.CRISandboxID,
+		fmt.Sprintf("CRI_MULTIPLEX_ANDROID_INSTANCE=%d", rec.BaseInstanceNum),
+	)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	sysProcAttr, err := e.cvdSysProcAttr(true)
@@ -1076,13 +1141,15 @@ func (e *AndroidEngine) startCVD(ctx context.Context, rec *AndroidSandboxRecord)
 	e.mu.Unlock()
 	exitCh := make(chan error, 1)
 	go func() {
-		if err := cmd.Wait(); err != nil {
+		err := cmd.Wait()
+		if err != nil {
 			log.Printf("[AndroidEngine] launch_cvd exited: sandbox=%s pid=%d err=%v", rec.CRISandboxID, cmd.Process.Pid, err)
 			exitCh <- err
 		} else {
 			log.Printf("[AndroidEngine] launch_cvd exited: sandbox=%s pid=%d", rec.CRISandboxID, cmd.Process.Pid)
 			exitCh <- nil
 		}
+		e.handleUnexpectedCVDExit(rec.CRISandboxID, err)
 	}()
 
 	waitCtx, cancel := context.WithTimeout(ctx, e.cfg.LaunchTimeout)
@@ -1092,6 +1159,34 @@ func (e *AndroidEngine) startCVD(ctx context.Context, rec *AndroidSandboxRecord)
 		return status.Errorf(codes.Internal, "android adb not ready: %v", err)
 	}
 	return nil
+}
+
+func (e *AndroidEngine) handleUnexpectedCVDExit(sandboxID string, waitErr error) {
+	e.mu.Lock()
+	if e.expectedStops[sandboxID] {
+		e.mu.Unlock()
+		return
+	}
+	pod := e.pods[sandboxID]
+	if pod == nil || (pod.State != androidSandboxRunning && pod.State != androidSandboxVMStarting) {
+		e.mu.Unlock()
+		return
+	}
+	pod.State = androidSandboxUnknown
+	for _, container := range e.containers {
+		if container.CRISandboxID == sandboxID && container.State != androidContainerRemoved {
+			container.State = androidContainerExited
+			container.FinishedAt = time.Now()
+			if exitErr, ok := waitErr.(*exec.ExitError); ok {
+				container.ExitCode = int32(exitErr.ExitCode())
+			}
+		}
+	}
+	e.persistPodLocked(sandboxID)
+	e.mu.Unlock()
+	if e.cleanupManager != nil {
+		go e.cleanupManager.CleanupAndroidSandbox(context.Background(), sandboxID, "process-exit")
+	}
 }
 
 func (e *AndroidEngine) stopCVD(ctx context.Context, rec *AndroidSandboxRecord) error {
@@ -1146,9 +1241,9 @@ func (e *AndroidEngine) killCVDProcessGroup(rec *AndroidSandboxRecord) {
 
 func (e *AndroidEngine) cvdSysProcAttr(setPGID bool) (*syscall.SysProcAttr, error) {
 	attr := &syscall.SysProcAttr{Setpgid: setPGID}
-	groupID, err := lookupGroupID(e.cfg.CVDGroup)
+	groupID, err := lookupGroupID(androidCVDGroup)
 	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "lookup android CVD group %q: %v", e.cfg.CVDGroup, err)
+		return nil, status.Errorf(codes.FailedPrecondition, "lookup android CVD group %q: %v", androidCVDGroup, err)
 	}
 	attr.Credential = &syscall.Credential{
 		Uid:    uint32(os.Getuid()),

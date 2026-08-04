@@ -61,7 +61,7 @@ if cri_multiplex_ready && ! cri_multiplex_cni_enabled; then
     log_pass "cri-multiplex 已运行且处于非 CNI 模式"
 else
     log_info "cri-multiplex 未就绪或当前不是非 CNI 模式，自动启动非 CNI 模式..."
-    if E2B_CNI_ENABLED=0 "${SCRIPT_DIR}/01_start_multiplex.sh"; then
+    if CNI_ENABLED=0 "${SCRIPT_DIR}/01_start_multiplex.sh"; then
         log_pass "cri-multiplex 非 CNI 模式已就绪"
     else
         log_fail "cri-multiplex 非 CNI 模式启动失败"
