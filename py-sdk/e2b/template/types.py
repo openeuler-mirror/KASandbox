@@ -6,6 +6,7 @@ from typing import List, Literal, Optional, TypedDict, Union
 
 from typing_extensions import NotRequired
 
+from e2b.sandbox.os_type import OsType
 from e2b.template.logger import LogEntry
 
 
@@ -164,12 +165,22 @@ Union type for all supported container registry configurations.
 RegistryConfig = Union[GenericDockerRegistry, AWSRegistry, GCPRegistry]
 
 
+class FromImageRaw(TypedDict):
+    """
+    Raw disk image source used as the base of a template build.
+    """
+
+    url: str
+
+
 class TemplateType(TypedDict):
     """
     Internal representation of a template for the E2B build API.
     """
 
     fromImage: NotRequired[str]
+    fromImageRaw: NotRequired[FromImageRaw]
+    osType: NotRequired[OsType]
     fromTemplate: NotRequired[str]
     fromImageRegistry: NotRequired[RegistryConfig]
     startCmd: NotRequired[str]

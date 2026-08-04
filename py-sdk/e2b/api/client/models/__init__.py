@@ -14,6 +14,7 @@ from .created_team_api_key import CreatedTeamAPIKey
 from .delete_template_tags_request import DeleteTemplateTagsRequest
 from .disk_metrics import DiskMetrics
 from .error import Error
+from .from_image_raw import FromImageRaw
 from .gcp_registry import GCPRegistry
 from .gcp_registry_type import GCPRegistryType
 from .general_registry import GeneralRegistry
@@ -102,6 +103,7 @@ __all__ = (
     "DeleteTemplateTagsRequest",
     "DiskMetrics",
     "Error",
+    "FromImageRaw",
     "GCPRegistry",
     "GCPRegistryType",
     "GeneralRegistry",

@@ -5,9 +5,12 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+from ..models.os_type import OsType
+from e2b.sandbox.os_type import normalize_os_type
 
 if TYPE_CHECKING:
     from ..models.aws_registry import AWSRegistry
+    from ..models.from_image_raw import FromImageRaw
     from ..models.gcp_registry import GCPRegistry
     from ..models.general_registry import GeneralRegistry
     from ..models.template_step import TemplateStep
@@ -23,6 +26,7 @@ class TemplateBuildStartV2:
         force (Union[Unset, bool]): Whether the whole build should be forced to run regardless of the cache Default:
             False.
         from_image (Union[Unset, str]): Image to use as a base for the template build
+        from_image_raw (Union[Unset, FromImageRaw]):
         from_image_registry (Union['AWSRegistry', 'GCPRegistry', 'GeneralRegistry', Unset]):
         from_template (Union[Unset, str]): Template to use as a base for the template build
         ready_cmd (Union[Unset, str]): Ready check command to execute in the template after the build
@@ -32,10 +36,12 @@ class TemplateBuildStartV2:
 
     force: Union[Unset, bool] = False
     from_image: Union[Unset, str] = UNSET
+    from_image_raw: Union[Unset, "FromImageRaw"] = UNSET
     from_image_registry: Union[
         "AWSRegistry", "GCPRegistry", "GeneralRegistry", Unset
     ] = UNSET
     from_template: Union[Unset, str] = UNSET
+    os_type: Union[Unset, OsType] = UNSET
     ready_cmd: Union[Unset, str] = UNSET
     start_cmd: Union[Unset, str] = UNSET
     steps: Union[Unset, list["TemplateStep"]] = UNSET
@@ -49,6 +55,10 @@ class TemplateBuildStartV2:
 
         from_image = self.from_image
 
+        from_image_raw: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.from_image_raw, Unset):
+            from_image_raw = self.from_image_raw.to_dict()
+
         from_image_registry: Union[Unset, dict[str, Any]]
         if isinstance(self.from_image_registry, Unset):
             from_image_registry = UNSET
@@ -60,6 +70,10 @@ class TemplateBuildStartV2:
             from_image_registry = self.from_image_registry.to_dict()
 
         from_template = self.from_template
+
+        os_type: Union[Unset, str] = UNSET
+        if not isinstance(self.os_type, Unset):
+            os_type = self.os_type.value
 
         ready_cmd = self.ready_cmd
 
@@ -79,10 +93,14 @@ class TemplateBuildStartV2:
             field_dict["force"] = force
         if from_image is not UNSET:
             field_dict["fromImage"] = from_image
+        if from_image_raw is not UNSET:
+            field_dict["fromImageRaw"] = from_image_raw
         if from_image_registry is not UNSET:
             field_dict["fromImageRegistry"] = from_image_registry
         if from_template is not UNSET:
             field_dict["fromTemplate"] = from_template
+        if os_type is not UNSET:
+            field_dict["osType"] = os_type
         if ready_cmd is not UNSET:
             field_dict["readyCmd"] = ready_cmd
         if start_cmd is not UNSET:
@@ -95,6 +113,7 @@ class TemplateBuildStartV2:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.aws_registry import AWSRegistry
+        from ..models.from_image_raw import FromImageRaw
         from ..models.gcp_registry import GCPRegistry
         from ..models.general_registry import GeneralRegistry
         from ..models.template_step import TemplateStep
@@ -103,6 +122,13 @@ class TemplateBuildStartV2:
         force = d.pop("force", UNSET)
 
         from_image = d.pop("fromImage", UNSET)
+
+        _from_image_raw = d.pop("fromImageRaw", UNSET)
+        from_image_raw: Union[Unset, FromImageRaw]
+        if isinstance(_from_image_raw, Unset):
+            from_image_raw = UNSET
+        else:
+            from_image_raw = FromImageRaw.from_dict(_from_image_raw)
 
         def _parse_from_image_registry(
             data: object,
@@ -143,6 +169,13 @@ class TemplateBuildStartV2:
 
         from_template = d.pop("fromTemplate", UNSET)
 
+        _os_type = d.pop("osType", UNSET)
+        os_type: Union[Unset, OsType]
+        if isinstance(_os_type, Unset):
+            os_type = UNSET
+        else:
+            os_type = OsType(normalize_os_type(_os_type))
+
         ready_cmd = d.pop("readyCmd", UNSET)
 
         start_cmd = d.pop("startCmd", UNSET)
@@ -157,8 +190,10 @@ class TemplateBuildStartV2:
         template_build_start_v2 = cls(
             force=force,
             from_image=from_image,
+            from_image_raw=from_image_raw,
             from_image_registry=from_image_registry,
             from_template=from_template,
+            os_type=os_type,
             ready_cmd=ready_cmd,
             start_cmd=start_cmd,
             steps=steps,
