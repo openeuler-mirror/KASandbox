@@ -46,6 +46,7 @@ from .exceptions import (
     InvalidArgumentException,
     NotEnoughSpaceException,
     NotFoundException,
+    NotSupportedException,
     RateLimitException,
     SandboxException,
     SandboxNotFoundException,
@@ -62,6 +63,7 @@ from .sandbox.commands.command_handle import (
     Stdout,
 )
 from .sandbox.commands.main import ProcessInfo
+from .sandbox.os_type import OsType
 from .sandbox.filesystem.filesystem import EntryInfo, FileType, WriteInfo
 from .sandbox.filesystem.watch_handle import (
     FilesystemEvent,
@@ -152,6 +154,7 @@ __all__ = [
     "GitUpstreamException",
     "InvalidArgumentException",
     "NotEnoughSpaceException",
+    "NotSupportedException",
     "TemplateException",
     "BuildException",
     "FileUploadException",
@@ -162,6 +165,7 @@ __all__ = [
     "SandboxInfoLifecycle",
     "SandboxMetrics",
     "ProcessInfo",
+    "OsType",
     "SandboxQuery",
     "SandboxState",
     "SandboxMetrics",

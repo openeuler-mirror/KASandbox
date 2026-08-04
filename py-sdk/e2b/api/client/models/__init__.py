@@ -35,6 +35,7 @@ from .node_detail import NodeDetail
 from .node_metrics import NodeMetrics
 from .node_status import NodeStatus
 from .node_status_change import NodeStatusChange
+from .os_type import OsType
 from .post_sandboxes_sandbox_id_refreshes_body import (
     PostSandboxesSandboxIDRefreshesBody,
 )
@@ -122,6 +123,7 @@ __all__ = (
     "NodeMetrics",
     "NodeStatus",
     "NodeStatusChange",
+    "OsType",
     "PostSandboxesSandboxIDRefreshesBody",
     "PostSandboxesSandboxIDSnapshotsBody",
     "PostSandboxesSandboxIDTimeoutBody",

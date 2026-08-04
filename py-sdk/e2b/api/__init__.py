@@ -16,6 +16,7 @@ from e2b.exceptions import (
     RateLimitException,
     SandboxException,
 )
+from e2b.sandbox.os_type import OsType
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class SandboxCreateResponse:
     envd_version: str
     envd_access_token: Optional[str]
     traffic_access_token: Optional[str]
+    os_type: OsType = "linux"
 
 
 def handle_api_exception(
