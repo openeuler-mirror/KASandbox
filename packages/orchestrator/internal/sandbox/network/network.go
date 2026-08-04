@@ -458,33 +458,18 @@ func (s *Slot) CreateExternalNetNSNetwork(ctx context.Context) error {
 		return fmt.Errorf("error finding lo: %w", err)
 	}
 
-	tapAttrs := netlink.NewLinkAttrs()
-	tapAttrs.Name = s.TapName()
-	tap := &netlink.Tuntap{
-		Mode:      netlink.TUNTAP_MODE_TAP,
-		LinkAttrs: tapAttrs,
-	}
-
-	if err = netlink.LinkAdd(tap); err != nil {
-		return fmt.Errorf("error creating external netns tap device: %w", err)
-	}
-
-	tapLink, err := netlink.LinkByName(s.TapName())
-	if err != nil {
-		return fmt.Errorf("error finding external netns tap device: %w", err)
-	}
-
-	if err = netlink.AddrAdd(tapLink, &netlink.Addr{
-		IPNet: &net.IPNet{
-			IP:   s.TapIP(),
-			Mask: s.TapCIDR(),
-		},
+	if err := createTap(tapOpts{
+		Name:    s.TapName(),
+		Address: &net.IPNet{IP: s.TapIP(), Mask: s.TapCIDR()},
 	}); err != nil {
-		return fmt.Errorf("error setting address of external netns tap device: %w", err)
+		return fmt.Errorf("error creating external netns primary tap: %w", err)
 	}
-
-	if err = netlink.LinkSetUp(tapLink); err != nil {
-		return fmt.Errorf("error setting external netns tap device up: %w", err)
+	if err := createTap(tapOpts{
+		Name:    s.ExtraTapName(),
+		Address: &net.IPNet{IP: s.ExtraTapIP(), Mask: s.ExtraTapCIDR()},
+		VnetHdr: true,
+	}); err != nil {
+		return fmt.Errorf("error creating external netns Android mobile tap: %w", err)
 	}
 
 	if err = os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644); err != nil {
@@ -502,11 +487,20 @@ func (s *Slot) CreateExternalNetNSNetwork(ctx context.Context) error {
 	if err = tables.Append("nat", "POSTROUTING", "-s", s.NamespaceIP(), "-j", "SNAT", "--to-source", s.HostIPString()); err != nil {
 		return fmt.Errorf("error creating external netns snat rule: %w", err)
 	}
+	if err = tables.Append("nat", "POSTROUTING", "-o", s.VpeerName(), "-s", cvdTapNetwork, "-j", "SNAT", "--to-source", s.HostIPString()); err != nil {
+		return fmt.Errorf("error creating external netns cvd-mtap snat rule: %w", err)
+	}
 	if err = tables.Append("filter", "FORWARD", "-i", s.VpeerName(), "-o", s.TapName(), "-j", "ACCEPT"); err != nil {
 		return fmt.Errorf("error creating external netns forward rule to tap: %w", err)
 	}
 	if err = tables.Append("filter", "FORWARD", "-i", s.TapName(), "-o", s.VpeerName(), "-j", "ACCEPT"); err != nil {
 		return fmt.Errorf("error creating external netns forward rule from tap: %w", err)
+	}
+	if err = tables.Append("filter", "FORWARD", "-i", s.VpeerName(), "-o", s.ExtraTapName(), "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("error creating external netns forward rule to cvd-mtap: %w", err)
+	}
+	if err = tables.Append("filter", "FORWARD", "-i", s.ExtraTapName(), "-o", s.VpeerName(), "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("error creating external netns forward rule from cvd-mtap: %w", err)
 	}
 
 	if err = s.InitializeFirewall(); err != nil {
@@ -558,12 +552,29 @@ func (s *Slot) RemoveExternalNetNSNetwork() error {
 		if err = tables.Delete("nat", "POSTROUTING", "-s", s.NamespaceIP(), "-j", "SNAT", "--to-source", s.HostIPString()); err != nil {
 			errs = append(errs, fmt.Errorf("error deleting external netns snat rule: %w", err))
 		}
+		if err = tables.Delete("nat", "POSTROUTING", "-o", s.VpeerName(), "-s", cvdTapNetwork, "-j", "SNAT", "--to-source", s.HostIPString()); err != nil {
+			errs = append(errs, fmt.Errorf("error deleting external netns cvd-mtap snat rule: %w", err))
+		}
 		if err = tables.Delete("filter", "FORWARD", "-i", s.VpeerName(), "-o", s.TapName(), "-j", "ACCEPT"); err != nil {
 			errs = append(errs, fmt.Errorf("error deleting external netns forward rule to tap: %w", err))
 		}
 		if err = tables.Delete("filter", "FORWARD", "-i", s.TapName(), "-o", s.VpeerName(), "-j", "ACCEPT"); err != nil {
 			errs = append(errs, fmt.Errorf("error deleting external netns forward rule from tap: %w", err))
 		}
+		if err = tables.Delete("filter", "FORWARD", "-i", s.VpeerName(), "-o", s.ExtraTapName(), "-j", "ACCEPT"); err != nil {
+			errs = append(errs, fmt.Errorf("error deleting external netns forward rule to cvd-mtap: %w", err))
+		}
+		if err = tables.Delete("filter", "FORWARD", "-i", s.ExtraTapName(), "-o", s.VpeerName(), "-j", "ACCEPT"); err != nil {
+			errs = append(errs, fmt.Errorf("error deleting external netns forward rule from cvd-mtap: %w", err))
+		}
+	}
+
+	if tap, err := netlink.LinkByName(s.ExtraTapName()); err == nil {
+		if err = netlink.LinkDel(tap); err != nil {
+			errs = append(errs, fmt.Errorf("error deleting external netns Android mobile tap device: %w", err))
+		}
+	} else {
+		errs = append(errs, fmt.Errorf("error finding external netns Android mobile tap device: %w", err))
 	}
 
 	if tap, err := netlink.LinkByName(s.TapName()); err == nil {

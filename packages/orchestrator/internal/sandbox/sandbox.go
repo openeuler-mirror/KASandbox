@@ -371,9 +371,6 @@ func (f *Factory) CreateSandbox(
 	// the allocated vsock CID.
 	var androidServices *hostservice.AndroidServices
 	if metadata.OSType(config.VMMConfig.OsType) == metadata.OSTypeAndroid {
-		if ips.ExternalNetNS {
-			return nil, fmt.Errorf("Android host services do not support CNI external network namespaces")
-		}
 		androidServices, err = hostservice.StartAndroidServices(ctx, hostservice.AndroidServicesParams{
 			Config:     f.config,
 			CIDPool:    f.cidPool,
@@ -732,9 +729,6 @@ func (f *Factory) ResumeSandbox(
 	zap.L().Sugar().Infof("[ResumeSandbox] vmmFactory.NewProcess cost: %.3f ms, traceID=%s", time.Since(t4).Seconds()*1000, traceID)
 	var androidServices *hostservice.AndroidServices
 	if metadata.OSType(meta.Template.OsType) == metadata.OSTypeAndroid {
-		if ips.ExternalNetNS {
-			return nil, fmt.Errorf("Android host services do not support CNI external network namespaces")
-		}
 		androidServices, err = hostservice.StartAndroidServices(ctx, hostservice.AndroidServicesParams{
 			Config:     f.config,
 			CIDPool:    f.cidPool,

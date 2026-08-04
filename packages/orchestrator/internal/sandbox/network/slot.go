@@ -208,6 +208,12 @@ func NewExternalNetNSSlot(key string, runtimeNet *orchestrator.SandboxRuntimeNet
 		return nil, fmt.Errorf("failed to parse tap CIDR: %w", err)
 	}
 
+	extraTapCIDR := fmt.Sprintf("%s/%d", extraTapIp, tapMask)
+	extraTapIp, extraTapNet, err := net.ParseCIDR(extraTapCIDR)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse extra tap CIDR: %w", err)
+	}
+
 	return &Slot{
 		Key:           key,
 		Idx:           -1,
@@ -218,6 +224,9 @@ func NewExternalNetNSSlot(key string, runtimeNet *orchestrator.SandboxRuntimeNet
 
 		tapIp:   tapIp,
 		tapMask: tapNet.Mask,
+
+		extraTapIp:   extraTapIp,
+		extraTapMask: extraTapNet.Mask,
 
 		HostIP:   podIP,
 		hostNet:  hostNet,
