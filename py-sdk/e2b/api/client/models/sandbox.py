@@ -4,7 +4,9 @@ from typing import Any, TypeVar, Union, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.os_type import OsType
 from ..types import UNSET, Unset
+from e2b.sandbox.os_type import normalize_os_type
 
 T = TypeVar("T", bound="Sandbox")
 
@@ -21,6 +23,7 @@ class Sandbox:
         domain (Union[None, Unset, str]): Base domain where the sandbox traffic is accessible
         envd_access_token (Union[Unset, str]): Access token used for envd communication
         traffic_access_token (Union[None, Unset, str]): Token required for accessing sandbox via proxy.
+        os_type (Union[Unset, OsType]): Guest operating system of the sandbox. Absent implies linux.
     """
 
     client_id: str
@@ -31,6 +34,7 @@ class Sandbox:
     domain: Union[None, Unset, str] = UNSET
     envd_access_token: Union[Unset, str] = UNSET
     traffic_access_token: Union[None, Unset, str] = UNSET
+    os_type: Union[Unset, OsType] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -58,6 +62,10 @@ class Sandbox:
         else:
             traffic_access_token = self.traffic_access_token
 
+        os_type: Union[Unset, str] = UNSET
+        if not isinstance(self.os_type, Unset):
+            os_type = self.os_type.value
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -76,6 +84,8 @@ class Sandbox:
             field_dict["envdAccessToken"] = envd_access_token
         if traffic_access_token is not UNSET:
             field_dict["trafficAccessToken"] = traffic_access_token
+        if os_type is not UNSET:
+            field_dict["osType"] = os_type
 
         return field_dict
 
@@ -114,6 +124,13 @@ class Sandbox:
             d.pop("trafficAccessToken", UNSET)
         )
 
+        _os_type = d.pop("osType", UNSET)
+        os_type: Union[Unset, OsType]
+        if isinstance(_os_type, Unset):
+            os_type = UNSET
+        else:
+            os_type = OsType(normalize_os_type(_os_type))
+
         sandbox = cls(
             client_id=client_id,
             envd_version=envd_version,
@@ -123,6 +140,7 @@ class Sandbox:
             domain=domain,
             envd_access_token=envd_access_token,
             traffic_access_token=traffic_access_token,
+            os_type=os_type,
         )
 
         sandbox.additional_properties = d

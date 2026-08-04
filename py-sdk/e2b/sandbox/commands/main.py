@@ -1,5 +1,20 @@
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
+from e2b.sandbox.os_type import OsType
+
+
+def _get_command_shell(os_type: Optional[OsType], cmd: str) -> Tuple[str, List[str]]:
+    """
+    Resolve the shell command and args used to run a user command for a given
+    guest OS. Internal helper.
+    """
+    if os_type == "windows":
+        return "powershell.exe", ["-NoLogo", "-NonInteractive", "-Command", cmd]
+    if os_type == "android":
+        return "/system/bin/sh", ["-c", cmd]
+
+    return "/bin/bash", ["-l", "-c", cmd]
 
 
 @dataclass

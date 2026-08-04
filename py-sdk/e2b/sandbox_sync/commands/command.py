@@ -13,8 +13,9 @@ from e2b.envd.process import process_connect, process_pb2
 from e2b.envd.rpc import authentication_header, handle_rpc_exception
 from e2b.envd.versions import ENVD_COMMANDS_STDIN
 from e2b.exceptions import SandboxException
-from e2b.sandbox.commands.main import ProcessInfo
+from e2b.sandbox.commands.main import ProcessInfo, _get_command_shell
 from e2b.sandbox.commands.command_handle import CommandResult
+from e2b.sandbox.os_type import OsType
 from e2b.sandbox_sync.commands.command_handle import CommandHandle
 
 
@@ -29,9 +30,11 @@ class Commands:
         connection_config: ConnectionConfig,
         pool: httpcore.ConnectionPool,
         envd_version: Version,
+        os_type: Optional[OsType] = None,
     ) -> None:
         self._connection_config = connection_config
         self._envd_version = envd_version
+        self._os_type: OsType = os_type or "linux"
         self._rpc = process_connect.ProcessClient(
             envd_api_url,
             # TODO: Fix and enable compression again — the headers compression is not solved for streaming.
@@ -246,12 +249,13 @@ class Commands:
         timeout: Optional[float],
         request_timeout: Optional[float],
     ):
+        shell_cmd, shell_args = _get_command_shell(self._os_type, cmd)
         events = self._rpc.start(
             process_pb2.StartRequest(
                 process=process_pb2.ProcessConfig(
-                    cmd="/bin/bash",
+                    cmd=shell_cmd,
                     envs=envs,
-                    args=["-l", "-c", cmd],
+                    args=shell_args,
                     cwd=cwd,
                 ),
                 stdin=stdin,

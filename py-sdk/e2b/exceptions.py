@@ -47,6 +47,16 @@ class InvalidArgumentException(SandboxException):
     pass
 
 
+class NotSupportedException(SandboxException):
+    """
+    Raised when an operation is not supported by the sandbox.
+
+    For example, calling PTY operations on a Windows sandbox.
+    """
+
+    pass
+
+
 class NotEnoughSpaceException(SandboxException):
     """
     Raised when there is not enough disk space.

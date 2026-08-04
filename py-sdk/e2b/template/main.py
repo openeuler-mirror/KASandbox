@@ -3,7 +3,12 @@ from typing import Dict, List, Optional, Union, Literal
 from pathlib import Path
 
 
-from e2b.exceptions import BuildException
+from e2b.exceptions import (
+    BuildException,
+    InvalidArgumentException,
+    NotSupportedException,
+)
+from e2b.sandbox.os_type import OsType
 from e2b.template.consts import STACK_TRACE_DEPTH, RESOLVE_SYMLINKS
 from e2b.template.dockerfile_parser import parse_dockerfile
 from e2b.template.readycmd import ReadyCmd, wait_for_file
@@ -27,6 +32,17 @@ from e2b.template.utils import (
 from types import TracebackType
 
 
+def _validate_registry_credentials(
+    username: Optional[str], password: Optional[str]
+) -> None:
+    if username is None and password is None:
+        return
+    if not username or not password:
+        raise InvalidArgumentException(
+            "Registry username and password must be provided together"
+        )
+
+
 class TemplateBuilder:
     """
     Builder class for adding instructions to an E2B template.
@@ -36,6 +52,15 @@ class TemplateBuilder:
 
     def __init__(self, template: "TemplateBase"):
         self._template = template
+
+    def _assert_linux_instruction(self, method: str) -> None:
+        if self._template._os_type in ("windows", "android"):
+            raise NotSupportedException(
+                f"{method} is not supported on {self._template._os_type} templates. "
+                "Windows and Android template builds currently only support "
+                "set_start_cmd / "
+                "set_ready_cmd."
+            )
 
     def copy(
         self,
@@ -64,6 +89,7 @@ class TemplateBuilder:
         template.copy(['app.py', 'config.py'], '/app/', mode=0o755)
         ```
         """
+        self._assert_linux_instruction("copy")
         srcs = [src] if isinstance(src, (str, Path)) else src
 
         # Get the caller frame for stack trace in validation errors
@@ -284,6 +310,7 @@ class TemplateBuilder:
         template.run_cmd('apt-get install vim', user='root')
         ```
         """
+        self._assert_linux_instruction("run_cmd")
         commands = [command] if isinstance(command, str) else command
         args = [" && ".join(commands)]
 
@@ -313,6 +340,7 @@ class TemplateBuilder:
         template.set_workdir('/app')
         ```
         """
+        self._assert_linux_instruction("set_workdir")
         instruction: Instruction = {
             "type": InstructionType.WORKDIR,
             "args": [str(workdir)],
@@ -336,6 +364,7 @@ class TemplateBuilder:
         template.set_user('root')
         ```
         """
+        self._assert_linux_instruction("set_user")
         instruction: Instruction = {
             "type": InstructionType.USER,
             "args": [user],
@@ -649,6 +678,7 @@ class TemplateBuilder:
         template.set_envs({'NODE_ENV': 'production', 'PORT': '8080'})
         ```
         """
+        self._assert_linux_instruction("set_envs")
         if len(envs) == 0:
             return self
 
@@ -781,8 +811,10 @@ class TemplateBase:
         """
         self._default_base_image: str = "e2bdev/base"
         self._base_image: Optional[str] = self._default_base_image
+        self._base_image_raw: Optional[str] = None
         self._base_template: Optional[str] = None
         self._registry_config: Optional[RegistryConfig] = None
+        self._os_type: Optional[OsType] = "linux"
         self._start_cmd: Optional[str] = None
         self._ready_cmd: Optional[str] = None
         # Force the whole template to be rebuilt
@@ -886,11 +918,14 @@ class TemplateBase:
         return result
 
     # Built-in image mixins
-    def from_debian_image(self, variant: str = "stable") -> TemplateBuilder:
+    def from_debian_image(
+        self, variant: str = "stable", os_type: OsType = "linux"
+    ) -> TemplateBuilder:
         """
         Start template from a Debian base image.
 
         :param variant: Debian image variant
+        :param os_type: Guest OS, defaults to ``"linux"``
 
         :return: `TemplateBuilder` class
 
@@ -900,14 +935,17 @@ class TemplateBase:
         ```
         """
         return self._run_in_new_stack_trace_context(
-            lambda: self.from_image(f"debian:{variant}")
+            lambda: self.from_image(f"debian:{variant}", os_type=os_type)
         )
 
-    def from_ubuntu_image(self, variant: str = "latest") -> TemplateBuilder:
+    def from_ubuntu_image(
+        self, variant: str = "latest", os_type: OsType = "linux"
+    ) -> TemplateBuilder:
         """
         Start template from an Ubuntu base image.
 
         :param variant: Ubuntu image variant (default: 'latest')
+        :param os_type: Guest OS, defaults to ``"linux"``
 
         :return: `TemplateBuilder` class
 
@@ -917,14 +955,17 @@ class TemplateBase:
         ```
         """
         return self._run_in_new_stack_trace_context(
-            lambda: self.from_image(f"ubuntu:{variant}")
+            lambda: self.from_image(f"ubuntu:{variant}", os_type=os_type)
         )
 
-    def from_python_image(self, version: str = "3") -> TemplateBuilder:
+    def from_python_image(
+        self, version: str = "3", os_type: OsType = "linux"
+    ) -> TemplateBuilder:
         """
         Start template from a Python base image.
 
         :param version: Python version (default: '3')
+        :param os_type: Guest OS, defaults to ``"linux"``
 
         :return: `TemplateBuilder` class
 
@@ -934,14 +975,17 @@ class TemplateBase:
         ```
         """
         return self._run_in_new_stack_trace_context(
-            lambda: self.from_image(f"python:{version}")
+            lambda: self.from_image(f"python:{version}", os_type=os_type)
         )
 
-    def from_node_image(self, variant: str = "lts") -> TemplateBuilder:
+    def from_node_image(
+        self, variant: str = "lts", os_type: OsType = "linux"
+    ) -> TemplateBuilder:
         """
         Start template from a Node.js base image.
 
         :param variant: Node.js image variant (default: 'lts')
+        :param os_type: Guest OS, defaults to ``"linux"``
 
         :return: `TemplateBuilder` class
 
@@ -951,24 +995,29 @@ class TemplateBase:
         ```
         """
         return self._run_in_new_stack_trace_context(
-            lambda: self.from_image(f"node:{variant}")
+            lambda: self.from_image(f"node:{variant}", os_type=os_type)
         )
 
-    def from_bun_image(self, variant: str = "latest") -> TemplateBuilder:
+    def from_bun_image(
+        self, variant: str = "latest", os_type: OsType = "linux"
+    ) -> TemplateBuilder:
         """
         Start template from a Bun base image.
 
         :param variant: Bun image variant (default: 'latest')
+        :param os_type: Guest OS, defaults to ``"linux"``
 
         :return: `TemplateBuilder` class
         """
         return self._run_in_new_stack_trace_context(
-            lambda: self.from_image(f"oven/bun:{variant}")
+            lambda: self.from_image(f"oven/bun:{variant}", os_type=os_type)
         )
 
-    def from_base_image(self) -> TemplateBuilder:
+    def from_base_image(self, os_type: OsType = "linux") -> TemplateBuilder:
         """
         Start template from the E2B base image (e2bdev/base:latest).
+
+        :param os_type: Guest OS, defaults to ``"linux"``
 
         :return: `TemplateBuilder` class
 
@@ -978,7 +1027,7 @@ class TemplateBase:
         ```
         """
         return self._run_in_new_stack_trace_context(
-            lambda: self.from_image(self._default_base_image)
+            lambda: self.from_image(self._default_base_image, os_type=os_type)
         )
 
     def from_image(
@@ -986,6 +1035,7 @@ class TemplateBase:
         image: str,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        os_type: OsType = "linux",
     ) -> TemplateBuilder:
         """
         Start template from a Docker image.
@@ -993,6 +1043,7 @@ class TemplateBase:
         :param image: Docker image name (e.g., 'ubuntu:24.04')
         :param username: Username for private registry authentication
         :param password: Password for private registry authentication
+        :param os_type: Guest OS, defaults to ``"linux"``
 
         :return: `TemplateBuilder` class
 
@@ -1005,7 +1056,14 @@ class TemplateBase:
         ```
         """
         self._base_image = image
+        self._base_image_raw = None
         self._base_template = None
+        self._os_type = os_type
+        # Drop any registry credentials carried over from a previous source
+        # (e.g. from_image('private-a', credsA)); they belong to that source,
+        # not to this one, and leaking them to a different registry would be a
+        # credential disclosure. They are re-set below only when freshly provided.
+        self._registry_config = None
 
         # Set the registry config if provided
         if username and password:
@@ -1022,11 +1080,77 @@ class TemplateBase:
         self._collect_stack_trace()
         return TemplateBuilder(self)
 
-    def from_template(self, template: str) -> TemplateBuilder:
+    def from_image_raw(
+        self,
+        url: str,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        os_type: OsType = "android",
+    ) -> TemplateBuilder:
+        """
+        Start template from a raw disk image stored in an OCI-compatible registry.
+
+        Raw-image template builds currently support Android and Windows guest
+        operating systems. These builds currently only support ``set_start_cmd``
+        and ``set_ready_cmd``. Calling Linux/Docker-specific instructions (e.g.
+        ``copy``, ``run_cmd``, ``apt_install``, ``set_user``) raises
+        ``NotSupportedException``.
+
+        :param url: Registry reference without a URL scheme
+        :param username: Optional registry username; omit for public images
+        :param password: Optional registry password; omit for public images
+        :param os_type: Guest OS, defaults to ``"android"``. Windows callers must
+            explicitly pass ``os_type="windows"``.
+
+        :return: `TemplateBuilder` class
+
+        Example
+        ```python
+        Template().from_image_raw(
+            'harbor.example.com/android/base:latest',
+            username='user',
+            password='pass',
+        )
+
+        Template().from_image_raw(
+            'harbor.example.com/windows/base:latest',
+            os_type='windows',
+        )
+        ```
+        """
+        _validate_registry_credentials(username, password)
+        self._base_image_raw = url
+        self._base_image = None
+        self._base_template = None
+        self._os_type = os_type
+        # Drop any registry credentials carried over from a previous source;
+        # they belong to that source, not to this raw image URL. Reused below
+        # only when freshly provided.
+        self._registry_config = None
+
+        # Reuse the existing generic registry config to carry the credentials
+        if username and password:
+            self._registry_config = {
+                "type": "registry",
+                "username": username,
+                "password": password,
+            }
+
+        # If we should force the next layer and it's a FROM command, invalidate whole template
+        if self._force_next_layer:
+            self._force = True
+
+        self._collect_stack_trace()
+        return TemplateBuilder(self)
+
+    def from_template(
+        self, template: str, os_type: OsType = "linux"
+    ) -> TemplateBuilder:
         """
         Start template from an existing E2B template.
 
         :param template: E2B template ID or alias
+        :param os_type: Guest OS, defaults to ``"linux"``
 
         :return: `TemplateBuilder` class
 
@@ -1037,6 +1161,12 @@ class TemplateBase:
         """
         self._base_template = template
         self._base_image = None
+        self._base_image_raw = None
+        self._os_type = os_type
+        # A template derived from another template never needs registry
+        # credentials; drop any carried over from a previous source so they
+        # are not leaked in the build request.
+        self._registry_config = None
 
         # If we should force the next layer and it's a FROM command, invalidate whole template
         if self._force_next_layer:
@@ -1045,11 +1175,14 @@ class TemplateBase:
         self._collect_stack_trace()
         return TemplateBuilder(self)
 
-    def from_dockerfile(self, dockerfile_content_or_path: str) -> TemplateBuilder:
+    def from_dockerfile(
+        self, dockerfile_content_or_path: str, os_type: OsType = "linux"
+    ) -> TemplateBuilder:
         """
         Parse a Dockerfile and convert it to Template SDK format.
 
         :param dockerfile_content_or_path: Either the Dockerfile content as a string, or a path to a Dockerfile file
+        :param os_type: Guest OS, defaults to ``"linux"``
 
         :return: `TemplateBuilder` class
 
@@ -1059,6 +1192,13 @@ class TemplateBase:
         Template().from_dockerfile('FROM python:3\\nRUN pip install numpy')
         ```
         """
+        self._base_image_raw = None
+        self._base_template = None
+        self._os_type = os_type
+        # A Dockerfile-based build does not accept registry credentials; drop
+        # any carried over from a previous source so they are not leaked.
+        self._registry_config = None
+
         # Create a TemplateBuilder first to use its methods
         builder = TemplateBuilder(self)
 
@@ -1087,6 +1227,7 @@ class TemplateBase:
         access_key_id: str,
         secret_access_key: str,
         region: str,
+        os_type: OsType = "linux",
     ) -> TemplateBuilder:
         """
         Start template from an AWS ECR registry image.
@@ -1095,6 +1236,7 @@ class TemplateBase:
         :param access_key_id: AWS access key ID
         :param secret_access_key: AWS secret access key
         :param region: AWS region
+        :param os_type: Guest OS, defaults to ``"linux"``
 
         :return: `TemplateBuilder` class
 
@@ -1109,7 +1251,9 @@ class TemplateBase:
         ```
         """
         self._base_image = image
+        self._base_image_raw = None
         self._base_template = None
+        self._os_type = os_type
 
         # Set the registry config if provided
         self._registry_config = {
@@ -1127,13 +1271,17 @@ class TemplateBase:
         return TemplateBuilder(self)
 
     def from_gcp_registry(
-        self, image: str, service_account_json: Union[str, dict]
+        self,
+        image: str,
+        service_account_json: Union[str, dict],
+        os_type: OsType = "linux",
     ) -> TemplateBuilder:
         """
         Start template from a GCP Artifact Registry or Container Registry image.
 
         :param image: Docker image name from GCP registry
         :param service_account_json: Service account JSON string, dict, or path to JSON file
+        :param os_type: Guest OS, defaults to ``"linux"``
 
         :return: `TemplateBuilder` class
 
@@ -1146,7 +1294,9 @@ class TemplateBase:
         ```
         """
         self._base_image = image
+        self._base_image_raw = None
         self._base_template = None
+        self._os_type = os_type
 
         # Set the registry config if provided
         self._registry_config = {
@@ -1326,6 +1476,12 @@ class TemplateBase:
 
         if self._base_image is not None:
             template_data["fromImage"] = self._base_image
+
+        if self._base_image_raw is not None:
+            template_data["fromImageRaw"] = {"url": self._base_image_raw}
+
+        if self._os_type is not None:
+            template_data["osType"] = self._os_type
 
         if self._base_template is not None:
             template_data["fromTemplate"] = self._base_template

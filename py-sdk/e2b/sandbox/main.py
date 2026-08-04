@@ -2,10 +2,13 @@ import urllib.parse
 from typing import Optional, TypedDict
 
 from packaging.version import Version
+from typing_extensions import NotRequired
 
 from e2b.connection_config import ConnectionConfig, default_username
 from e2b.envd.api import ENVD_API_FILES_ROUTE
 from e2b.envd.versions import ENVD_DEFAULT_USER
+from e2b.exceptions import NotSupportedException
+from e2b.sandbox.os_type import OsType
 from e2b.sandbox.signature import get_signature
 
 
@@ -17,6 +20,7 @@ class SandboxOpts(TypedDict):
     sandbox_url: Optional[str]
     traffic_access_token: Optional[str]
     connection_config: ConnectionConfig
+    os_type: NotRequired[Optional[OsType]]
 
 
 class SandboxBase:
@@ -35,6 +39,7 @@ class SandboxBase:
         sandbox_domain: Optional[str],
         connection_config: ConnectionConfig,
         traffic_access_token: Optional[str] = None,
+        os_type: Optional[OsType] = None,
     ):
         self.__connection_config = connection_config
         self.__sandbox_id = sandbox_id
@@ -42,6 +47,7 @@ class SandboxBase:
         self.__envd_version = envd_version
         self.__envd_access_token = envd_access_token
         self.__traffic_access_token = traffic_access_token
+        self.__os_type: OsType = os_type or "linux"
         self.__envd_api_url = self.connection_config.get_sandbox_url(
             self.sandbox_id, self.sandbox_domain
         )
@@ -71,6 +77,21 @@ class SandboxBase:
     @property
     def traffic_access_token(self) -> Optional[str]:
         return self.__traffic_access_token
+
+    @property
+    def _os_type(self) -> OsType:
+        return self.__os_type
+
+    def beta_get_os_type(self) -> OsType:
+        """
+        Guest operating system of the sandbox.
+
+        The value is determined by the backend. Older backends that do not
+        report it are treated as Linux.
+
+        :return: The sandbox guest OS: ``"linux"``, ``"windows"`` or ``"android"``.
+        """
+        return self.__os_type
 
     @property
     def sandbox_domain(self) -> str:
@@ -203,8 +224,17 @@ class SandboxBase:
 
     def get_mcp_url(self) -> str:
         """
-        Get the MCP URL for the sandbox.
+        Get the MCP URL for a Linux sandbox.
+
+        MCP is not supported on Windows or Android sandboxes.
 
         :returns MCP URL for the sandbox.
         """
+        self._assert_mcp_supported()
         return f"https://{self.get_host(self.mcp_port)}/mcp"
+
+    def _assert_mcp_supported(self) -> None:
+        if self.__os_type in ("windows", "android"):
+            raise NotSupportedException(
+                f"MCP is not supported on {self.__os_type} sandboxes"
+            )

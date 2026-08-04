@@ -14,6 +14,7 @@ from .created_team_api_key import CreatedTeamAPIKey
 from .delete_template_tags_request import DeleteTemplateTagsRequest
 from .disk_metrics import DiskMetrics
 from .error import Error
+from .from_image_raw import FromImageRaw
 from .gcp_registry import GCPRegistry
 from .gcp_registry_type import GCPRegistryType
 from .general_registry import GeneralRegistry
@@ -35,6 +36,7 @@ from .node_detail import NodeDetail
 from .node_metrics import NodeMetrics
 from .node_status import NodeStatus
 from .node_status_change import NodeStatusChange
+from .os_type import OsType
 from .post_sandboxes_sandbox_id_refreshes_body import (
     PostSandboxesSandboxIDRefreshesBody,
 )
@@ -101,6 +103,7 @@ __all__ = (
     "DeleteTemplateTagsRequest",
     "DiskMetrics",
     "Error",
+    "FromImageRaw",
     "GCPRegistry",
     "GCPRegistryType",
     "GeneralRegistry",
@@ -122,6 +125,7 @@ __all__ = (
     "NodeMetrics",
     "NodeStatus",
     "NodeStatusChange",
+    "OsType",
     "PostSandboxesSandboxIDRefreshesBody",
     "PostSandboxesSandboxIDSnapshotsBody",
     "PostSandboxesSandboxIDTimeoutBody",

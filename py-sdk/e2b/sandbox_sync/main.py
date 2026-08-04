@@ -14,10 +14,12 @@ from e2b.connection_config import ApiParams, ConnectionConfig
 from e2b.envd.api import ENVD_API_HEALTH_ROUTE, handle_envd_api_exception
 from e2b.envd.versions import ENVD_DEBUG_FALLBACK
 from e2b.exceptions import (
+    NotSupportedException,
     SandboxException,
     format_request_timeout_error,
 )
 from e2b.sandbox.main import SandboxOpts
+from e2b.sandbox.os_type import normalize_os_type
 from e2b.sandbox.sandbox_api import (
     McpServer,
     SandboxLifecycle,
@@ -45,7 +47,7 @@ class Sandbox(SandboxApi):
     E2B cloud sandbox is a secure and isolated cloud environment.
 
     The sandbox allows you to:
-    - Access Linux OS
+    - Access the sandbox guest OS
     - Create, list, and delete files and directories
     - Run commands
     - Run isolated code
@@ -87,8 +89,12 @@ class Sandbox(SandboxApi):
     @property
     def git(self) -> Git:
         """
-        Module for running git operations in the sandbox.
+        Module for running git operations in a Linux sandbox.
         """
+        if self._os_type != "linux":
+            raise NotSupportedException(
+                f"Git is not supported on {self._os_type} sandboxes"
+            )
         return self._git
 
     def __init__(self, **opts: Unpack[SandboxOpts]):
@@ -118,12 +124,14 @@ class Sandbox(SandboxApi):
             self.connection_config,
             self._transport.pool,
             self._envd_version,
+            self._os_type,
         )
         self._pty = Pty(
             self.envd_api_url,
             self.connection_config,
             self._transport.pool,
             self._envd_version,
+            self._os_type,
         )
         self._git = Git(self._commands)
 
@@ -189,10 +197,10 @@ class Sandbox(SandboxApi):
         :param envs: Custom environment variables for the sandbox
         :param secure: Envd is secured with access token and cannot be used without it, defaults to `True`.
         :param allow_internet_access: Allow sandbox to access the internet, defaults to `True`. If set to `False`, it works the same as setting network `deny_out` to `[0.0.0.0/0]`.
-        :param mcp: MCP server to enable in the sandbox
+        :param mcp: MCP server to enable in a Linux sandbox. MCP is not supported on Windows or Android.
         :param network: Sandbox network configuration
         :param lifecycle: Sandbox lifecycle configuration — ``on_timeout``: ``"kill"`` (default) or ``"pause"``; ``auto_resume``: ``False`` (default) or ``True`` (only when ``on_timeout="pause"``). Example: ``{"on_timeout": "pause", "auto_resume": True}``
-        :param volume_mounts: Dictionary mapping mount paths to Volume instances or volume names
+        :param volume_mounts: Dictionary mapping mount paths to Volume instances or volume names. Volume mounts are supported only on Linux.
 
         :return: A Sandbox instance for the new sandbox
 
@@ -834,10 +842,13 @@ class Sandbox(SandboxApi):
 
     def get_mcp_token(self) -> Optional[str]:
         """
-        Get the MCP token for the sandbox.
+        Get the MCP token for a Linux sandbox.
+
+        MCP is not supported on Windows or Android sandboxes.
 
         :return: MCP token for the sandbox, or None if MCP is not enabled.
         """
+        self._assert_mcp_supported()
         if not self._mcp_token:
             self._mcp_token = self.files.read("/etc/mcp-gateway/.token", user="root")
         return self._mcp_token
@@ -872,6 +883,7 @@ class Sandbox(SandboxApi):
             envd_version=Version(sandbox.envd_version),
             envd_access_token=envd_access_token,
             traffic_access_token=sandbox.traffic_access_token,
+            os_type=normalize_os_type(sandbox.os_type),
         )
 
     @classmethod
@@ -899,6 +911,7 @@ class Sandbox(SandboxApi):
             envd_version = ENVD_DEBUG_FALLBACK
             envd_access_token = None
             traffic_access_token = None
+            os_type = "linux"
         else:
             response = SandboxApi._create_sandbox(
                 template=template or cls.default_template,
@@ -920,6 +933,7 @@ class Sandbox(SandboxApi):
             envd_version = Version(response.envd_version)
             envd_access_token = response.envd_access_token
             traffic_access_token = response.traffic_access_token
+            os_type = response.os_type
 
             if envd_access_token is not None and not isinstance(
                 envd_access_token, Unset
@@ -941,4 +955,5 @@ class Sandbox(SandboxApi):
             envd_access_token=envd_access_token,
             traffic_access_token=traffic_access_token,
             connection_config=connection_config,
+            os_type=os_type,
         )

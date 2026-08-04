@@ -11,9 +11,10 @@ from e2b.connection_config import (
     KEEPALIVE_PING_HEADER,
     KEEPALIVE_PING_INTERVAL_SEC,
 )
-from e2b.exceptions import SandboxException
+from e2b.exceptions import NotSupportedException, SandboxException
 from e2b.envd.rpc import authentication_header, handle_rpc_exception
 from e2b.sandbox.commands.command_handle import PtySize
+from e2b.sandbox.os_type import OsType
 from e2b.sandbox_async.commands.command_handle import (
     AsyncCommandHandle,
     OutputHandler,
@@ -32,9 +33,11 @@ class Pty:
         connection_config: ConnectionConfig,
         pool: httpcore.AsyncConnectionPool,
         envd_version: Version,
+        os_type: Optional[OsType] = None,
     ) -> None:
         self._connection_config = connection_config
         self._envd_version = envd_version
+        self._os_type: OsType = os_type or "linux"
         self._rpc = process_connect.ProcessClient(
             envd_api_url,
             # TODO: Fix and enable compression again — the headers compression is not solved for streaming.
@@ -43,6 +46,10 @@ class Pty:
             json=True,
             headers=connection_config.sandbox_headers,
         )
+
+    def _assert_supported(self) -> None:
+        if self._os_type == "windows":
+            raise NotSupportedException("PTY is not supported on Windows sandboxes")
 
     async def kill(
         self,
@@ -57,6 +64,7 @@ class Pty:
 
         :return: `true` if the PTY was killed, `false` if the PTY was not found
         """
+        self._assert_supported()
         try:
             await self._rpc.asend_signal(
                 process_pb2.SendSignalRequest(
@@ -87,6 +95,7 @@ class Pty:
         :param data: Input data to send
         :param request_timeout: Timeout for the request in **seconds**
         """
+        self._assert_supported()
         try:
             await self._rpc.asend_input(
                 process_pb2.SendInputRequest(
@@ -125,6 +134,7 @@ class Pty:
 
         :return: Handle to interact with the PTY
         """
+        self._assert_supported()
         envs = envs or {}
         envs.setdefault("TERM", "xterm-256color")
         envs.setdefault("LANG", "C.UTF-8")
@@ -132,9 +142,9 @@ class Pty:
         events = self._rpc.astart(
             process_pb2.StartRequest(
                 process=process_pb2.ProcessConfig(
-                    cmd="/bin/bash",
+                    cmd="/system/bin/sh" if self._os_type == "android" else "/bin/bash",
                     envs=envs,
-                    args=["-i", "-l"],
+                    args=["-i"] if self._os_type == "android" else ["-i", "-l"],
                     cwd=cwd,
                 ),
                 pty=process_pb2.PTY(
@@ -185,6 +195,7 @@ class Pty:
 
         :return: Handle to interact with the PTY
         """
+        self._assert_supported()
         events = self._rpc.aconnect(
             process_pb2.ConnectRequest(
                 process=process_pb2.ProcessSelector(pid=pid),
@@ -229,6 +240,7 @@ class Pty:
         :param size: New size of the PTY
         :param request_timeout: Timeout for the request in **seconds**
         """
+        self._assert_supported()
         await self._rpc.aupdate(
             process_pb2.UpdateRequest(
                 process=process_pb2.ProcessSelector(pid=pid),

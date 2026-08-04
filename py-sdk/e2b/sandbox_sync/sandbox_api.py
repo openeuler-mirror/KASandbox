@@ -35,6 +35,7 @@ from e2b.exceptions import (
     TemplateException,
 )
 from e2b.sandbox.main import SandboxBase
+from e2b.sandbox.os_type import normalize_os_type
 from e2b.sandbox.sandbox_api import (
     SandboxLifecycle,
     get_auto_resume_enabled,
@@ -228,6 +229,7 @@ class SandboxApi(SandboxBase):
             if isinstance(res.parsed.traffic_access_token, str)
             else None
         )
+        os_type = normalize_os_type(res.parsed.os_type)
 
         return SandboxCreateResponse(
             sandbox_id=res.parsed.sandbox_id,
@@ -235,6 +237,7 @@ class SandboxApi(SandboxBase):
             envd_version=res.parsed.envd_version,
             envd_access_token=envd_token,
             traffic_access_token=traffic_token,
+            os_type=os_type,
         )
 
     @classmethod
