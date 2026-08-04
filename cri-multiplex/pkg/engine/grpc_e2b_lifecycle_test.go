@@ -13,7 +13,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/cri-multiplex/pkg/envd/process"
 	"github.com/cri-multiplex/pkg/orchestrator"
@@ -278,15 +277,16 @@ func TestGRPCE2BRemovePodSandboxDeletesOrchestratorAndCNI(t *testing.T) {
 }
 
 func TestGRPCE2BImageCacheWithFakeOrchestrator(t *testing.T) {
-	client := &fakeSandboxServiceClient{buildsResp: &orchestrator.SandboxListCachedBuildsResponse{
-		Builds: []*orchestrator.CachedBuildInfo{{BuildId: "build-a", ExpirationTime: timestamppb.Now()}},
-	}}
+	client := &fakeSandboxServiceClient{}
 	e := newTestGRPCE2BEngine(client)
 	image := &runtime.ImageSpec{Image: "e2b.dev/tmpl-a:build-a"}
 
 	pullResp, err := e.PullImage(context.Background(), &runtime.PullImageRequest{Image: image})
 	if err != nil {
 		t.Fatalf("PullImage: %v", err)
+	}
+	if client.buildsCalls != 0 {
+		t.Fatalf("PullImage should not query cached builds, got %d calls", client.buildsCalls)
 	}
 	if pullResp.ImageRef != image.Image {
 		t.Fatalf("image ref = %q", pullResp.ImageRef)
@@ -302,8 +302,8 @@ func TestGRPCE2BImageCacheWithFakeOrchestrator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListImages: %v", err)
 	}
-	if len(listResp.Images) < 2 {
-		t.Fatalf("expected cached builds plus image cache entries, got %+v", listResp.Images)
+	if len(listResp.Images) < 1 {
+		t.Fatalf("expected image cache entry, got %+v", listResp.Images)
 	}
 	if _, err := e.RemoveImage(context.Background(), &runtime.RemoveImageRequest{Image: image}); err != nil {
 		t.Fatalf("RemoveImage: %v", err)
