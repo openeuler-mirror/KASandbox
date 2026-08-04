@@ -115,6 +115,33 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		return nil, fmt.Errorf("failed to get template snapshot data: %w", err)
 	}
 
+	sandboxConfig := proto.CloneOf(req.GetSandbox())
+	templateMetadata, err := template.Metadata()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read template metadata: %w", err)
+	}
+	templateOS, err := vmm.ParseOsType(templateMetadata.Template.OsType)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "invalid template OS/VMM metadata: %s", err)
+	}
+	templateVMM := vmm.BackendType(templateMetadata.Template.VMMType).OrDefault()
+	if err := vmm.ValidateBackendForOS(templateOS, templateVMM); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "invalid template OS/VMM metadata: %s", err)
+	}
+
+	if templateVMM == vmm.BackendStratoVirt && sandboxConfig.GetHugePages() {
+		logger.L().Warn(ctx, "HugePages are not supported by StratoVirt; disabling HugePages",
+			logger.WithSandboxID(sandboxConfig.GetSandboxId()),
+			logger.WithTemplateID(sandboxConfig.GetTemplateId()),
+		)
+		sandboxConfig.HugePages = false
+	}
+	req.Sandbox = sandboxConfig
+
+	if len(req.GetSandbox().GetVolumeMounts()) > 0 && templateOS != vmm.OsLinux {
+		return nil, status.Errorf(codes.FailedPrecondition, "volume mounts are not supported on %s sandboxes", templateOS)
+	}
+
 	// Clone the network config to avoid modifying the original request
 	network := proto.CloneOf(req.GetSandbox().GetNetwork())
 
@@ -156,8 +183,10 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 			},
 
 			VMMConfig: vmm.VMMConfig{
+				Type:          templateVMM,
 				KernelVersion: req.GetSandbox().GetKernelVersion(),
 				VMMVersion:    req.GetSandbox().GetFirecrackerVersion(),
+				OsType:        templateOS,
 			},
 
 			VolumeMounts: createVolumeMountModelsFromAPI(req.GetSandbox().GetVolumeMounts()),
@@ -215,6 +244,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	return &orchestrator.SandboxCreateResponse{
 		ClientId: s.info.ClientId,
 		HostIp:   sbx.Slot.HostIPString(),
+		OsType:   string(templateOS),
 	}, nil
 }
 
@@ -299,6 +329,7 @@ func (s *Server) List(ctx context.Context, _ *emptypb.Empty) (*orchestrator.Sand
 			ClientId:  s.info.ClientId,
 			StartTime: timestamppb.New(startedAt),
 			EndTime:   timestamppb.New(sbx.GetEndAt()),
+			OsType:    string(sbx.Config.VMMConfig.OsType.OrDefault()),
 		})
 	}
 
@@ -583,6 +614,7 @@ func (s *Server) snapshotAndCacheSandbox(
 		KernelVersion:      sbx.Config.VMMConfig.KernelVersion,
 		FirecrackerVersion: sbx.Config.VMMConfig.VMMVersion,
 		VMMType:            string(sbx.Config.VMMConfig.Backend()),
+		OsType:             meta.Template.OsType,
 	})
 
 	snapshot, err := sbx.Pause(ctx, meta)
@@ -594,11 +626,11 @@ func (s *Server) snapshotAndCacheSandbox(
 		ctx,
 		meta.Template.BuildID,
 		snapshot.MemfileDiffHeader,
-		snapshot.RootfsDiffHeader,
+		snapshot.RootfsDiffHeaders,
 		snapshot.Snapfile,
 		snapshot.Metafile,
 		snapshot.MemfileDiff,
-		snapshot.RootfsDiff,
+		snapshot.RootfsDiffs,
 	)
 	if err != nil {
 		return metadata.Template{}, nil, fmt.Errorf("error adding snapshot to template cache: %w", err)

@@ -25,8 +25,10 @@ type BuilderConfig struct {
 	SandboxDir                 string        `env:"SANDBOX_DIR"              envDefault:"/fc-vm"`
 	SharedChunkCacheDir        string        `env:"SHARED_CHUNK_CACHE_PATH"`
 	TemplatesDir               string        `env:"TEMPLATES_DIR,expand"     envDefault:"${ORCHESTRATOR_BASE_PATH}/build-templates"`
-
-	DefaultCacheDir string `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
+	FirmwareDir                string        `env:"FIRMWARE_DIR"             envDefault:"/firmware"`
+	CvdHostPackageDir          string        `env:"CVD_HOST_PACKAGE_DIR"     envDefault:"/cvd-host_package"`
+	DefaultCacheDir            string        `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
+	ReadyCheckTimeout          time.Duration `env:"READY_CHECK_TIMEOUT"      envDefault:"30s"`
 
 	StorageConfig storage.Config
 	NetworkConfig network.Config
@@ -47,6 +49,8 @@ func makePathsAbsolute(c *BuilderConfig) error {
 		&c.StorageConfig.SnapshotCacheDir,
 		&c.StorageConfig.TemplateCacheDir,
 		&c.TemplatesDir,
+		&c.FirmwareDir,
+		&c.CvdHostPackageDir,
 	} {
 		dir := *item
 

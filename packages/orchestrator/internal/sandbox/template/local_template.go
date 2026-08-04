@@ -3,8 +3,10 @@ package template
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/build"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 )
@@ -14,6 +16,7 @@ type LocalTemplate struct {
 
 	memfile block.ReadonlyDevice
 	rootfs  block.ReadonlyDevice
+	disks   []Disk
 }
 
 func NewLocalTemplate(
@@ -25,7 +28,22 @@ func NewLocalTemplate(
 		files:   files,
 		memfile: memfile,
 		rootfs:  rootfs,
+		disks:   []Disk{{Name: storage.RootfsName, DiffType: build.Rootfs, Device: rootfs}},
 	}
+}
+
+func NewLocalMultiDiskTemplate(files storage.TemplateCacheFiles, disks []Disk, memfile block.ReadonlyDevice) (*LocalTemplate, error) {
+	ordered, err := NormalizeAndroidDisks(disks)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Android disk set: %w", err)
+	}
+
+	root, err := RootDisk(ordered)
+	if err != nil {
+		return nil, err
+	}
+
+	return &LocalTemplate{files: files, memfile: memfile, rootfs: root.Device, disks: ordered}, nil
 }
 
 func (t *LocalTemplate) Close(ctx context.Context) error {
@@ -46,6 +64,8 @@ func (t *LocalTemplate) Memfile(ctx context.Context) (block.ReadonlyDevice, erro
 func (t *LocalTemplate) Rootfs() (block.ReadonlyDevice, error) {
 	return t.rootfs, nil
 }
+
+func (t *LocalTemplate) Disks(context.Context) ([]Disk, error) { return t.disks, nil }
 
 func (t *LocalTemplate) Snapfile() (File, error) {
 	return &NoopFile{}, errors.New("snapfile not available in local template")

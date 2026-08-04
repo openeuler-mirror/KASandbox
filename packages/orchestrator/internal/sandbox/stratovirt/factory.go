@@ -27,12 +27,13 @@ func (f *Factory) NewProcess(
 	slot *network.Slot,
 	files *storage.SandboxFiles,
 	versions vmm.VMMConfig,
-	rootfsProvider rootfs.Provider,
+	rootfsProviders []rootfs.Provider,
 	rootfsPaths vmm.RootfsPaths,
 ) (vmm.Process, error) {
 	svConfig := Config{
 		KernelVersion:     versions.KernelVersion,
 		StratoVirtVersion: versions.VMMVersion,
+		OsType:            versions.OsType,
 	}
 	return NewProcess(
 		ctx,
@@ -41,7 +42,7 @@ func (f *Factory) NewProcess(
 		slot,
 		files,
 		svConfig,
-		rootfsProvider,
+		rootfsProviders,
 		rootfsPaths,
 	)
 }

@@ -47,6 +47,14 @@ func (s *SandboxFiles) SandboxCacheRootfsPath(config Config) string {
 	return filepath.Join(config.SandboxCacheDir, fmt.Sprintf("rootfs-%s-%s.cow", s.SandboxID, s.randomID))
 }
 
+func (s *SandboxFiles) SandboxCacheDiskPath(config Config, diskName string) string {
+	if diskName == RootfsName {
+		return s.SandboxCacheRootfsPath(config)
+	}
+
+	return filepath.Join(config.SandboxCacheDir, fmt.Sprintf("%s-%s-%s.cow", diskName, s.SandboxID, s.randomID))
+}
+
 func (s *SandboxFiles) SandboxRestoreDir(config Config) string {
 	return filepath.Join(config.SandboxCacheDir, fmt.Sprintf("restore-%s-%s", s.SandboxID, s.randomID))
 }
@@ -63,6 +71,26 @@ func (s *SandboxFiles) SandboxCacheRootfsLinkPath(config Config) string {
 	return filepath.Join(config.SandboxCacheDir, fmt.Sprintf("rootfs-%s-%s.link", s.SandboxID, s.randomID))
 }
 
+func (s *SandboxFiles) SandboxCacheDiskLinkPath(config Config, diskName string) string {
+	if diskName == RootfsName {
+		return s.SandboxCacheRootfsLinkPath(config)
+	}
+
+	return filepath.Join(config.SandboxCacheDir, fmt.Sprintf("%s-%s-%s.link", diskName, s.SandboxID, s.randomID))
+}
+
 func (s *SandboxFiles) SandboxSerialLogPath() string {
 	return filepath.Join(s.tmpDir, fmt.Sprintf("serial-%s-%s.log", s.SandboxID, s.randomID))
+}
+
+func (s *SandboxFiles) SandboxAndroidLogcatPath() string {
+	return filepath.Join(s.tmpDir, fmt.Sprintf("logcat-%s-%s.log", s.SandboxID, s.randomID))
+}
+
+// SandboxHostDir returns a per-sandbox directory on the host for sandbox-specific
+// auxiliary files (e.g. cuttlefish_config.json for Android host services).
+// The directory is created on demand by callers via os.MkdirAll and removed
+// explicitly during sandbox cleanup after host services release their files.
+func (s *SandboxFiles) SandboxHostDir() string {
+	return filepath.Join(s.tmpDir, fmt.Sprintf("sandbox-%s-%s", s.SandboxID, s.randomID))
 }

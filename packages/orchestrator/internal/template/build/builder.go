@@ -150,7 +150,7 @@ func (b *Builder) Build(ctx context.Context, template storage.TemplateFiles, cfg
 	// Validate template, update force layers if needed
 	cfg = forceSteps(cfg)
 
-	isV1Build := utils.IsVersion(cfg.Version, templates.TemplateV1Version) || (cfg.FromImage == "" && cfg.FromTemplate == nil)
+	isV1Build := utils.IsVersion(cfg.Version, templates.TemplateV1Version) || (cfg.FromImage == "" && cfg.FromImageRaw == "" && cfg.FromTemplate == nil)
 
 	l := logger.NewTracedLoggerFromCore(logsCore)
 	defer func(ctx context.Context) {
@@ -285,6 +285,9 @@ func runBuild(
 		builder.sandboxFactory,
 		builder.sandboxes,
 	)
+	if err := baseBuilder.ValidateSourceCapability(ctx, userLogger); err != nil {
+		return nil, err
+	}
 
 	commandExecutor := commands.NewCommandExecutor(
 		bc,
@@ -305,16 +308,28 @@ func runBuild(
 		bc.Config.Force,
 	)
 
-	stepBuilders := steps.CreateStepPhases(
-		bc,
-		builder.sandboxFactory,
-		builder.logger,
-		builder.proxy,
-		layerExecutor,
-		commandExecutor,
-		index,
-		builder.metrics,
-	)
+	skipGuestBuildPhases := bc.Config.IsWindows() || bc.Config.IsAndroid()
+	var stepBuilders []phases.BuilderPhase
+	if skipGuestBuildPhases {
+		if len(bc.Config.Steps) > 0 {
+			userLogger.Warn(ctx, fmt.Sprintf("Skipping %d build steps because %s builds do not currently support steps", len(bc.Config.Steps), bc.Config.GuestOS()),
+				logger.WithTemplateID(bc.Config.TemplateID),
+				logger.WithBuildID(bc.Template.BuildID),
+				zap.Int("step_count", len(bc.Config.Steps)),
+			)
+		}
+	} else {
+		stepBuilders = steps.CreateStepPhases(
+			bc,
+			builder.sandboxFactory,
+			builder.logger,
+			builder.proxy,
+			layerExecutor,
+			commandExecutor,
+			index,
+			builder.metrics,
+		)
+	}
 
 	postProcessingBuilder := finalize.New(
 		bc,
@@ -346,10 +361,12 @@ func runBuild(
 	if err != nil {
 		return nil, fmt.Errorf("error checking build version: %w", err)
 	}
-	if ok {
+	if ok && !skipGuestBuildPhases {
 		builders = append(builders, userBuilder)
 	}
-	builders = append(builders, stepBuilders...)
+	if !skipGuestBuildPhases {
+		builders = append(builders, stepBuilders...)
+	}
 	builders = append(builders, postProcessingBuilder)
 	builders = append(builders, optimizeBuilder)
 
@@ -373,8 +390,13 @@ func runBuild(
 	}
 	logger.L().Info(ctx, "rootfs size", zap.Uint64("size", rootfsSize))
 
+	resultEnvdVersion := bc.EnvdVersion
+	if bc.Config.UsesRawImage() && bc.Config.IsWindows() && lastLayerResult.Metadata.Template.EnvdVersion != "" {
+		resultEnvdVersion = lastLayerResult.Metadata.Template.EnvdVersion
+	}
+
 	return &Result{
-		EnvdVersion:  bc.EnvdVersion,
+		EnvdVersion:  resultEnvdVersion,
 		RootfsSizeMB: int64(rootfsSize >> constants.ToMBShift),
 	}, nil
 }

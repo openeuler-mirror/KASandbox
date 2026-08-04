@@ -112,6 +112,8 @@ message SandboxCreateRequest {
 message SandboxCreateResponse {
   string client_id = 1;
   string host_ip = 2;
+  // Guest operating system family resolved from the template metadata.
+  string os_type = 3;
 }
 
 message SandboxUpdateRequest {
@@ -144,6 +146,8 @@ message RunningSandbox {
 
   google.protobuf.Timestamp start_time = 3;
   google.protobuf.Timestamp end_time = 4;
+  // Guest operating system family used by the running sandbox.
+  string os_type = 5;
 }
 
 message SandboxListResponse {

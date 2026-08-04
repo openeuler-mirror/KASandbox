@@ -27,7 +27,7 @@ func storageHeaderObjectType(diffType build.DiffType) (storage.ObjectType, bool)
 	switch diffType {
 	case build.Memfile:
 		return storage.MemfileHeaderObjectType, true
-	case build.Rootfs:
+	case build.Rootfs, build.RootfsPersistent, build.RootfsSDCard:
 		return storage.RootFSHeaderObjectType, true
 	default:
 		return storage.UnknownObjectType, false
@@ -38,7 +38,7 @@ func objectType(diffType build.DiffType) (storage.SeekableObjectType, bool) {
 	switch diffType {
 	case build.Memfile:
 		return storage.MemfileObjectType, true
-	case build.Rootfs:
+	case build.Rootfs, build.RootfsPersistent, build.RootfsSDCard:
 		return storage.RootFSObjectType, true
 	default:
 		return storage.UnknownSeekableObjectType, false
@@ -106,7 +106,7 @@ func NewStorage(
 		switch fileType {
 		case build.Memfile:
 			blockSize = oldMemfileHugePageSize
-		case build.Rootfs:
+		case build.Rootfs, build.RootfsPersistent, build.RootfsSDCard:
 			blockSize = oldRootfsBlockSize
 		default:
 			return nil, fmt.Errorf("unsupported file type: %s", fileType)

@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 )
 
 const (
@@ -19,6 +20,7 @@ const (
 type Config struct {
 	KernelVersion     string
 	StratoVirtVersion string
+	OsType            vmm.OsType
 }
 
 func (t Config) SandboxKernelDir() string {

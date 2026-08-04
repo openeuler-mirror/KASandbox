@@ -39,6 +39,18 @@ var blockToAccessType = map[block.AccessType]AccessType{
 	block.Prefetch: AccessPrefetch,
 }
 
+// OSType is the guest operating system family targeted by a template.
+// It is set explicitly by the caller at template creation time and stored in
+// template metadata; it must NOT be inferred from VMMType because a single
+// VMM backend (e.g. Stratovirt) may host multiple OS families.
+type OSType string
+
+const (
+	OSTypeLinux   OSType = "linux"
+	OSTypeAndroid OSType = "android"
+	OSTypeWindows OSType = "windows"
+)
+
 type Version struct {
 	Version any `json:"version"`
 }
@@ -47,10 +59,17 @@ type Context struct {
 	User    string            `json:"user,omitempty"`
 	WorkDir *string           `json:"workdir,omitempty"`
 	EnvVars map[string]string `json:"env_vars,omitempty"`
+	OsType  string            `json:"os_type,omitempty"`
 }
 
 func (c Context) WithUser(user string) Context {
 	c.User = user
+
+	return c
+}
+
+func (c Context) WithOsType(osType string) Context {
+	c.OsType = osType
 
 	return c
 }
@@ -71,6 +90,8 @@ type TemplateMetadata struct {
 	KernelVersion      string `json:"kernel_version"`
 	FirecrackerVersion string `json:"firecracker_version"`
 	VMMType            string `json:"vmm_type,omitempty"`
+	OsType             string `json:"os_type,omitempty"`
+	EnvdVersion        string `json:"envd_version,omitempty"`
 }
 
 // MemoryPrefetchMapping stores block offsets that should be prefetched when starting a sandbox.
@@ -107,7 +128,9 @@ type Template struct {
 	Template     TemplateMetadata `json:"template"`
 	Context      Context          `json:"context"`
 	Start        *Start           `json:"start,omitempty"`
+	// FromImage, FromImageRaw and FromTemplate are mutually exclusive.
 	FromImage    *string          `json:"from_image,omitempty"`
+	FromImageRaw *string          `json:"from_image_raw,omitempty"`
 	FromTemplate *FromTemplate    `json:"from_template,omitempty"`
 	Prefetch     *Prefetch        `json:"prefetch,omitempty"`
 }
@@ -139,6 +162,7 @@ func (t Template) NewVersionTemplate(metadata TemplateMetadata) Template {
 		Start:        t.Start,
 		FromTemplate: t.FromTemplate,
 		FromImage:    t.FromImage,
+		FromImageRaw: t.FromImageRaw,
 	}
 }
 
@@ -150,6 +174,7 @@ func (t Template) SameVersionTemplate(metadata TemplateMetadata) Template {
 		Start:        t.Start,
 		FromTemplate: t.FromTemplate,
 		FromImage:    t.FromImage,
+		FromImageRaw: t.FromImageRaw,
 	}
 }
 
@@ -162,6 +187,7 @@ func (t Template) WithPrefetch(prefetch *Prefetch) Template {
 		Start:        t.Start,
 		FromTemplate: t.FromTemplate,
 		FromImage:    t.FromImage,
+		FromImageRaw: t.FromImageRaw,
 		Prefetch:     prefetch,
 	}
 }

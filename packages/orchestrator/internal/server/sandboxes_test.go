@@ -59,6 +59,7 @@ func Test_server_List(t *testing.T) {
 						// ClientId:  "client-id",
 						StartTime: timestamppb.New(startTime),
 						EndTime:   timestamppb.New(endTime),
+						OsType:    "linux",
 					},
 				},
 			},

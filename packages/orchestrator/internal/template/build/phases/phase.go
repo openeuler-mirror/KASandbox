@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/buildcontext"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/metrics"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
@@ -172,7 +173,7 @@ func validateTemplate(
 func validateContext(
 	context metadata.Context,
 ) (err error) {
-	if context.User == "" {
+	if context.User == "" && context.OsType != string(vmm.OsWindows) && context.OsType != string(vmm.OsAndroid) {
 		err = errors.Join(err, fmt.Errorf("context user is empty"))
 	}
 	if context.WorkDir != nil && *context.WorkDir == "" {

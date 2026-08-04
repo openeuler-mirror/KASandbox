@@ -29,6 +29,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/writer"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/constants"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
+	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
@@ -122,7 +123,7 @@ func (bb *BaseBuilder) provisionSandbox(
 		sandboxRuntime,
 		localTemplate,
 		provisionTimeout,
-		rootfsPath,
+		map[string]string{storage.RootfsName: rootfsPath},
 		vmm.ProcessOptions{
 			// Set the IO Engine explicitly to the default value
 			IoEngine: utils.ToPtr(layer.DefaultIoEngine),

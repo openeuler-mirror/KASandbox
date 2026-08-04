@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/codes"
@@ -32,19 +34,22 @@ type storageTemplate struct {
 	metafile *utils.SetOnce[File]
 
 	memfileHeader *header.Header
-	rootfsHeader  *header.Header
+	rootfsHeaders map[build.DiffType]*header.Header
 	localSnapfile File
 	localMetafile File
 
 	metrics     blockmetrics.Metrics
 	persistence storage.StorageProvider
+	buildStore  *build.DiffStore
+	disksMu     sync.Mutex
+	disks       []Disk
 }
 
 func newTemplateFromStorage(
 	config cfg.BuilderConfig,
 	buildId string,
 	memfileHeader *header.Header,
-	rootfsHeader *header.Header,
+	rootfsHeaders map[build.DiffType]*header.Header,
 	persistence storage.StorageProvider,
 	metrics blockmetrics.Metrics,
 	localSnapfile File,
@@ -62,7 +67,7 @@ func newTemplateFromStorage(
 		localSnapfile: localSnapfile,
 		localMetafile: localMetafile,
 		memfileHeader: memfileHeader,
-		rootfsHeader:  rootfsHeader,
+		rootfsHeaders: rootfsHeaders,
 		metrics:       metrics,
 		persistence:   persistence,
 		memfile:       utils.NewSetOnce[block.ReadonlyDevice](),
@@ -73,6 +78,7 @@ func newTemplateFromStorage(
 }
 
 func (t *storageTemplate) Fetch(ctx context.Context, buildStore *build.DiffStore) {
+	t.buildStore = buildStore
 	ctx, span := tracer.Start(ctx, "fetch storage template", trace.WithAttributes(
 		telemetry.WithBuildID(t.files.BuildID),
 	))
@@ -230,7 +236,7 @@ func (t *storageTemplate) Fetch(ctx context.Context, buildStore *build.DiffStore
 			buildStore,
 			t.files.BuildID,
 			build.Rootfs,
-			t.rootfsHeader,
+			t.rootfsHeaders[build.Rootfs],
 			t.persistence,
 			t.metrics,
 		)
@@ -287,6 +293,46 @@ func (t *storageTemplate) Memfile(ctx context.Context) (block.ReadonlyDevice, er
 
 func (t *storageTemplate) Rootfs() (block.ReadonlyDevice, error) {
 	return t.rootfs.Wait()
+}
+
+func (t *storageTemplate) Disks(ctx context.Context) ([]Disk, error) {
+	t.disksMu.Lock()
+	defer t.disksMu.Unlock()
+	if t.disks != nil {
+		return slices.Clone(t.disks), nil
+	}
+
+	root, err := t.Rootfs()
+	if err != nil {
+		return nil, err
+	}
+	disks := []Disk{{Name: storage.RootfsName, DiffType: build.Rootfs, Device: root}}
+
+	meta, err := t.Metadata()
+	if err != nil {
+		return nil, err
+	}
+	if meta.Template.OsType != "android" {
+		t.disks = disks
+		return slices.Clone(t.disks), nil
+	}
+
+	for _, spec := range []struct {
+		name string
+		typ  build.DiffType
+	}{{storage.PersistentName, build.RootfsPersistent}, {storage.SDCardName, build.RootfsSDCard}} {
+		device, err := NewStorage(ctx, t.buildStore, t.files.BuildID, spec.typ, t.rootfsHeaders[spec.typ], t.persistence, t.metrics)
+		if err != nil {
+			for i := len(disks) - 1; i > 0; i-- {
+				err = errors.Join(err, disks[i].Device.Close())
+			}
+			return nil, fmt.Errorf("failed to create %s disk storage: %w", spec.name, err)
+		}
+		disks = append(disks, Disk{Name: spec.name, DiffType: spec.typ, Device: device})
+	}
+
+	t.disks = disks
+	return slices.Clone(t.disks), nil
 }
 
 func (t *storageTemplate) Snapfile() (File, error) {

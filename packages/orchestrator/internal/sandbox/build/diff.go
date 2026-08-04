@@ -20,9 +20,15 @@ func (NoDiffError) Error() string {
 }
 
 const (
-	Memfile DiffType = storage.MemfileName
-	Rootfs  DiffType = storage.RootfsName
+	Memfile          DiffType = storage.MemfileName
+	Rootfs           DiffType = storage.RootfsName
+	RootfsPersistent DiffType = storage.PersistentName
+	RootfsSDCard     DiffType = storage.SDCardName
 )
+
+func IsRootfs(diffType DiffType) bool {
+	return diffType == Rootfs || diffType == RootfsPersistent || diffType == RootfsSDCard
+}
 
 type Diff interface {
 	io.Closer

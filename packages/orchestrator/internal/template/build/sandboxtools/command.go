@@ -17,6 +17,7 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/rootfs"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc"
@@ -134,20 +135,15 @@ func runCommandWithAllOptions(
 		}
 	}()
 
-	// Append standard directories to PATH so that utilities are always
-	// findable even if the user sets PATH to something broken.
-	envs := maps.Clone(metadata.EnvVars)
-	if _, ok := envs["PATH"]; ok {
-		envs["PATH"] += ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	}
+	envs := buildCommandEnvs(metadata)
+
+	shellCmd, shellArgs := guestShell(metadata.OsType, command)
 
 	runCmdReq := connect.NewRequest(&process.StartRequest{
 		Process: &process.ProcessConfig{
-			Cmd: "/bin/bash",
-			Cwd: metadata.WorkDir,
-			Args: []string{
-				"-l", "-c", command,
-			},
+			Cmd:  shellCmd,
+			Cwd:  metadata.WorkDir,
+			Args: shellArgs,
 			Envs: envs,
 		},
 	})
@@ -163,7 +159,13 @@ func runCommandWithAllOptions(
 	if err != nil {
 		return fmt.Errorf("failed to set sandbox header: %w", err)
 	}
-	grpc.SetUserHeader(runCmdReq.Header(), metadata.User)
+	// An empty user means "let envd pick the default user". We omit the auth
+	// header entirely (mirroring the SDK) instead of sending an empty username,
+	// which envd would reject via user.Lookup(""). This is how Windows commands
+	// run as the image's baked-in default user (there is no Linux "root").
+	if metadata.User != "" {
+		grpc.SetUserHeader(runCmdReq.Header(), metadata.User)
+	}
 
 	processCtx, processCancel := context.WithCancel(ctx)
 	defer processCancel()
@@ -214,6 +216,41 @@ func runCommandWithAllOptions(
 	}
 }
 
+// guestShell resolves the shell command and args used to run a command string
+// inside the guest, mirroring the SDK's per-OS selection (see python-sdk
+// e2b/sandbox/commands/main.py::_get_command_shell). envd executes the command
+// verbatim, so the OS-appropriate shell must be chosen here. The linux branch
+// (including the empty default) is byte-for-byte identical to the previous
+// hard-coded behavior.
+func guestShell(osType string, command string) (string, []string) {
+	if osType == string(vmm.OsWindows) {
+		return "powershell.exe", []string{"-NoLogo", "-NonInteractive", "-Command", command}
+	}
+	if osType == string(vmm.OsAndroid) {
+		return "/system/bin/sh", []string{"-c", command}
+	}
+
+	return "/bin/bash", []string{"-l", "-c", command}
+}
+
+// buildCommandEnvs clones the command environment and, on linux, appends the
+// standard directories to PATH so utilities are always findable even if the
+// user sets PATH to something broken. The unix path list and ':' separator are
+// meaningless on Windows, so they are skipped there.
+func buildCommandEnvs(meta metadata.Context) map[string]string {
+	envs := maps.Clone(meta.EnvVars)
+
+	if meta.OsType == string(vmm.OsWindows) || meta.OsType == string(vmm.OsAndroid) {
+		return envs
+	}
+
+	if _, ok := envs["PATH"]; ok {
+		envs["PATH"] += ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	}
+
+	return envs
+}
+
 func logStream(ctx context.Context, logger logger.Logger, lvl zapcore.Level, id string, name string, content string) {
 	if logger == nil {
 		return
@@ -232,21 +269,44 @@ func logStream(ctx context.Context, logger logger.Logger, lvl zapcore.Level, id 
 	}
 }
 
-// syncChangesToDisk synchronizes filesystem changes to the filesystem
-// This is useful to ensure that all changes made in the sandbox are written to disk
-// to be able to re-create the sandbox without resume.
+// windowsSyncCommand flushes every mounted fixed volume's write cache to disk
+// via the Storage module's Write-VolumeCache. $ErrorActionPreference = 'Stop'
+// turns a missing cmdlet or a permission failure into a non-zero exit so the
+// caller treats it as an error, matching the Linux "sync" failure semantics.
+const windowsSyncCommand = `$ErrorActionPreference = 'Stop'; Get-Volume | Where-Object DriveLetter | ForEach-Object { Write-VolumeCache $_.DriveLetter }`
+
+// syncCommand returns the guest command and command context used to flush the
+// in-guest page cache to disk for the given OS family. Linux runs busybox sync
+// as root over bash; Windows runs Write-VolumeCache over powershell as the
+// image's default (admin) user. The empty/Linux branch is byte-for-byte
+// identical to the previous hard-coded behavior.
+func syncCommand(osType vmm.OsType) (string, metadata.Context) {
+	if osType.OrDefault() == vmm.OsWindows {
+		return windowsSyncCommand, metadata.Context{OsType: string(vmm.OsWindows)}
+	}
+	if osType.OrDefault() == vmm.OsAndroid {
+		return "/system/bin/sync", metadata.Context{OsType: string(vmm.OsAndroid)}
+	}
+
+	return rootfs.SandboxBusyBoxPath + " sync", metadata.Context{User: "root"}
+}
+
+// SyncChangesToDisk synchronizes filesystem changes to disk so the sandbox can
+// be re-created without resuming from memory. It is OS-aware: Linux runs busybox
+// sync as root, Windows runs Write-VolumeCache over powershell (see syncCommand).
 func SyncChangesToDisk(
 	ctx context.Context,
 	proxy *proxy.SandboxProxy,
 	sandboxID string,
+	osType vmm.OsType,
 ) error {
+	command, meta := syncCommand(osType)
+
 	return RunCommand(
 		ctx,
 		proxy,
 		sandboxID,
-		rootfs.SandboxBusyBoxPath+" sync",
-		metadata.Context{
-			User: "root",
-		},
+		command,
+		meta,
 	)
 }
