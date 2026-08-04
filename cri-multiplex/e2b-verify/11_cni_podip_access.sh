@@ -34,13 +34,13 @@ log_step "1.1 前置检查"
 
 require_refresh_script "${REFRESH_SCRIPT}" || exit 1
 
-require_cri_multiplex_cni_enabled || exit 1
+require_cri_multiplex_cni_enabled_quiet || exit 1
 
 if ! kubectl get runtimeclass e2b > /dev/null 2>&1; then
-    log_fail "RuntimeClass e2b 不存在"
+    log_info "RuntimeClass e2b 不存在"
     exit 1
 fi
-log_pass "RuntimeClass e2b 存在"
+log_info "RuntimeClass e2b 存在"
 
 if ! command -v curl >/dev/null 2>&1; then
     log_fail "curl 不存在，无法验证 PodIP:49983/health"

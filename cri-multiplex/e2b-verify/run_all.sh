@@ -66,6 +66,7 @@ SCRIPTS=(
     "17|Android CNI PodIP/Netns 访问验证|${SCRIPT_DIR}/17_android_cni_podip.sh"
     "18|cri-multiplex 重启恢复验证|${SCRIPT_DIR}/18_state_restore.sh"
     "19|状态持久化完整场景矩阵验证|${SCRIPT_DIR}/19_state_persistence_matrix.sh"
+	"20|清理与孤儿资源回收验证|${SCRIPT_DIR}/20_cleanup_orphan_recovery.sh"
 )
 
 #==================== 执行 ====================#
@@ -101,7 +102,7 @@ for entry in "${SCRIPTS[@]}"; do
             02|04|05|06)
                 log_info "切换 cri-multiplex 到非 CNI 模式，用于 crictl 直连用例 ..."
                 set +e
-                switch_output=$(E2B_CNI_ENABLED=0 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" 2>&1)
+                switch_output=$(CNI_ENABLED=0 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" 2>&1)
                 switch_code=$?
                 set -e
                 echo "${switch_output}"
@@ -124,13 +125,13 @@ for entry in "${SCRIPTS[@]}"; do
                     continue
                 fi
                 ;;
-            18|19)
+			18|19|20)
                 log_info "[${num}] 用例内部会以 CNI+Android runtime 模式启动 cri-multiplex，并使用独立 state-dir ..."
                 ;;
         esac
     else
         if [ "${num}" = "01" ]; then
-            env_args=(E2B_CNI_ENABLED=0 E2B_FORCE_RESTART=1)
+            env_args=(CNI_ENABLED=0 E2B_FORCE_RESTART=1)
         elif [ "${num}" = "07" ]; then
             log_info "切换 cri-multiplex 到 CNI+Android runtime 模式，用于 07 及之后用例 ..."
             set +e

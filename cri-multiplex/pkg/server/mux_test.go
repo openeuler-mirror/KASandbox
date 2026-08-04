@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	"github.com/cri-multiplex/pkg/engine"
@@ -290,6 +292,23 @@ func TestMuxRouteMissFallsBackToContainer(t *testing.T) {
 	}
 	if container.calls["PodSandboxStatus"] != 1 || container.calls["Exec"] != 1 {
 		t.Fatalf("container fallback calls mismatch: %v", container.calls)
+	}
+}
+
+func TestMuxRemovePodSandboxRouteMissNotFoundIsIdempotent(t *testing.T) {
+	container := newFakeEngine(engine.EngineTypeContainer)
+	container.err = status.Error(codes.NotFound, "sandbox does not exist")
+	s := NewMuxServer(container, newFakeEngine(engine.EngineTypeE2B), newFakeEngine(engine.EngineTypeAndroid))
+
+	resp, err := s.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "already-removed"})
+	if err != nil {
+		t.Fatalf("RemovePodSandbox should treat route-miss NotFound as success: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("RemovePodSandbox returned a nil response")
+	}
+	if container.calls["RemovePodSandbox"] != 1 {
+		t.Fatalf("container RemovePodSandbox calls = %d, want 1", container.calls["RemovePodSandbox"])
 	}
 }
 
