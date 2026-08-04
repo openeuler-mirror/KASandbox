@@ -268,11 +268,11 @@ configure_domain_access() {
         # 在 'ready' 行后插入（4 空格缩进，KubeKey 默认布局）；找不到则回退到 'errors' 行
         # 注意: sed a\ 命令会吃掉单个反斜杠，故 \. 需写成 \\. 才能原样输出
         if grep -q "^    ready$" "$tmp_corefile"; then
-            sed -i '/^    ready$/a\    rewrite name regex .*\\.e2b\\.app\\.$ edge-api.e2b.svc.cluster.local' "$tmp_corefile"
+            sed -i '/^    ready$/a\    rewrite name regex .*.e2b.app.$ edge-api.e2b.svc.cluster.local' "$tmp_corefile"
         elif grep -q "^    errors$" "$tmp_corefile"; then
-            sed -i '/^    errors$/a\    rewrite name regex .*\\.e2b\\.app\\.$ edge-api.e2b.svc.cluster.local' "$tmp_corefile"
+            sed -i '/^    errors$/a\    rewrite name regex .*.e2b.app.$ edge-api.e2b.svc.cluster.local' "$tmp_corefile"
         else
-            warn "无法识别 Corefile 结构，请手动添加: rewrite name regex .*\.e2b\.app\.$ edge-api.e2b.svc.cluster.local"
+            warn "无法识别 Corefile 结构，请手动添加: rewrite name regex .*.e2b.app.$ edge-api.e2b.svc.cluster.local"
             rm -f "$tmp_corefile"
             return
         fi
