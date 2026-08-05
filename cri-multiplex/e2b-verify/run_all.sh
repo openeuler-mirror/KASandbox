@@ -64,9 +64,10 @@ SCRIPTS=(
     "15|E2B CNI NetworkPolicy ingress 验证|${SCRIPT_DIR}/15_cni_networkpolicy_ingress.sh"
     "16|E2B CNI NetworkPolicy egress 验证|${SCRIPT_DIR}/16_cni_networkpolicy_egress.sh"
     "17|Android CNI PodIP/Netns 访问验证|${SCRIPT_DIR}/17_android_cni_podip.sh"
-    "18|cri-multiplex 重启恢复验证|${SCRIPT_DIR}/18_state_restore.sh"
+	"18|cri-multiplex 重启恢复验证|${SCRIPT_DIR}/18_state_restore.sh"
     "19|状态持久化完整场景矩阵验证|${SCRIPT_DIR}/19_state_persistence_matrix.sh"
 	"20|清理与孤儿资源回收验证|${SCRIPT_DIR}/20_cleanup_orphan_recovery.sh"
+	"21|cri-multiplex 多 Runtime 路由验证|${SCRIPT_DIR}/21_mux_multi_runtime_routing.sh"
 )
 
 #==================== 执行 ====================#
@@ -112,7 +113,7 @@ for entry in "${SCRIPTS[@]}"; do
                     continue
                 fi
                 ;;
-            07|08|09|10|11|12|13|14|15|16|17)
+            07|08|09|10|11|12|13|14|15|16|17|21)
                 log_info "切换 cri-multiplex 到 CNI+Android runtime 模式，用于 07 及之后用例 ..."
                 set +e
                 switch_output=$(start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式" 2>&1)

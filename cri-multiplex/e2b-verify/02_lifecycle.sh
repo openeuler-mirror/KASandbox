@@ -228,7 +228,49 @@ else
 fi
 rm -f /tmp/e2b-bad.json
 
-log_step "6.2 删除不存在的 Pod（幂等）"
+log_step "6.2 省略可选 annotation 使用默认值"
+python3 - "${BASE_POD_JSON}" /tmp/e2b-defaults.json <<'PY'
+import json
+import sys
+import time
+
+src, dst = sys.argv[1:3]
+with open(src, encoding="utf-8") as source:
+    pod = json.load(source)
+
+uid = f"e2b-defaults-{int(time.time())}"
+pod["metadata"] = {
+    "name": "defaults-pod",
+    "namespace": "default",
+    "uid": uid,
+}
+anns = pod.get("annotations") or {}
+pod["annotations"] = {
+    "e2b.dev/template-id": anns["e2b.dev/template-id"],
+    "e2b.dev/build-id": anns["e2b.dev/build-id"],
+    "e2b.dev/team-id": anns["e2b.dev/team-id"],
+}
+pod.setdefault("linux", {})
+with open(dst, "w", encoding="utf-8") as target:
+    json.dump(pod, target, indent=2, ensure_ascii=True)
+    target.write("\n")
+PY
+output=$(${CRICTL} runp -r e2b /tmp/e2b-defaults.json 2>&1) || true
+if echo "${output}" | grep -qE "^[a-zA-Z0-9_-]+$" && ! echo "${output}" | grep -qi "error\\|FATA"; then
+    DEFAULTS_POD_ID=$(echo "${output}" | head -1 | tr -d '[:space:]')
+    status_output=$(${CRICTL} inspectp "${DEFAULTS_POD_ID}" 2>&1) || true
+    if echo "${status_output}" | grep -q "SANDBOX_READY"; then
+        log_pass "只保留必填 annotation 时 Pod 使用默认值创建为 Running"
+    else
+        log_fail "只保留必填 annotation 创建后状态异常: ${status_output}"
+    fi
+    cleanup_pod "${DEFAULTS_POD_ID}"
+else
+    log_fail "只保留必填 annotation 创建失败: ${output}"
+fi
+rm -f /tmp/e2b-defaults.json
+
+log_step "6.3 删除不存在的 Pod（幂等）"
 output=$(grpc_call "runtime.v1.RuntimeService/RemovePodSandbox" '{"pod_sandbox_id": "e2b-not-exist-999"}') || true
 if echo "${output}" | grep -q "^{}\|^$"; then
     log_pass "删除不存在的 Pod 成功（幂等）"
