@@ -21,19 +21,27 @@ log_section "19 — 状态持久化 kubelet 黑盒自动化验证"
 
 POD_NAME="${POD_NAME:-e2b-state-matrix-test}"
 BAD_POD_NAME="${BAD_POD_NAME:-e2b-state-matrix-invalid-annotation}"
+CRASH_POD_NAME="${CRASH_POD_NAME:-e2b-state-crash-19}"
+CONCURRENT_E2B_PREFIX="${CONCURRENT_E2B_PREFIX:-e2b-state-burst-19}"
+MIXED_E2B_PREFIX="${MIXED_E2B_PREFIX:-e2b-state-mixed-e2b-19}"
+MIXED_DEFAULT_PREFIX="${MIXED_DEFAULT_PREFIX:-e2b-state-mixed-default-19}"
 POD_YAML="${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
 WORK_POD_YAML="/tmp/e2b-state-matrix-pod.yaml"
 BAD_POD_YAML="/tmp/e2b-state-matrix-invalid-annotation-pod.yaml"
+CRASH_POD_YAML="/tmp/e2b-state-crash-19.yaml"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 STATE_DIR="${STATE_DIR:-/tmp/cri-multiplex-state-matrix}"
 STATE_FILE="${STATE_DIR}/state.json"
 BAD_STATE_PARENT="${BAD_STATE_PARENT:-/tmp/cri-multiplex-state-parent-file}"
 BAD_STATE_DIR="${BAD_STATE_PARENT}/child"
+TEST_LABEL_KEY="cri-multiplex-test"
+TEST_LABEL_VALUE="19"
+DEFAULT_CLIENT_IMAGE="${DEFAULT_CLIENT_IMAGE:-docker.io/library/busybox:latest}"
 
 cleanup_all() {
-    kubectl delete pod "${POD_NAME}" --force --grace-period=0 >/dev/null 2>&1 || true
-    kubectl delete pod "${BAD_POD_NAME}" --force --grace-period=0 >/dev/null 2>&1 || true
-    rm -f "${WORK_POD_YAML}" "${BAD_POD_YAML}" || true
+    kubectl delete pod "${POD_NAME}" "${BAD_POD_NAME}" "${CRASH_POD_NAME}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete pod -l "${TEST_LABEL_KEY}=${TEST_LABEL_VALUE}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
+    rm -f "${WORK_POD_YAML}" "${BAD_POD_YAML}" "${CRASH_POD_YAML}" /tmp/e2b-state-burst-19-*.yaml /tmp/e2b-state-mixed-*-19-*.yaml || true
 }
 trap cleanup_all EXIT
 
@@ -152,6 +160,29 @@ elif check == "removed":
         fail(f"removed routes still persisted: pod={pod_id} container={container_id} routes={routes}")
     if any(p.get("sandbox_id") == pod_id for p in pods):
         fail(f"removed e2b pod still persisted: {pod_id}, pods={pods}")
+elif check == "routes_active":
+    route_ids = {r.get("id") for r in routes}
+    missing = [rid for rid in args if rid and rid not in route_ids]
+    if missing:
+        fail(f"active routes missing: {missing}, routes={routes}")
+elif check == "routes_removed":
+    route_ids = {r.get("id") for r in routes}
+    remaining = [rid for rid in args if rid and rid in route_ids]
+    if remaining:
+        fail(f"removed routes still persisted: {remaining}, routes={routes}")
+elif check == "e2b_active":
+    pod_ids = {p.get("sandbox_id") for p in pods}
+    missing = [pid for pid in args if pid and pid not in pod_ids]
+    if missing:
+        fail(f"active e2b pods missing: {missing}, pods={pods}")
+    bad = [p for p in pods if p.get("sandbox_id") in args and p.get("state") != 0]
+    if bad:
+        fail(f"e2b pods should be Running(0): {bad}")
+elif check == "e2b_removed":
+    pod_ids = {p.get("sandbox_id") for p in pods}
+    remaining = [pid for pid in args if pid and pid in pod_ids]
+    if remaining:
+        fail(f"removed e2b pods still persisted: {remaining}, pods={pods}")
 else:
     fail(f"unknown check {check}")
 PY
@@ -192,10 +223,186 @@ reset_pod_yaml_name() {
     reset_e2b_yaml_metadata "${name}" "${dst}"
 }
 
+add_metadata_label() {
+    local yaml="$1"
+    local key="$2"
+    local value="$3"
+    local tmp="${yaml}.tmp"
+
+    awk -v key="${key}" -v value="${value}" '
+        /^metadata:/ {
+            in_metadata=1
+            inserted=0
+            print
+            next
+        }
+        in_metadata == 1 && /^  annotations:/ && inserted != 1 {
+            print "  labels:"
+            print "    " key ": \"" value "\""
+            inserted=1
+            print
+            next
+        }
+        in_metadata == 1 && /^spec:/ {
+            if (inserted != 1) {
+                print "  labels:"
+                print "    " key ": \"" value "\""
+                inserted=1
+            }
+            in_metadata=0
+            print
+            next
+        }
+        { print }
+    ' "${yaml}" > "${tmp}"
+    mv "${tmp}" "${yaml}"
+}
+
+create_e2b_test_yaml() {
+    local name="$1"
+    local yaml="$2"
+
+    reset_pod_yaml_name "${POD_YAML}" "${yaml}" "${name}"
+    add_metadata_label "${yaml}" "${TEST_LABEL_KEY}" "${TEST_LABEL_VALUE}"
+}
+
+create_default_test_yaml() {
+    local name="$1"
+    local yaml="$2"
+
+    cat > "${yaml}" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${name}
+  labels:
+    ${TEST_LABEL_KEY}: "${TEST_LABEL_VALUE}"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: app
+      image: ${DEFAULT_CLIENT_IMAGE}
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "3600"]
+EOF
+}
+
 remove_yaml_annotation() {
     local annotation_key="$1"
     local yaml_file="$2"
     sed -i "\\#^[[:space:]]*${annotation_key}:#d" "${yaml_file}"
+}
+
+pod_cri_sandbox_id() {
+    local pod_name="$1"
+    ${CRICTL} pods --name "${pod_name}" -q 2>/dev/null | head -1 || true
+}
+
+collect_route_ids_for_pods() {
+    local name sid cid runtime_class
+
+    for name in "$@"; do
+        sid=$(pod_cri_sandbox_id "${name}")
+        runtime_class=$(kubectl get pod "${name}" -o jsonpath='{.spec.runtimeClassName}' 2>/dev/null || true)
+        if [ -z "${sid}" ] && [ "${runtime_class}" = "e2b" ]; then
+            sid=$(pod_uid "${name}")
+        fi
+        cid=$(pod_container_id "${name}" "${sid}")
+        [ "${cid}" = "-c" ] && cid=""
+        [ -n "${sid}" ] && printf '%s\n' "${sid}"
+        [ -n "${cid}" ] && printf '%s\n' "${cid}"
+    done
+}
+
+collect_e2b_sandbox_ids() {
+    local name sid
+
+    for name in "$@"; do
+        sid=$(pod_uid "${name}")
+        [ -n "${sid}" ] && printf '%s\n' "${sid}"
+    done
+}
+
+apply_yaml_concurrently() {
+    local log_file="$1"
+    shift
+    local yaml rc
+
+    : > "${log_file}"
+    for yaml in "$@"; do
+        kubectl apply -f "${yaml}" >>"${log_file}" 2>&1 &
+    done
+    set +e
+    wait
+    rc=$?
+    set -e
+    if [ "${rc}" -ne 0 ] || { [ -s "${log_file}" ] && grep -qiE "error|failed|forbidden|invalid" "${log_file}"; }; then
+        log_fail "并发 kubectl apply 存在失败: $(cat "${log_file}")"
+        return 1
+    fi
+}
+
+wait_pods_ready() {
+    local timeout_seconds="$1"
+    shift
+    local name
+
+    for name in "$@"; do
+        wait_pod_ready "${name}" "${timeout_seconds}" || return 1
+    done
+}
+
+delete_pods_concurrently() {
+    local log_file="$1"
+    shift
+    local name rc
+
+    : > "${log_file}"
+    for name in "$@"; do
+        kubectl delete pod "${name}" --wait=false --grace-period=0 --ignore-not-found >>"${log_file}" 2>&1 &
+    done
+    set +e
+    wait
+    rc=$?
+    set -e
+    if [ "${rc}" -ne 0 ] || { [ -s "${log_file}" ] && grep -qiE "error|failed|forbidden|invalid" "${log_file}"; }; then
+        log_fail "并发 kubectl delete 存在失败: $(cat "${log_file}")"
+        return 1
+    fi
+}
+
+wait_pods_deleted() {
+    local name
+
+    for name in "$@"; do
+        wait_pod_deleted "${name}" || return 1
+    done
+}
+
+wait_state_routes_removed() {
+    local timeout_seconds="$1"
+    shift
+
+    for _ in $(seq 1 "${timeout_seconds}"); do
+        if state_json_matches "routes_removed" "$@" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+wait_state_e2b_removed() {
+    local timeout_seconds="$1"
+    shift
+
+    for _ in $(seq 1 "${timeout_seconds}"); do
+        if state_json_matches "e2b_removed" "$@" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
 }
 
 log_step "1.1 前置检查"
@@ -225,10 +432,11 @@ fi
 log_info "CNI 配置目录和二进制目录存在"
 
 log_step "1.2 清理旧 Pod 和旧状态"
-kubectl delete pod "${POD_NAME}" --force --grace-period=0 >/dev/null 2>&1 || true
-kubectl delete pod "${BAD_POD_NAME}" --force --grace-period=0 >/dev/null 2>&1 || true
+kubectl delete pod "${POD_NAME}" "${BAD_POD_NAME}" "${CRASH_POD_NAME}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
+kubectl delete pod -l "${TEST_LABEL_KEY}=${TEST_LABEL_VALUE}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
 wait_pod_deleted "${POD_NAME}" || true
 wait_pod_deleted "${BAD_POD_NAME}" || true
+wait_pod_deleted "${CRASH_POD_NAME}" || true
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 log_pass "旧 Pod 和测试 state-dir 已清理"
@@ -353,6 +561,110 @@ if [ "${REMOVED}" = "1" ]; then
     log_pass "Remove 后 Pod/Container 状态和路由已删除"
 else
     assert_state_json "Remove 后 Pod/Container 状态和路由已删除" "removed" "${POD_UID}" "${CONTAINER_ID}" || exit 1
+fi
+
+log_step "4.2 并发创建/删除 10 个 E2B Pod 验证状态持久化并发安全"
+burst_names=()
+burst_yamls=()
+for i in $(seq 1 10); do
+    name="${CONCURRENT_E2B_PREFIX}-${i}"
+    yaml="/tmp/${name}.yaml"
+    burst_names+=("${name}")
+    burst_yamls+=("${yaml}")
+    create_e2b_test_yaml "${name}" "${yaml}"
+done
+apply_yaml_concurrently "/tmp/e2b-state-burst-19-apply.log" "${burst_yamls[@]}" || exit 1
+wait_pods_ready 240 "${burst_names[@]}" || exit 1
+mapfile -t burst_e2b_ids < <(collect_e2b_sandbox_ids "${burst_names[@]}")
+mapfile -t burst_route_ids < <(collect_route_ids_for_pods "${burst_names[@]}")
+if [ "${#burst_e2b_ids[@]}" -eq 10 ]; then
+    log_pass "10 个 E2B Pod UID 已收集"
+else
+    log_fail "E2B Pod UID 数量不符合预期: ${#burst_e2b_ids[@]}"
+    exit 1
+fi
+assert_state_json "10 个 E2B Pod Running 状态已持久化" "e2b_active" "${burst_e2b_ids[@]}" || exit 1
+assert_state_json "10 个 E2B Pod/Container 路由已持久化" "routes_active" "${burst_route_ids[@]}" || exit 1
+delete_pods_concurrently "/tmp/e2b-state-burst-19-delete.log" "${burst_names[@]}" || exit 1
+wait_pods_deleted "${burst_names[@]}" || exit 1
+wait_state_routes_removed 120 "${burst_route_ids[@]}" || {
+    assert_state_json "10 个 E2B Pod/Container 路由已清理" "routes_removed" "${burst_route_ids[@]}" || exit 1
+}
+wait_state_e2b_removed 120 "${burst_e2b_ids[@]}" || {
+    assert_state_json "10 个 E2B Pod 状态已清理" "e2b_removed" "${burst_e2b_ids[@]}" || exit 1
+}
+log_pass "10 个 E2B Pod 并发创建/删除后状态已收敛"
+
+log_step "4.3 混合 5 个 E2B Pod + 5 个普通 Pod 并发创建/删除验证路由互不干扰"
+mixed_names=()
+mixed_e2b_names=()
+mixed_yamls=()
+for i in $(seq 1 5); do
+    e2b_name="${MIXED_E2B_PREFIX}-${i}"
+    default_name="${MIXED_DEFAULT_PREFIX}-${i}"
+    e2b_yaml="/tmp/${e2b_name}.yaml"
+    default_yaml="/tmp/${default_name}.yaml"
+    mixed_names+=("${e2b_name}" "${default_name}")
+    mixed_e2b_names+=("${e2b_name}")
+    mixed_yamls+=("${e2b_yaml}" "${default_yaml}")
+    create_e2b_test_yaml "${e2b_name}" "${e2b_yaml}"
+    create_default_test_yaml "${default_name}" "${default_yaml}"
+done
+apply_yaml_concurrently "/tmp/e2b-state-mixed-19-apply.log" "${mixed_yamls[@]}" || exit 1
+wait_pods_ready 240 "${mixed_names[@]}" || exit 1
+mapfile -t mixed_e2b_ids < <(collect_e2b_sandbox_ids "${mixed_e2b_names[@]}")
+mapfile -t mixed_route_ids < <(collect_route_ids_for_pods "${mixed_names[@]}")
+if [ "${#mixed_e2b_ids[@]}" -eq 5 ]; then
+    log_pass "5 个混合场景 E2B Pod UID 已收集"
+else
+    log_fail "混合场景 E2B Pod UID 数量不符合预期: ${#mixed_e2b_ids[@]}"
+    exit 1
+fi
+assert_state_json "混合场景 E2B Pod Running 状态已持久化" "e2b_active" "${mixed_e2b_ids[@]}" || exit 1
+assert_state_json "混合场景 E2B/containerd 路由已持久化" "routes_active" "${mixed_route_ids[@]}" || exit 1
+delete_pods_concurrently "/tmp/e2b-state-mixed-19-delete.log" "${mixed_names[@]}" || exit 1
+wait_pods_deleted "${mixed_names[@]}" || exit 1
+wait_state_routes_removed 120 "${mixed_route_ids[@]}" || {
+    assert_state_json "混合场景 E2B/containerd 路由已清理" "routes_removed" "${mixed_route_ids[@]}" || exit 1
+}
+wait_state_e2b_removed 120 "${mixed_e2b_ids[@]}" || {
+    assert_state_json "混合场景 E2B Pod 状态已清理" "e2b_removed" "${mixed_e2b_ids[@]}" || exit 1
+}
+log_pass "混合 5+5 并发创建/删除后状态已收敛"
+
+log_step "4.4 kill -9 cri-multiplex 后验证状态恢复和后续删除"
+create_e2b_test_yaml "${CRASH_POD_NAME}" "${CRASH_POD_YAML}"
+kubectl apply -f "${CRASH_POD_YAML}" >&2
+wait_pod_ready "${CRASH_POD_NAME}" 120 || exit 1
+CRASH_UID=$(pod_uid "${CRASH_POD_NAME}")
+CRASH_CONTAINER_ID=$(pod_container_id "${CRASH_POD_NAME}" "${CRASH_UID}")
+if [ -z "${CRASH_UID}" ] || [ -z "${CRASH_CONTAINER_ID}" ]; then
+    log_fail "无法读取崩溃恢复场景 Pod UID/ContainerID: uid=${CRASH_UID}, cid=${CRASH_CONTAINER_ID}"
+    exit 1
+fi
+assert_state_json "崩溃前 Pod/Container 状态已持久化" "k8s_active" "${CRASH_UID}" "${CRASH_CONTAINER_ID}" || exit 1
+crash_pids=$(cri_multiplex_pids)
+if [ -z "${crash_pids}" ]; then
+    log_fail "未找到待 kill -9 的 cri-multiplex 进程"
+    exit 1
+fi
+log_info "kill -9 cri-multiplex 进程: ${crash_pids}"
+kill -9 ${crash_pids} 2>/dev/null || true
+sleep 2
+start_cni_android_multiplex "kill -9 后重启 cri-multiplex 恢复状态" || exit 1
+assert_state_json "kill -9 重启后 Pod/Container 状态已恢复" "k8s_active" "${CRASH_UID}" "${CRASH_CONTAINER_ID}" || exit 1
+assert_kubectl_exec "${CRASH_POD_NAME}" "crash_restore_ok" echo "crash_restore_ok" || exit 1
+kubectl delete pod "${CRASH_POD_NAME}" --wait=true --timeout=90s >&2 || {
+    log_fail "kill -9 恢复后的 Pod 删除失败"
+    kubectl describe pod "${CRASH_POD_NAME}" >&2 || true
+    exit 1
+}
+wait_pod_deleted "${CRASH_POD_NAME}" || exit 1
+if wait_state_routes_removed 120 "${CRASH_UID}" "${CRASH_CONTAINER_ID}" &&
+   wait_state_e2b_removed 120 "${CRASH_UID}"; then
+    log_pass "kill -9 恢复后 Pod 删除与状态清理成功"
+else
+    assert_state_json "kill -9 恢复后 Pod/Container 路由已清理" "removed" "${CRASH_UID}" "${CRASH_CONTAINER_ID}" || exit 1
 fi
 
 log_step "5.1 非法参数：缺少 template-id 时 kubelet 创建 Pod 失败应可观测"

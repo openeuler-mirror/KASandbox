@@ -8,7 +8,8 @@
 #   3. CRI status annotations 中包含 CNI 相关信息
 #   4. CNI netns 中存在 eth0=<PodIP> 和 tap0=169.254.0.22/30
 #   5. 可以通过 CNI 分配的 PodIP 访问沙箱内 envd health: PodIP:49983/health
-#   6. 删除 Pod 后 CNI netns 被清理
+#   6. E2B 沙箱内可以经 CNI 访问外网
+#   7. 删除 Pod 后 CNI netns 被清理
 ###############################################################################
 set -euo pipefail
 
@@ -195,6 +196,34 @@ else
     cat /tmp/e2b-cni-health.err >&2 || true
     log_info "curl body:"
     cat /tmp/e2b-cni-health.out >&2 || true
+fi
+
+log_step "5.2 E2B 沙箱内经 CNI 访问外网"
+
+EGRESS_OUTPUT=$(kubectl_exec_output_with_retry "${POD_NAME}" 60 sh -c '
+set -eu
+getent hosts example.com >/tmp/e2b-dns.out 2>/tmp/e2b-dns.err || {
+  echo "DNS_FAIL"
+  cat /tmp/e2b-dns.err 2>/dev/null || true
+  exit 11
+}
+if command -v curl >/dev/null 2>&1; then
+  code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 https://example.com)
+elif command -v wget >/dev/null 2>&1; then
+  wget -q -T 10 -O /dev/null https://example.com && code=200 || code=000
+else
+  echo "NO_HTTP_CLIENT"
+  exit 12
+fi
+case "${code}" in
+  2*|3*) echo "EXTERNAL_OK ${code}" ;;
+  *) echo "HTTP_FAIL ${code}"; exit 13 ;;
+esac
+' 2>&1) || true
+if grep -q "EXTERNAL_OK" <<< "${EGRESS_OUTPUT}"; then
+    log_pass "E2B 沙箱内 DNS 和 HTTPS 外网访问成功: ${EGRESS_OUTPUT}"
+else
+    log_fail "E2B 沙箱内外网访问失败: ${EGRESS_OUTPUT}"
 fi
 
 #==================== 删除清理验证 ====================#

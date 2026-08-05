@@ -117,9 +117,20 @@ if [ "${E2B_SKIP_BUILD}" = "1" ]; then
     log_info "E2B_SKIP_BUILD=1，跳过构建"
 else
     log_step "构建 cri-multiplex"
+    need_build=0
     if [ ! -f "${MULTIPLEX_DIR}/cri-multiplex" ] || [ "${E2B_FORCE_BUILD}" = "1" ]; then
+        need_build=1
+    elif find "${MULTIPLEX_DIR}/cmd" "${MULTIPLEX_DIR}/pkg" -name '*.go' -newer "${MULTIPLEX_DIR}/cri-multiplex" -print -quit | grep -q .; then
+        need_build=1
+        log_info "检测到源码比 cri-multiplex 二进制更新，重新构建"
+    fi
+    if [ "${need_build}" = "1" ]; then
         log_info "执行 go build..."
-        (cd "${MULTIPLEX_DIR}" && go build ./cmd/cri-multiplex) || {
+        (cd "${MULTIPLEX_DIR}" && \
+            GOWORK=off \
+            GOCACHE="${GOCACHE:-/tmp/go-build-cache}" \
+            GOMODCACHE="${GOMODCACHE:-/tmp/go-mod-cache}" \
+            go build ./cmd/cri-multiplex) || {
             log_info "构建 cri-multiplex 失败"
             exit 1
         }
