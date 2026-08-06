@@ -88,6 +88,44 @@ cri_multiplex_pids() {
         ' || true
 }
 
+stop_cri_multiplex() {
+    local timeout_seconds="${1:-10}"
+    local pids deadline
+
+    pids=$(cri_multiplex_pids)
+    if [ -z "${pids}" ]; then
+        rm -f "${SOCKET}" 2>/dev/null || true
+        return 0
+    fi
+
+    log_info "停止旧 cri-multiplex 进程: ${pids}"
+    kill ${pids} 2>/dev/null || true
+    deadline=$(( $(date +%s) + timeout_seconds ))
+    while [ "$(date +%s)" -lt "${deadline}" ]; do
+        [ -z "$(cri_multiplex_pids)" ] && break
+        sleep 1
+    done
+
+    pids=$(cri_multiplex_pids)
+    if [ -n "${pids}" ]; then
+        log_info "cri-multiplex 未在 ${timeout_seconds}s 内退出，发送 SIGKILL: ${pids}"
+        kill -9 ${pids} 2>/dev/null || true
+        deadline=$(( $(date +%s) + timeout_seconds ))
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+            [ -z "$(cri_multiplex_pids)" ] && break
+            sleep 1
+        done
+    fi
+
+    pids=$(cri_multiplex_pids)
+    if [ -n "${pids}" ]; then
+        log_fail "旧 cri-multiplex 进程未能停止: ${pids}"
+        return 1
+    fi
+
+    rm -f "${SOCKET}" 2>/dev/null || true
+}
+
 cri_multiplex_cmdline() {
     local pid
     for pid in $(cri_multiplex_pids); do
@@ -282,6 +320,134 @@ reset_e2b_yaml_metadata() {
     mv "${tmp}" "${yaml}"
 }
 
+patch_yaml_metadata_labels() {
+    local yaml="$1"
+    local labels="${2:-}"
+    local tmp="${yaml}.labels-tmp"
+
+    awk -v labels="${labels}" '
+        BEGIN {
+            n = split(labels, pairs, ",")
+            for (i = 1; i <= n; i++) {
+                if (pairs[i] == "") {
+                    continue
+                }
+                split(pairs[i], kv, "=")
+                if (kv[1] != "" && kv[2] != "") {
+                    label_keys[++label_count] = kv[1]
+                    label_values[label_count] = kv[2]
+                }
+            }
+        }
+        /^  labels:/ {
+            skipping_labels=1
+            next
+        }
+        skipping_labels == 1 && /^  [A-Za-z0-9_.-]+:/ {
+            skipping_labels=0
+        }
+        skipping_labels == 1 {
+            next
+        }
+        /^  annotations:/ && inserted != 1 {
+            if (label_count > 0) {
+                print "  labels:"
+                for (i = 1; i <= label_count; i++) {
+                    print "    " label_keys[i] ": \"" label_values[i] "\""
+                }
+            }
+            inserted=1
+        }
+        { print }
+    ' "${yaml}" > "${tmp}"
+    mv "${tmp}" "${yaml}"
+}
+
+patch_yaml_annotations() {
+    local yaml="$1"
+    local annotations="${2:-}"
+    local tmp="${yaml}.annotations-tmp"
+
+    [ -n "${annotations}" ] || return 0
+
+    awk -v annotations="${annotations}" '
+        BEGIN {
+            n = split(annotations, pairs, ",")
+            for (i = 1; i <= n; i++) {
+                if (pairs[i] == "") {
+                    continue
+                }
+                pos = index(pairs[i], "=")
+                if (pos > 0) {
+                    annotation_keys[++annotation_count] = substr(pairs[i], 1, pos - 1)
+                    annotation_values[annotation_count] = substr(pairs[i], pos + 1)
+                }
+            }
+        }
+        /^  annotations:/ {
+            print
+            for (i = 1; i <= annotation_count; i++) {
+                print "    " annotation_keys[i] ": \"" annotation_values[i] "\""
+            }
+            inserted=1
+            next
+        }
+        { print }
+        END {
+            if (inserted != 1 && annotation_count > 0) {
+                exit 1
+            }
+        }
+    ' "${yaml}" > "${tmp}"
+    mv "${tmp}" "${yaml}"
+}
+
+prepare_e2b_pod_yaml() {
+    local pod_name="$1"
+    local out_yaml="$2"
+    local labels="${3:-}"
+    local annotations="${4:-}"
+    local refresh_script="${REFRESH_SCRIPT:-${SCRIPT_DIR_COMMON}/lib/refresh_build_id.sh}"
+    local base_yaml="${E2B_BASE_POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
+
+    if [ "${E2B_SKIP_BUILD:-0}" = "1" ] && [ "${out_yaml}" != "${base_yaml}" ] && [ -f "${base_yaml}" ]; then
+        cp "${base_yaml}" "${out_yaml}"
+    fi
+
+    POD_YAML="${out_yaml}" refresh_or_reuse_e2b_yaml "${refresh_script}" "${pod_name}" "${out_yaml}" || return 1
+    patch_yaml_metadata_labels "${out_yaml}" "${labels}"
+    patch_yaml_annotations "${out_yaml}" "${annotations}"
+}
+
+prepare_default_busybox_pod_yaml() {
+    local pod_name="$1"
+    local out_yaml="$2"
+    local labels="${3:-}"
+    local client_image="${CLIENT_IMAGE:-docker.io/library/busybox:latest}"
+    local attach="${4:-0}"
+
+    {
+        printf 'apiVersion: v1\nkind: Pod\nmetadata:\n  name: %s\n' "${pod_name}"
+        if [ -n "${labels}" ]; then
+            printf '  labels:\n'
+            local item key value
+            IFS=',' read -r -a label_items <<< "${labels}"
+            for item in "${label_items[@]}"; do
+                [ -n "${item}" ] || continue
+                key="${item%%=*}"
+                value="${item#*=}"
+                printf '    %s: "%s"\n' "${key}" "${value}"
+            done
+        fi
+        printf 'spec:\n  restartPolicy: Never\n  containers:\n    - name: app\n      image: %s\n      imagePullPolicy: IfNotPresent\n' "${client_image}"
+        if [ "${attach}" = "1" ]; then
+            printf '      stdin: true\n      tty: true\n      command: ["sh"]\n'
+        else
+            printf '      command: ["sleep", "3600"]\n'
+        fi
+    } > "${out_yaml}"
+}
+
 refresh_or_reuse_e2b_yaml() {
     local refresh_script="$1"
     local pod_name="$2"
@@ -368,6 +534,68 @@ kubectl_exec_output_with_retry() {
         fi
         sleep 1
     done
+}
+
+normalize_timeout_seconds() {
+    local timeout="${1:-120}"
+    timeout="${timeout%s}"
+    echo "${timeout}"
+}
+
+wait_pod_ready() {
+    local pod_name="$1"
+    local timeout_seconds
+    timeout_seconds=$(normalize_timeout_seconds "${2:-120}")
+
+    if kubectl wait --for=condition=Ready "pod/${pod_name}" --timeout="${timeout_seconds}s" >&2; then
+        log_pass "Pod 已 Ready: ${pod_name}"
+        return 0
+    fi
+
+    log_fail "Pod 未在 ${timeout_seconds}s 内 Ready: ${pod_name}"
+    kubectl describe pod "${pod_name}" >&2 || true
+    return 1
+}
+
+wait_pod_deleted() {
+    local pod_name="$1"
+    local timeout_seconds
+    timeout_seconds=$(normalize_timeout_seconds "${2:-60}")
+
+    for _ in $(seq 1 "${timeout_seconds}"); do
+        if ! kubectl get pod "${pod_name}" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+delete_pod_and_wait_gone() {
+    local pod_name="$1"
+    local timeout_seconds
+    timeout_seconds=$(normalize_timeout_seconds "${2:-60}")
+
+    kubectl delete pod "${pod_name}" --force --grace-period=0 --ignore-not-found >&2 || true
+    wait_pod_deleted "${pod_name}" "${timeout_seconds}"
+}
+
+pod_uid() {
+    kubectl get pod "$1" -o jsonpath='{.metadata.uid}' 2>/dev/null || true
+}
+
+pod_container_id() {
+    local pod_name="$1"
+    local uid="${2:-}"
+    local cid
+    cid=$(kubectl get pod "${pod_name}" -o jsonpath='{.status.containerStatuses[0].containerID}' 2>/dev/null | sed -E 's#^[^:]+://##' || true)
+    if [ -n "${cid}" ]; then
+        echo "${cid}"
+        return 0
+    fi
+    if [ -n "${uid}" ]; then
+        echo "${uid}-c"
+    fi
 }
 
 android_pgid_from_state() {

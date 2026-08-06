@@ -19,7 +19,8 @@ log_section "10 — Attach 能力 kubelet 验证"
 
 #==================== 配置 ====================#
 POD_NAME="${POD_NAME:-e2b-attach-test}"
-POD_YAML="/tmp/e2b-kubelet-pod.yaml"
+BASE_POD_YAML="${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
+POD_YAML="${WORK_POD_YAML:-/tmp/e2b-attach-kubelet-pod.yaml}"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 
 #==================== 前置检查 ====================#
@@ -40,8 +41,10 @@ log_step "1.2 清理旧 Pod"
 
 if kubectl get pod "${POD_NAME}" > /dev/null 2>&1; then
     log_info "删除已存在的 Pod: ${POD_NAME}"
-    kubectl delete pod "${POD_NAME}" --force --grace-period=0 >&2 || true
-    sleep 3
+    delete_pod_and_wait_gone "${POD_NAME}" 90 || {
+        log_fail "旧 Pod 未在 90s 内删除: ${POD_NAME}"
+        exit 1
+    }
     log_pass "旧 Pod 已删除"
 else
     log_skip "无旧 Pod 需清理"
@@ -53,7 +56,7 @@ fi
 #==================== 刷新 build_id ====================#
 log_step "2.1 刷新 build_id（每次创建 Pod 前必须执行）"
 
-if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${POD_NAME}" "${POD_YAML}"; then
+if ! E2B_BASE_POD_YAML="${BASE_POD_YAML}" prepare_e2b_pod_yaml "${POD_NAME}" "${POD_YAML}"; then
     exit 1
 fi
 
@@ -180,19 +183,21 @@ log_info "kubectl attach 输出:\n${attach_result}"
 if echo "${attach_result}" | grep -q "attach_test_ok"; then
     log_pass "kubectl attach 成功，收到命令回显"
 else
-    # attach 输出可能只有提示符或控制字符，只要无明显错误也算通过
     if echo "${attach_result}" | grep -qiE "error|failed|unable"; then
         log_fail "kubectl attach 失败: ${attach_result}"
     else
-        log_pass "kubectl attach 连接成功（输出中未检测到 attach_test_ok，但无错误）"
+        log_fail "kubectl attach 未收到 attach_test_ok 回显，输出中无明显错误但不能判定通过"
     fi
 fi
 
 #==================== 清理 ====================#
 log_step "清理资源"
 
-kubectl delete pod "${POD_NAME}" --force --grace-period=0 >&2 || true
-log_info "Pod 已删除"
+delete_pod_and_wait_gone "${POD_NAME}" 90 || log_fail "Pod 未在 90s 内删除: ${POD_NAME}"
+log_info "Pod 删除流程完成"
 
 print_summary
-exit 0
+if [ "${FAIL_COUNT}" -eq 0 ]; then
+    exit 0
+fi
+exit 1

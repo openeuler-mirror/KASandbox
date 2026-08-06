@@ -37,7 +37,6 @@ log_pass "宿主机 curl 可用"
 
 log_step "1.2 清理旧资源"
 cleanup
-sleep 2
 log_pass "旧资源已清理"
 
 log_step "2.1 刷新 build_id 并生成带 label 的 E2B Pod YAML"
@@ -60,13 +59,14 @@ if [ "${HOST_CODE}" = "204" ]; then
 else
     log_fail "宿主机访问 PodIP:${ENVD_PORT}/health 失败，HTTP ${HOST_CODE}"
     cat /tmp/cni-host-curl.err >&2 || true
+    exit 1
 fi
 
 log_step "3.2 从普通 Pod 直接访问 E2B PodIP"
-expect_http_204_from_client "${CLIENT_POD}" "http://${POD_IP}:${ENVD_PORT}/health" "client Pod -> E2B PodIP" || true
+expect_http_204_from_client "${CLIENT_POD}" "http://${POD_IP}:${ENVD_PORT}/health" "client Pod -> E2B PodIP" || exit 1
 
 log_step "3.3 从普通 Pod 通过 Service DNS 访问 E2B"
-expect_http_204_from_client "${CLIENT_POD}" "http://${SVC_NAME}:${ENVD_PORT}/health" "client Pod -> Service DNS" || true
+expect_http_204_from_client "${CLIENT_POD}" "http://${SVC_NAME}:${ENVD_PORT}/health" "client Pod -> Service DNS" || exit 1
 
 log_step "3.4 验证 Service DNS 解析"
 DNS_OUTPUT=$(client_dns_lookup "${CLIENT_POD}" "${SVC_NAME}.default.svc.cluster.local" || true)
@@ -88,7 +88,6 @@ fi
 
 log_step "4.1 删除资源"
 cleanup
-sleep 3
 log_pass "资源删除请求已提交"
 
 print_summary

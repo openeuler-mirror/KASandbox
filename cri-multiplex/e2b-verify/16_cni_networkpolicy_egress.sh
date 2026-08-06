@@ -76,7 +76,6 @@ require_cni_behavior_prereqs || exit 1
 
 log_step "1.2 清理旧资源"
 cleanup
-sleep 2
 log_pass "旧资源已清理"
 
 log_step "2.1 创建 E2B CNI Pod"
@@ -185,11 +184,19 @@ spec:
     - Egress
 EOF
 kubectl apply -f "/tmp/${DENY_POLICY}.yaml" >&2
-sleep 8
 log_pass "deny-all egress policy 已应用"
 
-DENY_CODE=$(e2b_http_code "${TARGET_URL}")
-if [ "${DENY_CODE}" = "000" ]; then
+DENY_CODE=""
+DENY_BLOCKED=0
+for _ in $(seq 1 30); do
+    DENY_CODE=$(e2b_http_code "${TARGET_URL}")
+    if [ "${DENY_CODE}" = "000" ]; then
+        DENY_BLOCKED=1
+        break
+    fi
+    sleep 1
+done
+if [ "${DENY_BLOCKED}" = "1" ]; then
     log_pass "deny-all egress 已阻断 E2B VM -> target"
 else
     log_skip "deny-all egress 未阻断，HTTP ${DENY_CODE}，当前 CNI POC 暂不承诺 egress NetworkPolicy"
@@ -197,7 +204,6 @@ fi
 
 log_step "5.1 删除资源"
 cleanup
-sleep 3
 log_pass "资源删除请求已提交"
 
 print_summary
