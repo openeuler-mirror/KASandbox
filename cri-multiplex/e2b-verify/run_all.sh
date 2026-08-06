@@ -19,6 +19,8 @@ log_section "cri-multiplex grpc_e2b 全接口自动化验证"
 #==================== 参数解析 ====================#
 SKIP_SETUP=0
 ONLY=""
+LOG_DIR="${E2B_VERIFY_LOG_DIR:-/tmp}"
+SHARED_E2B_FIXTURE_READY=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -76,6 +78,48 @@ TOTAL_FAIL=0
 TOTAL_SKIP=0
 MATCHED=0
 RESULTS=()
+mkdir -p "${LOG_DIR}"
+
+parse_count_from_log() {
+    local log_file="$1"
+    local key="$2"
+    grep -aoP "${key}:\\s*\\K[0-9]+" "${log_file}" 2>/dev/null | tail -1 || echo "0"
+}
+
+run_streamed() {
+    local log_file="$1"
+    shift
+    local restore_errexit=0
+    if [[ $- == *e* ]]; then
+        restore_errexit=1
+    fi
+
+    : > "${log_file}"
+    set +e
+    "$@" 2>&1 | tee "${log_file}"
+    local exit_code=${PIPESTATUS[0]}
+    if [ "${restore_errexit}" = "1" ]; then
+        set -e
+    else
+        set +e
+    fi
+    return "${exit_code}"
+}
+
+prepare_shared_e2b_fixture_once() {
+    if [ "${SHARED_E2B_FIXTURE_READY}" = "1" ]; then
+        return 0
+    fi
+
+    log_info "准备 07 及之后用例共享 E2B fixture: /tmp/e2b-kubelet-pod.yaml"
+    E2B_SKIP_BUILD=0 E2B_YAML_COUNT=0 refresh_or_reuse_e2b_yaml \
+        "${SCRIPT_DIR}/lib/refresh_build_id.sh" \
+        "e2b-kubelet-test" \
+        "/tmp/e2b-kubelet-pod.yaml" || return 1
+    export E2B_SKIP_BUILD=1
+    export E2B_BASE_POD_YAML=/tmp/e2b-kubelet-pod.yaml
+    SHARED_E2B_FIXTURE_READY=1
+}
 
 for entry in "${SCRIPTS[@]}"; do
     IFS='|' read -r num desc path <<< "${entry}"
@@ -102,12 +146,8 @@ for entry in "${SCRIPTS[@]}"; do
         case "${num}" in
             02|04|05|06)
                 log_info "切换 cri-multiplex 到非 CNI 模式，用于 crictl 直连用例 ..."
-                set +e
-                switch_output=$(CNI_ENABLED=0 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" 2>&1)
-                switch_code=$?
-                set -e
-                echo "${switch_output}"
-                if [ ${switch_code} -ne 0 ]; then
+                switch_log="${LOG_DIR}/e2b-verify-switch-non-cni.log"
+                if ! run_streamed "${switch_log}" env CNI_ENABLED=0 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh"; then
                     RESULTS+=("01-non-cni|切换 cri-multiplex 到非 CNI 模式|FAIL(0/0/0)")
                     TOTAL_FAIL=$((TOTAL_FAIL+1))
                     continue
@@ -115,12 +155,8 @@ for entry in "${SCRIPTS[@]}"; do
                 ;;
             07|08|09|10|11|12|13|14|15|16|17|21)
                 log_info "切换 cri-multiplex 到 CNI+Android runtime 模式，用于 07 及之后用例 ..."
-                set +e
-                switch_output=$(start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式" 2>&1)
-                switch_code=$?
-                set -e
-                echo "${switch_output}"
-                if [ ${switch_code} -ne 0 ]; then
+                switch_log="${LOG_DIR}/e2b-verify-switch-cni-android.log"
+                if ! run_streamed "${switch_log}" start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式"; then
                     RESULTS+=("01-cni-android|切换 cri-multiplex 到 CNI+Android runtime 模式|FAIL(0/0/0)")
                     TOTAL_FAIL=$((TOTAL_FAIL+1))
                     continue
@@ -135,36 +171,35 @@ for entry in "${SCRIPTS[@]}"; do
             env_args=(CNI_ENABLED=0 E2B_FORCE_RESTART=1)
         elif [ "${num}" = "07" ]; then
             log_info "切换 cri-multiplex 到 CNI+Android runtime 模式，用于 07 及之后用例 ..."
-            set +e
-            switch_output=$(start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式" 2>&1)
-            switch_code=$?
-            set -e
-            echo "${switch_output}"
-            if [ ${switch_code} -ne 0 ]; then
+            switch_log="${LOG_DIR}/e2b-verify-switch-cni-android.log"
+            if ! run_streamed "${switch_log}" start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式"; then
                 RESULTS+=("01-cni-android|切换 cri-multiplex 到 CNI+Android runtime 模式|FAIL(0/0/0)")
+                TOTAL_FAIL=$((TOTAL_FAIL+1))
+                continue
+            fi
+            if ! prepare_shared_e2b_fixture_once; then
+                RESULTS+=("fixture-e2b|准备 07 及之后共享 E2B fixture|FAIL(0/0/0)")
                 TOTAL_FAIL=$((TOTAL_FAIL+1))
                 continue
             fi
         fi
     fi
 
-    # 执行子脚本，捕获退出码
+    # 执行子脚本，实时输出到控制台，同时保留完整日志便于定位卡住/失败。
+    log_file="${LOG_DIR}/e2b-verify-${num}.log"
     set +e
     if [ ${#env_args[@]} -gt 0 ]; then
-        script_output=$(env "${env_args[@]}" "${path}" 2>&1)
+        run_streamed "${log_file}" env "${env_args[@]}" "${path}"
     else
-        script_output=$("${path}" 2>&1)
+        run_streamed "${log_file}" "${path}"
     fi
     exit_code=$?
     set -e
 
-    # 输出子脚本内容
-    echo "${script_output}"
-
     # 解析子脚本的 PASS/FAIL/SKIP 计数
-    sub_pass=$(echo "${script_output}" | grep -oP 'PASS:\s*\K[0-9]+' | tail -1 || echo "0")
-    sub_fail=$(echo "${script_output}" | grep -oP 'FAIL:\s*\K[0-9]+' | tail -1 || echo "0")
-    sub_skip=$(echo "${script_output}" | grep -oP 'SKIP:\s*\K[0-9]+' | tail -1 || echo "0")
+    sub_pass=$(parse_count_from_log "${log_file}" "PASS")
+    sub_fail=$(parse_count_from_log "${log_file}" "FAIL")
+    sub_skip=$(parse_count_from_log "${log_file}" "SKIP")
 
     TOTAL_PASS=$((TOTAL_PASS + sub_pass))
     TOTAL_FAIL=$((TOTAL_FAIL + sub_fail))

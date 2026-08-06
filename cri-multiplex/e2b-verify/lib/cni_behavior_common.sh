@@ -175,6 +175,51 @@ expect_blocked_from_client() {
     return 2
 }
 
+wait_http_204_from_client() {
+    local client_pod="$1"
+    local url="$2"
+    local desc="$3"
+    local timeout_seconds="${4:-30}"
+    local deadline code
+
+    deadline=$(( $(date +%s) + timeout_seconds ))
+    while true; do
+        code=$(client_curl_code "${client_pod}" "${url}")
+        if [ "${code}" = "204" ]; then
+            log_pass "${desc}: HTTP ${code}"
+            return 0
+        fi
+        if [ "$(date +%s)" -ge "${deadline}" ]; then
+            log_fail "${desc} 失败: HTTP ${code}"
+            cat /tmp/cni-client-curl.err >&2 || true
+            return 1
+        fi
+        sleep 1
+    done
+}
+
+wait_blocked_from_client() {
+    local client_pod="$1"
+    local url="$2"
+    local desc="$3"
+    local timeout_seconds="${4:-30}"
+    local deadline code
+
+    deadline=$(( $(date +%s) + timeout_seconds ))
+    while true; do
+        code=$(client_curl_code "${client_pod}" "${url}")
+        if [ "${code}" = "000" ]; then
+            log_pass "${desc}: 已阻断"
+            return 0
+        fi
+        if [ "$(date +%s)" -ge "${deadline}" ]; then
+            log_skip "${desc}: 未阻断，HTTP ${code}，当前 CNI POC 暂不承诺该 NetworkPolicy 行为"
+            return 2
+        fi
+        sleep 1
+    done
+}
+
 create_e2b_service() {
     local svc_name="$1"
     local app_label="$2"

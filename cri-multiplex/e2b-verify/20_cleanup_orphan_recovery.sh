@@ -28,17 +28,33 @@ ORCH_PROTO="${MULTIPLEX_DIR}/proto/orchestrator.proto"
 E2B_POD_TEMPLATE="${E2B_POD_TEMPLATE:-/tmp/e2b-kubelet-pod.yaml}"
 ANDROID_WAIT_TIMEOUT="${ANDROID_WAIT_TIMEOUT:-360s}"
 BROKEN_CNI_CONF_DIR="${BROKEN_CNI_CONF_DIR:-/tmp/cri-multiplex-20-empty-cni}"
+PRESERVE_ON_FAIL="${PRESERVE_ON_FAIL:-1}"
 
 cleanup_all() {
-    local pids
-    pids=$(cri_multiplex_pids)
-    [ -z "${pids}" ] || kill ${pids} >/dev/null 2>&1 || true
-    rm -f "${SOCKET}" || true
+    local rc=$?
     kubectl delete pod -l cri-multiplex-test=20 --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
     rm -f /tmp/cri-multiplex-20-*.yaml /tmp/cri-multiplex-20-*.credentials.json || true
     iptables -t filter -D OUTPUT -p tcp -d 127.0.0.1 --dport 1 \
         -m comment --comment "${NONOWNER_COMMENT}" -j ACCEPT >/dev/null 2>&1 || true
+
+    if [ "${rc}" -ne 0 ] && [ "${PRESERVE_ON_FAIL}" = "1" ]; then
+        log_info "20 号失败，保留现场用于定位："
+        log_info "  state-dir: ${STATE_DIR}"
+        log_info "  android-state-dir: ${ANDROID_STATE_DIR}"
+        log_info "  cri-multiplex log: /tmp/cri-multiplex.log"
+        log_info "  socket: ${SOCKET}"
+        return
+    fi
+
+    stop_cri_multiplex 10 >/dev/null 2>&1 || true
     rm -rf "${STATE_DIR}" "${ANDROID_STATE_DIR}" "${BROKEN_CNI_CONF_DIR}" || true
+
+    if [ "${rc}" -eq 0 ]; then
+        STATE_DIR=/var/lib/cri-multiplex/state \
+        ANDROID_STATE_DIR=/var/lib/cri-multiplex/android \
+        START_CNI_ANDROID_COUNT=0 \
+        start_cni_android_multiplex "20 号完成后恢复 cri-multiplex 标准 CNI+Android runtime 模式" >/dev/null 2>&1 || true
+    fi
 }
 trap cleanup_all EXIT
 
@@ -66,14 +82,7 @@ start_cleanup_multiplex() {
 }
 
 stop_test_multiplex() {
-    local pids
-    pids=$(cri_multiplex_pids)
-    [ -z "${pids}" ] || kill ${pids} >/dev/null 2>&1 || true
-    for _ in $(seq 1 10); do
-        [ -z "$(cri_multiplex_pids)" ] && break
-        sleep 1
-    done
-    rm -f "${SOCKET}" || true
+    stop_cri_multiplex 10
 }
 
 assert_empty_response() {
@@ -425,13 +434,7 @@ remove_sandbox() {
 delete_kube_pod() {
     local name="$1"
     kubectl delete pod "${name}" --wait=true --timeout=120s >&2 || true
-    for _ in $(seq 1 60); do
-        if ! kubectl get pod "${name}" >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 1
-    done
-    return 1
+    wait_pod_deleted "${name}" 60
 }
 
 log_step "1. 前置检查（20 号默认不构建）"
