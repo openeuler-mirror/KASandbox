@@ -114,6 +114,8 @@ message SandboxCreateResponse {
   string host_ip = 2;
   // Guest operating system family resolved from the template metadata.
   string os_type = 3;
+  // Android guest version resolved from the template metadata.
+  string android_version = 4;
 }
 
 message SandboxUpdateRequest {
@@ -148,6 +150,8 @@ message RunningSandbox {
   google.protobuf.Timestamp end_time = 4;
   // Guest operating system family used by the running sandbox.
   string os_type = 5;
+  // Android guest version used by the running sandbox.
+  string android_version = 6;
 }
 
 message SandboxListResponse {

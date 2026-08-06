@@ -372,15 +372,16 @@ func (f *Factory) CreateSandbox(
 	var androidServices *hostservice.AndroidServices
 	if metadata.OSType(config.VMMConfig.OsType) == metadata.OSTypeAndroid {
 		androidServices, err = hostservice.StartAndroidServices(ctx, hostservice.AndroidServicesParams{
-			Config:     f.config,
-			CIDPool:    f.cidPool,
-			Process:    vmmHandle,
-			Cleanup:    cleanup,
-			Mux:        f.vsockMux,
-			SandboxID:  runtime.SandboxID,
-			SandboxDir: sandboxFiles.SandboxHostDir(),
-			NetNSName:  ips.NamespaceID(),
-			MobileTap:  ips.ExtraTapName(),
+			Config:         f.config,
+			CIDPool:        f.cidPool,
+			Process:        vmmHandle,
+			Cleanup:        cleanup,
+			Mux:            f.vsockMux,
+			SandboxID:      runtime.SandboxID,
+			SandboxDir:     sandboxFiles.SandboxHostDir(),
+			NetNSName:      ips.NamespaceID(),
+			MobileTap:      ips.ExtraTapName(),
+			AndroidVersion: string(config.VMMConfig.AndroidVersion),
 		})
 		if err != nil {
 			return nil, err
@@ -691,6 +692,14 @@ func (f *Factory) ResumeSandbox(
 	}
 	config.VMMConfig.Type = metadataVMM
 	config.VMMConfig.OsType = metadataOS
+	metadataAndroidVersion, err := vmm.ParseAndroidVersion(meta.Template.AndroidVersion)
+	if err != nil {
+		return nil, fmt.Errorf("invalid template android version metadata: %w", err)
+	}
+	if err := vmm.ValidateAndroidVersion(metadataOS, metadataAndroidVersion); err != nil {
+		return nil, fmt.Errorf("invalid template android version metadata: %w", err)
+	}
+	config.VMMConfig.AndroidVersion = metadataAndroidVersion
 	vmmFactory, vmmErr := newVMMFactory(config.VMMConfig.Backend())
 	if vmmErr != nil {
 		return nil, vmmErr
@@ -730,15 +739,16 @@ func (f *Factory) ResumeSandbox(
 	var androidServices *hostservice.AndroidServices
 	if metadata.OSType(meta.Template.OsType) == metadata.OSTypeAndroid {
 		androidServices, err = hostservice.StartAndroidServices(ctx, hostservice.AndroidServicesParams{
-			Config:     f.config,
-			CIDPool:    f.cidPool,
-			Process:    vmmHandle,
-			Cleanup:    cleanup,
-			Mux:        f.vsockMux,
-			SandboxID:  runtime.SandboxID,
-			SandboxDir: sandboxFiles.SandboxHostDir(),
-			NetNSName:  ips.NamespaceID(),
-			MobileTap:  ips.ExtraTapName(),
+			Config:         f.config,
+			CIDPool:        f.cidPool,
+			Process:        vmmHandle,
+			Cleanup:        cleanup,
+			Mux:            f.vsockMux,
+			SandboxID:      runtime.SandboxID,
+			SandboxDir:     sandboxFiles.SandboxHostDir(),
+			NetNSName:      ips.NamespaceID(),
+			MobileTap:      ips.ExtraTapName(),
+			AndroidVersion: string(config.VMMConfig.AndroidVersion),
 		})
 		if err != nil {
 			return nil, err

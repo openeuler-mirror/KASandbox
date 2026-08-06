@@ -135,6 +135,7 @@ func (sb *StepBuilder) Layer(
 		FirecrackerVersion: sb.Config.FirecrackerVersion,
 		VMMType:            string(vmm.BackendType(sb.Config.VMMType).OrDefault()),
 		OsType:             sourceLayer.Metadata.Template.OsType,
+		AndroidVersion:     sourceLayer.Metadata.Template.AndroidVersion,
 		EnvdVersion:        sourceLayer.Metadata.Template.EnvdVersion,
 	}
 
@@ -186,10 +187,11 @@ func (sb *StepBuilder) Build(
 		},
 
 		VMMConfig: vmm.VMMConfig{
-			Type:          vmm.BackendType(sb.Config.VMMType).OrDefault(),
-			KernelVersion: sb.Config.KernelVersion,
-			VMMVersion:    sb.Config.FirecrackerVersion,
-			OsType:        osType,
+			Type:           vmm.BackendType(sb.Config.VMMType).OrDefault(),
+			KernelVersion:  sb.Config.KernelVersion,
+			VMMVersion:     sb.Config.FirecrackerVersion,
+			OsType:         osType,
+			AndroidVersion: sb.Config.AndroidVersion,
 		},
 	}
 

@@ -12,11 +12,13 @@ const ConfigServerVsockPort uint32 = 6800
 
 func BuildConfigServerService(
 	config cfg.BuilderConfig,
+	androidVersion string,
 	cuttlefishConfigPath string,
 	netNSName string,
 	listener *UnixListener,
 ) (Service, error) {
-	binaryPath := filepath.Join(config.CvdHostPackageDir, "bin", "config_server")
+	hostPackageDir := config.CvdHostPackageDirForVersion(androidVersion)
+	binaryPath := filepath.Join(hostPackageDir, "bin", "config_server")
 	if _, err := os.Stat(binaryPath); err != nil {
 		return Service{}, fmt.Errorf("config_server binary not found at %s: %w", binaryPath, err)
 	}
@@ -33,7 +35,7 @@ func BuildConfigServerService(
 		Binary: binaryPath,
 		Args:   []string{"-server_fd=3"},
 		Env: []string{
-			fmt.Sprintf("HOME=%s", config.CvdHostPackageDir),
+			fmt.Sprintf("HOME=%s", hostPackageDir),
 			fmt.Sprintf("CUTTLEFISH_CONFIG_FILE=%s", cuttlefishConfigPath),
 			"CUTTLEFISH_INSTANCE=1",
 		},

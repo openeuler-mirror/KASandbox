@@ -25,13 +25,28 @@ type BuilderConfig struct {
 	SandboxDir                 string        `env:"SANDBOX_DIR"              envDefault:"/fc-vm"`
 	SharedChunkCacheDir        string        `env:"SHARED_CHUNK_CACHE_PATH"`
 	TemplatesDir               string        `env:"TEMPLATES_DIR,expand"     envDefault:"${ORCHESTRATOR_BASE_PATH}/build-templates"`
-	FirmwareDir                string        `env:"FIRMWARE_DIR"             envDefault:"/firmware"`
-	CvdHostPackageDir          string        `env:"CVD_HOST_PACKAGE_DIR"     envDefault:"/cvd-host_package"`
+	FirmwarePackagesRoot       string        `env:"FIRMWARE_PACKAGES_ROOT" envDefault:"/firmware"`
+	CvdHostPackagesRoot        string        `env:"CVD_HOST_PACKAGES_ROOT" envDefault:"/cvd-host-packages"`
 	DefaultCacheDir            string        `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
 	ReadyCheckTimeout          time.Duration `env:"READY_CHECK_TIMEOUT"      envDefault:"30s"`
 
 	StorageConfig storage.Config
 	NetworkConfig network.Config
+}
+
+// CvdHostPackageDirForVersion resolves the Cuttlefish host package directory
+// for the given Android version: <CvdHostPackagesRoot>/android-<version>.
+// Only multi-version mode is supported; every version lives in its own
+// android-<version> subdirectory under the root.
+func (c BuilderConfig) CvdHostPackageDirForVersion(version string) string {
+	return filepath.Join(c.CvdHostPackagesRoot, "android-"+version)
+}
+
+// FirmwareDirForVersion resolves the firmware directory for the given
+// Android version: <FirmwarePackagesRoot>/android-<version>. Only
+// multi-version mode is supported.
+func (c BuilderConfig) FirmwareDirForVersion(version string) string {
+	return filepath.Join(c.FirmwarePackagesRoot, "android-"+version)
 }
 
 func makePathsAbsolute(c *BuilderConfig) error {
@@ -49,8 +64,8 @@ func makePathsAbsolute(c *BuilderConfig) error {
 		&c.StorageConfig.SnapshotCacheDir,
 		&c.StorageConfig.TemplateCacheDir,
 		&c.TemplatesDir,
-		&c.FirmwareDir,
-		&c.CvdHostPackageDir,
+		&c.FirmwarePackagesRoot,
+		&c.CvdHostPackagesRoot,
 	} {
 		dir := *item
 

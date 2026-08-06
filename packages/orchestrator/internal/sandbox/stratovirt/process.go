@@ -108,12 +108,12 @@ func NewProcess(
 	}
 
 	if versions.OsType.OrDefault() == vmm.OsWindows {
-		_, err := os.Stat(filepath.Join(config.FirmwareDir, windowsUEFIFirmwareFile))
+		_, err := os.Stat(filepath.Join(config.FirmwarePackagesRoot, windowsUEFIFirmwareFile))
 		if err != nil {
 			return nil, fmt.Errorf("error stating UEFI firmware: %w", err)
 		}
 	} else if versions.OsType.OrDefault() == vmm.OsAndroid {
-		androidBootloaderPath := filepath.Join(config.FirmwareDir, androidBootloaderFile)
+		androidBootloaderPath := filepath.Join(config.FirmwareDirForVersion(string(versions.AndroidVersion)), androidBootloaderFile)
 		if _, err := os.Stat(androidBootloaderPath); err != nil {
 			return nil, fmt.Errorf("error stating Android bootloader %q: %w", androidBootloaderPath, err)
 		}

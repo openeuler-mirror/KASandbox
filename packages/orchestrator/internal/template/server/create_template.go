@@ -33,6 +33,14 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 		return nil, fmt.Errorf("invalid OS/VMM configuration: %w", err)
 	}
 
+	androidVersion, err := vmm.ParseAndroidVersion(cfg.GetAndroidVersion())
+	if err != nil {
+		return nil, fmt.Errorf("invalid android version: %w", err)
+	}
+	if err := vmm.ValidateAndroidVersion(osType, androidVersion); err != nil {
+		return nil, fmt.Errorf("invalid android version: %w", err)
+	}
+
 	hugePages := cfg.GetHugePages()
 	if vmmType == vmm.BackendStratoVirt && hugePages {
 		s.buildLogger.Warn(ctx, "HugePages are not supported by StratoVirt; disabling HugePages",
@@ -99,6 +107,7 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 		FirecrackerVersion:   cfg.GetFirecrackerVersion(),
 		VMMType:              string(vmmType),
 		OsType:               osType,
+		AndroidVersion:       androidVersion,
 	}
 
 	logs := buildlogger.NewLogEntryLogger()

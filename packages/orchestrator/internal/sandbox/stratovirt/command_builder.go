@@ -141,24 +141,28 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 		guestDiskPaths[i] = filepath.Join(b.config.SandboxDir, fmt.Sprintf("android-disk-%d.raw", i))
 		fmt.Fprintf(&preamble, "ln -s %s %s &&\n", files.SandboxCacheDiskLinkPath(b.config.StorageConfig, name), guestDiskPaths[i])
 	}
-	pipeDir := filepath.Join(b.config.SandboxDir, "android-pipes")
+	// pipeDir lives under SandboxHostDir because stratovirt's unshare -m
+	// mounts a tmpfs over SandboxDir, which would hide FIFOs from secure_env
+	// in the orchestrator namespace.
+	pipeDir := filepath.Join(files.SandboxHostDir(), "android-pipes")
 	fmt.Fprintf(&preamble, "mkdir -p %s &&\n", pipeDir)
-	pipeNames := []string{"keymaster_fifo_vm", "gatekeeper_fifo_vm", "bt_fifo_vm", "gnsshvc_fifo_vm", "locationhvc_fifo_vm", "uwb_fifo_vm", "oemlock_fifo_vm", "keymint_fifo_vm", "nfc_fifo_vm", "sensors_control_fifo_vm", "sensors_data_fifo_vm"}
+	// Create all FIFOs referenced by pipeByPort: stratovirt's -chardev pipe
+	// opens <name>.in/.out at startup and aborts if they're missing. Port<->FIFO
+	// assignment is e2b-defined (matches upstream cuttlefish only for the stable
+	// ports 3/4/9/10/11); see buildAndroidVirtconsoleArgs.
+	pipeNames := []string{"keymaster_fifo_vm", "gatekeeper_fifo_vm", "oemlock_fifo_vm", "keymint_fifo_vm", "bt_fifo_vm", "gnsshvc_fifo_vm", "locationhvc_fifo_vm", "uwb_fifo_vm", "nfc_fifo_vm", "sensors_control_fifo_vm", "sensors_data_fifo_vm"}
 	for _, name := range pipeNames {
 		path := filepath.Join(pipeDir, name)
 		fmt.Fprintf(&preamble, "mkfifo -m 600 %s.in %s.out 2>/dev/null || true; ", path, path)
 	}
 	preamble.WriteString("\n")
 
-	// Relocate the Android serial and logcat logs from /tmp to /tmp/templates so
-	// all build-time logs land alongside the StratoVirt -D log.
+	// Co-locate serial and logcat logs with the StratoVirt -D log.
 	serialLogPath := filepath.Join("/tmp/templates", filepath.Base(files.SandboxSerialLogPath()))
 	logcatPath := filepath.Join("/tmp/templates", filepath.Base(files.SandboxAndroidLogcatPath()))
 
-	// Pre-compute the dynamic VMM argument groups so the main command can be
-	// assembled via a single fmt.Sprintf template, mirroring buildWindowsCommand.
 	diskArgs := buildAndroidDiskArgs(guestDiskPaths)
-	virtconsoleArgs := buildAndroidVirtconsoleArgs(pipeDir, serialLogPath, logcatPath)
+	virtconsoleArgs := buildAndroidVirtconsoleArgs(pipeDir, logcatPath)
 
 	vsockArg := ""
 	if vsockGuestCID > 0 {
@@ -197,13 +201,13 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 		memoryMB,
 		memoryMB+4,
 		slot.Idx,
-		filepath.Join(b.config.FirmwareDir, androidBootloaderFile),
+		filepath.Join(b.config.FirmwareDirForVersion(string(versions.AndroidVersion)), androidBootloaderFile),
 		diskArgs,
 		virtconsoleArgs,
 		vsockArg,
-		slot.ExtraTapName(), // hostnet0 (netdev0) ifname = cvd-mtap
-		slot.TapName(),      // hostnet1 (netdev1) ifname = tap0
-		slot.VpeerName(),    // hostnet1 (netdev1) id = "eth0" (used by MMDS)
+		slot.ExtraTapName(), // netdev0 ifname = cvd-mtap
+		slot.TapName(),      // netdev1 ifname = tap0
+		slot.VpeerName(),    // netdev1 id = eth0 (MMDS)
 		qmpSocket,
 		serialLogPath,
 		incomingArg,
@@ -213,9 +217,8 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 	return &CommandResult{Value: preamble.String() + cmd, RootfsPath: rootfsPath, QmpSocket: qmpSocket}
 }
 
-// buildAndroidDiskArgs renders the three Android data disks (os, persistent,
-// sdcard) as virtio-blk-pci devices. The first disk (os) gets bootindex=1 so
-// the guest boots from it.
+// buildAndroidDiskArgs renders the Android data disks (os/persistent/sdcard)
+// as virtio-blk-pci devices. Disk 0 gets bootindex=1 so the guest boots from it.
 func buildAndroidDiskArgs(guestDiskPaths []string) string {
 	var args strings.Builder
 	for i, path := range guestDiskPaths {
@@ -229,11 +232,11 @@ func buildAndroidDiskArgs(guestDiskPaths []string) string {
 	return args.String()
 }
 
-// buildAndroidVirtconsoleArgs renders the 31 virtio-serial ports used by the
-// Android HALs. Ports 0 and 2 capture the kernel serial log and logcat to
-// files; the ports listed in pipeByPort connect to FIFO pairs under pipeDir
-// for HAL host↔guest IPC; the rest are left null.
-func buildAndroidVirtconsoleArgs(pipeDir string, serialLogPath, logcatPath string) string {
+// buildAndroidVirtconsoleArgs renders the 31 virtio-serial ports for the
+// Android HALs. Port 0 uses a null backend (a file backend blocks U-Boot's
+// AVB handshake). Port 2 captures logcat to a file; pipeByPort ports connect
+// to FIFO pairs under pipeDir for HAL host↔guest IPC; the rest are null.
+func buildAndroidVirtconsoleArgs(pipeDir string, logcatPath string) string {
 	var args strings.Builder
 	pipeByPort := map[int]string{
 		3:  "keymaster_fifo_vm",
@@ -251,7 +254,7 @@ func buildAndroidVirtconsoleArgs(pipeDir string, serialLogPath, logcatPath strin
 	for port := 0; port < 31; port++ {
 		switch port {
 		case 0:
-			fmt.Fprintf(&args, "-chardev file,id=hvc0,path=%s -device virtconsole,id=hvc0,chardev=hvc0,nr=0 ", serialLogPath)
+			fmt.Fprintf(&args, "-chardev null,id=hvc0 -device virtconsole,id=hvc0,chardev=hvc0,nr=0 ")
 		case 2:
 			fmt.Fprintf(&args, "-chardev file,id=hvc2,path=%s -device virtconsole,id=hvc2,chardev=hvc2,nr=2 ", logcatPath)
 		default:
@@ -266,12 +269,9 @@ func buildAndroidVirtconsoleArgs(pipeDir string, serialLogPath, logcatPath strin
 }
 
 // buildWindowsCommand builds the StratoVirt invocation for a Windows guest.
-//
-// Unlike the Linux microvm path it boots from a UEFI pflash firmware (D7) rather
-// than a kernel, drives a raw disk (D6), and exposes a graphical console through
-// virtio-gpu + VNC with USB input. QMP is retained for MMDS injection and
-// snapshots. It still launches inside the sandbox network namespace so the proxy
-// and VNC listener stay isolated.
+// Unlike the Linux path it boots from UEFI pflash, drives a raw disk, and
+// exposes a graphical console via virtio-gpu + VNC. Launches in the sandbox
+// netns so the proxy and VNC listener stay isolated.
 func (b *CommandBuilder) buildWindowsCommand(
 	versions Config,
 	rootfsPath string,
@@ -307,7 +307,7 @@ func (b *CommandBuilder) buildWindowsCommand(
 		versions.StratoVirtPath(b.config),
 		machineType,
 		memArgs,
-		filepath.Join(b.config.FirmwareDir, windowsUEFIFirmwareFile),
+		filepath.Join(b.config.FirmwarePackagesRoot, windowsUEFIFirmwareFile),
 		rootfsPath,
 		slot.TapName(),
 		slot.VpeerName(), slot.TapMAC(),

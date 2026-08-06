@@ -21,6 +21,7 @@ type Config struct {
 	KernelVersion     string
 	StratoVirtVersion string
 	OsType            vmm.OsType
+	AndroidVersion    vmm.AndroidVersion
 }
 
 func (t Config) SandboxKernelDir() string {

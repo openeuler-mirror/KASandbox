@@ -91,6 +91,7 @@ type TemplateMetadata struct {
 	FirecrackerVersion string `json:"firecracker_version"`
 	VMMType            string `json:"vmm_type,omitempty"`
 	OsType             string `json:"os_type,omitempty"`
+	AndroidVersion     string `json:"android_version,omitempty"`
 	EnvdVersion        string `json:"envd_version,omitempty"`
 }
 

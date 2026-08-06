@@ -181,6 +181,7 @@ class TemplateType(TypedDict):
     fromImage: NotRequired[str]
     fromImageRaw: NotRequired[FromImageRaw]
     osType: NotRequired[OsType]
+    androidVersion: NotRequired[str]
     fromTemplate: NotRequired[str]
     fromImageRegistry: NotRequired[RegistryConfig]
     startCmd: NotRequired[str]

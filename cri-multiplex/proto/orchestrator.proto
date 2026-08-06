@@ -123,6 +123,7 @@ message SandboxCreateResponse {
   int32 modem_simulator_port = 5;
   int32 webrtc_http_port = 6;
   int32 webrtc_streaming_port = 7;
+  string android_version = 8;
 }
 
 message SandboxUpdateRequest {
@@ -157,6 +158,7 @@ message RunningSandbox {
   google.protobuf.Timestamp end_time = 4;
   // Guest operating system family used by the running sandbox.
   string os_type = 5;
+  string android_version = 6;
 }
 
 message SandboxListResponse {

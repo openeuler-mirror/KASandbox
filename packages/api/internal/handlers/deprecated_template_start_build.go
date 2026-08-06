@@ -205,6 +205,7 @@ func (a *APIStore) PostTemplatesTemplateIDBuildsBuildID(c *gin.Context, template
 		nil, // fromTemplate not supported in v1 handler
 		nil, // fromImageRegistry not supported in v1 handler
 		nil, // osType not supported in v1 handler
+		nil, // androidVersion not supported in v1 handler
 		&forceRebuild,
 		nil,
 		apiutils.WithClusterFallback(team.ClusterID),

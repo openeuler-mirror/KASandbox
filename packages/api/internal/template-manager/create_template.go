@@ -56,6 +56,7 @@ func (tm *TemplateManager) CreateTemplate(
 	fromTemplate *string,
 	fromImageRegistry *api.FromImageRegistry,
 	osType *api.OsType,
+	androidVersion *api.AndroidVersion,
 	force *bool,
 	steps *[]api.TemplateStep,
 	clusterID uuid.UUID,
@@ -128,6 +129,11 @@ func (tm *TemplateManager) CreateTemplate(
 		return fmt.Errorf("failed to convert image registry: %w", err)
 	}
 
+	androidVersionStr := ""
+	if androidVersion != nil {
+		androidVersionStr = string(*androidVersion)
+	}
+
 	template := &templatemanagergrpc.TemplateConfig{
 		TeamID:             teamID.String(),
 		TemplateID:         templateID,
@@ -145,6 +151,7 @@ func (tm *TemplateManager) CreateTemplate(
 		FromImageRegistry:  imageRegistry,
 		VmmType:            string(resolvedVMMType),
 		OsType:             string(resolvedOsType),
+		AndroidVersion:     androidVersionStr,
 	}
 
 	err = setTemplateSource(ctx, tm, teamID, teamSlug, template, fromImage, fromImageRaw, fromTemplate, version)
