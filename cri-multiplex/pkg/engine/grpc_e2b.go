@@ -858,9 +858,6 @@ func (e *grpcE2BEngine) ContainerStatus(ctx context.Context, req *runtime.Contai
 
 func (e *grpcE2BEngine) PullImage(ctx context.Context, req *runtime.PullImageRequest) (*runtime.PullImageResponse, error) {
 	log.Printf("[GrpcE2BEngine] PullImage: %s", req.Image.Image)
-	if err := e.ensureConn(); err != nil {
-		return nil, mapE2BError(err)
-	}
 	imageRef := req.Image.Image
 	if !strings.HasPrefix(imageRef, "e2b.dev/") {
 		return nil, status.Error(codes.InvalidArgument, "not an e2b image")
@@ -868,20 +865,6 @@ func (e *grpcE2BEngine) PullImage(ctx context.Context, req *runtime.PullImageReq
 	templateID, buildID, err := parseE2BImageRef(imageRef)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-	resp, err := e.client.ListCachedBuilds(ctx, &emptypb.Empty{})
-	if err != nil {
-		return nil, mapE2BError(err)
-	}
-	found := false
-	for _, build := range resp.Builds {
-		if build.BuildId == buildID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return nil, status.Errorf(codes.NotFound, "build %s not found in cached builds", buildID)
 	}
 	e.imageMu.Lock()
 	e.imageCache[imageRef] = &e2bImageMeta{

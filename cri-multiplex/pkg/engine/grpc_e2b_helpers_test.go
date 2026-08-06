@@ -81,6 +81,38 @@ func TestAnnotationsToSandboxConfig(t *testing.T) {
 	}
 }
 
+func TestAnnotationsToSandboxConfigUsesDefaultsWhenOptionalAnnotationsOmitted(t *testing.T) {
+	e := &grpcE2BEngine{}
+	cfg := e.annotationsToSandboxConfig(map[string]string{
+		annTemplateID: "tmpl",
+		annBuildID:    "build",
+		annTeamID:     "team",
+	}, "sandbox-a", "alias-a", map[string]string{"app": "e2b"})
+
+	if cfg.TemplateId != "tmpl" || cfg.BuildId != "build" || cfg.TeamId != "team" {
+		t.Fatalf("required fields mismatch: %+v", cfg)
+	}
+	if cfg.Vcpu != defaultSandboxConfig.VCPU ||
+		cfg.RamMb != defaultSandboxConfig.RAMMB ||
+		cfg.EnvdVersion != defaultSandboxConfig.EnvdVersion ||
+		cfg.MaxSandboxLength != defaultSandboxConfig.MaxSandboxLength {
+		t.Fatalf("optional numeric/string defaults mismatch: %+v", cfg)
+	}
+	if cfg.AllowInternetAccess != nil {
+		t.Fatalf("allow internet should remain unset when default is false and annotation is omitted: %+v", cfg.AllowInternetAccess)
+	}
+	if cfg.HugePages || cfg.AutoPause || cfg.Snapshot || cfg.TotalDiskSizeMb != 0 ||
+		cfg.BaseTemplateId != "" || cfg.ExecutionId != "" || cfg.EnvdAccessToken != nil {
+		t.Fatalf("optional zero-value defaults mismatch: %+v", cfg)
+	}
+	if cfg.KernelVersion != "vmlinux-6.1.158" || cfg.FirecrackerVersion != "v1.13.1" {
+		t.Fatalf("runtime version defaults mismatch: %+v", cfg)
+	}
+	if cfg.Metadata["app"] != "e2b" || strDeref(cfg.Alias) != "alias-a" || cfg.SandboxId != "sandbox-a" {
+		t.Fatalf("identity metadata mismatch: %+v", cfg)
+	}
+}
+
 func TestAnnotationsToSandboxConfigIgnoresInvalidValues(t *testing.T) {
 	e := &grpcE2BEngine{}
 	cfg := e.annotationsToSandboxConfig(map[string]string{

@@ -207,6 +207,45 @@ else
     log_fail "ReopenContainerLog 异常: ${output}"
 fi
 
+log_step "5.12 长耗时 exec + SIGTERM 优雅关闭"
+long_exec_log="/tmp/e2b-exec-sigterm-08.log"
+: > "${long_exec_log}"
+set +e
+timeout 35 kubectl exec "${POD_NAME}" -- sh -c "sleep 20; echo long_exec_done" >"${long_exec_log}" 2>&1 &
+long_exec_pid=$!
+set -e
+sleep 2
+mux_pids=$(cri_multiplex_pids)
+if [ -z "${mux_pids}" ]; then
+    log_fail "SIGTERM 场景未找到 cri-multiplex 进程"
+else
+    log_info "发送 SIGTERM 到 cri-multiplex: ${mux_pids}"
+    kill -TERM ${mux_pids} 2>/dev/null || true
+    set +e
+    wait "${long_exec_pid}"
+    long_exec_rc=$?
+    set -e
+    if [ "${long_exec_rc}" -eq 124 ]; then
+        log_fail "长耗时 kubectl exec 在 SIGTERM 后超时未退出"
+    else
+        log_pass "长耗时 kubectl exec 在 SIGTERM 后及时退出，rc=${long_exec_rc}"
+    fi
+    stopped=0
+    for _ in $(seq 1 15); do
+        if [ -z "$(cri_multiplex_pids)" ]; then
+            stopped=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "${stopped}" = "1" ]; then
+        log_pass "cri-multiplex 收到 SIGTERM 后退出"
+    else
+        log_fail "cri-multiplex 收到 SIGTERM 后未退出"
+    fi
+    START_CNI_ANDROID_COUNT=0 start_cni_android_multiplex "SIGTERM 验证后重启 cri-multiplex" || exit 1
+fi
+
 #==================== 清理 ====================#
 log_step "清理资源"
 

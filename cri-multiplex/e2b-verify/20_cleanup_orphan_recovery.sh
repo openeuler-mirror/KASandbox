@@ -27,6 +27,7 @@ NONOWNER_COMMENT="cri-multiplex-similar-no-owner-20"
 ORCH_PROTO="${MULTIPLEX_DIR}/proto/orchestrator.proto"
 E2B_POD_TEMPLATE="${E2B_POD_TEMPLATE:-/tmp/e2b-kubelet-pod.yaml}"
 ANDROID_WAIT_TIMEOUT="${ANDROID_WAIT_TIMEOUT:-360s}"
+BROKEN_CNI_CONF_DIR="${BROKEN_CNI_CONF_DIR:-/tmp/cri-multiplex-20-empty-cni}"
 
 cleanup_all() {
     local pids
@@ -37,7 +38,7 @@ cleanup_all() {
     rm -f /tmp/cri-multiplex-20-*.yaml /tmp/cri-multiplex-20-*.credentials.json || true
     iptables -t filter -D OUTPUT -p tcp -d 127.0.0.1 --dport 1 \
         -m comment --comment "${NONOWNER_COMMENT}" -j ACCEPT >/dev/null 2>&1 || true
-    rm -rf "${STATE_DIR}" "${ANDROID_STATE_DIR}" || true
+    rm -rf "${STATE_DIR}" "${ANDROID_STATE_DIR}" "${BROKEN_CNI_CONF_DIR}" || true
 }
 trap cleanup_all EXIT
 
@@ -133,6 +134,65 @@ run_e2b_sandbox() {
     log_pass "Pod YAML 已提交: ${name}"
     kubectl label pod "${name}" cri-multiplex-test=20 --overwrite >/dev/null
     wait_pod_ready "${name}" || return 1
+    id=$(kubectl get pod "${name}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+    [ -n "${id}" ] || return 1
+    echo "${id}"
+}
+
+set_yaml_annotation() {
+    local key="$1" value="$2" yaml="$3" tmp="${yaml}.tmp"
+
+    awk -v key="${key}:" -v value="${value}" '
+        $1 == key {
+            print "    " key " \"" value "\""
+            next
+        }
+        { print }
+    ' "${yaml}" > "${tmp}"
+    mv "${tmp}" "${yaml}"
+}
+
+run_e2b_create_failure_pod() {
+    local name="$1"
+    local yaml="/tmp/cri-multiplex-20-${name}.yaml" id
+    local bad_build_id="missing-build-id-20-${RANDOM}-${RANDOM}"
+
+    if [ "${E2B_SKIP_BUILD}" = "1" ]; then
+        cp "${E2B_POD_TEMPLATE}" "${yaml}"
+    fi
+    if ! POD_YAML="${yaml}" refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${name}" "${yaml}"; then
+        echo "无法刷新或复用 E2B Pod YAML: ${yaml}" >&2
+        rm -f "${yaml}"
+        return 1
+    fi
+    set_yaml_annotation "e2b.dev/build-id" "${bad_build_id}" "${yaml}"
+    if ! kubectl apply -f "${yaml}" >&2 2>&1; then
+        log_fail "创建失败回滚场景 kubectl apply 失败: ${name}"
+        return 1
+    fi
+    kubectl label pod "${name}" cri-multiplex-test=20 --overwrite >/dev/null
+    id=$(kubectl get pod "${name}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+    [ -n "${id}" ] || return 1
+    echo "${id}"
+}
+
+submit_e2b_pod_no_wait() {
+    local name="$1"
+    local yaml="/tmp/cri-multiplex-20-${name}.yaml" id
+
+    if [ "${E2B_SKIP_BUILD}" = "1" ]; then
+        cp "${E2B_POD_TEMPLATE}" "${yaml}"
+    fi
+    if ! POD_YAML="${yaml}" refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${name}" "${yaml}"; then
+        echo "无法刷新或复用 E2B Pod YAML: ${yaml}" >&2
+        rm -f "${yaml}"
+        return 1
+    fi
+    if ! kubectl apply -f "${yaml}" >&2 2>&1; then
+        log_fail "kubectl apply 失败: ${name}"
+        return 1
+    fi
+    kubectl label pod "${name}" cri-multiplex-test=20 --overwrite >/dev/null
     id=$(kubectl get pod "${name}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
     [ -n "${id}" ] || return 1
     echo "${id}"
@@ -264,7 +324,10 @@ wait_android_gone() {
 state_has_no_e2b() {
     python3 - "${STATE_FILE}" "$1" <<'PY'
 import json, sys
-s = json.load(open(sys.argv[1], encoding="utf-8"))
+try:
+    s = json.load(open(sys.argv[1], encoding="utf-8"))
+except FileNotFoundError:
+    raise SystemExit(0)
 sandbox_id = sys.argv[2]
 pods = (s.get("e2b") or {}).get("pods") or []
 routes = s.get("routes") or []
@@ -273,6 +336,49 @@ if any(p.get("sandbox_id") == sandbox_id for p in pods):
 if any(r.get("id") in (sandbox_id, sandbox_id + "-c") for r in routes):
     raise SystemExit(1)
 PY
+}
+
+wait_e2b_create_failure_observed() {
+    local name="$1" id="$2" describe_output log_output
+
+    for _ in $(seq 1 120); do
+        describe_output=$(kubectl describe pod "${name}" 2>&1 || true)
+        log_output=$(tail -n 240 /tmp/cri-multiplex.log 2>/dev/null || true)
+        if echo "${describe_output}" | grep -qiE "FailedCreatePodSandBox|failed to create sandbox|build|not found|invalid" &&
+           echo "${log_output}" | grep -q "CNI ADD: sandbox=${id}" &&
+           echo "${log_output}" | grep -q "RunPodSandbox: orchestrator.Create FAILED"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+wait_e2b_create_rollback() {
+    local id="$1" netns="$2"
+
+    for _ in $(seq 1 90); do
+        if state_has_no_e2b "${id}" >/dev/null 2>&1 && [ ! -e "${netns}" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+wait_pod_failure_diagnostic() {
+    local name="$1" pattern="$2" timeout_seconds="${3:-120}"
+    local describe_output
+
+    for _ in $(seq 1 "${timeout_seconds}"); do
+        describe_output=$(kubectl describe pod "${name}" 2>&1 || true)
+        if echo "${describe_output}" | grep -qi "FailedCreatePodSandBox" &&
+           echo "${describe_output}" | grep -qiE "${pattern}"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
 }
 
 owner_rule_exists() {
@@ -386,7 +492,52 @@ else
     log_info "已有二进制就绪，使用 07 号流程刷新 build_id 并通过 RuntimeClass 正常创建 Pod"
 fi
 
-log_step "2. E2B 删除幂等清理"
+log_step "2. Orchestrator 不可用错误诊断"
+stop_test_multiplex
+ORCH_DOWN_NAME="e2b-orch-down-20-${RANDOM}"
+ORCH_DOWN_ADDRESS="${ORCH_DOWN_ADDRESS:-127.0.0.1:1}"
+ORCHESTRATOR_ADDRESS="${ORCH_DOWN_ADDRESS}" start_cleanup_multiplex
+ORCH_DOWN_ID=$(submit_e2b_pod_no_wait "${ORCH_DOWN_NAME}")
+ORCH_DOWN_NETNS="${CNI_NETNS_DIR}/e2b-${ORCH_DOWN_ID:0:12}"
+if ! wait_pod_failure_diagnostic "${ORCH_DOWN_NAME}" "orchestrator|connection|unavailable|refused|failed to create sandbox" 120; then
+    fail_context
+    kubectl describe pod "${ORCH_DOWN_NAME}" >&2 || true
+    log_fail "Orchestrator 不可用时错误未通过 Pod 事件诊断"
+    exit 1
+fi
+if state_has_no_e2b "${ORCH_DOWN_ID}" >/dev/null 2>&1 && [ ! -e "${ORCH_DOWN_NETNS}" ]; then
+    log_pass "Orchestrator 不可用错误可诊断，且无 state/routes/netns 残留"
+else
+    fail_context
+    log_fail "Orchestrator 不可用场景存在 state/routes 或 netns 残留: ${ORCH_DOWN_ID}"
+    exit 1
+fi
+delete_kube_pod "${ORCH_DOWN_NAME}" || true
+
+log_step "3. CNI 配置不可用错误诊断和无 netns 残留"
+stop_test_multiplex
+rm -rf "${BROKEN_CNI_CONF_DIR}"
+mkdir -p "${BROKEN_CNI_CONF_DIR}"
+CNI_DOWN_NAME="e2b-cni-down-20-${RANDOM}"
+CNI_CONF_DIR="${BROKEN_CNI_CONF_DIR}" start_cleanup_multiplex
+CNI_DOWN_ID=$(submit_e2b_pod_no_wait "${CNI_DOWN_NAME}")
+CNI_DOWN_NETNS="${CNI_NETNS_DIR}/e2b-${CNI_DOWN_ID:0:12}"
+if ! wait_pod_failure_diagnostic "${CNI_DOWN_NAME}" "cni|netns|network|failed to create sandbox|not initialized|no configs" 120; then
+    fail_context
+    kubectl describe pod "${CNI_DOWN_NAME}" >&2 || true
+    log_fail "CNI 配置不可用时错误未通过 Pod 事件诊断"
+    exit 1
+fi
+if state_has_no_e2b "${CNI_DOWN_ID}" >/dev/null 2>&1 && [ ! -e "${CNI_DOWN_NETNS}" ]; then
+    log_pass "CNI 配置不可用错误可诊断，且无 state/routes/netns 残留"
+else
+    fail_context
+    log_fail "CNI 配置不可用场景存在 state/routes 或 netns 残留: ${CNI_DOWN_ID}"
+    exit 1
+fi
+delete_kube_pod "${CNI_DOWN_NAME}" || true
+
+log_step "4. E2B 删除幂等清理"
 start_cleanup_multiplex
 E2B_NAME="e2b-cleanup-20-${RANDOM}"
 E2B_ID=$(run_e2b_sandbox "${E2B_NAME}")
@@ -409,7 +560,7 @@ if ! wait_e2b_gone "${E2B_ID}" "${E2B_NETNS}" "${E2B_COMMENTS}"; then
 fi
 log_pass "E2B 删除幂等：state/routes、CNI netns、HostPort 均已清理"
 
-log_step "3. E2B 重启后回收 missing sandbox"
+log_step "5. E2B 重启后回收 missing sandbox"
 MISSING_NAME="e2b-missing-20-${RANDOM}"
 MISSING_E2B_ID=$(run_e2b_sandbox "${MISSING_NAME}")
 mapfile -t missing_fields < <(e2b_resources "${MISSING_E2B_ID}")
@@ -440,7 +591,25 @@ if ! wait_e2b_gone "${MISSING_E2B_ID}" "${MISSING_NETNS}" "${MISSING_COMMENTS}";
 fi
 log_pass "重启后 missing E2B 的 state/routes、CNI netns、HostPort 已回收"
 
-log_step "4. Android 删除幂等清理和端口复用"
+log_step "6. E2B 创建过程中异常资源回滚"
+CREATE_FAIL_NAME="e2b-create-fail-20-${RANDOM}"
+CREATE_FAIL_ID=$(run_e2b_create_failure_pod "${CREATE_FAIL_NAME}")
+CREATE_FAIL_NETNS="${CNI_NETNS_DIR}/e2b-${CREATE_FAIL_ID:0:12}"
+if ! wait_e2b_create_failure_observed "${CREATE_FAIL_NAME}" "${CREATE_FAIL_ID}"; then
+    fail_context
+    kubectl describe pod "${CREATE_FAIL_NAME}" >&2 || true
+    log_fail "未观察到 E2B 创建失败前的 CNI ADD 和 Orchestrator Create 失败"
+    exit 1
+fi
+delete_kube_pod "${CREATE_FAIL_NAME}" || true
+if ! wait_e2b_create_rollback "${CREATE_FAIL_ID}" "${CREATE_FAIL_NETNS}"; then
+    fail_context
+    log_fail "E2B 创建失败后 state/routes 或 CNI netns 未回滚: id=${CREATE_FAIL_ID}, netns=${CREATE_FAIL_NETNS}"
+    exit 1
+fi
+log_pass "E2B 创建失败后已回滚 state/routes 和 CNI netns"
+
+log_step "7. Android 删除幂等清理和端口复用"
 ANDROID_DELETE_NAME="android-delete-20-${RANDOM}"
 ANDROID_DELETE_ID=$(run_android_sandbox "${ANDROID_DELETE_NAME}")
 mapfile -t delete_fields < <(wait_android_resources "${ANDROID_DELETE_ID}")
@@ -473,7 +642,7 @@ delete_kube_pod "${ANDROID_REUSE_NAME}" || true
 remove_sandbox "${ANDROID_REUSE_ID}" || true
 wait_android_gone "${ANDROID_REUSE_ID}" "${reuse_fields[0]}" "${reuse_fields[1]}" || true
 
-log_step "5. Android 进程异常退出"
+log_step "8. Android 进程异常退出"
 ANDROID_EXIT_NAME="android-exit-20-${RANDOM}"
 ANDROID_EXIT_ID=$(run_android_sandbox "${ANDROID_EXIT_NAME}")
 mapfile -t exit_fields < <(wait_android_resources "${ANDROID_EXIT_ID}")
@@ -515,7 +684,7 @@ fi
 log_pass "异常退出后台清理已完成"
 delete_kube_pod "${ANDROID_EXIT_NAME}" || true
 
-log_step "6. Android 重启后孤儿回收"
+log_step "9. Android 重启后孤儿回收"
 ANDROID_RESTART_NAME="android-restart-20-${RANDOM}"
 ANDROID_RESTART_ID=$(run_android_sandbox "${ANDROID_RESTART_NAME}")
 mapfile -t restart_fields < <(wait_android_resources "${ANDROID_RESTART_ID}")
@@ -533,7 +702,7 @@ if ! wait_android_gone "${ANDROID_RESTART_ID}" "${RESTART_WORKDIR}" "${RESTART_N
 fi
 log_pass "重启后对账并回收 Android CVD、state、CNI netns"
 
-log_step "7. 非 owner 资源保护"
+log_step "10. 非 owner 资源保护"
 if ! grep -q "skip unknown owner" /tmp/cri-multiplex.log; then
     fail_context
     log_fail "未输出 unknown owner warning"
