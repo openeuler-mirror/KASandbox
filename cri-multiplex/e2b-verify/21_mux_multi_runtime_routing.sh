@@ -37,24 +37,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-wait_pod_ready() {
-    local pod="$1"
-    local timeout="${2:-120s}"
-
-    if kubectl wait --for=condition=Ready "pod/${pod}" --timeout="${timeout}" >&2; then
-        log_pass "Pod 已 Ready: ${pod}"
-        return 0
-    fi
-    log_fail "Pod 未在 ${timeout} 内 Ready: ${pod}"
-    kubectl describe pod "${pod}" >&2 || true
-    return 1
-}
-
-pod_container_id() {
-    local pod="$1"
-    kubectl get pod "${pod}" -o jsonpath='{.status.containerStatuses[0].containerID}' 2>/dev/null | sed -E 's#^[^:]+://##' || true
-}
-
 assert_log_contains() {
     local pattern="$1"
     local desc="$2"
@@ -66,46 +48,6 @@ assert_log_contains() {
     log_fail "${desc}"
     tail -n 120 /tmp/cri-multiplex.log >&2 || true
     return 1
-}
-
-create_busybox_pod_yaml() {
-    local pod="$1"
-    local runtime_class="$2"
-    local attach="$3"
-    local yaml="$4"
-
-    {
-        cat <<EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: ${pod}
-spec:
-  restartPolicy: Never
-EOF
-        if [ -n "${runtime_class}" ]; then
-            cat <<EOF
-  runtimeClassName: ${runtime_class}
-EOF
-        fi
-        cat <<EOF
-  containers:
-    - name: app
-      image: ${CLIENT_IMAGE}
-      imagePullPolicy: IfNotPresent
-EOF
-        if [ "${attach}" = "1" ]; then
-            cat <<'EOF'
-      stdin: true
-      tty: true
-      command: ["sh"]
-EOF
-        else
-            cat <<'EOF'
-      command: ["sleep", "3600"]
-EOF
-        fi
-    } > "${yaml}"
 }
 
 create_android_pod_yaml() {
@@ -230,12 +172,11 @@ log_pass "RuntimeClass e2b 存在"
 
 log_step "1.2 清理旧资源"
 cleanup
-sleep 2
 : > /tmp/cri-multiplex.log 2>/dev/null || true
 log_pass "旧资源已清理"
 
 log_step "2.1 创建无 RuntimeClass 普通 Pod"
-create_busybox_pod_yaml "${DEFAULT_POD}" "" "0" "/tmp/${DEFAULT_POD}.yaml"
+prepare_default_busybox_pod_yaml "${DEFAULT_POD}" "/tmp/${DEFAULT_POD}.yaml"
 kubectl apply -f "/tmp/${DEFAULT_POD}.yaml" >&2
 wait_pod_ready "${DEFAULT_POD}" 120s || exit 1
 assert_log_contains "RunPodSandbox routing: handler=\"\" -> container" "无 RuntimeClass Pod 已路由到 containerd" || exit 1
@@ -254,11 +195,9 @@ wait_pod_ready "${ANDROID_POD}" 240s || exit 1
 assert_log_contains "RunPodSandbox routing: handler=\"${ANDROID_RUNTIME_HANDLER}\" -> android" "RuntimeClass=${ANDROID_RUNTIMECLASS} Pod 已路由到 Android" || exit 1
 
 log_step "2.3 创建 E2B Pod"
-if ! E2B_YAML_COUNT=0 refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${E2B_POD}" "${POD_YAML}"; then
+if ! E2B_YAML_COUNT=0 E2B_BASE_POD_YAML="${POD_YAML}" prepare_e2b_pod_yaml "${E2B_POD}" "${E2B_WORK_YAML}"; then
     exit 1
 fi
-cp "${POD_YAML}" "${E2B_WORK_YAML}"
-reset_e2b_yaml_metadata "${E2B_POD}" "${E2B_WORK_YAML}"
 make_e2b_attach_yaml "${E2B_WORK_YAML}"
 kubectl apply -f "${E2B_WORK_YAML}" >&2
 wait_pod_ready "${E2B_POD}" 120s || exit 1
@@ -327,7 +266,6 @@ assert_attach_output "${E2B_POD}" "e2b_attach_ok" || exit 1
 
 log_step "5.1 清理资源"
 cleanup
-sleep 3
 log_pass "资源删除请求已提交"
 
 print_summary

@@ -35,7 +35,6 @@ require_cni_behavior_prereqs || exit 1
 
 log_step "1.2 清理旧资源"
 cleanup
-sleep 2
 log_pass "旧资源已清理"
 
 log_step "2.1 创建 E2B CNI Pod、Service 和两个 client Pod"
@@ -50,8 +49,8 @@ create_curl_client_pod "${ALLOWED_CLIENT}" "role" "allowed-client" || exit 1
 create_curl_client_pod "${DENIED_CLIENT}" "role" "denied-client" || exit 1
 
 log_step "3.1 baseline：两个 client 均可访问 E2B PodIP"
-expect_http_204_from_client "${ALLOWED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "allowed client baseline" || true
-expect_http_204_from_client "${DENIED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "denied client baseline" || true
+expect_http_204_from_client "${ALLOWED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "allowed client baseline" || exit 1
+expect_http_204_from_client "${DENIED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "denied client baseline" || exit 1
 
 log_step "4.1 应用 deny-all ingress NetworkPolicy"
 cat > "/tmp/${DENY_POLICY}.yaml" <<EOF
@@ -67,11 +66,10 @@ spec:
     - Ingress
 EOF
 kubectl apply -f "/tmp/${DENY_POLICY}.yaml" >&2
-sleep 5
 log_pass "deny-all ingress policy 已应用"
 
 DENY_BLOCKED=0
-if expect_blocked_from_client "${DENIED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "deny-all ingress 阻断 denied client"; then
+if wait_blocked_from_client "${DENIED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "deny-all ingress 阻断 denied client" 30; then
     DENY_BLOCKED=1
 else
     rc=$?
@@ -105,16 +103,14 @@ spec:
           port: ${ENVD_PORT}
 EOF
     kubectl apply -f "/tmp/${ALLOW_POLICY}.yaml" >&2
-    sleep 5
     log_pass "allow selected client policy 已应用"
 
-    expect_http_204_from_client "${ALLOWED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "allow policy 放行 allowed client" || true
-    expect_blocked_from_client "${DENIED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "allow policy 阻断 denied client" || true
+    wait_http_204_from_client "${ALLOWED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "allow policy 放行 allowed client" 30 || exit 1
+    wait_blocked_from_client "${DENIED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "allow policy 阻断 denied client" 30 || exit 1
 fi
 
 log_step "5.1 删除资源"
 cleanup
-sleep 3
 log_pass "资源删除请求已提交"
 
 print_summary

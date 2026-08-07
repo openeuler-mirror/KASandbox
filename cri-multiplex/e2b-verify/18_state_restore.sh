@@ -29,27 +29,6 @@ cleanup_all() {
 }
 trap cleanup_all EXIT
 
-wait_pod_ready() {
-    local pod_name="$1"
-    local timeout_seconds="${2:-120}"
-    if kubectl wait --for=condition=Ready "pod/${pod_name}" --timeout="${timeout_seconds}s" >&2; then
-        return 0
-    fi
-    kubectl describe pod "${pod_name}" >&2 || true
-    return 1
-}
-
-wait_pod_deleted() {
-    local pod_name="$1"
-    for _ in $(seq 1 60); do
-        if ! kubectl get pod "${pod_name}" >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 1
-    done
-    return 1
-}
-
 wait_remove_podsandbox_log() {
     local sandbox_id="$1"
     for _ in $(seq 1 90); do
@@ -59,22 +38,6 @@ wait_remove_podsandbox_log() {
         sleep 1
     done
     return 1
-}
-
-pod_uid() {
-    kubectl get pod "$1" -o jsonpath='{.metadata.uid}' 2>/dev/null || true
-}
-
-pod_container_id() {
-    local pod_name="$1"
-    local uid="$2"
-    local cid
-    cid=$(kubectl get pod "${pod_name}" -o jsonpath='{.status.containerStatuses[0].containerID}' 2>/dev/null | sed -E 's#^[^:]+://##' || true)
-    if [ -n "${cid}" ]; then
-        echo "${cid}"
-        return 0
-    fi
-    echo "${uid}-c"
 }
 
 assert_kubectl_exec() {
