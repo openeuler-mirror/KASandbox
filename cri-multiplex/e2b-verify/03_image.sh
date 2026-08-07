@@ -93,4 +93,7 @@ else
 fi
 
 print_summary
-exit 0
+if [ "${FAIL_COUNT}" -eq 0 ]; then
+    exit 0
+fi
+exit 1

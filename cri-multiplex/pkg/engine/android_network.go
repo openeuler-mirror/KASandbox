@@ -21,7 +21,7 @@ import (
 
 const (
 	androidGuestIface      = "eth1"
-	androidGuestRouteTable = "local_network"
+	androidGuestRouteTable = "100"
 	androidGuestNetBaseA   = 192
 	androidGuestNetBaseB   = 168
 	androidGuestNetBaseC   = 240

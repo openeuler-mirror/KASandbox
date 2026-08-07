@@ -24,7 +24,8 @@ log_section "09 — ExecSync 能力 kubelet 验证"
 
 #==================== 配置 ====================#
 POD_NAME="${POD_NAME:-e2b-execsync-test}"
-POD_YAML="/tmp/e2b-kubelet-pod.yaml"
+BASE_POD_YAML="${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
+POD_YAML="${WORK_POD_YAML:-/tmp/e2b-execsync-kubelet-pod.yaml}"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 STARTUP_PROBE_MARK="startup_probe_execsync_ok"
 READINESS_PROBE_MARK="readiness_probe_execsync_ok"
@@ -77,8 +78,10 @@ log_step "1.2 清理旧 Pod"
 
 if kubectl get pod "${POD_NAME}" > /dev/null 2>&1; then
     log_info "删除已存在的 Pod: ${POD_NAME}"
-    kubectl delete pod "${POD_NAME}" --force --grace-period=0 >&2 || true
-    sleep 3
+    delete_pod_and_wait_gone "${POD_NAME}" 90 || {
+        log_fail "旧 Pod 未在 90s 内删除: ${POD_NAME}"
+        exit 1
+    }
     log_pass "旧 Pod 已删除"
 else
     log_skip "无旧 Pod 需清理"
@@ -90,7 +93,7 @@ fi
 #==================== 刷新 build_id ====================#
 log_step "2.1 刷新 build_id（每次创建 Pod 前必须执行）"
 
-if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${POD_NAME}" "${POD_YAML}"; then
+if ! E2B_BASE_POD_YAML="${BASE_POD_YAML}" prepare_e2b_pod_yaml "${POD_NAME}" "${POD_YAML}"; then
     exit 1
 fi
 
@@ -314,4 +317,7 @@ log_step "6.1 验证 lifecycle preStop 触发 CRI ExecSync"
 wait_execsync_log "${PRESTOP_MARK}" "preStop exec hook" 60 || exit 1
 
 print_summary
-exit 0
+if [ "${FAIL_COUNT}" -eq 0 ]; then
+    exit 0
+fi
+exit 1

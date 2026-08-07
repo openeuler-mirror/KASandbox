@@ -97,13 +97,7 @@ fi
 
 old_pids=$(cri_multiplex_pids)
 if [ -n "${old_pids}" ]; then
-    log_info "停止旧 cri-multiplex 进程: ${old_pids}"
-    kill ${old_pids} 2>/dev/null || true
-    sleep 1
-    old_pids=$(cri_multiplex_pids)
-    if [ -n "${old_pids}" ]; then
-        kill -9 ${old_pids} 2>/dev/null || true
-    fi
+    stop_cri_multiplex 10 || exit 1
 fi
 rm -f "${SOCKET}"
 

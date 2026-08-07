@@ -50,11 +50,12 @@ log_step "1.2 清理旧 Pod"
 
 if kubectl get pod "${POD_NAME}" > /dev/null 2>&1; then
     log_info "删除已存在的 Pod: ${POD_NAME}"
-    kubectl delete pod "${POD_NAME}" >&2 || true
-
-   # kubectl delete pod "${POD_NAME}" --force --grace-period=0 >&2 || true
-    sleep 3
-    log_pass "旧 Pod 已删除"
+    if delete_pod_and_wait_gone "${POD_NAME}" 90; then
+        log_pass "旧 Pod 已删除"
+    else
+        log_fail "旧 Pod 未在 90s 内删除: ${POD_NAME}"
+        exit 1
+    fi
 else
     log_skip "无旧 Pod 需清理"
 fi
@@ -196,6 +197,7 @@ log_step "5.1 删除 Pod 验证沙箱销毁"
 
 log_info "kubectl delete pod ${POD_NAME} --force --grace-period=0"
 kubectl delete pod "${POD_NAME}" --force --grace-period=0 >&2 || true
+wait_pod_deleted "${POD_NAME}" 90 || log_fail "Pod 未在 90s 内删除: ${POD_NAME}"
 
 # 等待 RemovePodSandbox 被调用
 REMOVED=0
