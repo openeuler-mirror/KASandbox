@@ -26,6 +26,28 @@ spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       initContainers:
+      - name: wait-redis
+        image: "{{ .Values.registry }}/{{ .Values.image.busybox }}"
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until nc -z redis.e2b.svc.cluster.local {{ .Values.redisPort | int }}; do
+            echo waiting for redis...
+            sleep 1
+          done
+      - name: wait-postgres
+        image: "{{ .Values.registry }}/{{ .Values.image.busybox }}"
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until nc -z {{ .Values.postgresUrl }} {{ .Values.postgresPort | int }}; do
+            echo waiting for postgres...
+            sleep 1
+          done
       - name: db-migrator
         image: "{{ .Values.registry }}/{{ .Values.image.migrator }}"
         imagePullPolicy: {{ .Values.pullPolicy }}
@@ -81,28 +103,6 @@ spec:
           limits:
             cpu: 250m
             memory: 128Mi
-      - name: wait-redis
-        image: "{{ .Values.registry }}/{{ .Values.image.busybox }}"
-        imagePullPolicy: IfNotPresent
-        command:
-        - /bin/sh
-        - -c
-        - |
-          until nc -z redis.e2b.svc.cluster.local {{ .Values.redisPort | int }}; do
-            echo waiting for redis...
-            sleep 1
-          done
-      - name: wait-postgres
-        image: "{{ .Values.registry }}/{{ .Values.image.busybox }}"
-        imagePullPolicy: IfNotPresent
-        command:
-        - /bin/sh
-        - -c
-        - |
-          until nc -z {{ .Values.postgresUrl }} {{ .Values.postgresPort | int }}; do
-            echo waiting for postgres...
-            sleep 1
-          done
       containers:
       - name: api
         image: "{{ .Values.registry }}/{{ .Values.image.api }}"

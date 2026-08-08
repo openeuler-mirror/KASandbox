@@ -15,7 +15,6 @@ spec:
         app: postgres
     spec:
       # 对齐 edge 节点亲和规则，调度到同一节点池
-      hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       affinity:
         nodeAffinity:

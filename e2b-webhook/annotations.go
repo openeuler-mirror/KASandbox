@@ -203,7 +203,7 @@ func (s *SandboxTransformer) FetchForPod(pod *corev1.Pod) (map[string]string, er
 	templateID := extractTemplateNameFromPodEnv(pod)
 
 	if templateID == "" {
-		klog.V(3).Infof("pod %s/%s has no TEMPLATE_NAME env, skipping",
+		klog.Warningf("pod %s/%s has no TEMPLATE_NAME env, skipping",
 			pod.Namespace, pod.Name)
 		return nil, nil
 	}
@@ -234,7 +234,7 @@ func (s *SandboxTransformer) FetchForBatchSandbox(obj *unstructured.Unstructured
 	sandboxID := obj.GetName()
 	if sandboxID == "" {
 		sandboxID = string(obj.GetUID())
-		klog.V(3).Infof("batchsandbox has no name, using UID as sandboxID: %s", sandboxID)
+		klog.Warningf("batchsandbox has no name, using UID as sandboxID: %s", sandboxID)
 	}
 
 	annos, err := s.callTransformAPI(templateID, sandboxID)
