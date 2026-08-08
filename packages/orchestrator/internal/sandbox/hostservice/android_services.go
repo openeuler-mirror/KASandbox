@@ -32,10 +32,11 @@ type AndroidServicesParams struct {
 	Cleanup cleanupRegistrar
 	Mux     *VsockMux
 
-	SandboxID  string
-	SandboxDir string
-	NetNSName  string
-	MobileTap  string
+	SandboxID      string
+	SandboxDir     string
+	NetNSName      string
+	MobileTap      string
+	AndroidVersion string
 }
 
 type AndroidServices struct {
@@ -102,7 +103,7 @@ func StartAndroidServices(ctx context.Context, params AndroidServicesParams) (_ 
 		}
 	}()
 
-	baseConfigPath := filepath.Join(params.Config.CvdHostPackageDir, "cuttlefish", "assembly", "cuttlefish_config.json")
+	baseConfigPath := filepath.Join(params.Config.CvdHostPackageDirForVersion(params.AndroidVersion), "cuttlefish", "assembly", "cuttlefish_config.json")
 	runtimeConfigPath := filepath.Join(params.SandboxDir, "cuttlefish_config.json")
 	adbPort := 0
 	if _, scanErr := fmt.Sscanf(adbAddress, "127.0.0.1:%d", &adbPort); scanErr != nil {
@@ -136,20 +137,52 @@ func StartAndroidServices(ctx context.Context, params AndroidServicesParams) (_ 
 		}
 	}()
 
-	configServer, err := BuildConfigServerService(params.Config, runtimeConfigPath, params.NetNSName, configListener)
+	// secure_env is required on Android 15+. BuildSecureEnvService creates
+	// the virtio-serial FIFO pair endpoints internally and owns their full
+	// lifecycle (Manager closes them at StopAll/startup-rollback via
+	// CloseParentResources). See secure_env.go for the FIFO/secure_env
+	// protocol details.
+	secureEnvEnabled := vmm.AndroidVersion(params.AndroidVersion).RequiresSecureEnv()
+
+	// Version-gate config_server so a missing binary on a version that
+	// requires it fails the build instead of failing at runtime.
+	configServerEnabled := vmm.AndroidVersion(params.AndroidVersion).RequiresConfigServer()
+	var configServer Service
+	if configServerEnabled {
+		configServer, err = BuildConfigServerService(params.Config, params.AndroidVersion, runtimeConfigPath, params.NetNSName, configListener)
+		if err != nil {
+			return nil, fmt.Errorf("build config_server service: %w", err)
+		}
+	} else {
+		logger.L().Debug(ctx, "skipping config_server; runtime config reaches guest through a different channel",
+			zap.String("sandbox_id", params.SandboxID),
+			zap.String("android_version", params.AndroidVersion),
+		)
+		_ = configListener.Close()
+	}
+	modem, err := BuildModemSimulatorService(params.Config, params.AndroidVersion, runtimeConfigPath, params.NetNSName, modemListener)
 	if err != nil {
 		return nil, err
 	}
-	modem, err := BuildModemSimulatorService(params.Config, runtimeConfigPath, params.NetNSName, modemListener)
-	if err != nil {
-		return nil, err
-	}
-	adbProxy, err := BuildVsockProxyService(params.Config, allocatedCID, params.SandboxID, runtimeConfigPath, adbListener)
+	adbProxy, err := BuildVsockProxyService(params.Config, params.AndroidVersion, allocatedCID, params.SandboxID, runtimeConfigPath, params.NetNSName, adbListener)
 	if err != nil {
 		return nil, err
 	}
 
-	manager := NewManager([]Service{configServer, modem, adbProxy}, params.Config.ReadyCheckTimeout)
+	serviceList := []Service{}
+	if configServerEnabled {
+		serviceList = append(serviceList, configServer)
+	}
+	serviceList = append(serviceList, modem, adbProxy)
+	if secureEnvEnabled {
+		secureEnv, buildErr := BuildSecureEnvService(params.Config, params.AndroidVersion, runtimeConfigPath, params.NetNSName, params.SandboxDir)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		serviceList = append(serviceList, secureEnv)
+	}
+
+	manager := NewManager(serviceList, params.Config.ReadyCheckTimeout)
 	if err := manager.StartAll(ctx); err != nil {
 		return nil, fmt.Errorf("start Android host services: %w", err)
 	}

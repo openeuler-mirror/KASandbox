@@ -197,9 +197,10 @@ func (pb *OptimizeBuilder) collectMemoryPrefetchMapping(
 		},
 
 		VMMConfig: vmm.VMMConfig{
-			Type:          vmm.BackendType(pb.Config.VMMType).OrDefault(),
-			KernelVersion: pb.Config.KernelVersion,
-			VMMVersion:    pb.Config.FirecrackerVersion,
+			Type:           vmm.BackendType(pb.Config.VMMType).OrDefault(),
+			KernelVersion:  pb.Config.KernelVersion,
+			VMMVersion:     pb.Config.FirecrackerVersion,
+			AndroidVersion: pb.Config.AndroidVersion,
 		},
 	}
 

@@ -73,11 +73,14 @@ type BaseBuilder struct {
 }
 
 func (bb *BaseBuilder) androidPersistentPath() string {
-	return filepath.Join(bb.BuilderConfig.FirmwareDir, storage.PersistentName)
+	return filepath.Join(
+		bb.BuilderConfig.FirmwareDirForVersion(string(bb.Config.AndroidVersion)),
+		storage.PersistentName,
+	)
 }
 
 func (bb *BaseBuilder) androidNewfsMsdosPath() string {
-	return filepath.Join(bb.BuilderConfig.CvdHostPackageDir, "bin", "newfs_msdos")
+	return filepath.Join(bb.BuilderConfig.CvdHostPackageDirForVersion(string(bb.Config.AndroidVersion)), "bin", "newfs_msdos")
 }
 
 func (bb *BaseBuilder) androidPersistentDigest(ctx context.Context) (string, error) {
@@ -331,10 +334,11 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 		},
 
 		VMMConfig: vmm.VMMConfig{
-			Type:          vmm.BackendType(bb.Config.VMMType).OrDefault(),
-			KernelVersion: bb.Config.KernelVersion,
-			VMMVersion:    bb.Config.FirecrackerVersion,
-			OsType:        bb.Config.GuestOS(),
+			Type:           vmm.BackendType(bb.Config.VMMType).OrDefault(),
+			KernelVersion:  bb.Config.KernelVersion,
+			VMMVersion:     bb.Config.FirecrackerVersion,
+			OsType:         bb.Config.GuestOS(),
+			AndroidVersion: bb.Config.AndroidVersion,
 		},
 	}
 
@@ -479,10 +483,11 @@ func (bb *BaseBuilder) buildLayerFromOCI(
 		},
 
 		VMMConfig: vmm.VMMConfig{
-			Type:          vmm.BackendType(bb.Config.VMMType).OrDefault(),
-			KernelVersion: bb.Config.KernelVersion,
-			VMMVersion:    bb.Config.FirecrackerVersion,
-			OsType:        bb.Config.GuestOS(),
+			Type:           vmm.BackendType(bb.Config.VMMType).OrDefault(),
+			KernelVersion:  bb.Config.KernelVersion,
+			VMMVersion:     bb.Config.FirecrackerVersion,
+			OsType:         bb.Config.GuestOS(),
+			AndroidVersion: bb.Config.AndroidVersion,
 		},
 	}
 	err = bb.provisionSandbox(
@@ -640,6 +645,7 @@ func (bb *BaseBuilder) Layer(
 			meta.Context.WorkDir = nil
 			meta.Context.OsType = string(vmm.OsAndroid)
 			meta.Template.OsType = string(vmm.OsAndroid)
+			meta.Template.AndroidVersion = string(bb.Config.AndroidVersion)
 		}
 
 		notCachedResult := phases.LayerResult{

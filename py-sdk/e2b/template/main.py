@@ -43,6 +43,24 @@ def _validate_registry_credentials(
         )
 
 
+_VALID_ANDROID_VERSIONS = {"14", "15", "16"}
+
+
+def _validate_android_version(os_type: OsType, android_version: Optional[str]) -> None:
+    if os_type != "android":
+        return
+    if not android_version:
+        raise InvalidArgumentException(
+            "android_version is required when os_type='android' "
+            f"(pass one of {', '.join(sorted(_VALID_ANDROID_VERSIONS))})"
+        )
+    if android_version not in _VALID_ANDROID_VERSIONS:
+        raise InvalidArgumentException(
+            f"Unsupported android_version {android_version!r}. "
+            f"Pass one of {', '.join(sorted(_VALID_ANDROID_VERSIONS))}."
+        )
+
+
 class TemplateBuilder:
     """
     Builder class for adding instructions to an E2B template.
@@ -815,6 +833,7 @@ class TemplateBase:
         self._base_template: Optional[str] = None
         self._registry_config: Optional[RegistryConfig] = None
         self._os_type: Optional[OsType] = "linux"
+        self._android_version: Optional[str] = None
         self._start_cmd: Optional[str] = None
         self._ready_cmd: Optional[str] = None
         # Force the whole template to be rebuilt
@@ -1059,6 +1078,7 @@ class TemplateBase:
         self._base_image_raw = None
         self._base_template = None
         self._os_type = os_type
+        self._android_version = None
         # Drop any registry credentials carried over from a previous source
         # (e.g. from_image('private-a', credsA)); they belong to that source,
         # not to this one, and leaking them to a different registry would be a
@@ -1086,6 +1106,7 @@ class TemplateBase:
         username: Optional[str] = None,
         password: Optional[str] = None,
         os_type: OsType = "android",
+        android_version: Optional[str] = None,
     ) -> TemplateBuilder:
         """
         Start template from a raw disk image stored in an OCI-compatible registry.
@@ -1101,6 +1122,11 @@ class TemplateBase:
         :param password: Optional registry password; omit for public images
         :param os_type: Guest OS, defaults to ``"android"``. Windows callers must
             explicitly pass ``os_type="windows"``.
+        :param android_version: Android guest version. **Required** when
+            ``os_type="android"`` — pass one of ``"14"``, ``"15"`` or ``"16"``
+            matching the major release of the raw image you are pushing. There
+            is no default; omitting it (or passing an unsupported value) raises
+            ``InvalidArgumentException``.
 
         :return: `TemplateBuilder` class
 
@@ -1110,6 +1136,7 @@ class TemplateBase:
             'harbor.example.com/android/base:latest',
             username='user',
             password='pass',
+            android_version='16',
         )
 
         Template().from_image_raw(
@@ -1119,10 +1146,12 @@ class TemplateBase:
         ```
         """
         _validate_registry_credentials(username, password)
+        _validate_android_version(os_type, android_version)
         self._base_image_raw = url
         self._base_image = None
         self._base_template = None
         self._os_type = os_type
+        self._android_version = android_version
         # Drop any registry credentials carried over from a previous source;
         # they belong to that source, not to this raw image URL. Reused below
         # only when freshly provided.
@@ -1163,6 +1192,7 @@ class TemplateBase:
         self._base_image = None
         self._base_image_raw = None
         self._os_type = os_type
+        self._android_version = None
         # A template derived from another template never needs registry
         # credentials; drop any carried over from a previous source so they
         # are not leaked in the build request.
@@ -1195,6 +1225,7 @@ class TemplateBase:
         self._base_image_raw = None
         self._base_template = None
         self._os_type = os_type
+        self._android_version = None
         # A Dockerfile-based build does not accept registry credentials; drop
         # any carried over from a previous source so they are not leaked.
         self._registry_config = None
@@ -1254,6 +1285,7 @@ class TemplateBase:
         self._base_image_raw = None
         self._base_template = None
         self._os_type = os_type
+        self._android_version = None
 
         # Set the registry config if provided
         self._registry_config = {
@@ -1297,6 +1329,7 @@ class TemplateBase:
         self._base_image_raw = None
         self._base_template = None
         self._os_type = os_type
+        self._android_version = None
 
         # Set the registry config if provided
         self._registry_config = {
@@ -1482,6 +1515,9 @@ class TemplateBase:
 
         if self._os_type is not None:
             template_data["osType"] = self._os_type
+
+        if self._android_version is not None:
+            template_data["androidVersion"] = self._android_version
 
         if self._base_template is not None:
             template_data["fromTemplate"] = self._base_template

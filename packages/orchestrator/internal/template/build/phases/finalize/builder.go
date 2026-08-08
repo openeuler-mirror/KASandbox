@@ -113,6 +113,7 @@ func (ppb *PostProcessingBuilder) Layer(
 		FirecrackerVersion: ppb.Config.FirecrackerVersion,
 		VMMType:            string(vmm.BackendType(ppb.Config.VMMType).OrDefault()),
 		OsType:             result.Template.OsType,
+		AndroidVersion:     result.Template.AndroidVersion,
 		EnvdVersion:        result.Template.EnvdVersion,
 	}
 
@@ -183,10 +184,11 @@ func (ppb *PostProcessingBuilder) Build(
 		},
 
 		VMMConfig: vmm.VMMConfig{
-			Type:          vmm.BackendType(ppb.Config.VMMType).OrDefault(),
-			KernelVersion: ppb.Config.KernelVersion,
-			VMMVersion:    ppb.Config.FirecrackerVersion,
-			OsType:        osType,
+			Type:           vmm.BackendType(ppb.Config.VMMType).OrDefault(),
+			KernelVersion:  ppb.Config.KernelVersion,
+			VMMVersion:     ppb.Config.FirecrackerVersion,
+			OsType:         osType,
+			AndroidVersion: ppb.Config.AndroidVersion,
 		},
 	}
 

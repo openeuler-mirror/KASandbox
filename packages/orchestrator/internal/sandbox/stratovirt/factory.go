@@ -34,6 +34,7 @@ func (f *Factory) NewProcess(
 		KernelVersion:     versions.KernelVersion,
 		StratoVirtVersion: versions.VMMVersion,
 		OsType:            versions.OsType,
+		AndroidVersion:    versions.AndroidVersion,
 	}
 	return NewProcess(
 		ctx,

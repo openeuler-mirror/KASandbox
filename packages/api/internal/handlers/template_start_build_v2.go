@@ -48,6 +48,16 @@ func (a *APIStore) PostV2TemplatesTemplateIDBuildsBuildID(c *gin.Context, templa
 		return
 	}
 
+	// androidVersion is required when osType is explicitly set to android.
+	// (For fromTemplate builds without osType, the orchestrator inherits and
+	// validates the source template's android version.)
+	if body.OsType != nil && *body.OsType == api.Android && body.AndroidVersion == nil {
+		a.sendAPIStoreError(c, http.StatusBadRequest, "androidVersion is required when osType is android (pass one of 14, 15, 16)")
+		telemetry.ReportCriticalError(ctx, "androidVersion missing for android build", nil, telemetry.WithTemplateID(templateID))
+
+		return
+	}
+
 	buildUUID, err := uuid.Parse(buildID)
 	if err != nil {
 		a.sendAPIStoreError(c, http.StatusBadRequest, fmt.Sprintf("Invalid build ID: %s", buildID))
@@ -181,6 +191,7 @@ func (a *APIStore) PostV2TemplatesTemplateIDBuildsBuildID(c *gin.Context, templa
 		body.FromTemplate,
 		body.FromImageRegistry,
 		body.OsType,
+		body.AndroidVersion,
 		body.Force,
 		body.Steps,
 		clusters.WithClusterFallback(team.ClusterID),

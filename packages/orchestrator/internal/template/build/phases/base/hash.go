@@ -14,12 +14,15 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 )
 
-func rawImageBaseSource(osType vmm.OsType, url, persistentDigest string, sdcardSizeMB int64, generatorVersion string) (string, error) {
+func rawImageBaseSource(osType vmm.OsType, url, androidVersion, persistentDigest string, sdcardSizeMB int64, generatorVersion string) (string, error) {
 	switch osType {
 	case vmm.OsWindows:
 		return fmt.Sprintf("raw:windows:%s", url), nil
 	case vmm.OsAndroid:
-		return fmt.Sprintf("raw:android:%s:%s:%d:%s", url, persistentDigest, sdcardSizeMB, generatorVersion), nil
+		// androidVersion is part of the cache identity so that rebuilding the
+		// same image for a different Android major version (14/15/16) invalidates
+		// the base layer cache instead of reusing a layer built for another version.
+		return fmt.Sprintf("raw:android:%s:%s:%s:%d:%s", androidVersion, url, persistentDigest, sdcardSizeMB, generatorVersion), nil
 	default:
 		return "", fmt.Errorf("unsupported raw-image guest OS %q", osType)
 	}
@@ -43,7 +46,7 @@ func (bb *BaseBuilder) Hash(ctx context.Context, _ phases.LayerResult) (string, 
 				return "", err
 			}
 		}
-		baseSource, err = rawImageBaseSource(bb.Config.GuestOS(), bb.Config.FromImageRaw, persistentDigest, androidSDCardImageSizeMB, androidSDCardGeneratorVersion)
+		baseSource, err = rawImageBaseSource(bb.Config.GuestOS(), bb.Config.FromImageRaw, string(bb.Config.AndroidVersion), persistentDigest, androidSDCardImageSizeMB, androidSDCardGeneratorVersion)
 		if err != nil {
 			return "", err
 		}

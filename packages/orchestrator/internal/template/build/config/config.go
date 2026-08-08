@@ -73,6 +73,11 @@ type TemplateConfig struct {
 	// OsType is the guest operating system family to use for the build.
 	OsType vmm.OsType
 
+	// AndroidVersion is the Android guest version. Required when OsType is
+	// OsAndroid (must be one of 14/15/16); ignored for other OS types.
+	// There is no default: an empty value is rejected for Android builds.
+	AndroidVersion vmm.AndroidVersion
+
 	// Kernel version to use
 	KernelVersion string
 }

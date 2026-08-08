@@ -456,6 +456,8 @@ components:
           description: Base domain where the sandbox traffic is accessible
         osType:
           $ref: "#/components/schemas/OsType"
+        androidVersion:
+          $ref: "#/components/schemas/AndroidVersion"
 
     OsType:
       type: string
@@ -464,6 +466,14 @@ components:
         - windows
         - android
       description: Guest operating system of the sandbox. Absent implies linux.
+
+    AndroidVersion:
+      type: string
+      enum:
+        - "14"
+        - "15"
+        - "16"
+      description: Android guest version. Required when osType is android; ignored otherwise.
 
     SandboxDetail:
       required:
@@ -1304,6 +1314,8 @@ components:
           $ref: "#/components/schemas/FromImageRegistry"
         osType:
           $ref: "#/components/schemas/OsType"
+        androidVersion:
+          $ref: "#/components/schemas/AndroidVersion"
         force:
           default: false
           type: boolean

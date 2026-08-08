@@ -12,11 +12,13 @@ const ModemSimulatorVsockPort uint32 = 9600
 
 func BuildModemSimulatorService(
 	config cfg.BuilderConfig,
+	androidVersion string,
 	cuttlefishConfigPath string,
 	netNSName string,
 	listener *UnixListener,
 ) (Service, error) {
-	binaryPath := filepath.Join(config.CvdHostPackageDir, "bin", "modem_simulator")
+	hostPackageDir := config.CvdHostPackageDirForVersion(androidVersion)
+	binaryPath := filepath.Join(hostPackageDir, "bin", "modem_simulator")
 	if _, err := os.Stat(binaryPath); err != nil {
 		return Service{}, fmt.Errorf("modem_simulator binary not found at %s: %w", binaryPath, err)
 	}
@@ -29,13 +31,13 @@ func BuildModemSimulatorService(
 	}
 
 	env := []string{
-		fmt.Sprintf("HOME=%s", config.CvdHostPackageDir),
+		fmt.Sprintf("HOME=%s", hostPackageDir),
 		// modem_simulator links Android's host bionic. ANDROID_ROOT provides
 		// the fallback /usr/share/zoneinfo/tzdata path shipped in the matching
 		// CVD host package; ANDROID_TZDATA_ROOT must also be set because bionic
 		// treats a missing variable as fatal before trying that fallback.
-		fmt.Sprintf("ANDROID_ROOT=%s", config.CvdHostPackageDir),
-		fmt.Sprintf("ANDROID_TZDATA_ROOT=%s", config.CvdHostPackageDir),
+		fmt.Sprintf("ANDROID_ROOT=%s", hostPackageDir),
+		fmt.Sprintf("ANDROID_TZDATA_ROOT=%s", hostPackageDir),
 		fmt.Sprintf("CUTTLEFISH_CONFIG_FILE=%s", cuttlefishConfigPath),
 		"CUTTLEFISH_INSTANCE=1",
 	}

@@ -148,6 +148,7 @@ func (lb *LayerExecutor) BuildLayer(
 		FirecrackerVersion: sbx.Config.VMMConfig.VMMVersion,
 		VMMType:            string(sbx.Config.VMMConfig.Backend()),
 		OsType:             meta.Template.OsType,
+		AndroidVersion:     meta.Template.AndroidVersion,
 		EnvdVersion:        meta.Template.EnvdVersion,
 	})
 	err = lb.PauseAndUpload(
