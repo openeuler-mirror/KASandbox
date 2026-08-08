@@ -9,6 +9,24 @@ import (
 	"time"
 )
 
+type ADBProxyReady struct {
+	Delay time.Duration
+}
+
+func (r *ADBProxyReady) Check(ctx context.Context) error {
+	timer := time.NewTimer(r.Delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (r *ADBProxyReady) String() string { return "adb-vsock-proxy" }
+
 type ConfigServerReady struct {
 	Path string
 }

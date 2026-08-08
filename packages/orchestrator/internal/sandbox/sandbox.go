@@ -406,7 +406,7 @@ func (f *Factory) CreateSandbox(
 
 	if androidServices != nil {
 		proxyAddr := androidServices.ADBAddress
-		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, 30*time.Second); err != nil {
+		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, f.config.ReadyCheckTimeout); err != nil {
 			return nil, fmt.Errorf("vsock proxy not ready: %w", err)
 		}
 		rilCtx, cancelRIL := context.WithTimeout(ctx, f.config.ReadyCheckTimeout)
@@ -806,7 +806,7 @@ func (f *Factory) ResumeSandbox(
 	}
 	if androidServices != nil {
 		proxyAddr := androidServices.ADBAddress
-		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, 30*time.Second); err != nil {
+		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, f.config.ReadyCheckTimeout); err != nil {
 			return nil, fmt.Errorf("vsock proxy not ready (guest adbd unreachable): %w", err)
 		}
 		logger.L().Info(ctx, "android host services ready",

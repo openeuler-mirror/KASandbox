@@ -240,7 +240,6 @@ type VsockMux struct {
 
 	startMu   sync.Mutex
 	started   bool
-	startErr  error
 	ctx       context.Context
 	cancel    context.CancelFunc
 	acceptWG  sync.WaitGroup
@@ -258,25 +257,36 @@ func NewVsockMux() *VsockMux {
 func (m *VsockMux) Start(ctx context.Context) error {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
+
 	if m.started {
-		return m.startErr
+		return nil
 	}
-	m.started = true
-	m.ctx, m.cancel = context.WithCancel(context.WithoutCancel(ctx))
+
+	listeners := make(map[uint32]*vsockListener, 2)
 
 	for _, port := range []uint32{ConfigServerVsockPort, ModemSimulatorVsockPort} {
 		file, err := VsockListen(VMADDR_CID_ANY, port)
 		if err != nil {
-			m.startErr = fmt.Errorf("bind global vsock listener on port %d: %w", port, err)
-			m.closeListeners()
-			m.cancel()
-			return m.startErr
+			for _, listener := range listeners {
+				listener.close()
+			}
+
+			return fmt.Errorf("bind global vsock listener on port %d: %w", port, err)
 		}
-		listener := &vsockListener{port: port, file: file}
-		m.listeners[port] = listener
+
+		listeners[port] = &vsockListener{port: port, file: file}
+	}
+
+	m.ctx, m.cancel = context.WithCancel(context.WithoutCancel(ctx))
+	m.listeners = listeners
+
+	for _, listener := range listeners {
 		m.acceptWG.Add(1)
 		go m.acceptLoop(listener)
 	}
+
+	m.started = true
+
 	return nil
 }
 

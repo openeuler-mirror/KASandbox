@@ -39,6 +39,15 @@ spec:
           mountPath: /fc-kernels
         - name: fc-versions
           mountPath: /fc-versions
+        - name: stratovirt-versions
+          mountPath: /stratovirt-versions
+        - name: cvd-host-packages
+          mountPath: /cvd-host-packages
+        - name: firmware
+          mountPath: /firmware
+        - name: lib-pixman
+          mountPath: /usr/lib64/libpixman-1.so.0
+          readOnly: true
         - name: fc-vm
           mountPath: /fc-vm
         - name: tmp-templates
@@ -59,6 +68,12 @@ spec:
         - containerPort: {{ .Values.templateManagerPort | int }}
           name: grpc
         env:
+        - name: ENVD_TIMEOUT
+          value: 300s
+        - name: CVD_HOST_PACKAGE_DIR
+          value: "/cvd-host-packages"
+        - name: LD_LIBRARY_PATH
+          value: "/cvd-host-packages/android-14/lib64:/usr/lib64"
         - name: NODE_ID
           valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
         - name: GCP_DOCKER_REPOSITORY_NAME
@@ -188,6 +203,22 @@ spec:
         hostPath:
           path: /fc-versions
           type: DirectoryOrCreate
+      - name: stratovirt-versions
+        hostPath:
+          path: /stratovirt-versions
+          type: DirectoryOrCreate
+      - name: cvd-host-packages
+        hostPath:
+          path: /cvd-host-packages
+          type: DirectoryOrCreate
+      - name: firmware
+        hostPath:
+          path: /firmware
+          type: DirectoryOrCreate
+      - name: lib-pixman
+        hostPath:
+          path: /usr/lib64/libpixman-1.so.0.42.2
+          type: File
       - name: fc-vm
         hostPath:
           path: /fc-vm
