@@ -128,11 +128,11 @@ type annotationTransformer interface {
 
 // admitPod 处理 Pod 的 AdmissionReview，返回 AdmissionResponse。
 func admitPod(ar *admissionv1.AdmissionReview, transformer annotationTransformer) *admissionv1.AdmissionResponse {
-	klog.V(2).Infof("admitPod: kind=%s operation=%s uid=%s",
+	klog.Infof("admitPod: kind=%s operation=%s uid=%s",
 		ar.Request.Kind, ar.Request.Operation, ar.Request.UID)
 
 	if ar.Request.Operation != admissionv1.Create {
-		klog.V(3).Infof("skip non-create operation: %s", ar.Request.Operation)
+		klog.Infof("skip non-create operation: %s", ar.Request.Operation)
 		return &admissionv1.AdmissionResponse{Allowed: true, UID: ar.Request.UID}
 	}
 
@@ -142,31 +142,25 @@ func admitPod(ar *admissionv1.AdmissionReview, transformer annotationTransformer
 		return errorResponse(ar.Request.UID, fmt.Sprintf("failed to decode pod: %v", err))
 	}
 
-	klog.V(2).Infof("handling pod %s/%s", pod.Namespace, pod.Name)
+	klog.Infof("handling pod %s/%s", pod.Namespace, pod.Name)
 
 	// 根据 ANDROID_SANDBOX 环境变量决定 runtimeClassName:
 	//   - android: 跳过 e2b API 调用与注解注入
 	//   - e2b:     调用 e2b API 获取注解
 	runtimeClass := "e2b"
 	var patches []patchOperation
-	if hasAndroidSandboxEnv(&pod) {
-		runtimeClass = "android"
-		klog.V(2).Infof("pod %s/%s marked as android sandbox (skip e2b annotations)", pod.Namespace, pod.Name)
-	} else {
-		// 从 e2b API 动态获取注解 (带容错, 失败时返回空注解)
-		e2bAnnotations, err := transformer.FetchForPod(&pod)
-		if err != nil {
-			klog.Warningf("fetch annotations with error (using fallback): %v", err)
-		}
-		patches = buildPatch(pod.Annotations, e2bAnnotations, "/metadata/annotations")
+	e2bAnnotations, err := transformer.FetchForPod(&pod)
+	if err != nil {
+		klog.Warningf("fetch annotations with error (using fallback): %v", err)
 	}
+	patches = buildPatch(pod.Annotations, e2bAnnotations, "/metadata/annotations")
 
 	// 注入 runtimeClassName (若未设置)
 	if pod.Spec.RuntimeClassName == nil {
 		patches = append(patches, patchOperation{
 			Op: "add", Path: "/spec/runtimeClassName", Value: runtimeClass,
 		})
-		klog.V(2).Infof("injecting runtimeClassName=%s for pod %s/%s", runtimeClass, pod.Namespace, pod.Name)
+		klog.Infof("injecting runtimeClassName=%s for pod %s/%s", runtimeClass, pod.Namespace, pod.Name)
 	}
 
 	if len(patches) == 0 {
@@ -174,7 +168,7 @@ func admitPod(ar *admissionv1.AdmissionReview, transformer annotationTransformer
 		return &admissionv1.AdmissionResponse{Allowed: true, UID: ar.Request.UID}
 	}
 
-	klog.V(2).Infof("injecting %d patches into pod %s/%s", len(patches), pod.Namespace, pod.Name)
+	klog.Infof("injecting %d patches into pod %s/%s", len(patches), pod.Namespace, pod.Name)
 	return patchResponse(ar.Request.UID, patches)
 }
 
@@ -182,11 +176,11 @@ func admitPod(ar *admissionv1.AdmissionReview, transformer annotationTransformer
 // BatchSandbox 是 CRD, 使用 unstructured 解码; 注解注入到
 // spec.template.metadata.annotations, 以便传播到其创建的 Pod。
 func admitBatchSandbox(ar *admissionv1.AdmissionReview, transformer annotationTransformer) *admissionv1.AdmissionResponse {
-	klog.V(2).Infof("admitBatchSandbox: kind=%s operation=%s uid=%s",
+	klog.Infof("admitBatchSandbox: kind=%s operation=%s uid=%s",
 		ar.Request.Kind, ar.Request.Operation, ar.Request.UID)
 
 	if ar.Request.Operation != admissionv1.Create {
-		klog.V(3).Infof("skip non-create operation: %s", ar.Request.Operation)
+		klog.Infof("skip non-create operation: %s", ar.Request.Operation)
 		return &admissionv1.AdmissionResponse{Allowed: true, UID: ar.Request.UID}
 	}
 
@@ -210,11 +204,11 @@ func admitBatchSandbox(ar *admissionv1.AdmissionReview, transformer annotationTr
 	patches := buildPatch(existingAnnotations, e2bAnnotations, "/spec/template/metadata/annotations")
 
 	if len(patches) == 0 {
-		klog.V(3).Infof("no patches needed for batchsandbox %s/%s", obj.GetNamespace(), obj.GetName())
+		klog.Infof("no patches needed for batchsandbox %s/%s", obj.GetNamespace(), obj.GetName())
 		return &admissionv1.AdmissionResponse{Allowed: true, UID: ar.Request.UID}
 	}
 
-	klog.V(2).Infof("injecting %d patches into batchsandbox %s/%s",
+	klog.Infof("injecting %d patches into batchsandbox %s/%s",
 		len(patches), obj.GetNamespace(), obj.GetName())
 	return patchResponse(ar.Request.UID, patches)
 }

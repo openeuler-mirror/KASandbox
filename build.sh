@@ -156,9 +156,9 @@ done
 
 setup_mooncake() {
     log_section "Mooncake Store 依赖准备"
-    
+
     BUILD_TAGS="-tags mooncake"
-    
+
     # 构建 CGo 编译器标志
     local cgo_cflags=(
         "-I/usr/include"
@@ -166,7 +166,7 @@ setup_mooncake() {
         "-I/usr/include/ub/umdk/urma"
         "-I/usr/include/ub/umdk/urma/udma"
     )
-    
+
     # 构建 CGo 链接器标志
     local cgo_ldflags=(
         "-L/usr/lib64/urma"
@@ -175,19 +175,19 @@ setup_mooncake() {
         "-lstdc++ -lnuma -lglog -lgflags -libverbs -ljsoncpp -lzstd -lcurl -luring"
         "-lurma -letcd_wrapper -lubdiag"
     )
-    
+
     # 可选：CUDA 支持
     if [ -d "/usr/local/cuda/lib64" ]; then
         cgo_ldflags+=("-L/usr/local/cuda/lib64 -lcudart")
     fi
-    
-    export CGO_CFLAGS="${cgo_cflags[*]}"
-    export CGO_LDFLAGS="${cgo_ldflags[*]}"
+
+    MOONCAKE_CGO_CFLAGS="${cgo_cflags[*]}"
+    MOONCAKE_CGO_LDFLAGS="${cgo_ldflags[*]}"
     export BUILD_TAGS="$BUILD_TAGS"
-    
-    log_info "CGO_CFLAGS=${CGO_CFLAGS}"
-    log_info "CGO_LDFLAGS=${CGO_LDFLAGS}"
+
     log_info "BUILD_TAGS=${BUILD_TAGS}"
+    log_info "MOONCAKE_CGO_CFLAGS=${MOONCAKE_CGO_CFLAGS}"
+    log_info "MOONCAKE_CGO_LDFLAGS=${MOONCAKE_CGO_LDFLAGS}"
 }
 
 setup_standard_build() {
@@ -295,17 +295,32 @@ build_go_module() {
     local module_dir=$1
     local output=$2
     local build_args=${3:-.}
-    
+    local module_tags="$BUILD_TAGS"
+    local module_cgo_cflags=""
+    local module_cgo_ldflags=""
+
+    # Mooncake 仅 orchestrator 依赖
+    if $ENABLE_MOONCAKE; then
+        if [[ "$module_dir" == *"orchestrator"* ]]; then
+            module_cgo_cflags="$MOONCAKE_CGO_CFLAGS"
+            module_cgo_ldflags="$MOONCAKE_CGO_LDFLAGS"
+        else
+            module_tags=""
+        fi
+    fi
+
     if ! check_dir "$module_dir"; then
         return 1
     fi
-    
+
     log_warn "→ 构建 $module_dir -> $output"
     (
         cd "$module_dir"
+        export CGO_CFLAGS="$module_cgo_cflags"
+        export CGO_LDFLAGS="$module_cgo_ldflags"
         # 使用 GOWORK=off：部分模块（如 e2b-webhook）不在 go.work 中，
         # 必须脱离 workspace 才能按各自 go.mod 构建
-        GOWORK=off go build $BUILD_TAGS -o "$output" $build_args
+        GOWORK=off go build $module_tags -o "$output" $build_args
     )
     log_info "✓ $output 构建完成"
 }
@@ -351,16 +366,20 @@ build_db_tools() {
     (
         log_warn "→ 构建 $db_dir 的 migrator"
         cd "$db_dir"
-        go build $BUILD_TAGS -o "../../${BIN_DIR}/migrator" ./scripts/migrator.go
+        export CGO_CFLAGS=""
+        export CGO_LDFLAGS=""
+        go build -o "../../${BIN_DIR}/migrator" ./scripts/migrator.go
         log_info "✓ ${BIN_DIR}/migrator 构建完成"
     ) &
     pids+=($!)
-    
+
     # seed-db 后台构建
     (
         log_warn "→ 构建 $db_dir 的 seed-db"
         cd "$db_dir"
-        go build $BUILD_TAGS -o "../../${BIN_DIR}/seed-db" ./scripts/seed/postgres/seed-db.go
+        export CGO_CFLAGS=""
+        export CGO_LDFLAGS=""
+        go build -o "../../${BIN_DIR}/seed-db" ./scripts/seed/postgres/seed-db.go
         log_info "✓ ${BIN_DIR}/seed-db 构建完成"
     ) &
     pids+=($!)

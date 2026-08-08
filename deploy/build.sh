@@ -35,10 +35,43 @@ esac
 
 # 设置初始架构为自动检测值
 ARCH="$DEFAULT_ARCH"
+CONTAINER_RUNTIME=""
 
 # 设置容器运行时命令
 # 优先使用 docker，若不存在则回退到 nerdctl（通常用于 k8s 节点）
+# 可通过 --runtime docker|nerdctl 显式指定
 set_container_runtime() {
+    local explicit_runtime="${1:-}"
+
+    if [ -n "$explicit_runtime" ]; then
+        case "$explicit_runtime" in
+            docker)
+                if ! command -v docker >/dev/null 2>&1; then
+                    error "显式指定 docker，但系统中未找到 docker 命令"
+                    exit 1
+                fi
+                DOCKER_CMD="docker"
+                DOCKER_COMPOSE_CMD="docker-compose"
+                CONTAINERD_SERVICE="docker"
+                ;;
+            nerdctl)
+                if ! command -v nerdctl >/dev/null 2>&1; then
+                    error "显式指定 nerdctl，但系统中未找到 nerdctl 命令"
+                    exit 1
+                fi
+                DOCKER_CMD="nerdctl"
+                DOCKER_COMPOSE_CMD="nerdctl compose"
+                CONTAINERD_SERVICE="containerd"
+                ;;
+            *)
+                error "不支持的容器运行时: $explicit_runtime（仅支持 docker/nerdctl）"
+                exit 1
+                ;;
+        esac
+        info "使用显式指定的容器运行时: $DOCKER_CMD"
+        return
+    fi
+
     if command -v docker >/dev/null 2>&1; then
         DOCKER_CMD="docker"
         DOCKER_COMPOSE_CMD="docker-compose"
@@ -391,12 +424,19 @@ uninstall_harbor() {
         info "未找到 Harbor 相关镜像"
     fi
 
-    # 删除 Harbor 目录
-    info "删除 Harbor 目录..."
+    # 删除 Harbor 安装目录
+    info "删除 Harbor 安装目录: $WORK_DIR/harbor"
     rm -rf "$WORK_DIR/harbor" 2>/dev/null || true
 
-    # 清理 Harbor 相关的 Docker 配置
-    rm -rf /etc/docker/certs.d/harbor* 2>/dev/null || true
+    # 清理 Harbor 相关的容器运行时证书配置
+    info "清理 Docker/Containerd 证书配置: /etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT 及 /etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT"
+    rm -rf /etc/docker/certs.d/${HOST_IP}:$HARBOR_HTTPS_PORT 2>/dev/null || true
+    rm -rf /etc/containerd/certs.d/${HOST_IP}:*$HARBOR_HTTPS_PORT 2>/dev/null || true
+    info "删除 Harbor 证书目录: $HARBOR_CERTS_DIR"
+    rm -rf $HARBOR_CERTS_DIR 2>/dev/null || true
+    # 删除 Harbor 数据目录
+    info "删除 Harbor 数据目录: $HARBOR_DATA_DIR"
+    rm -rf "$HARBOR_DATA_DIR" 2>/dev/null || true
 
     success "Harbor 卸载完成"
 }
@@ -565,10 +605,10 @@ uninstall_docker_resources() {
     
     # 停止并删除脚本创建的容器
     for container in "${script_containers[@]}"; do
-        if docker ps -a --format "{{.Names}}" | grep -q "^${container}$"; then
+        if $DOCKER_CMD ps -a --format "{{.Names}}" | grep -q "^${container}$"; then
             info "停止并删除容器: $container"
-            docker stop "$container" 2>/dev/null || true
-            docker rm -f "$container" 2>/dev/null || true
+            $DOCKER_CMD stop "$container" 2>/dev/null || true
+            $DOCKER_CMD rm -f "$container" 2>/dev/null || true
             success "容器 $container 已清理"
         else
             info "容器 $container 不存在，跳过"
@@ -589,18 +629,34 @@ uninstall_docker_resources() {
     
     # 删除脚本拉取的镜像
     for image in "${script_images[@]}"; do
-        if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${image}$"; then
+        if $DOCKER_CMD images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${image}$"; then
             info "删除镜像: $image"
-            docker rmi -f "$image" 2>/dev/null || true
+            $DOCKER_CMD rmi -f "$image" 2>/dev/null || true
             success "镜像 $image 已清理"
         else
             info "镜像 $image 不存在，跳过"
         fi
     done
     
+    # 清理推送到 Harbor 的 orchestration 镜像（如 193.12.7.2:30443/e2b-orchestration/o*）
+    local registry_prefix="${SERVER_IP}:${HARBOR_HTTPS_PORT}/${REGISTRY_PROJECT}"
+    info "清理 Harbor 镜像: ${registry_prefix}/..."
+    local harbor_images
+    harbor_images=$($DOCKER_CMD images --format "{{.Repository}}:{{.Tag}}" | grep "^${registry_prefix}/" || true)
+    if [ -n "$harbor_images" ]; then
+        while IFS= read -r image; do
+            [ -n "$image" ] || continue
+            info "删除 Harbor 镜像: $image"
+            $DOCKER_CMD rmi -f "$image" 2>/dev/null || true
+        done <<< "$harbor_images"
+        success "Harbor 镜像已清理"
+    else
+        info "未找到 Harbor 镜像，跳过"
+    fi
+
     # 清理悬空镜像
     info "清理悬空镜像..."
-    docker image prune -f 2>/dev/null || true
+    $DOCKER_CMD image prune -f 2>/dev/null || true
 }
 
 uninstall() {
@@ -792,9 +848,15 @@ start_harbor() {
         cp -f harbor.yml.tmpl harbor.yml || error "生成 harbor.yml 失败"
     fi
     sed -i "s/^hostname: .*/hostname: $HOST_IP/" "$harbor_config" || error "修改 hostname 失败"
-    # 根据当前使用的容器运行时修改 harbor/install.sh
+    mkdir -p "$HARBOR_DATA_DIR" || error "创建 Harbor 数据目录失败"
+    sed -i "s|^#*data_volume: .*|data_volume: $HARBOR_DATA_DIR|" "$harbor_config" || error "修改 data_volume 失败"
+    # 根据当前使用的容器运行时修改 harbor/install.sh 和 prepare
     # 若使用 nerdctl（通常为 k8s 节点），则需跳过 install.sh 自带的 docker 检查
     sed -i "s|^DOCKER_COMPOSE=.*$|DOCKER_COMPOSE='$DOCKER_COMPOSE_CMD'|" install.sh
+    sed -i "s|docker load|$DOCKER_CMD load|g" install.sh
+    if [ -f "prepare" ]; then
+        sed -i "s|docker run|$DOCKER_CMD run|g" prepare
+    fi
     if [ "$DOCKER_CMD" = "nerdctl" ]; then
         sed -i "/check_docker/d" install.sh
         sed -i "/check_dockercompose/d" install.sh
@@ -1407,6 +1469,7 @@ deploy_component() {
             ;;
         harbor)
             info "单独部署 Harbor..."
+            install_harbor
             install_harbor_certs
             deploy_harbor
             success "Harbor 部署完成"
@@ -1484,6 +1547,7 @@ show_help() {
     echo -e "  ${GREEN}--create-harbor-project [项目名]${NC}  创建 Harbor 项目 (默认: e2b-orchestration)"
     echo -e "  ${GREEN}--k8s [node-name]${NC}  启用 K8S 模式启动服务"
     echo -e "                      不指定节点名时自动选择第一个节点"
+    echo -e "  ${GREEN}--runtime docker|nerdctl${NC}  显式指定容器运行时（默认自动检测）"
     echo ""
     echo -e "${YELLOW}使用示例:${NC}"
     echo -e "  ${GREEN}# 初次完整安装:${NC}"
@@ -1502,6 +1566,10 @@ show_help() {
     echo -e "  ${GREEN}# K8S 模式部署:${NC}"
     echo -e "  $0 --k8s worker1 --start   # 指定节点名部署"
     echo -e "  $0 --k8s --start          # 自动选择第一个节点"
+    echo ""
+    echo -e "  ${GREEN}# 指定容器运行时:${NC}"
+    echo -e "  $0 --runtime nerdctl --install --start  # 强制使用 nerdctl"
+    echo -e "  $0 --runtime docker --install --start   # 强制使用 docker"
     echo ""
     echo -e "  ${GREEN}# 卸载组件:${NC}"
     echo -e "  $0 --uninstall              # 卸载所有组件"
@@ -1528,7 +1596,7 @@ show_help() {
 # 注意：deploy-plugin 不带冒号，因为它需要处理多个可选参数
 PARSED_ARGUMENTS=$(getopt \
   --options "h" \
-  --longoptions "help,download,install,install-client,uninstall,remove:,start,stop,deploy:,deploy-plugin,nomad-job,make:,k8s:,create-harbor-project:" \
+  --longoptions "help,download,install,install-client,uninstall,remove:,start,stop,deploy:,deploy-plugin,nomad-job,make:,k8s:,create-harbor-project:,runtime:" \
   --name "$0" \
   -- "$@")
 
@@ -1640,6 +1708,10 @@ while true; do
                 CREATE_PROJECT="e2b-orchestration"
             fi
             ;;
+        --runtime)
+            CONTAINER_RUNTIME="$2"
+            shift
+            ;;
         --)
             shift
             break
@@ -1654,7 +1726,7 @@ done
 # ===================== 执行逻辑阶段 =====================
 echo "------------------------------$DEPLOY_MODE---------------------------------"
 # 初始化容器运行时
-set_container_runtime
+set_container_runtime "$CONTAINER_RUNTIME"
 # 显示帮助
 if [ "${ACTION_HELP:-false}" = true ]; then
     show_help

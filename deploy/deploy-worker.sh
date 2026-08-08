@@ -15,6 +15,9 @@ DEPLOY_DIR="/opt/e2b-infra"
 HARBOR_CERTS="/etc/nginx/ssl/harbor.crt"
 E2B_API_TOKEN="/root/.e2b/config.json"
 HTTP_PROXY="${HTTP_PROXY:-}"
+CRI_MULTIPLEX_BIN="${CRI_MULTIPLEX_BIN:-/opt/e2b-infra/bin/cri-multiplex}"
+CRI_MULTIPLEX_ORCHESTRATOR="${CRI_MULTIPLEX_ORCHESTRATOR:-localhost:5008}"
+KUBELET_FLAGS_FILE="${KUBELET_FLAGS_FILE:-/var/lib/kubelet/kubeadm-flags.env}"
 PARALLEL=1
 
 # ========== 颜色定义 ==========
@@ -189,11 +192,11 @@ else
 fi
 
 cd ${DEPLOY_DIR}
-cp dep/.env "dep/.env.bak.\$(date +%Y%m%d%H%M%S)"
-sed -i "s/^export SERVER_IP=.*/export SERVER_IP=${node_ip}/" dep/.env
-sed -i 's/^export DEPLOY_MODE=.*/export DEPLOY_MODE=k8s/' dep/.env
+cp .env ".env.bak.\$(date +%Y%m%d%H%M%S)"
+sed -i "s/^export SERVER_IP=.*/export SERVER_IP=${node_ip}/" .env
+sed -i 's/^export DEPLOY_MODE=.*/export DEPLOY_MODE=k8s/' .env
 echo "  .env 已更新:"
-grep -E "^export SERVER_IP|^export DEPLOY_MODE" dep/.env
+grep -E "^export SERVER_IP|^export DEPLOY_MODE" .env
 
 echo "  执行 build.sh --install-client ..."
 bash build.sh --install-client
@@ -210,6 +213,15 @@ systemctl restart kubelet
 
 echo "  重启 containerd ..."
 systemctl restart containerd
+
+# 部署 cri-multiplex（多 runtime 复用器）
+echo "  部署 cri-multiplex ..."
+if [ -x "${CRI_MULTIPLEX_BIN}" ]; then
+    export CRI_MULTIPLEX_BIN CRI_MULTIPLEX_ORCHESTRATOR KUBELET_FLAGS_FILE
+    bash "${DEPLOY_DIR}/k8s-deploy.sh" cri-multiplex
+else
+    echo "  WARN: 未找到 cri-multiplex 可执行文件: ${CRI_MULTIPLEX_BIN}，跳过部署"
+fi
 
 echo "  测试镜像拉取 ${REGISTRY}/${IMAGE} ..."
 crictl pull ${REGISTRY}/${IMAGE}

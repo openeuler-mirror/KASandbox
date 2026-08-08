@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 用法:
+#   ./deploy.sh --type k8s              # K8S 部署，自动使用 k8s pod 模式初始化数据库
+#   ./deploy.sh --type nomad            # Nomad 部署，自动使用容器模式初始化数据库
+#   ./deploy.sh --type k8s --db-mode container  # K8S 部署但使用容器模式初始化数据库
+#   ./deploy.sh --type nomad --db-mode k8s      # Nomad 部署但使用 k8s pod 模式初始化数据库
+#   ./deploy.sh createapikey --type k8s # 仅执行数据库初始化（跳过 build/push/deploy）
+#   ./deploy.sh --build-image api,orchestrator  # 仅构建指定镜像（默认 nomad，可加 --type k8s）
+#   ./deploy.sh --build-image ""                # 构建所有镜像
+
 # ===================== 基础配置 =====================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$SCRIPT_DIR/bin"
 DEPLOY_TYPE="nomad"
+DB_MODE=""
+CREATE_API_KEY_MODE=false
+BUILD_ONLY_MODE=false
+BUILD_IMAGES=""
 REGISTRY_URL=""
 
 # ===================== 输出函数 =====================
@@ -12,6 +25,28 @@ info()  { echo "==> $*"; }
 warn()  { echo "==> WARN: $*"; }
 step()  { echo "------> $*"; }
 step2() { echo "======  $*  ======"; }
+
+show_help() {
+    cat <<'EOF'
+Usage: ./deploy.sh [OPTIONS]
+
+Options:
+  --type <k8s|nomad>          Deployment type (default: nomad)
+  --db-mode <container|k8s>   Database initialization mode
+  createapikey                Only initialize database (skip build/push/deploy)
+  --build-image <images>      Only build specified images, comma separated;
+                              use empty string "" to build all images
+  -h, --help                  Show this help message
+
+Examples:
+  ./deploy.sh --type k8s
+  ./deploy.sh --type nomad
+  ./deploy.sh --type k8s --db-mode container
+  ./deploy.sh createapikey --type k8s
+  ./deploy.sh --build-image api,orchestrator
+  ./deploy.sh --build-image ""
+EOF
+}
 
 # ===================== 参数解析 =====================
 parse_args() {
@@ -21,8 +56,26 @@ parse_args() {
                 DEPLOY_TYPE="$2"
                 shift 2
                 ;;
+            --db-mode)
+                DB_MODE="$2"
+                shift 2
+                ;;
+            createapikey)
+                CREATE_API_KEY_MODE=true
+                shift
+                ;;
+            --build-image)
+                BUILD_ONLY_MODE=true
+                BUILD_IMAGES="$2"
+                shift 2
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
             *)
                 echo "Unknown parameter: $1"
+                show_help
                 exit 1
                 ;;
         esac
@@ -46,12 +99,18 @@ load_env() {
 # ===================== 镜像构建与推送 =====================
 # 构建 bin 目录下的 *.Dockerfile 并推送到 Harbor
 build_and_push_dockerfiles() {
+    local push_images="${1:-true}"
+    local filter="${2:-}"
     cd "$BIN_DIR"
     local dockerfile name tag
     for dockerfile in *.Dockerfile; do
         # 无 Dockerfile 时 glob 返回字面量，跳过
         [ -e "$dockerfile" ] || continue
         name="${dockerfile%.Dockerfile}"
+        # 如果指定了镜像过滤，只构建匹配的镜像
+        if [ -n "$filter" ] && [[ ",${filter}," != *,${name},* ]]; then
+            continue
+        fi
         tag="${REGISTRY_URL}/${name,,}"
         step "检查镜像 $tag 是否存在"
         if docker image inspect "$name" >/dev/null 2>&1; then
@@ -63,13 +122,17 @@ build_and_push_dockerfiles() {
             step "构建镜像 $tag"
             docker build --pull=false -t "$tag" -f "$dockerfile" .
         fi
-        step "推送镜像 $tag"
-        docker push "$tag"
+        if [ "$push_images" = true ]; then
+            step "推送镜像 $tag"
+            docker push "$tag"
+        fi
     done
 }
 
 # 推送预构建镜像（redis/postgres/busybox）到 Harbor
 push_prebuilt_images() {
+    local push_images="${1:-true}"
+    local filter="${2:-}"
     declare -A imgs=(
         [redis]="redis:${REDIS_VERSION}"
         [postgres]="postgres:latest"
@@ -81,11 +144,17 @@ push_prebuilt_images() {
     )
     local name src tag
     for name in "${!imgs[@]}"; do
+        # 如果指定了镜像过滤，只处理匹配的预构建镜像
+        if [ -n "$filter" ] && [[ ",${filter}," != *,${name},* ]]; then
+            continue
+        fi
         src="${imgs[$name]}"
         tag="${REGISTRY_URL}/${src}"
         step2 "$src  ->  $tag"
         docker tag "$src" "$tag"
-        docker push "$tag"
+        if [ "$push_images" = true ]; then
+            docker push "$tag"
+        fi
     done
 }
 
@@ -262,7 +331,8 @@ deploy_nomad() {
 
 # ===================== 数据库初始化 =====================
 # 检查 E2B 团队是否已初始化，未初始化则导入默认用户并调整 sandbox 配额
-init_database() {
+# 容器模式：直接 docker exec 进 postgres 容器执行
+init_database_container() {
     local pg_container="postgres"
     local pg_user="postgres"
     local pg_db="mydatabase"
@@ -314,23 +384,149 @@ EOF
     fi
 }
 
+# K8S Pod 模式：通过 kubectl exec + port-forward 初始化
+init_database_k8s() {
+    NAMESPACE="e2b"
+    PG_USER="postgres"
+    PG_DB="mydatabase"
+    SCRIPT_DIR="/root/.e2b"
+    SEED_DB="/opt/e2b-infra/bin/seed-db"
+    POSTGRES_PASSWORD="local"
+
+    # 获取 postgres pod
+    PG_POD=$(kubectl get pod -n "$NAMESPACE" -l app=postgres -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -z "$PG_POD" ]; then
+        echo "ERROR: No postgres pod found in namespace $NAMESPACE"
+        exit 1
+    fi
+    info "Postgres pod: $PG_POD"
+
+    # 1. 创建数据库
+    info "Creating database if not exists..."
+    kubectl exec -n "$NAMESPACE" "$PG_POD" -- psql -U "$PG_USER" -d postgres -c "CREATE DATABASE $PG_DB;" 2>/dev/null || true
+
+    # 2. 检查是否已初始化
+    query="SELECT EXISTS (SELECT 1 FROM teams WHERE name = 'E2B');"
+    result=$(kubectl exec -n "$NAMESPACE" "$PG_POD" -- psql -U "$PG_USER" -d "$PG_DB" -q --tuples-only -c "$query" 2>/dev/null | xargs || true)
+
+    if [ "$result" == "t" ]; then
+        info "E2B team already exists, skipping."
+        exit 0
+    fi
+
+    # 3. 找一个能运行 seed-db 的 pod（api pod 即可）
+    API_POD=$(kubectl get pod -n "$NAMESPACE" -l app=api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -z "$API_POD" ]; then
+        echo "ERROR: No api pod found. Make sure e2b is deployed."
+        exit 1
+    fi
+    info "API pod: $API_POD"
+
+    # 4. 复制 seed-db 到 pod
+    info "Copying seed-db to api pod..."
+    kubectl cp "$SEED_DB" "$NAMESPACE/$API_POD:/tmp/seed-db"
+    kubectl exec -n "$NAMESPACE" "$API_POD" -- chmod +x /tmp/seed-db
+
+    # 5. 在 pod 内运行 seed-db（使用 K8s 内部 DNS，无需 port-forward）
+    info "Running seed-db inside api pod..."
+    mkdir -p "$SCRIPT_DIR"
+
+    # 关键：用 here-string <<< 传递交互输入，避免管道子 shell 污染
+    kubectl exec -i -n "$NAMESPACE" "$API_POD" -- \
+        bash -c "POSTGRES_CONNECTION_STRING='postgresql://${PG_USER}:${POSTGRES_PASSWORD}@postgres.${NAMESPACE}.svc.cluster.local:5432/${PG_DB}?sslmode=disable' /tmp/seed-db" \
+        > "$SCRIPT_DIR/user.txt" 2>&1 <<< "admin@e2b.dev" || {
+            echo "ERROR: seed-db failed, output:"
+            cat "$SCRIPT_DIR/user.txt"
+            exit 1
+        }
+
+    # 6. 提取变量（|| true 防止 grep 失败触发 set -e）
+    team_id=$(grep "Team ID:" "$SCRIPT_DIR/user.txt" | awk -F': ' '{print $2}' || true)
+    token=$(grep "Access Token:" "$SCRIPT_DIR/user.txt" | awk -F': ' '{print $2}' || true)
+    api_key=$(grep "Team API Key:" "$SCRIPT_DIR/user.txt" | awk -F': ' '{print $2}' || true)
+
+    if [ -z "$team_id" ] || [ -z "$token" ] || [ -z "$api_key" ]; then
+        echo "ERROR: Failed to extract credentials from seed-db output:"
+        cat "$SCRIPT_DIR/user.txt"
+        exit 1
+    fi
+
+    cat > /root/.e2b/config.json <<EOF
+{
+    "teamId": "$team_id",
+    "accessToken": "$token",
+    "teamApiKey": "$api_key"
+}
+EOF
+    info "config.json written successfully"
+    info "Access Token: $token"
+    info "Team API Key: $api_key"
+
+    # 7. 更新 tiers
+    info "Updating tiers..."
+    kubectl exec -n "$NAMESPACE" "$PG_POD" -- \
+        psql -U "$PG_USER" -d "$PG_DB" -c "UPDATE tiers SET max_length_hours = 10000 WHERE id = 'base_v1';"
+    kubectl exec -n "$NAMESPACE" "$PG_POD" -- \
+        psql -U "$PG_USER" -d "$PG_DB" -c "UPDATE tiers SET concurrent_instances = 10000 WHERE id = 'base_v1';"
+
+    info "Initialization complete!"
+}
+
+# 根据 DEPLOY_TYPE 或 --db-mode 参数选择初始化方式
+init_database() {
+    case "$DB_MODE" in
+        container)
+            init_database_container
+            ;;
+        k8s)
+            init_database_k8s
+            ;;
+        "")
+            # 未显式指定时，根据部署类型自动选择
+            case "$DEPLOY_TYPE" in
+                k8s)   init_database_k8s ;;
+                nomad) init_database_container ;;
+                *)     init_database_container ;;
+            esac
+            ;;
+        *)
+            echo "Unknown db mode: $DB_MODE (supported: container, k8s)"
+            exit 1
+            ;;
+    esac
+}
+
 # ===================== 主流程 =====================
 main() {
     parse_args "$@"
     load_env
-    build_and_push_dockerfiles
-    push_prebuilt_images
 
-    case "$DEPLOY_TYPE" in
-        k8s)   deploy_k8s ;;
-        nomad) deploy_nomad ;;
-        *)
-            echo "Unknown deploy type: $DEPLOY_TYPE"
-            exit 1
-            ;;
-    esac
+    if [ "$BUILD_ONLY_MODE" = true ]; then
+        info "build mode: only build images, skip push/deploy/init"
+        build_and_push_dockerfiles false "$BUILD_IMAGES"
+        push_prebuilt_images false "$BUILD_IMAGES"
+        info "images build complete"
+        return
+    fi
 
-    init_database
+    if [ "$CREATE_API_KEY_MODE" = true ]; then
+        info "createapikey mode: skipping build/push/deploy"
+        init_database
+    else
+        build_and_push_dockerfiles true "$BUILD_IMAGES"
+        push_prebuilt_images true "$BUILD_IMAGES"
+
+        case "$DEPLOY_TYPE" in
+            k8s)   deploy_k8s ;;
+            nomad) deploy_nomad ;;
+            *)
+                echo "Unknown deploy type: $DEPLOY_TYPE"
+                exit 1
+                ;;
+        esac
+
+        init_database
+    fi
 
     # init_database 生成了 teamApiKey → 更新 Secret 并重启 webhook 使其生效
     if [ "$DEPLOY_TYPE" = "k8s" ] && [ "${ENABLE_WEBHOOK:-false}" = "true" ]; then

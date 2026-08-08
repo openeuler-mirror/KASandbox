@@ -4,12 +4,13 @@ set -euo pipefail
 # ===================== 基础配置 =====================
 # 使用 KubeKey 部署 K8S 集群（支持 x86_64 / arm64）
 # 用法:
-#   ./k8s-deploy.sh prep     # 安装依赖、下载 kk、生成集群配置（生成后需手动编辑节点信息）
+#   ./k8s-deploy.sh prep     # 安装依赖、下载 kk/cni、生成集群配置（生成后需手动编辑节点信息）
 #   ./k8s-deploy.sh create   # 根据配置文件创建集群
 #   ./k8s-deploy.sh all      # prep + create（需先通过 -c 指定已编辑的配置文件）
 
 KUBEKEY_VERSION="${KUBEKEY_VERSION:-v3.1.10}"
 K8S_VERSION="${K8S_VERSION:-v1.32.5}"
+CNI_PLUGINS_VERSION="${CNI_PLUGINS_VERSION:-v1.6.2}"
 CLUSTER_NAME="${CLUSTER_NAME:-k8s}"
 CONFIG_FILE="${CONFIG_FILE:-}"
 
@@ -79,6 +80,30 @@ download_kubekey() {
     curl -sfL "https://get-kk.kubesphere.io" | VERSION="$KUBEKEY_VERSION" sh -
     chmod +x "$SCRIPT_DIR/kk"
     success "KubeKey 下载完成: $SCRIPT_DIR/kk"
+}
+
+# 下载 CNI 插件二进制到 /opt/cni/bin
+# KubeKey 默认使用 calico，但节点上仍需 bridge/host-local 等基础 CNI 插件
+# 环境变量 CNI_PLUGINS_VERSION 可指定版本（默认 v1.6.2）
+download_cni_plugins() {
+    local version arch tar_name download_url
+    version="${CNI_PLUGINS_VERSION:-v1.9.1}"
+    arch="$(detect_arch)"
+    tar_name="cni-plugins-linux-${arch}-${version}.tgz"
+    download_url="https://github.com/containernetworking/plugins/releases/download/${version}/${tar_name}"
+
+    # 幂等检查：已有核心插件则跳过
+    if [ -d "/opt/cni/bin" ] && [ -f "/opt/cni/bin/bridge" ] && [ -f "/opt/cni/bin/host-local" ]; then
+        info "CNI 插件已存在，跳过下载"
+        return
+    fi
+
+    info "下载 CNI 插件 ${version} (${arch}) ..."
+    mkdir -p /opt/cni/bin
+    curl -sfL "$download_url" -o "/tmp/${tar_name}" || error "CNI 插件下载失败: $download_url"
+    tar -xzf "/tmp/${tar_name}" -C /opt/cni/bin || error "CNI 插件解压失败"
+    rm -f "/tmp/${tar_name}"
+    success "CNI 插件已安装到 /opt/cni/bin"
 }
 
 # 生成集群配置文件
@@ -268,11 +293,11 @@ configure_domain_access() {
         # 在 'ready' 行后插入（4 空格缩进，KubeKey 默认布局）；找不到则回退到 'errors' 行
         # 注意: sed a\ 命令会吃掉单个反斜杠，故 \. 需写成 \\. 才能原样输出
         if grep -q "^    ready$" "$tmp_corefile"; then
-            sed -i '/^    ready$/a\    rewrite name regex .*\\.e2b\\.app\\.$ edge-api.e2b.svc.cluster.local' "$tmp_corefile"
+            sed -i '/^    ready$/a\    rewrite name regex .*.e2b.app.$ edge-api.e2b.svc.cluster.local' "$tmp_corefile"
         elif grep -q "^    errors$" "$tmp_corefile"; then
-            sed -i '/^    errors$/a\    rewrite name regex .*\\.e2b\\.app\\.$ edge-api.e2b.svc.cluster.local' "$tmp_corefile"
+            sed -i '/^    errors$/a\    rewrite name regex .*.e2b.app.$ edge-api.e2b.svc.cluster.local' "$tmp_corefile"
         else
-            warn "无法识别 Corefile 结构，请手动添加: rewrite name regex .*\.e2b\.app\.$ edge-api.e2b.svc.cluster.local"
+            warn "无法识别 Corefile 结构，请手动添加: rewrite name regex .*.e2b.app.$ edge-api.e2b.svc.cluster.local"
             rm -f "$tmp_corefile"
             return
         fi
@@ -307,7 +332,7 @@ deploy_cri_multiplex() {
     local mux_socket="/run/cri-multiplex.sock"
     local containerd_socket="/run/containerd/containerd.sock"
     local orchestrator_addr="${CRI_MULTIPLEX_ORCHESTRATOR:-localhost:5008}"
-    local flags_file="/var/lib/kubelet/kubeadm-flags.env"
+    local flags_file="${KUBELET_FLAGS_FILE:-/var/lib/kubelet/kubeadm-flags.env}"
     local unit_file="/etc/systemd/system/cri-multiplex.service"
 
     info "部署 cri-multiplex ..."
@@ -327,7 +352,18 @@ After=containerd.service
 Wants=containerd.service
 
 [Service]
-ExecStart=${bin} -socket ${mux_socket} -containerd-socket ${containerd_socket} -orchestrator-address ${orchestrator_addr}
+ExecStart=${bin} -socket ${mux_socket} -containerd-socket ${containerd_socket} -orchestrator-address ${orchestrator_addr} \
+-orchestrator-proxy-address localhost:5007 \
+  -state-dir /var/lib/cri-multiplex/state \
+  -orphan-reconcile-enabled=1 \
+  -orphan-reconcile-interval 60s \
+  -orphan-grace-period 120s \
+  -cleanup-max-retries 10 \
+  -cni-enabled \
+  -cni-conf-dir /etc/cni/net.d \
+  -cni-bin-dir /opt/cni/bin \
+  -cni-ifname eth0 \
+  -cni-netns-dir /var/run/netns
 Restart=always
 RestartSec=3
 # 运行时 socket 目录
@@ -399,6 +435,62 @@ EOF
     success "RuntimeClass 创建完成"
 }
 
+install_buildkit() {
+    case "$(uname -m)" in
+        x86_64)
+            ARCH=amd64
+            ;;
+        aarch64*)
+            ARCH=arm64
+            ;;
+        *)
+            echo "$(uname -m), isn't supported"
+            exit 1
+            ;;
+    esac
+
+    wget https://openfuyao.obs.cn-north-4.myhuaweicloud.com/moby/buildkit/releases/download/v0.27.1/buildkit-v0.27.1.linux-${ARCH}.tar.gz
+
+    tar -xvzf buildkit-v0.27.1.linux-${ARCH}.tar.gz -C /usr/local/bin/
+    mv /usr/local/bin/bin/buildctl /usr/local/bin/bin/buildkitd /usr/local/bin/
+    mkdir -p /etc/buildkit
+    cat > /etc/buildkit/buildkitd.toml <<'EOF'
+[worker.oci]
+  enabled = false
+
+[worker.containerd]
+  namespace = "default"
+  address = "/run/containerd/containerd.sock"
+EOF
+    cat > /usr/lib/systemd/system/buildkit.service <<'EOF'
+[Unit]
+Description=BuildKit
+Requires=buildkit.socket
+After=buildkit.socket
+Documentation=https://github.com/moby/buildkit
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/buildkitd --addr fd://
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    cat > /usr/lib/systemd/system/buildkit.socket <<'EOF'
+[Unit]
+Description=BuildKit
+Documentation=https://github.com/moby/buildkit
+
+[Socket]
+ListenStream=%t/buildkit/buildkitd.sock
+SocketMode=0660
+
+[Install]
+WantedBy=sockets.target
+EOF
+    systemctl enable --now buildkit.service buildkit.socket
+}
+
 # ===================== 主流程 =====================
 main() {
     local action="${1:-help}"
@@ -410,6 +502,7 @@ main() {
         prep)
             install_system_deps
             download_kubekey
+            download_cni_plugins
             generate_config
             ;;
         create)
@@ -423,6 +516,7 @@ main() {
             if [ -z "$CONFIG_FILE" ]; then
                 install_system_deps
                 download_kubekey
+                download_cni_plugins
                 generate_config
                 warn "all 流程需要已编辑的配置文件"
                 error "请编辑 $GENERATED_CONFIG 后重新执行: CONFIG_FILE=<path> $0 all"
@@ -440,35 +534,43 @@ main() {
             # 部署 cri-multiplex 并切换 kubelet endpoint（节点级操作，每个节点执行）
             deploy_cri_multiplex
             ;;
+        buildkit)
+            # 安装 buildkit（节点级操作）
+            install_buildkit
+            ;;
         help|--help|-h)
-            echo "用法: $0 <prep|create|all|configure-domain|cri-multiplex>"
+            echo "用法: $0 <prep|create|all|configure-domain|cri-multiplex|buildkit>"
             echo ""
-            echo "  prep              安装依赖、下载 kk、生成集群配置（需手动编辑节点信息）"
+            echo "  prep              安装依赖、下载 kk 和 CNI 插件、生成集群配置（需手动编辑节点信息）"
             echo "  create            根据配置文件创建集群、验证状态、部署 ingress-nginx、配置域名访问"
             echo "  all               prep + create（需通过 CONFIG_FILE 指定已编辑的配置）"
             echo "  configure-domain  单独配置 *.e2b.app 域名访问（CoreDNS rewrite + wildcard Ingress）"
             echo "                    （e2b 部署后执行以补建 wildcard Ingress）"
             echo "  cri-multiplex     部署 cri-multiplex、切换 kubelet endpoint、创建 RuntimeClass"
             echo "                    （节点级操作，需在每个节点执行；需先安装 cri-multiplex 二进制）"
+            echo "  buildkit          安装并启用 buildkit"
             echo ""
             echo "环境变量:"
-            echo "  KUBEKEY_VERSION  KubeKey 版本（默认 v3.1.10）"
-            echo "  K8S_VERSION      K8S 版本（默认 v1.32.5）"
-            echo "  CLUSTER_NAME     集群名（默认 k8s）"
+            echo "  KUBEKEY_VERSION      KubeKey 版本（默认 v3.1.10）"
+            echo "  K8S_VERSION          K8S 版本（默认 v1.32.5）"
+            echo "  CNI_PLUGINS_VERSION  CNI 插件版本（默认 v1.6.2）"
+            echo "  CLUSTER_NAME         集群名（默认 k8s）"
             echo "  CONFIG_FILE      指定配置文件路径（create/all 使用）"
             echo "  HOST_IP          本机 IP（默认自动探测，prep 生成配置时使用）"
             echo "  NODE_PASSWORD    节点 SSH 密码（必须通过环境变量提供）"
-            echo "  CRI_MULTIPLEX_BIN       cri-multiplex 二进制路径（默认 /opt/e2b-infra/bin/cri-multiplex）"
-            echo "  CRI_MULTIPLEX_ORCHESTRATOR  orchestrator 地址（默认 localhost:5008）"
+            echo "  CRI_MULTIPLEX_BIN          cri-multiplex 二进制路径（默认 /opt/e2b-infra/bin/cri-multiplex）"
+            echo "  CRI_MULTIPLEX_ORCHESTRATOR orchestrator 地址（默认 localhost:5008）"
+            echo "  KUBELET_FLAGS_FILE         kubelet 启动参数文件路径（默认 /var/lib/kubelet/kubeadm-flags.env）"
             echo ""
             echo "示例:"
             echo "  $0 prep                                  # 生成 config-k8s-arm64.yaml（自动填充本机 IP）"
             echo "  vi config-k8s-arm64.yaml                 # 按需修改多节点/密码"
             echo "  $0 create                                # 创建集群"
             echo "  HOST_IP=10.0.0.5 NODE_PASSWORD=secret $0 prep   # 指定 IP 和密码生成配置"
+            echo "  $0 buildkit                              # 安装 buildkit"
             ;;
         *)
-            error "未知操作: $action（支持: prep / create / all / configure-domain / cri-multiplex / help）"
+            error "未知操作: $action（支持: prep / create / all / configure-domain / cri-multiplex / buildkit / help）"
             ;;
     esac
 }
