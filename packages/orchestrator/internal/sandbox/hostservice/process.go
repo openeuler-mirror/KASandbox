@@ -183,10 +183,10 @@ func stopProc(_ context.Context, entry *procEntry, gracePeriodSec int) error {
 }
 
 const (
-	maxRestarts          = 5
+	maxRestarts          = 3
 	restartBackoffStart  = 1 * time.Second
 	restartBackoffMax    = 16 * time.Second
-	successResetInterval = 30 * time.Second
+	successResetInterval = 60 * time.Second
 )
 
 func monitorAndRestart(ctx context.Context, entry *procEntry, restart func(context.Context, *procEntry) (*procEntry, error)) {

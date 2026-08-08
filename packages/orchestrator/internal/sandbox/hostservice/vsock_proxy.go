@@ -66,9 +66,12 @@ func BuildVsockProxyService(config cfg.BuilderConfig, cid int64, sandboxID, cutt
 		},
 		ExtraFiles:    []*os.File{listenerFile},
 		RestartPolicy: RestartOnCrash,
-		// ReadyCheck stays nil because end-to-end readiness is checked after the
-		// VMM has restored. A TCP dial here would make the proxy attempt CID:5555
-		// before the guest exists.
+		// This only verifies that the proxy survives its first second; it does not
+		// check guest adbd. End-to-end readiness is still checked after the VMM
+		// starts by PollVsockProxyReady.
+		ReadyCheck: &ADBProxyReady{
+			Delay: time.Second,
+		},
 	}, nil
 }
 
