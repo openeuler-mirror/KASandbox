@@ -38,6 +38,8 @@ spec:
           value: "{{ .Values.postgresUser }}"
         - name: POSTGRES_PASSWORD
           value: "{{ .Values.postgresPassword }}"
+        - name: POSTGRES_DB
+          value: "mydatabase"
 
         # 资源配额（和 edge 风格统一，使用 Values 注入）
         resources:
