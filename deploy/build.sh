@@ -537,13 +537,14 @@ start_client() {
 download_packages() {
     local pkg_dir="$DEP_DIR"
     # 架构相关变量映射
-    local docker_arch nomad_arch consul_arch fc_arch harbor_pkg
+    local docker_arch nomad_arch consul_arch fc_arch oe_arch harbor_pkg
     case "$ARCH" in
         x86_64)
             docker_arch="x86_64"
             nomad_arch="amd64"
             consul_arch="amd64"
             fc_arch="x86_64"
+            oe_arch="x86_64"
             harbor_pkg="harbor-offline-installer-v2.13.0.tgz"
             harbor_url="https://github.com/goharbor/harbor/releases/download/v2.13.0"
             ;;
@@ -552,6 +553,7 @@ download_packages() {
             nomad_arch="arm64"
             consul_arch="arm64"
             fc_arch="aarch64"
+            oe_arch="aarch64"
             harbor_pkg="harbor-offline-installer-aarch64-v2.13.0.tgz"
             harbor_url="https://github.com/wise2c-devops/build-harbor-aarch64/releases/download/v2.13.0"
             ;;
@@ -569,6 +571,7 @@ download_packages() {
         "https://releases.hashicorp.com/nomad/1.10.4/nomad_1.10.4_linux_${nomad_arch}.zip|nomad_1.10.4_linux_${nomad_arch}.zip|nomad"
         "https://releases.hashicorp.com/consul/1.21.4/consul_1.21.4_linux_${consul_arch}.zip|consul_1.21.4_linux_${consul_arch}.zip|consul"
         "https://github.com/firecracker-microvm/firecracker/releases/download/v1.13.1/firecracker-v1.13.1-${fc_arch}.tgz|firecracker-v1.13.1-${fc_arch}.tgz|firecracker"
+        "https://dl-cdn.openeuler.openatom.cn/openEuler-24.03-LTS-SP3/docker_img/${oe_arch}/openEuler-docker.${oe_arch}.tar.xz|openEuler-docker.${oe_arch}.tar.xz|docker"
         "${harbor_url}/${harbor_pkg}|${harbor_pkg}|harbor"
     )
 
