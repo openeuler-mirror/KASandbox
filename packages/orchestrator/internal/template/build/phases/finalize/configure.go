@@ -18,7 +18,7 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 )
 
-const configurationTimeout = 5 * time.Minute
+const configurationTimeout = 20 * time.Minute
 
 //go:embed configure.sh
 var configureScriptFile string
