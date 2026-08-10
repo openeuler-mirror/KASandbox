@@ -100,7 +100,7 @@ download_cni_plugins() {
 
     info "下载 CNI 插件 ${version} (${arch}) ..."
     mkdir -p /opt/cni/bin
-    curl -sfL "$download_url" -o "/tmp/${tar_name}" || error "CNI 插件下载失败: $download_url"
+    curl -sfkL "$download_url" -o "/tmp/${tar_name}" || error "CNI 插件下载失败: $download_url"
     tar -xzf "/tmp/${tar_name}" -C /opt/cni/bin || error "CNI 插件解压失败"
     rm -f "/tmp/${tar_name}"
     success "CNI 插件已安装到 /opt/cni/bin"
@@ -449,7 +449,7 @@ install_buildkit() {
             ;;
     esac
 
-    wget https://openfuyao.obs.cn-north-4.myhuaweicloud.com/moby/buildkit/releases/download/v0.27.1/buildkit-v0.27.1.linux-${ARCH}.tar.gz
+    wget --no-check-certificate https://openfuyao.obs.cn-north-4.myhuaweicloud.com/moby/buildkit/releases/download/v0.27.1/buildkit-v0.27.1.linux-${ARCH}.tar.gz
 
     tar -xvzf buildkit-v0.27.1.linux-${ARCH}.tar.gz -C /usr/local/bin/
     mv /usr/local/bin/bin/buildctl /usr/local/bin/bin/buildkitd /usr/local/bin/
@@ -538,8 +538,12 @@ main() {
             # 安装 buildkit（节点级操作）
             install_buildkit
             ;;
+        download-cni)
+            # 单独下载 CNI 插件
+            download_cni_plugins
+            ;;
         help|--help|-h)
-            echo "用法: $0 <prep|create|all|configure-domain|cri-multiplex|buildkit>"
+            echo "用法: $0 <prep|create|all|configure-domain|cri-multiplex|buildkit|download-cni>"
             echo ""
             echo "  prep              安装依赖、下载 kk 和 CNI 插件、生成集群配置（需手动编辑节点信息）"
             echo "  create            根据配置文件创建集群、验证状态、部署 ingress-nginx、配置域名访问"
@@ -549,6 +553,7 @@ main() {
             echo "  cri-multiplex     部署 cri-multiplex、切换 kubelet endpoint、创建 RuntimeClass"
             echo "                    （节点级操作，需在每个节点执行；需先安装 cri-multiplex 二进制）"
             echo "  buildkit          安装并启用 buildkit"
+            echo "  download-cni      单独下载并安装 CNI 插件到 /opt/cni/bin"
             echo ""
             echo "环境变量:"
             echo "  KUBEKEY_VERSION      KubeKey 版本（默认 v3.1.10）"
@@ -568,9 +573,11 @@ main() {
             echo "  $0 create                                # 创建集群"
             echo "  HOST_IP=10.0.0.5 NODE_PASSWORD=secret $0 prep   # 指定 IP 和密码生成配置"
             echo "  $0 buildkit                              # 安装 buildkit"
+            echo "  $0 download-cni                          # 下载 CNI 插件"
+            echo "  CNI_PLUGINS_VERSION=v1.6.2 $0 download-cni      # 指定版本下载 CNI 插件"
             ;;
         *)
-            error "未知操作: $action（支持: prep / create / all / configure-domain / cri-multiplex / buildkit / help）"
+            error "未知操作: $action（支持: prep / create / all / configure-domain / cri-multiplex / buildkit / download-cni / help）"
             ;;
     esac
 }
