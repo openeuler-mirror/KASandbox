@@ -72,8 +72,6 @@ spec:
           value: 300s
         - name: CVD_HOST_PACKAGE_DIR
           value: "/cvd-host-packages"
-        - name: LD_LIBRARY_PATH
-          value: "/cvd-host-packages/android-14/lib64:/usr/lib64"
         - name: NODE_ID
           valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
         - name: GCP_DOCKER_REPOSITORY_NAME
