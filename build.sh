@@ -173,7 +173,7 @@ setup_mooncake() {
         "-L/usr/lib64"
         "-lmooncake_store -lmooncake_common"
         "-lstdc++ -lnuma -lglog -lgflags -libverbs -ljsoncpp -lzstd -lcurl -luring"
-        "-lurma -letcd_wrapper -lubdiag"
+        "-lurma -letcd_wrapper -lspdiag"
     )
 
     # 可选：CUDA 支持
@@ -181,8 +181,9 @@ setup_mooncake() {
         cgo_ldflags+=("-L/usr/local/cuda/lib64 -lcudart")
     fi
 
-    MOONCAKE_CGO_CFLAGS="${cgo_cflags[*]}"
-    MOONCAKE_CGO_LDFLAGS="${cgo_ldflags[*]}"
+    # 合并用户手动传入的 CGO flags（追加到内置 flags 之后）
+    MOONCAKE_CGO_CFLAGS="${cgo_cflags[*]} ${CGO_CFLAGS:-}"
+    MOONCAKE_CGO_LDFLAGS="${cgo_ldflags[*]} ${CGO_LDFLAGS:-}"
     export BUILD_TAGS="$BUILD_TAGS"
 
     log_info "BUILD_TAGS=${BUILD_TAGS}"
