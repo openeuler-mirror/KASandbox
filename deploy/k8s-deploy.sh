@@ -375,17 +375,12 @@ EOF
     systemctl daemon-reload
     systemctl enable cri-multiplex >/dev/null 2>&1 || true
     systemctl restart cri-multiplex
-    # 等待 socket 就绪
-    local i
-    for i in $(seq 1 10); do
-        [ -S "$mux_socket" ] && break
+    # 持续等待 socket 就绪
+    info "等待 cri-multiplex socket 就绪: $mux_socket ..."
+    while [ ! -S "$mux_socket" ]; do
         sleep 0.5
     done
-    if [ ! -S "$mux_socket" ]; then
-        warn "cri-multiplex socket 未就绪: $mux_socket，请检查: journalctl -u cri-multiplex -n 50"
-        return
-    fi
-    success "cri-multiplex 已启动: $mux_socket"
+    success "cri-multiplex socket 已就绪: $mux_socket"
 
     # ③ 修改 kubelet endpoint: containerd.sock -> cri-multiplex.sock（幂等）
     info "修改 kubelet 运行时 endpoint ..."
@@ -398,7 +393,7 @@ EOF
     else
         # 备份后替换
         cp -a "$flags_file" "${flags_file}.bak.$(date +%s)"
-        sed -i "s#unix://${containerd_socket}#unix://${mux_socket}#g" "$flags_file"
+        sed -i "s#--container-runtime-endpoint=[^ \"']*#--container-runtime-endpoint=unix://${mux_socket}#g" "$flags_file"
         success "kubeadm-flags.env 已更新: endpoint=${mux_socket}"
     fi
 

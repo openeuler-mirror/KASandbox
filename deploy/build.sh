@@ -298,6 +298,15 @@ install_harbor_certs() {
         -extensions v3_req || error "生成 SSL 证书失败"
 
     success "Harbor SSL 证书生成完成: $HARBOR_CERTS_DIR/"
+
+    if [ "$DEPLOY_MODE" = "k8s" ]; then
+        if ! kubectl create configmap harbor-ca-cert \
+            --from-file=harbor.crt="$HARBOR_CERTS_DIR/harbor.crt" \
+            -n e2b \
+            --dry-run=client -o yaml | kubectl apply -f -; then
+            error "创建 harbor-ca-cert ConfigMap 失败，请检查 kubectl 连接与证书路径: $HARBOR_CERTS_DIR/harbor.crt"
+        fi
+    fi
 }
 
 install_postgres() {
@@ -1112,6 +1121,7 @@ start() {
         echo "当前节点名称：$node_name"
         kubectl label node "$node_name" node-role.kubernetes.io/sandbox=true --overwrite
         kubectl label node "$node_name" node-role.kubernetes.io/api= --overwrite
+        kubectl label node "$node_name" node-role.kubernetes.io/postgres= --overwrite
         bash deploy.sh --type k8s
         success "K8S 模式启动完成！"
 
@@ -1728,13 +1738,28 @@ done
 
 # ===================== 执行逻辑阶段 =====================
 echo "------------------------------$DEPLOY_MODE---------------------------------"
-# 初始化容器运行时
-set_container_runtime "$CONTAINER_RUNTIME"
+
 # 显示帮助
 if [ "${ACTION_HELP:-false}" = true ]; then
     show_help
     exit 0
 fi
+
+# 仅在需要容器运行时的操作前初始化
+# install-client、download、help 等不依赖容器运行时，避免在无 docker/nerdctl 环境报错
+if [ "$ACTION_INSTALL" = true ] || \
+   [ "$ACTION_UNINSTALL" = true ] || \
+   [ "$ACTION_START" = true ] || \
+   [ "$ACTION_STOP" = true ] || \
+   [ -n "$DEPLOY_COMPONENT" ] || \
+   [ "$DEPLOY_PLUGIN" = true ] || \
+   [ "$NOMAD_JOB" = true ] || \
+   [ -n "$MAKE_TARGET" ] || \
+   [ -n "$CREATE_PROJECT" ] || \
+   [ -n "$REMOVE_COMPONENT" ]; then
+    set_container_runtime "$CONTAINER_RUNTIME"
+fi
+
 
 # 执行下载
 if [ "$ACTION_DOWNLOAD" = true ]; then
