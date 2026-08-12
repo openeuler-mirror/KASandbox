@@ -12,7 +12,7 @@ CERT_SRC="/etc/containerd/certs.d/${REGISTRY}"
 INFRA_SRC="${E2B_INFRA_SRC:-/home/e2b}"
 REMOTE_INFRA_DIR="/home/e2b"
 DEPLOY_DIR="/opt/e2b-infra"
-HARBOR_CERTS="/etc/nginx/ssl/harbor.crt"
+HARBOR_CERTS="/etc/harbor/certs/harbor.crt"
 E2B_API_TOKEN="/root/.e2b/config.json"
 HTTP_PROXY="${HTTP_PROXY:-}"
 CRI_MULTIPLEX_BIN="${CRI_MULTIPLEX_BIN:-/opt/e2b-infra/bin/cri-multiplex}"
@@ -152,8 +152,8 @@ deploy_node() {
 
     # ---------- 步骤 3：复制 harbor 证书 ----------
     log_step "3/${step_total}" "复制 harbor 证书到 $node ..."
-    ssh_run "${node_ip}" "mkdir -p /etc/nginx/ssl" 2>/dev/null || true
-    if scp_to "${node_ip}" "$HARBOR_CERTS" "root@${node_ip}:/etc/nginx/ssl/"; then
+    ssh_run "${node_ip}" "mkdir -p /etc/harbor/certs" 2>/dev/null || true
+    if scp_to "${node_ip}" "$HARBOR_CERTS" "root@${node_ip}:/etc/harbor/certs/"; then
         log_info "Harbor 证书复制完成"
     else
         log_error "Harbor 证书复制失败"

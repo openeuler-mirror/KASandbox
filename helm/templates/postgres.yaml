@@ -21,7 +21,7 @@ spec:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
             - matchExpressions:
-              - key: node-role.kubernetes.io/{{ .Values.api.pool }}
+              - key: node-role.kubernetes.io/{{ .Values.postgres.pool }}
                 operator: Exists
 
       containers:
