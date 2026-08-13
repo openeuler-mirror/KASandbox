@@ -1,4 +1,5 @@
 //go:build mooncake
+
 package storage
 
 /*
@@ -113,10 +114,10 @@ import (
 	"time"
 	"unsafe"
 
-	"golang.org/x/sync/errgroup"
-	"go.uber.org/zap"
 	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 	"github.com/kvcache-ai/Mooncake/mooncake-store/go/mooncakestore"
+	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -452,18 +453,69 @@ type mooncakeBlob struct {
 
 var _ Blob = (*mooncakeBlob)(nil)
 
-func (o *mooncakeBlob) Put(_ context.Context, data []byte) error {
+func (o *mooncakeBlob) Put(ctx context.Context, data []byte) error {
 	start := time.Now()
 	defer func() {
 		zap.L().Sugar().Infof("[MooncakeStorage] [Blob.Put] path=%s size=%d total_cost_ms=%.3f",
 			o.path, len(data), time.Since(start).Seconds()*1000)
 	}()
 
+	// Small objects are stored as a single blob, preserving backwards compatibility
+	// and avoiding the metadata overhead for headers and small metadata files.
+	if len(data) <= MemoryChunkSize {
+		t := time.Now()
+		err := o.store.Put(o.path, data, nil)
+		zap.L().Sugar().Infof("[MooncakeStorage] [Blob.Put] phase=store_put path=%s size=%d cost_ms=%.3f",
+			o.path, len(data), time.Since(t).Seconds()*1000)
+		return err
+	}
+
+	// Large objects are split into 4 MB chunks, mirroring the Seekable path.
+	// This avoids single large-value transfers and unregistered huge buffers.
+	if err := o.deleteObjectAndChunks(); err != nil {
+		return fmt.Errorf("failed to clean up old object %s: %w", o.path, err)
+	}
+
+	g, _ := errgroup.WithContext(ctx)
+	g.SetLimit(mooncakeUploadConcurrency)
+
+	size := int64(len(data))
+	for offset := int64(0); offset < size; offset += MemoryChunkSize {
+		off := offset
+		g.Go(func() error {
+			end := min(off+MemoryChunkSize, size)
+			chunk := data[off:end]
+
+			cChunk := C.CBytes(chunk)
+			defer C.free(cChunk)
+
+			t := time.Now()
+			err := o.store.Put(o.chunkKey(off), unsafe.Slice((*byte)(cChunk), len(chunk)), nil)
+			zap.L().Sugar().Infof("[MooncakeStorage] [Blob.Put] phase=put_chunk path=%s chunk_offset=%d size=%d cost_ms=%.3f",
+				o.path, off, len(chunk), time.Since(t).Seconds()*1000)
+			return err
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("failed to upload chunks: %w", err)
+	}
+
+	// Write metadata last so readers see a consistent object only when fully written.
+	meta := &mooncakeObjectMeta{Size: size, ChunkSize: MemoryChunkSize}
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
 	t := time.Now()
-	err := o.store.Put(o.path, data, nil)
-	zap.L().Sugar().Infof("[MooncakeStorage] [Blob.Put] phase=store_put path=%s size=%d cost_ms=%.3f",
-		o.path, len(data), time.Since(t).Seconds()*1000)
-	return err
+	if err := o.store.Put(o.path, metaBytes, nil); err != nil {
+		return fmt.Errorf("failed to write metadata: %w", err)
+	}
+	zap.L().Sugar().Infof("[MooncakeStorage] [Blob.Put] phase=put_metadata path=%s size=%d cost_ms=%.3f",
+		o.path, len(metaBytes), time.Since(t).Seconds()*1000)
+
+	return nil
 }
 
 func (o *mooncakeBlob) WriteTo(ctx context.Context, dst io.Writer) (int64, error) {
@@ -476,10 +528,83 @@ func (o *mooncakeBlob) WriteTo(ctx context.Context, dst io.Writer) (int64, error
 	ctx, cancel := context.WithTimeout(ctx, mooncakeOperationTimeout)
 	defer cancel()
 
+	// Try to read metadata first. If present, this is a chunked large object.
+	meta, err := o.readMeta(ctx)
+	if err == nil && meta != nil {
+		return o.writeChunkedTo(ctx, dst, meta)
+	}
+	if err != nil && !errors.Is(err, ErrObjectNotExist) {
+		zap.L().Sugar().Debugf("[MooncakeStorage] [Blob.WriteTo] metadata read failed, fallback to single object: %v", err)
+	}
+
+	// Fallback: treat as a single-object blob (small objects or old format).
+	return o.writeSingleTo(ctx, dst)
+}
+
+func (o *mooncakeBlob) Exists(_ context.Context) (bool, error) {
+	return o.store.Exists(o.path)
+}
+
+func (o *mooncakeBlob) chunkKey(offset int64) string {
+	return fmt.Sprintf("%s#c#%d", o.path, offset)
+}
+
+func (o *mooncakeBlob) deleteObjectAndChunks() error {
+	// Remove the metadata/single-object key.
+	if _, err := o.store.RemoveByRegex("^"+regexp.QuoteMeta(o.path)+"$", true); err != nil {
+		return err
+	}
+	// Remove any leftover chunks from previous large-object uploads.
+	if _, err := o.store.RemoveByRegex("^"+regexp.QuoteMeta(o.path+"#c#"), true); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (o *mooncakeBlob) readMeta(ctx context.Context) (*mooncakeObjectMeta, error) {
+	_ = ctx
+	numaBuf, release, err := getOrCreateNumaBuffer(o.store)
+	if err == nil {
+		defer release()
+		n, err := o.store.GetInto(o.path, uintptr(unsafe.Pointer(&numaBuf.buf[0])), 4096)
+		if err != nil {
+			return nil, err
+		}
+		var meta mooncakeObjectMeta
+		if err := json.Unmarshal(numaBuf.buf[:n], &meta); err != nil {
+			return nil, err
+		}
+		if meta.ChunkSize <= 0 || meta.Size < 0 {
+			return nil, fmt.Errorf("invalid metadata for %s: %+v", o.path, meta)
+		}
+		return &meta, nil
+	}
+
+	buf := make([]byte, 4096)
+	n, err := o.store.GetInto(o.path, uintptr(unsafe.Pointer(&buf[0])), uint64(len(buf)))
+	if err != nil {
+		return nil, err
+	}
+	var meta mooncakeObjectMeta
+	if err := json.Unmarshal(buf[:n], &meta); err != nil {
+		return nil, err
+	}
+	if meta.ChunkSize <= 0 || meta.Size < 0 {
+		return nil, fmt.Errorf("invalid metadata for %s: %+v", o.path, meta)
+	}
+	return &meta, nil
+}
+
+func (o *mooncakeBlob) writeSingleTo(ctx context.Context, dst io.Writer) (int64, error) {
+	_ = ctx
+	start := time.Now()
+	defer func() {
+		zap.L().Sugar().Infof("[MooncakeStorage] [Blob.WriteTo] phase=single path=%s total_cost_ms=%.3f",
+			o.path, time.Since(start).Seconds()*1000)
+	}()
+
 	t := time.Now()
 	size, err := o.store.GetSize(o.path)
-	zap.L().Sugar().Infof("[MooncakeStorage] [Blob.WriteTo] phase=get_size path=%s cost_ms=%.3f",
-		o.path, time.Since(t).Seconds()*1000)
 	if err != nil {
 		exists, _ := o.store.Exists(o.path)
 		if !exists {
@@ -498,16 +623,41 @@ func (o *mooncakeBlob) WriteTo(ctx context.Context, dst io.Writer) (int64, error
 	defer release()
 
 	if int(size) > len(numaBuf.buf) {
-		buf := make([]byte, size)
+		alignedSize := ((size + int64(numaBufferSize) - 1) / int64(numaBufferSize)) * int64(numaBufferSize)
+
+		var cptr unsafe.Pointer
+		if ret := C.posix_memalign(&cptr, C.size_t(numaBufferSize), C.size_t(alignedSize)); ret != 0 {
+			return 0, fmt.Errorf("failed to allocate %d-byte buffer aligned to %d for %s: ret=%d",
+				alignedSize, numaBufferSize, o.path, ret)
+		}
+		defer C.free(cptr)
+
 		t := time.Now()
-		n, err := o.store.GetInto(o.path, uintptr(unsafe.Pointer(&buf[0])), uint64(len(buf)))
-		zap.L().Sugar().Infof("[MooncakeStorage] [Blob.WriteTo] phase=get_into_large path=%s size=%d cost_ms=%.3f",
-			o.path, len(buf), time.Since(t).Seconds()*1000)
+		if err := o.store.RegisterBuffer(uintptr(cptr), uint64(alignedSize)); err != nil {
+			return 0, fmt.Errorf("failed to register large buffer for %s: %w", o.path, err)
+		}
+		zap.L().Sugar().Infof("[MooncakeStorage] [Blob.WriteTo] phase=register_buffer path=%s size=%d cost_ms=%.3f",
+			o.path, alignedSize, time.Since(t).Seconds()*1000)
+		defer func() {
+			if err := o.store.UnregisterBuffer(uintptr(cptr)); err != nil {
+				zap.L().Sugar().Warnf("[MooncakeStorage] [Blob.WriteTo] failed to unregister buffer for %s: %v", o.path, err)
+			}
+		}()
+
+		t = time.Now()
+		n, err := o.store.GetInto(o.path, uintptr(cptr), uint64(size))
+		zap.L().Sugar().Infof("[MooncakeStorage] [Blob.WriteTo] phase=get_into_large path=%s size=%d buffer=%d cost_ms=%.3f",
+			o.path, size, alignedSize, time.Since(t).Seconds()*1000)
 		if err != nil {
-			return int64(n), fmt.Errorf("failed to get object: %w", err)
+			return int64(n), fmt.Errorf("failed to get object %s: %w", o.path, err)
+		}
+
+		actual := int64(n)
+		if actual > size {
+			actual = size
 		}
 		t = time.Now()
-		written, err := dst.Write(buf[:n])
+		written, err := dst.Write(unsafe.Slice((*byte)(cptr), int(actual)))
 		zap.L().Sugar().Infof("[MooncakeStorage] [Blob.WriteTo] phase=dst_write path=%s size=%d cost_ms=%.3f",
 			o.path, written, time.Since(t).Seconds()*1000)
 		return int64(written), err
@@ -527,8 +677,68 @@ func (o *mooncakeBlob) WriteTo(ctx context.Context, dst io.Writer) (int64, error
 	return int64(written), err
 }
 
-func (o *mooncakeBlob) Exists(_ context.Context) (bool, error) {
-	return o.store.Exists(o.path)
+func (o *mooncakeBlob) writeChunkedTo(ctx context.Context, dst io.Writer, meta *mooncakeObjectMeta) (int64, error) {
+	_ = ctx
+	start := time.Now()
+	defer func() {
+		zap.L().Sugar().Infof("[MooncakeStorage] [Blob.WriteTo] phase=chunked path=%s size=%d chunks=%d total_cost_ms=%.3f",
+			o.path, meta.Size, (meta.Size+meta.ChunkSize-1)/meta.ChunkSize, time.Since(start).Seconds()*1000)
+	}()
+
+	var total int64
+	for offset := int64(0); offset < meta.Size; offset += meta.ChunkSize {
+		chunkOffset := offset
+		chunkEnd := min(chunkOffset+meta.ChunkSize, meta.Size)
+		chunkSize := chunkEnd - chunkOffset
+
+		n, err := o.readChunk(chunkOffset, chunkSize, dst)
+		if err != nil {
+			return total, err
+		}
+		total += int64(n)
+	}
+	return total, nil
+}
+
+func (o *mooncakeBlob) readChunk(chunkOffset, chunkSize int64, dst io.Writer) (int, error) {
+	start := time.Now()
+	defer func() {
+		zap.L().Sugar().Infof("[MooncakeStorage] [Blob.WriteTo] phase=read_chunk path=%s chunk_offset=%d size=%d total_cost_ms=%.3f",
+			o.path, chunkOffset, chunkSize, time.Since(start).Seconds()*1000)
+	}()
+
+	key := o.chunkKey(chunkOffset)
+
+	numaBuf, release, err := getOrCreateNumaBuffer(o.store)
+	if err != nil {
+		buf := make([]byte, chunkSize)
+		t := time.Now()
+		n, err := o.store.GetInto(key, uintptr(unsafe.Pointer(&buf[0])), uint64(len(buf)))
+		zap.L().Sugar().Infof("[MooncakeStorage] [Blob.WriteTo] phase=get_into_heap key=%s size=%d cost_ms=%.3f",
+			key, len(buf), time.Since(t).Seconds()*1000)
+		if err != nil {
+			return 0, fmt.Errorf("failed to read chunk %s: %w", key, err)
+		}
+		t = time.Now()
+		written, err := dst.Write(buf[:n])
+		zap.L().Sugar().Infof("[MooncakeStorage] [Blob.WriteTo] phase=dst_write_chunk key=%s size=%d cost_ms=%.3f",
+			key, written, time.Since(t).Seconds()*1000)
+		return written, err
+	}
+	defer release()
+
+	t := time.Now()
+	n, err := o.store.GetInto(key, uintptr(unsafe.Pointer(&numaBuf.buf[0])), uint64(chunkSize))
+	zap.L().Sugar().Infof("[MooncakeStorage] [Blob.WriteTo] phase=get_into_numa key=%s size=%d cost_ms=%.3f",
+		key, chunkSize, time.Since(t).Seconds()*1000)
+	if err != nil {
+		return int(n), fmt.Errorf("failed to read chunk %s: %w", key, err)
+	}
+	t = time.Now()
+	written, err := dst.Write(numaBuf.buf[:n])
+	zap.L().Sugar().Infof("[MooncakeStorage] [Blob.WriteTo] phase=dst_write_chunk key=%s size=%d cost_ms=%.3f",
+		key, written, time.Since(t).Seconds()*1000)
+	return written, err
 }
 
 // -----------------------------------------------------------------------------
@@ -890,10 +1100,10 @@ func (o *mooncakeSeekable) StoreFile(ctx context.Context, localPath string) erro
 			}
 			readCost := time.Since(t).Seconds() * 1000
 
-			cChunk := C.CBytes(chunk)  // 分配 C 堆内存并拷贝
+			cChunk := C.CBytes(chunk) // 分配 C 堆内存并拷贝
 			t = time.Now()
 			err := o.store.Put(o.chunkKey(off), unsafe.Slice((*byte)(cChunk), len(chunk)), nil)
-			defer C.free(cChunk)       // 确保释放（如果 Mooncake 同步拷贝）
+			defer C.free(cChunk) // 确保释放（如果 Mooncake 同步拷贝）
 			zap.L().Sugar().Infof("[MooncakeStorage] [Seekable.StoreFile] phase=put_chunk path=%s chunk_offset=%d size=%d read_cost_ms=%.3f put_cost_ms=%.3f",
 				o.path, off, len(chunk), readCost, time.Since(t).Seconds()*1000)
 			return err
