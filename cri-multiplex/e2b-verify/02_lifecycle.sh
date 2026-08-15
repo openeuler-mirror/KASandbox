@@ -19,6 +19,12 @@ cleanup_02_tmp() {
 }
 trap cleanup_02_tmp EXIT
 
+#==================== 前置：确保非 CNI 模式 ====================#
+log_step "0.1 前置检查：切换到非 CNI 模式"
+if ! start_non_cni_multiplex "启动 cri-multiplex 非 CNI runtime 模式"; then
+    exit 1
+fi
+
 #==================== 一、基础接口 ====================#
 
 log_step "1.1 Version"
@@ -128,8 +134,21 @@ else
 fi
 
 log_step "3.3 StartContainer"
-output=$(grpc_call "runtime.v1.RuntimeService/StartContainer" "{\"container_id\": \"${CONTAINER_ID}\"}") || true
-if echo "${output}" | grep -q "^{}\|^$"; then
+wait_cri_pod_ready "${POD_UID}" 20 || true
+start_ok=0
+for attempt in 1 2 3 4 5; do
+    output=$(grpc_call "runtime.v1.RuntimeService/StartContainer" "{\"container_id\": \"${CONTAINER_ID}\"}") || true
+    if echo "${output}" | grep -q "^{}\|^$"; then
+        start_ok=1
+        break
+    fi
+    if ! echo "${output}" | grep -qiE "FailedPrecondition|not running|Unavailable|DeadlineExceeded"; then
+        break
+    fi
+    log_info "StartContainer 暂未就绪，第 ${attempt}/5 次: ${output}"
+    sleep 2
+done
+if [ "${start_ok}" = "1" ]; then
     log_pass "StartContainer 成功（返回空）"
 else
     log_fail "StartContainer 异常: ${output}"

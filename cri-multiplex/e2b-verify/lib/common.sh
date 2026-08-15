@@ -239,6 +239,27 @@ start_cni_android_multiplex() {
     fi
 }
 
+start_non_cni_multiplex() {
+    local desc="${1:-启动 cri-multiplex 非 CNI runtime 模式}"
+
+    log_info "${desc} ..."
+    if ! STATE_DIR="${STATE_DIR:-/var/lib/cri-multiplex/state}" \
+        ANDROID_ENABLED=0 \
+        CNI_ENABLED=0 \
+        E2B_FORCE_RESTART=1 \
+        "${SCRIPT_DIR_COMMON}/01_start_multiplex.sh" >&2; then
+        log_fail "${desc} 失败"
+        return 1
+    fi
+
+    require_cri_multiplex_ready_quiet || return 1
+    if cri_multiplex_cni_enabled; then
+        log_fail "cri-multiplex 仍处于 CNI 模式"
+        return 1
+    fi
+    log_pass "cri-multiplex 已启用非 CNI 模式"
+}
+
 require_refresh_script() {
     local refresh_script="$1"
     if [ ! -f "${refresh_script}" ]; then
@@ -578,6 +599,53 @@ delete_pod_and_wait_gone() {
 
     kubectl delete pod "${pod_name}" --force --grace-period=0 --ignore-not-found >&2 || true
     wait_pod_deleted "${pod_name}" "${timeout_seconds}"
+}
+
+wait_cri_pod_absent() {
+    local pod_id="$1"
+    local timeout_seconds
+    timeout_seconds=$(normalize_timeout_seconds "${2:-30}")
+
+    [ -n "${pod_id}" ] || return 0
+    for _ in $(seq 1 "${timeout_seconds}"); do
+        if ! ${CRICTL} inspectp "${pod_id}" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+wait_cri_container_absent() {
+    local container_id="$1"
+    local timeout_seconds
+    timeout_seconds=$(normalize_timeout_seconds "${2:-30}")
+
+    [ -n "${container_id}" ] || return 0
+    for _ in $(seq 1 "${timeout_seconds}"); do
+        if ! grpc_call "runtime.v1.RuntimeService/ContainerStatus" "{\"container_id\": \"${container_id}\"}" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+wait_cri_pod_ready() {
+    local pod_id="$1"
+    local timeout_seconds
+    timeout_seconds=$(normalize_timeout_seconds "${2:-30}")
+
+    local output
+    [ -n "${pod_id}" ] || return 1
+    for _ in $(seq 1 "${timeout_seconds}"); do
+        output=$(${CRICTL} inspectp "${pod_id}" 2>&1 || true)
+        if echo "${output}" | grep -q "SANDBOX_READY"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
 }
 
 pod_uid() {
@@ -920,26 +988,42 @@ EOF
     local cid
     cid=$(echo "${output}" | grep -oP '"containerId":\s*"\K[^"]+')
 
-    # StartContainer
-    output=$(grpc_call "runtime.v1.RuntimeService/StartContainer" "{\"container_id\": \"${cid}\"}") || true
-    if ! echo "${output}" | grep -q "^{}" && ! echo "${output}" | grep -q "^$"; then
-        log_fail "StartContainer 失败: ${output}"
-        return 1
-    fi
+    wait_cri_pod_ready "${pod_id}" 20 || true
 
-    echo "${cid}"
-    return 0
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        output=$(grpc_call "runtime.v1.RuntimeService/StartContainer" "{\"container_id\": \"${cid}\"}") || true
+        if echo "${output}" | grep -q "^{}" || echo "${output}" | grep -q "^$"; then
+            echo "${cid}"
+            return 0
+        fi
+        if ! echo "${output}" | grep -qiE "FailedPrecondition|not running|Unavailable|DeadlineExceeded"; then
+            log_fail "StartContainer 失败: ${output}"
+            return 1
+        fi
+        log_info "StartContainer 暂未就绪，第 ${attempt}/5 次: ${output}"
+        sleep 2
+    done
+
+    log_fail "StartContainer 重试后仍失败: ${output}"
+    return 1
 }
 
 #==================== 清理资源 ====================#
 cleanup_container() {
     local cid="${1:-${CONTAINER_ID}}"
-    [ -n "${cid}" ] && grpc_call "runtime.v1.RuntimeService/RemoveContainer" "{\"container_id\": \"${cid}\"}" > /dev/null 2>&1 || true
+    if [ -n "${cid}" ]; then
+        grpc_call "runtime.v1.RuntimeService/RemoveContainer" "{\"container_id\": \"${cid}\"}" > /dev/null 2>&1 || true
+        wait_cri_container_absent "${cid}" 10 || true
+    fi
 }
 
 cleanup_pod() {
     local pid="${1:-${POD_UID}}"
-    [ -n "${pid}" ] && grpc_call "runtime.v1.RuntimeService/RemovePodSandbox" "{\"pod_sandbox_id\": \"${pid}\"}" > /dev/null 2>&1 || true
+    if [ -n "${pid}" ]; then
+        grpc_call "runtime.v1.RuntimeService/RemovePodSandbox" "{\"pod_sandbox_id\": \"${pid}\"}" > /dev/null 2>&1 || true
+        wait_cri_pod_absent "${pid}" 15 || true
+    fi
 }
 
 #==================== 输出汇总 ====================#

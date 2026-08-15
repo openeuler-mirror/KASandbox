@@ -57,16 +57,8 @@ trap cleanup_06 EXIT
 
 #==================== 前置：确保 cri-multiplex 可用 ====================#
 log_step "前置检查：cri-multiplex 非 CNI 模式"
-if cri_multiplex_ready && ! cri_multiplex_cni_enabled; then
-    log_pass "cri-multiplex 已运行且处于非 CNI 模式"
-else
-    log_info "cri-multiplex 未就绪或当前不是非 CNI 模式，自动启动非 CNI 模式..."
-    if CNI_ENABLED=0 "${SCRIPT_DIR}/01_start_multiplex.sh"; then
-        log_pass "cri-multiplex 非 CNI 模式已就绪"
-    else
-        log_fail "cri-multiplex 非 CNI 模式启动失败"
-        exit 1
-    fi
+if ! start_non_cni_multiplex "启动 cri-multiplex 非 CNI runtime 模式"; then
+    exit 1
 fi
 
 #==================== 前置：创建 Pod + Container ====================#
@@ -103,27 +95,37 @@ fi
 export POD_UID CONTAINER_ID
 log_info "Pod: ${POD_UID}, Container: ${CONTAINER_ID}"
 
-#==================== Step 1: 调用 Attach ====================#
-log_step "5.3.1 调用 Attach"
-attach_output=$(grpc_call "runtime.v1.RuntimeService/Attach" \
-    "{\"container_id\": \"${CONTAINER_ID}\", \"tty\": true, \"stdin\": true, \"stdout\": true, \"stderr\": true}") || true
+#==================== Step 1/2: 调用 Attach 并连接验证 ====================#
+log_step "5.3 调用 Attach 并连接验证输出"
+attach_ok=0
+attach_output=""
+attach_result=""
+ATTACH_URL=""
+for attempt in 1 2 3; do
+    attach_output=$(grpc_call "runtime.v1.RuntimeService/Attach" \
+        "{\"container_id\": \"${CONTAINER_ID}\", \"tty\": true, \"stdin\": true, \"stdout\": true, \"stderr\": true}") || true
 
-if ! grep -q "url" <<< "${attach_output}"; then
-    log_fail "Attach 失败: ${attach_output}"
-    finish_06
-fi
+    if ! grep -q "url" <<< "${attach_output}"; then
+        log_info "Attach 第 ${attempt}/3 次未返回 URL: ${attach_output}"
+        sleep 1
+        continue
+    fi
 
-ATTACH_URL=$(echo "${attach_output}" | grep -oP '"url":\s*"\K[^"]+')
-log_pass "Attach 返回 URL: ${ATTACH_URL}"
+    ATTACH_URL=$(echo "${attach_output}" | grep -oP '"url":\s*"\K[^"]+')
+    log_info "Attach 第 ${attempt}/3 次返回 URL: ${ATTACH_URL}"
+    attach_result=$(printf 'echo attach_test_ok\nexit\n' | python3 "${STREAM_CLIENT}" "${ATTACH_URL}" 10 2>&1) || true
+    if grep -q "attach_test_ok" <<< "${attach_result}"; then
+        attach_ok=1
+        break
+    fi
+    log_info "Attach 第 ${attempt}/3 次未收到回显: ${attach_result}"
+    sleep 1
+done
 
-#==================== Step 2: 连接 Attach URL 验证 ====================#
-log_step "5.3.2 连接 Attach URL 验证输出"
-attach_result=$(printf 'echo attach_test_ok\nexit\n' | python3 "${STREAM_CLIENT}" "${ATTACH_URL}" 8 2>&1) || true
-
-if grep -q "attach_test_ok" <<< "${attach_result}"; then
-    log_pass "Attach 连接成功，收到输出"
+if [ "${attach_ok}" = "1" ]; then
+    log_pass "Attach 返回 URL 并收到 attach_test_ok 回显"
 else
-    log_fail "Attach 连接未收到 attach_test_ok 回显: ${attach_result}"
+    log_fail "Attach 连接未收到 attach_test_ok 回显: output=${attach_output}; result=${attach_result}"
 fi
 
 #==================== 清理 ====================#

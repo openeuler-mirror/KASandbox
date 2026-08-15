@@ -31,8 +31,9 @@ REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 CLIENT_IMAGE="${CLIENT_IMAGE:-docker.io/library/busybox:latest}"
 
 cleanup() {
-    kubectl delete pod "${DEFAULT_POD}" "${ANDROID_POD}" "${E2B_POD}" \
-        --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
+    delete_pod_and_wait_gone "${DEFAULT_POD}" 90 >/dev/null 2>&1 || true
+    delete_pod_and_wait_gone "${ANDROID_POD}" 90 >/dev/null 2>&1 || true
+    delete_pod_and_wait_gone "${E2B_POD}" 90 >/dev/null 2>&1 || true
     rm -f "${E2B_WORK_YAML}" "${ANDROID_WORK_YAML}" "/tmp/${DEFAULT_POD}.yaml" "/tmp/${ANDROID_POD}.yaml" || true
 }
 trap cleanup EXIT
@@ -204,7 +205,16 @@ wait_pod_ready "${E2B_POD}" 120s || exit 1
 assert_log_contains "RunPodSandbox routing: handler=\"e2b\" -> e2b" "RuntimeClass=e2b Pod 已路由到 E2B" || exit 1
 
 log_step "3.1 验证 ListPodSandbox 多后端合并"
-pods_output=$(${CRICTL} pods 2>&1 || true)
+pods_output=""
+for _ in $(seq 1 30); do
+    pods_output=$(${CRICTL} pods 2>&1 || true)
+    if echo "${pods_output}" | grep -q "${DEFAULT_POD}" &&
+       echo "${pods_output}" | grep -q "${ANDROID_POD}" &&
+       echo "${pods_output}" | grep -q "${E2B_POD}"; then
+        break
+    fi
+    sleep 1
+done
 if echo "${pods_output}" | grep -q "${DEFAULT_POD}" &&
    echo "${pods_output}" | grep -q "${ANDROID_POD}" &&
    echo "${pods_output}" | grep -q "${E2B_POD}"; then
@@ -215,33 +225,32 @@ else
 fi
 
 log_step "3.2 验证 ListContainers 多后端合并"
-DEFAULT_CID=$(pod_container_id "${DEFAULT_POD}")
-ANDROID_CID=$(pod_container_id "${ANDROID_POD}")
+DEFAULT_UID=$(kubectl get pod "${DEFAULT_POD}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+ANDROID_UID=$(kubectl get pod "${ANDROID_POD}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+DEFAULT_CID=$(pod_container_id "${DEFAULT_POD}" "${DEFAULT_UID}")
+ANDROID_CID=$(pod_container_id "${ANDROID_POD}" "${ANDROID_UID}")
 E2B_UID=$(kubectl get pod "${E2B_POD}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
-E2B_CID=$(pod_container_id "${E2B_POD}")
-if [ -z "${E2B_CID}" ]; then
-    E2B_CID="${E2B_UID}-c"
-fi
-CONTAINERD_CID=$(crictl --runtime-endpoint "unix://${CONTAINERD_SOCKET}" ps -q 2>/dev/null | head -1 || true)
+E2B_CID=$(pod_container_id "${E2B_POD}" "${E2B_UID}")
 containers_output=""
-for _ in $(seq 1 20); do
+for _ in $(seq 1 30); do
     containers_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" 2>&1 || true)
-    if [ -n "${CONTAINERD_CID}" ] &&
-       echo "${containers_output}" | grep -q "${CONTAINERD_CID:0:12}" &&
-       echo "${containers_output}" | grep -q "${ANDROID_POD}" &&
-       echo "${containers_output}" | grep -q "${E2B_POD}"; then
+    if [ -n "${DEFAULT_CID}" ] &&
+       [ -n "${ANDROID_CID}" ] &&
+       [ -n "${E2B_CID}" ] &&
+       echo "${containers_output}" | grep -q "${DEFAULT_CID}" &&
+       echo "${containers_output}" | grep -q "${ANDROID_CID}" &&
+       echo "${containers_output}" | grep -q "${E2B_CID}"; then
         break
     fi
     sleep 1
 done
-if [ -n "${DEFAULT_CID}" ] && [ -n "${CONTAINERD_CID}" ] &&
-   [ -n "${ANDROID_CID}" ] && [ -n "${E2B_CID}" ] &&
-   echo "${containers_output}" | grep -q "${CONTAINERD_CID:0:12}" &&
-   echo "${containers_output}" | grep -q "${ANDROID_POD}" &&
-   echo "${containers_output}" | grep -q "${E2B_POD}"; then
+if [ -n "${DEFAULT_CID}" ] && [ -n "${ANDROID_CID}" ] && [ -n "${E2B_CID}" ] &&
+   echo "${containers_output}" | grep -q "${DEFAULT_CID}" &&
+   echo "${containers_output}" | grep -q "${ANDROID_CID}" &&
+   echo "${containers_output}" | grep -q "${E2B_CID}"; then
     log_pass "ListContainers 同时包含 containerd 默认、Android 和 E2B Container"
 else
-    log_fail "ListContainers 合并结果缺失: pod_default=${DEFAULT_CID} containerd=${CONTAINERD_CID} android=${ANDROID_CID} e2b=${E2B_CID} output=${containers_output}"
+    log_fail "ListContainers 合并结果缺失: pod_default=${DEFAULT_CID} android=${ANDROID_CID} e2b=${E2B_CID} output=${containers_output}"
     exit 1
 fi
 
