@@ -16,6 +16,7 @@ SELECT ea.alias, ea.is_renamable, ea.env_id, ea.namespace, ea.id, e.team_id, e.p
 FROM "public"."env_aliases" ea
 JOIN "public"."envs" e ON ea.env_id = e.id
 WHERE ea.alias = $1
+  AND e.deleted_at IS NULL
 `
 
 type GetTemplateAliasByAliasRow struct {

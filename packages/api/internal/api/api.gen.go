@@ -37,6 +37,12 @@ const (
 	Aws AWSRegistryType = "aws"
 )
 
+// Defines values for BuildStatusRequestStatus.
+const (
+	Failed  BuildStatusRequestStatus = "failed"
+	Success BuildStatusRequestStatus = "success"
+)
+
 // Defines values for GCPRegistryType.
 const (
 	Gcp GCPRegistryType = "gcp"
@@ -181,6 +187,21 @@ type BuildStatusReason struct {
 	// Step Step that failed
 	Step *string `json:"step,omitempty"`
 }
+
+// BuildStatusRequest defines model for BuildStatusRequest.
+type BuildStatusRequest struct {
+	// Error Failure reason
+	Error *string `json:"error,omitempty"`
+
+	// OperationId Idempotency key of the operation
+	OperationId string `json:"operation_id"`
+
+	// Status Terminal build status
+	Status BuildStatusRequestStatus `json:"status"`
+}
+
+// BuildStatusRequestStatus Terminal build status
+type BuildStatusRequestStatus string
 
 // CPUCount CPU cores for the sandbox
 type CPUCount = int32
@@ -563,6 +584,49 @@ type NodeStatusChange struct {
 	Status NodeStatus `json:"status"`
 }
 
+// PauseSnapshotResponse defines model for PauseSnapshotResponse.
+type PauseSnapshotResponse struct {
+	// BuildId New build ID with status=snapshotting
+	BuildId openapi_types.UUID `json:"build_id"`
+
+	// TemplateId Internal snapshot template ID (envs.id, source='snapshot')
+	TemplateId string `json:"template_id"`
+}
+
+// ResumeMetadata defines model for ResumeMetadata.
+type ResumeMetadata struct {
+	// Aliases Aliases of the base env (empty for checkpoint templates)
+	Aliases    *[]string               `json:"aliases,omitempty"`
+	AutoPause  bool                    `json:"auto_pause"`
+	AutoResume *map[string]interface{} `json:"auto_resume,omitempty"`
+
+	// BaseTemplateId Original product template ID (empty for checkpoint templates)
+	BaseTemplateId *string `json:"base_template_id,omitempty"`
+
+	// BuildId Last ready build ID
+	BuildId            openapi_types.UUID `json:"build_id"`
+	EnvSecure          bool               `json:"env_secure"`
+	EnvdVersion        *string            `json:"envd_version,omitempty"`
+	FirecrackerVersion string             `json:"firecracker_version"`
+	KernelVersion      string             `json:"kernel_version"`
+
+	// MachineInfo CPU info of the node the snapshot was taken on
+	MachineInfo *map[string]interface{} `json:"machine_info,omitempty"`
+	Metadata    *map[string]string      `json:"metadata,omitempty"`
+	Network     *map[string]interface{} `json:"network,omitempty"`
+
+	// OriginNode Node the snapshot was taken on
+	OriginNode       string    `json:"origin_node"`
+	RamMb            int64     `json:"ram_mb"`
+	SandboxStartedAt time.Time `json:"sandbox_started_at"`
+
+	// TemplateId Snapshot template env ID used to resume
+	TemplateId      string                    `json:"template_id"`
+	TotalDiskSizeMb *int64                    `json:"total_disk_size_mb,omitempty"`
+	Vcpu            int64                     `json:"vcpu"`
+	VolumeMounts    *[]map[string]interface{} `json:"volume_mounts,omitempty"`
+}
+
 // ResumedSandbox defines model for ResumedSandbox.
 type ResumedSandbox struct {
 	// AutoPause Automatically pauses the sandbox after the timeout
@@ -571,6 +635,54 @@ type ResumedSandbox struct {
 
 	// Timeout Time to live for the sandbox in seconds.
 	Timeout *int32 `json:"timeout,omitempty"`
+}
+
+// RuntimeSnapshotMetadata Runtime metadata collected by the in-cluster webhook service for a Pause/Checkpoint operation
+type RuntimeSnapshotMetadata struct {
+	AllowInternetAccess *bool `json:"allow_internet_access,omitempty"`
+	AutoPause           *bool `json:"auto_pause,omitempty"`
+
+	// AutoResume Auto-resume policy (PausedSandboxConfig.autoResume)
+	AutoResume *map[string]interface{} `json:"auto_resume,omitempty"`
+
+	// BaseTemplateId Original product template ID
+	BaseTemplateId     string `json:"base_template_id"`
+	EnvdVersion        string `json:"envd_version"`
+	FirecrackerVersion string `json:"firecracker_version"`
+	KernelVersion      string `json:"kernel_version"`
+
+	// Metadata User-provided sandbox metadata
+	Metadata *map[string]string `json:"metadata,omitempty"`
+
+	// Network Network configuration (PausedSandboxConfig.network)
+	Network *map[string]interface{} `json:"network,omitempty"`
+
+	// OperationId Idempotency key of the operation (logged; idempotency is provided by the underlying SQL)
+	OperationId string `json:"operation_id"`
+	RamMb       int64  `json:"ram_mb"`
+
+	// SandboxStartedAt Start time of the current sandbox run
+	SandboxStartedAt time.Time `json:"sandbox_started_at"`
+
+	// Secure Whether envd requires an access token
+	Secure bool `json:"secure"`
+
+	// SourceMachineInfo CPU info of the source node (cpu_architecture/cpu_family/cpu_model/cpu_model_name/cpu_flags)
+	SourceMachineInfo *map[string]interface{} `json:"source_machine_info,omitempty"`
+
+	// SourceNodeName Name of the node the sandbox ran on (stored as origin_node_id)
+	SourceNodeName string `json:"source_node_name"`
+
+	// SourcePodUid UID of the source Pod
+	SourcePodUid string `json:"source_pod_uid"`
+
+	// TeamId Team that owns the sandbox
+	TeamId          openapi_types.UUID `json:"team_id"`
+	TotalDiskSizeMb int64              `json:"total_disk_size_mb"`
+	Vcpu            int64              `json:"vcpu"`
+
+	// VolumeMounts Volume mounts (PausedSandboxConfig.volumeMounts)
+	VolumeMounts *[]map[string]interface{} `json:"volume_mounts,omitempty"`
 }
 
 // Sandbox defines model for Sandbox.
@@ -843,6 +955,27 @@ type SnapshotInfo struct {
 
 	// SnapshotID Identifier of the snapshot template including the tag. Uses namespace/alias when a name was provided (e.g. team-slug/my-snapshot:default), otherwise falls back to the raw template ID (e.g. abc123:default).
 	SnapshotID string `json:"snapshotID"`
+}
+
+// SnapshotStateResponse defines model for SnapshotStateResponse.
+type SnapshotStateResponse struct {
+	BuildId *openapi_types.UUID `json:"build_id,omitempty"`
+
+	// Paused Whether the sandbox has a live paused snapshot
+	Paused     bool    `json:"paused"`
+	TemplateId *string `json:"template_id,omitempty"`
+}
+
+// SnapshotTemplateResponse defines model for SnapshotTemplateResponse.
+type SnapshotTemplateResponse struct {
+	// BuildId New build ID with status=snapshotting
+	BuildId openapi_types.UUID `json:"build_id"`
+
+	// SnapshotId User-visible snapshot reference (template_id:default)
+	SnapshotId string `json:"snapshot_id"`
+
+	// TemplateId Snapshot template env ID
+	TemplateId string `json:"template_id"`
 }
 
 // Team defines model for Team.
@@ -1284,6 +1417,9 @@ type PaginationNextToken = string
 // SandboxID defines model for sandboxID.
 type SandboxID = string
 
+// SnapshotID Identifier of the snapshot (template ID)
+type SnapshotID = string
+
 // TeamID defines model for teamID.
 type TeamID = string
 
@@ -1308,8 +1444,29 @@ type N404 = Error
 // N409 defines model for 409.
 type N409 = Error
 
+// N422 defines model for 422.
+type N422 = Error
+
 // N500 defines model for 500.
 type N500 = Error
+
+// DeleteInternalSnapshotTemplatesSnapshotIDParams defines parameters for DeleteInternalSnapshotTemplatesSnapshotID.
+type DeleteInternalSnapshotTemplatesSnapshotIDParams struct {
+	// TeamId Team ID used for alias namespace resolution and ownership check
+	TeamId openapi_types.UUID `form:"team_id" json:"team_id"`
+}
+
+// GetInternalSnapshotsSnapshotIDResolveParams defines parameters for GetInternalSnapshotsSnapshotIDResolve.
+type GetInternalSnapshotsSnapshotIDResolveParams struct {
+	// TeamId Team ID used for alias namespace resolution and ownership check
+	TeamId openapi_types.UUID `form:"team_id" json:"team_id"`
+}
+
+// DeleteInternalTemplatesTemplateIDParams defines parameters for DeleteInternalTemplatesTemplateID.
+type DeleteInternalTemplatesTemplateIDParams struct {
+	// TeamId Team ID used for alias namespace resolution and ownership check
+	TeamId openapi_types.UUID `form:"team_id" json:"team_id"`
+}
 
 // GetNodesNodeIDParams defines parameters for GetNodesNodeID.
 type GetNodesNodeIDParams struct {
@@ -1467,6 +1624,15 @@ type PostApiKeysJSONRequestBody = NewTeamAPIKey
 
 // PatchApiKeysApiKeyIDJSONRequestBody defines body for PatchApiKeysApiKeyID for application/json ContentType.
 type PatchApiKeysApiKeyIDJSONRequestBody = UpdateTeamAPIKey
+
+// PostInternalBuildsBuildIDStatusJSONRequestBody defines body for PostInternalBuildsBuildIDStatus for application/json ContentType.
+type PostInternalBuildsBuildIDStatusJSONRequestBody = BuildStatusRequest
+
+// PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody defines body for PostInternalSandboxesSandboxIDPauseSnapshot for application/json ContentType.
+type PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody = RuntimeSnapshotMetadata
+
+// PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody defines body for PostInternalSandboxesSandboxIDSnapshotTemplates for application/json ContentType.
+type PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody = RuntimeSnapshotMetadata
 
 // PostNodesNodeIDJSONRequestBody defines body for PostNodesNodeID for application/json ContentType.
 type PostNodesNodeIDJSONRequestBody = NodeStatusChange
@@ -1746,6 +1912,39 @@ type ClientInterface interface {
 
 	// GetHealth request
 	GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostInternalBuildsBuildIDStatusWithBody request with any body
+	PostInternalBuildsBuildIDStatusWithBody(ctx context.Context, buildID BuildID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PostInternalBuildsBuildIDStatus(ctx context.Context, buildID BuildID, body PostInternalBuildsBuildIDStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetInternalSandboxesSandboxIDLastSnapshot request
+	GetInternalSandboxesSandboxIDLastSnapshot(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostInternalSandboxesSandboxIDPauseSnapshotWithBody request with any body
+	PostInternalSandboxesSandboxIDPauseSnapshotWithBody(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PostInternalSandboxesSandboxIDPauseSnapshot(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteInternalSandboxesSandboxIDSnapshot request
+	DeleteInternalSandboxesSandboxIDSnapshot(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetInternalSandboxesSandboxIDSnapshotState request
+	GetInternalSandboxesSandboxIDSnapshotState(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostInternalSandboxesSandboxIDSnapshotTemplatesWithBody request with any body
+	PostInternalSandboxesSandboxIDSnapshotTemplatesWithBody(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PostInternalSandboxesSandboxIDSnapshotTemplates(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteInternalSnapshotTemplatesSnapshotID request
+	DeleteInternalSnapshotTemplatesSnapshotID(ctx context.Context, snapshotID SnapshotID, params *DeleteInternalSnapshotTemplatesSnapshotIDParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetInternalSnapshotsSnapshotIDResolve request
+	GetInternalSnapshotsSnapshotIDResolve(ctx context.Context, snapshotID SnapshotID, params *GetInternalSnapshotsSnapshotIDResolveParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteInternalTemplatesTemplateID request
+	DeleteInternalTemplatesTemplateID(ctx context.Context, templateID TemplateID, params *DeleteInternalTemplatesTemplateIDParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetNodes request
 	GetNodes(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2053,6 +2252,150 @@ func (c *Client) PatchApiKeysApiKeyID(ctx context.Context, apiKeyID ApiKeyID, bo
 
 func (c *Client) GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetHealthRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostInternalBuildsBuildIDStatusWithBody(ctx context.Context, buildID BuildID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostInternalBuildsBuildIDStatusRequestWithBody(c.Server, buildID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostInternalBuildsBuildIDStatus(ctx context.Context, buildID BuildID, body PostInternalBuildsBuildIDStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostInternalBuildsBuildIDStatusRequest(c.Server, buildID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetInternalSandboxesSandboxIDLastSnapshot(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetInternalSandboxesSandboxIDLastSnapshotRequest(c.Server, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostInternalSandboxesSandboxIDPauseSnapshotWithBody(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostInternalSandboxesSandboxIDPauseSnapshotRequestWithBody(c.Server, sandboxID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostInternalSandboxesSandboxIDPauseSnapshot(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostInternalSandboxesSandboxIDPauseSnapshotRequest(c.Server, sandboxID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteInternalSandboxesSandboxIDSnapshot(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteInternalSandboxesSandboxIDSnapshotRequest(c.Server, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetInternalSandboxesSandboxIDSnapshotState(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetInternalSandboxesSandboxIDSnapshotStateRequest(c.Server, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostInternalSandboxesSandboxIDSnapshotTemplatesWithBody(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequestWithBody(c.Server, sandboxID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostInternalSandboxesSandboxIDSnapshotTemplates(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequest(c.Server, sandboxID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteInternalSnapshotTemplatesSnapshotID(ctx context.Context, snapshotID SnapshotID, params *DeleteInternalSnapshotTemplatesSnapshotIDParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteInternalSnapshotTemplatesSnapshotIDRequest(c.Server, snapshotID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetInternalSnapshotsSnapshotIDResolve(ctx context.Context, snapshotID SnapshotID, params *GetInternalSnapshotsSnapshotIDResolveParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetInternalSnapshotsSnapshotIDResolveRequest(c.Server, snapshotID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteInternalTemplatesTemplateID(ctx context.Context, templateID TemplateID, params *DeleteInternalTemplatesTemplateIDParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteInternalTemplatesTemplateIDRequest(c.Server, templateID, params)
 	if err != nil {
 		return nil, err
 	}
@@ -3129,6 +3472,405 @@ func NewGetHealthRequest(server string) (*http.Request, error) {
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPostInternalBuildsBuildIDStatusRequest calls the generic PostInternalBuildsBuildIDStatus builder with application/json body
+func NewPostInternalBuildsBuildIDStatusRequest(server string, buildID BuildID, body PostInternalBuildsBuildIDStatusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostInternalBuildsBuildIDStatusRequestWithBody(server, buildID, "application/json", bodyReader)
+}
+
+// NewPostInternalBuildsBuildIDStatusRequestWithBody generates requests for PostInternalBuildsBuildIDStatus with any type of body
+func NewPostInternalBuildsBuildIDStatusRequestWithBody(server string, buildID BuildID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "buildID", runtime.ParamLocationPath, buildID)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/builds/%s/status", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetInternalSandboxesSandboxIDLastSnapshotRequest generates requests for GetInternalSandboxesSandboxIDLastSnapshot
+func NewGetInternalSandboxesSandboxIDLastSnapshotRequest(server string, sandboxID SandboxID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "sandboxID", runtime.ParamLocationPath, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/sandboxes/%s/last-snapshot", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPostInternalSandboxesSandboxIDPauseSnapshotRequest calls the generic PostInternalSandboxesSandboxIDPauseSnapshot builder with application/json body
+func NewPostInternalSandboxesSandboxIDPauseSnapshotRequest(server string, sandboxID SandboxID, body PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostInternalSandboxesSandboxIDPauseSnapshotRequestWithBody(server, sandboxID, "application/json", bodyReader)
+}
+
+// NewPostInternalSandboxesSandboxIDPauseSnapshotRequestWithBody generates requests for PostInternalSandboxesSandboxIDPauseSnapshot with any type of body
+func NewPostInternalSandboxesSandboxIDPauseSnapshotRequestWithBody(server string, sandboxID SandboxID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "sandboxID", runtime.ParamLocationPath, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/sandboxes/%s/pause-snapshot", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewDeleteInternalSandboxesSandboxIDSnapshotRequest generates requests for DeleteInternalSandboxesSandboxIDSnapshot
+func NewDeleteInternalSandboxesSandboxIDSnapshotRequest(server string, sandboxID SandboxID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "sandboxID", runtime.ParamLocationPath, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/sandboxes/%s/snapshot", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetInternalSandboxesSandboxIDSnapshotStateRequest generates requests for GetInternalSandboxesSandboxIDSnapshotState
+func NewGetInternalSandboxesSandboxIDSnapshotStateRequest(server string, sandboxID SandboxID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "sandboxID", runtime.ParamLocationPath, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/sandboxes/%s/snapshot-state", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequest calls the generic PostInternalSandboxesSandboxIDSnapshotTemplates builder with application/json body
+func NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequest(server string, sandboxID SandboxID, body PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequestWithBody(server, sandboxID, "application/json", bodyReader)
+}
+
+// NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequestWithBody generates requests for PostInternalSandboxesSandboxIDSnapshotTemplates with any type of body
+func NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequestWithBody(server string, sandboxID SandboxID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "sandboxID", runtime.ParamLocationPath, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/sandboxes/%s/snapshot-templates", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewDeleteInternalSnapshotTemplatesSnapshotIDRequest generates requests for DeleteInternalSnapshotTemplatesSnapshotID
+func NewDeleteInternalSnapshotTemplatesSnapshotIDRequest(server string, snapshotID SnapshotID, params *DeleteInternalSnapshotTemplatesSnapshotIDParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "snapshotID", runtime.ParamLocationPath, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/snapshot-templates/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "team_id", runtime.ParamLocationQuery, params.TeamId); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetInternalSnapshotsSnapshotIDResolveRequest generates requests for GetInternalSnapshotsSnapshotIDResolve
+func NewGetInternalSnapshotsSnapshotIDResolveRequest(server string, snapshotID SnapshotID, params *GetInternalSnapshotsSnapshotIDResolveParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "snapshotID", runtime.ParamLocationPath, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/snapshots/%s/resolve", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "team_id", runtime.ParamLocationQuery, params.TeamId); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewDeleteInternalTemplatesTemplateIDRequest generates requests for DeleteInternalTemplatesTemplateID
+func NewDeleteInternalTemplatesTemplateIDRequest(server string, templateID TemplateID, params *DeleteInternalTemplatesTemplateIDParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "templateID", runtime.ParamLocationPath, templateID)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/templates/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "team_id", runtime.ParamLocationQuery, params.TeamId); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -5503,6 +6245,39 @@ type ClientWithResponsesInterface interface {
 	// GetHealthWithResponse request
 	GetHealthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHealthResponse, error)
 
+	// PostInternalBuildsBuildIDStatusWithBodyWithResponse request with any body
+	PostInternalBuildsBuildIDStatusWithBodyWithResponse(ctx context.Context, buildID BuildID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostInternalBuildsBuildIDStatusResponse, error)
+
+	PostInternalBuildsBuildIDStatusWithResponse(ctx context.Context, buildID BuildID, body PostInternalBuildsBuildIDStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*PostInternalBuildsBuildIDStatusResponse, error)
+
+	// GetInternalSandboxesSandboxIDLastSnapshotWithResponse request
+	GetInternalSandboxesSandboxIDLastSnapshotWithResponse(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*GetInternalSandboxesSandboxIDLastSnapshotResponse, error)
+
+	// PostInternalSandboxesSandboxIDPauseSnapshotWithBodyWithResponse request with any body
+	PostInternalSandboxesSandboxIDPauseSnapshotWithBodyWithResponse(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDPauseSnapshotResponse, error)
+
+	PostInternalSandboxesSandboxIDPauseSnapshotWithResponse(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDPauseSnapshotResponse, error)
+
+	// DeleteInternalSandboxesSandboxIDSnapshotWithResponse request
+	DeleteInternalSandboxesSandboxIDSnapshotWithResponse(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*DeleteInternalSandboxesSandboxIDSnapshotResponse, error)
+
+	// GetInternalSandboxesSandboxIDSnapshotStateWithResponse request
+	GetInternalSandboxesSandboxIDSnapshotStateWithResponse(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*GetInternalSandboxesSandboxIDSnapshotStateResponse, error)
+
+	// PostInternalSandboxesSandboxIDSnapshotTemplatesWithBodyWithResponse request with any body
+	PostInternalSandboxesSandboxIDSnapshotTemplatesWithBodyWithResponse(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDSnapshotTemplatesResponse, error)
+
+	PostInternalSandboxesSandboxIDSnapshotTemplatesWithResponse(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDSnapshotTemplatesResponse, error)
+
+	// DeleteInternalSnapshotTemplatesSnapshotIDWithResponse request
+	DeleteInternalSnapshotTemplatesSnapshotIDWithResponse(ctx context.Context, snapshotID SnapshotID, params *DeleteInternalSnapshotTemplatesSnapshotIDParams, reqEditors ...RequestEditorFn) (*DeleteInternalSnapshotTemplatesSnapshotIDResponse, error)
+
+	// GetInternalSnapshotsSnapshotIDResolveWithResponse request
+	GetInternalSnapshotsSnapshotIDResolveWithResponse(ctx context.Context, snapshotID SnapshotID, params *GetInternalSnapshotsSnapshotIDResolveParams, reqEditors ...RequestEditorFn) (*GetInternalSnapshotsSnapshotIDResolveResponse, error)
+
+	// DeleteInternalTemplatesTemplateIDWithResponse request
+	DeleteInternalTemplatesTemplateIDWithResponse(ctx context.Context, templateID TemplateID, params *DeleteInternalTemplatesTemplateIDParams, reqEditors ...RequestEditorFn) (*DeleteInternalTemplatesTemplateIDResponse, error)
+
 	// GetNodesWithResponse request
 	GetNodesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetNodesResponse, error)
 
@@ -5885,6 +6660,243 @@ func (r GetHealthResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetHealthResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PostInternalBuildsBuildIDStatusResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *N400
+	JSON401      *N401
+	JSON404      *N404
+	JSON409      *N409
+	JSON500      *N500
+}
+
+// Status returns HTTPResponse.Status
+func (r PostInternalBuildsBuildIDStatusResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostInternalBuildsBuildIDStatusResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetInternalSandboxesSandboxIDLastSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ResumeMetadata
+	JSON401      *N401
+	JSON404      *N404
+	JSON500      *N500
+}
+
+// Status returns HTTPResponse.Status
+func (r GetInternalSandboxesSandboxIDLastSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetInternalSandboxesSandboxIDLastSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PostInternalSandboxesSandboxIDPauseSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *PauseSnapshotResponse
+	JSON400      *N400
+	JSON401      *N401
+	JSON404      *N404
+	JSON409      *N409
+	JSON422      *N422
+	JSON500      *N500
+}
+
+// Status returns HTTPResponse.Status
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type DeleteInternalSandboxesSandboxIDSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON401      *N401
+	JSON404      *N404
+	JSON409      *N409
+	JSON500      *N500
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteInternalSandboxesSandboxIDSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteInternalSandboxesSandboxIDSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetInternalSandboxesSandboxIDSnapshotStateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *SnapshotStateResponse
+	JSON401      *N401
+	JSON500      *N500
+}
+
+// Status returns HTTPResponse.Status
+func (r GetInternalSandboxesSandboxIDSnapshotStateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetInternalSandboxesSandboxIDSnapshotStateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PostInternalSandboxesSandboxIDSnapshotTemplatesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *SnapshotTemplateResponse
+	JSON400      *N400
+	JSON401      *N401
+	JSON404      *N404
+	JSON409      *N409
+	JSON422      *N422
+	JSON500      *N500
+}
+
+// Status returns HTTPResponse.Status
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type DeleteInternalSnapshotTemplatesSnapshotIDResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *N400
+	JSON401      *N401
+	JSON404      *N404
+	JSON409      *N409
+	JSON422      *N422
+	JSON500      *N500
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteInternalSnapshotTemplatesSnapshotIDResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteInternalSnapshotTemplatesSnapshotIDResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetInternalSnapshotsSnapshotIDResolveResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ResumeMetadata
+	JSON400      *N400
+	JSON401      *N401
+	JSON404      *N404
+	JSON422      *N422
+	JSON500      *N500
+}
+
+// Status returns HTTPResponse.Status
+func (r GetInternalSnapshotsSnapshotIDResolveResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetInternalSnapshotsSnapshotIDResolveResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type DeleteInternalTemplatesTemplateIDResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *N400
+	JSON401      *N401
+	JSON404      *N404
+	JSON409      *N409
+	JSON422      *N422
+	JSON500      *N500
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteInternalTemplatesTemplateIDResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteInternalTemplatesTemplateIDResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -7112,6 +8124,111 @@ func (c *ClientWithResponses) GetHealthWithResponse(ctx context.Context, reqEdit
 	return ParseGetHealthResponse(rsp)
 }
 
+// PostInternalBuildsBuildIDStatusWithBodyWithResponse request with arbitrary body returning *PostInternalBuildsBuildIDStatusResponse
+func (c *ClientWithResponses) PostInternalBuildsBuildIDStatusWithBodyWithResponse(ctx context.Context, buildID BuildID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostInternalBuildsBuildIDStatusResponse, error) {
+	rsp, err := c.PostInternalBuildsBuildIDStatusWithBody(ctx, buildID, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostInternalBuildsBuildIDStatusResponse(rsp)
+}
+
+func (c *ClientWithResponses) PostInternalBuildsBuildIDStatusWithResponse(ctx context.Context, buildID BuildID, body PostInternalBuildsBuildIDStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*PostInternalBuildsBuildIDStatusResponse, error) {
+	rsp, err := c.PostInternalBuildsBuildIDStatus(ctx, buildID, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostInternalBuildsBuildIDStatusResponse(rsp)
+}
+
+// GetInternalSandboxesSandboxIDLastSnapshotWithResponse request returning *GetInternalSandboxesSandboxIDLastSnapshotResponse
+func (c *ClientWithResponses) GetInternalSandboxesSandboxIDLastSnapshotWithResponse(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*GetInternalSandboxesSandboxIDLastSnapshotResponse, error) {
+	rsp, err := c.GetInternalSandboxesSandboxIDLastSnapshot(ctx, sandboxID, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetInternalSandboxesSandboxIDLastSnapshotResponse(rsp)
+}
+
+// PostInternalSandboxesSandboxIDPauseSnapshotWithBodyWithResponse request with arbitrary body returning *PostInternalSandboxesSandboxIDPauseSnapshotResponse
+func (c *ClientWithResponses) PostInternalSandboxesSandboxIDPauseSnapshotWithBodyWithResponse(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDPauseSnapshotResponse, error) {
+	rsp, err := c.PostInternalSandboxesSandboxIDPauseSnapshotWithBody(ctx, sandboxID, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostInternalSandboxesSandboxIDPauseSnapshotResponse(rsp)
+}
+
+func (c *ClientWithResponses) PostInternalSandboxesSandboxIDPauseSnapshotWithResponse(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDPauseSnapshotResponse, error) {
+	rsp, err := c.PostInternalSandboxesSandboxIDPauseSnapshot(ctx, sandboxID, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostInternalSandboxesSandboxIDPauseSnapshotResponse(rsp)
+}
+
+// DeleteInternalSandboxesSandboxIDSnapshotWithResponse request returning *DeleteInternalSandboxesSandboxIDSnapshotResponse
+func (c *ClientWithResponses) DeleteInternalSandboxesSandboxIDSnapshotWithResponse(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*DeleteInternalSandboxesSandboxIDSnapshotResponse, error) {
+	rsp, err := c.DeleteInternalSandboxesSandboxIDSnapshot(ctx, sandboxID, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteInternalSandboxesSandboxIDSnapshotResponse(rsp)
+}
+
+// GetInternalSandboxesSandboxIDSnapshotStateWithResponse request returning *GetInternalSandboxesSandboxIDSnapshotStateResponse
+func (c *ClientWithResponses) GetInternalSandboxesSandboxIDSnapshotStateWithResponse(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*GetInternalSandboxesSandboxIDSnapshotStateResponse, error) {
+	rsp, err := c.GetInternalSandboxesSandboxIDSnapshotState(ctx, sandboxID, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetInternalSandboxesSandboxIDSnapshotStateResponse(rsp)
+}
+
+// PostInternalSandboxesSandboxIDSnapshotTemplatesWithBodyWithResponse request with arbitrary body returning *PostInternalSandboxesSandboxIDSnapshotTemplatesResponse
+func (c *ClientWithResponses) PostInternalSandboxesSandboxIDSnapshotTemplatesWithBodyWithResponse(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDSnapshotTemplatesResponse, error) {
+	rsp, err := c.PostInternalSandboxesSandboxIDSnapshotTemplatesWithBody(ctx, sandboxID, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostInternalSandboxesSandboxIDSnapshotTemplatesResponse(rsp)
+}
+
+func (c *ClientWithResponses) PostInternalSandboxesSandboxIDSnapshotTemplatesWithResponse(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDSnapshotTemplatesResponse, error) {
+	rsp, err := c.PostInternalSandboxesSandboxIDSnapshotTemplates(ctx, sandboxID, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostInternalSandboxesSandboxIDSnapshotTemplatesResponse(rsp)
+}
+
+// DeleteInternalSnapshotTemplatesSnapshotIDWithResponse request returning *DeleteInternalSnapshotTemplatesSnapshotIDResponse
+func (c *ClientWithResponses) DeleteInternalSnapshotTemplatesSnapshotIDWithResponse(ctx context.Context, snapshotID SnapshotID, params *DeleteInternalSnapshotTemplatesSnapshotIDParams, reqEditors ...RequestEditorFn) (*DeleteInternalSnapshotTemplatesSnapshotIDResponse, error) {
+	rsp, err := c.DeleteInternalSnapshotTemplatesSnapshotID(ctx, snapshotID, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteInternalSnapshotTemplatesSnapshotIDResponse(rsp)
+}
+
+// GetInternalSnapshotsSnapshotIDResolveWithResponse request returning *GetInternalSnapshotsSnapshotIDResolveResponse
+func (c *ClientWithResponses) GetInternalSnapshotsSnapshotIDResolveWithResponse(ctx context.Context, snapshotID SnapshotID, params *GetInternalSnapshotsSnapshotIDResolveParams, reqEditors ...RequestEditorFn) (*GetInternalSnapshotsSnapshotIDResolveResponse, error) {
+	rsp, err := c.GetInternalSnapshotsSnapshotIDResolve(ctx, snapshotID, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetInternalSnapshotsSnapshotIDResolveResponse(rsp)
+}
+
+// DeleteInternalTemplatesTemplateIDWithResponse request returning *DeleteInternalTemplatesTemplateIDResponse
+func (c *ClientWithResponses) DeleteInternalTemplatesTemplateIDWithResponse(ctx context.Context, templateID TemplateID, params *DeleteInternalTemplatesTemplateIDParams, reqEditors ...RequestEditorFn) (*DeleteInternalTemplatesTemplateIDResponse, error) {
+	rsp, err := c.DeleteInternalTemplatesTemplateID(ctx, templateID, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteInternalTemplatesTemplateIDResponse(rsp)
+}
+
 // GetNodesWithResponse request returning *GetNodesResponse
 func (c *ClientWithResponses) GetNodesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetNodesResponse, error) {
 	rsp, err := c.GetNodes(ctx, reqEditors...)
@@ -8015,6 +9132,513 @@ func ParseGetHealthResponse(rsp *http.Response) (*GetHealthResponse, error) {
 			return nil, err
 		}
 		response.JSON401 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostInternalBuildsBuildIDStatusResponse parses an HTTP response from a PostInternalBuildsBuildIDStatusWithResponse call
+func ParsePostInternalBuildsBuildIDStatusResponse(rsp *http.Response) (*PostInternalBuildsBuildIDStatusResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostInternalBuildsBuildIDStatusResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest N409
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetInternalSandboxesSandboxIDLastSnapshotResponse parses an HTTP response from a GetInternalSandboxesSandboxIDLastSnapshotWithResponse call
+func ParseGetInternalSandboxesSandboxIDLastSnapshotResponse(rsp *http.Response) (*GetInternalSandboxesSandboxIDLastSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetInternalSandboxesSandboxIDLastSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ResumeMetadata
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostInternalSandboxesSandboxIDPauseSnapshotResponse parses an HTTP response from a PostInternalSandboxesSandboxIDPauseSnapshotWithResponse call
+func ParsePostInternalSandboxesSandboxIDPauseSnapshotResponse(rsp *http.Response) (*PostInternalSandboxesSandboxIDPauseSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostInternalSandboxesSandboxIDPauseSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PauseSnapshotResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest N409
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest N422
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteInternalSandboxesSandboxIDSnapshotResponse parses an HTTP response from a DeleteInternalSandboxesSandboxIDSnapshotWithResponse call
+func ParseDeleteInternalSandboxesSandboxIDSnapshotResponse(rsp *http.Response) (*DeleteInternalSandboxesSandboxIDSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteInternalSandboxesSandboxIDSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest N409
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetInternalSandboxesSandboxIDSnapshotStateResponse parses an HTTP response from a GetInternalSandboxesSandboxIDSnapshotStateWithResponse call
+func ParseGetInternalSandboxesSandboxIDSnapshotStateResponse(rsp *http.Response) (*GetInternalSandboxesSandboxIDSnapshotStateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetInternalSandboxesSandboxIDSnapshotStateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SnapshotStateResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostInternalSandboxesSandboxIDSnapshotTemplatesResponse parses an HTTP response from a PostInternalSandboxesSandboxIDSnapshotTemplatesWithResponse call
+func ParsePostInternalSandboxesSandboxIDSnapshotTemplatesResponse(rsp *http.Response) (*PostInternalSandboxesSandboxIDSnapshotTemplatesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostInternalSandboxesSandboxIDSnapshotTemplatesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SnapshotTemplateResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest N409
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest N422
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteInternalSnapshotTemplatesSnapshotIDResponse parses an HTTP response from a DeleteInternalSnapshotTemplatesSnapshotIDWithResponse call
+func ParseDeleteInternalSnapshotTemplatesSnapshotIDResponse(rsp *http.Response) (*DeleteInternalSnapshotTemplatesSnapshotIDResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteInternalSnapshotTemplatesSnapshotIDResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest N409
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest N422
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetInternalSnapshotsSnapshotIDResolveResponse parses an HTTP response from a GetInternalSnapshotsSnapshotIDResolveWithResponse call
+func ParseGetInternalSnapshotsSnapshotIDResolveResponse(rsp *http.Response) (*GetInternalSnapshotsSnapshotIDResolveResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetInternalSnapshotsSnapshotIDResolveResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ResumeMetadata
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest N422
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteInternalTemplatesTemplateIDResponse parses an HTTP response from a DeleteInternalTemplatesTemplateIDWithResponse call
+func ParseDeleteInternalTemplatesTemplateIDResponse(rsp *http.Response) (*DeleteInternalTemplatesTemplateIDResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteInternalTemplatesTemplateIDResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest N409
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest N422
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
 
 	}
 
@@ -10102,6 +11726,33 @@ type ServerInterface interface {
 
 	// (GET /health)
 	GetHealth(c *gin.Context)
+	// Write back the terminal status of a snapshot build
+	// (POST /internal/builds/{buildID}/status)
+	PostInternalBuildsBuildIDStatus(c *gin.Context, buildID BuildID)
+	// Get resume metadata of the last paused snapshot
+	// (GET /internal/sandboxes/{sandboxID}/last-snapshot)
+	GetInternalSandboxesSandboxIDLastSnapshot(c *gin.Context, sandboxID SandboxID)
+	// Write pause snapshot metadata
+	// (POST /internal/sandboxes/{sandboxID}/pause-snapshot)
+	PostInternalSandboxesSandboxIDPauseSnapshot(c *gin.Context, sandboxID SandboxID)
+	// Delete paused snapshot metadata
+	// (DELETE /internal/sandboxes/{sandboxID}/snapshot)
+	DeleteInternalSandboxesSandboxIDSnapshot(c *gin.Context, sandboxID SandboxID)
+	// Get the pause state of a sandbox
+	// (GET /internal/sandboxes/{sandboxID}/snapshot-state)
+	GetInternalSandboxesSandboxIDSnapshotState(c *gin.Context, sandboxID SandboxID)
+	// Write checkpoint snapshot template metadata
+	// (POST /internal/sandboxes/{sandboxID}/snapshot-templates)
+	PostInternalSandboxesSandboxIDSnapshotTemplates(c *gin.Context, sandboxID SandboxID)
+	// Delete checkpoint snapshot template metadata
+	// (DELETE /internal/snapshot-templates/{snapshotID})
+	DeleteInternalSnapshotTemplatesSnapshotID(c *gin.Context, snapshotID SnapshotID, params DeleteInternalSnapshotTemplatesSnapshotIDParams)
+	// Resolve a user snapshot reference
+	// (GET /internal/snapshots/{snapshotID}/resolve)
+	GetInternalSnapshotsSnapshotIDResolve(c *gin.Context, snapshotID SnapshotID, params GetInternalSnapshotsSnapshotIDResolveParams)
+	// Delete base template metadata
+	// (DELETE /internal/templates/{templateID})
+	DeleteInternalTemplatesTemplateID(c *gin.Context, templateID TemplateID, params DeleteInternalTemplatesTemplateIDParams)
 
 	// (GET /nodes)
 	GetNodes(c *gin.Context)
@@ -10442,6 +12093,294 @@ func (siw *ServerInterfaceWrapper) GetHealth(c *gin.Context) {
 	}
 
 	siw.Handler.GetHealth(c)
+}
+
+// PostInternalBuildsBuildIDStatus operation middleware
+func (siw *ServerInterfaceWrapper) PostInternalBuildsBuildIDStatus(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "buildID" -------------
+	var buildID BuildID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "buildID", c.Param("buildID"), &buildID, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter buildID: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(AdminTokenAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PostInternalBuildsBuildIDStatus(c, buildID)
+}
+
+// GetInternalSandboxesSandboxIDLastSnapshot operation middleware
+func (siw *ServerInterfaceWrapper) GetInternalSandboxesSandboxIDLastSnapshot(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "sandboxID" -------------
+	var sandboxID SandboxID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sandboxID", c.Param("sandboxID"), &sandboxID, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter sandboxID: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(AdminTokenAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetInternalSandboxesSandboxIDLastSnapshot(c, sandboxID)
+}
+
+// PostInternalSandboxesSandboxIDPauseSnapshot operation middleware
+func (siw *ServerInterfaceWrapper) PostInternalSandboxesSandboxIDPauseSnapshot(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "sandboxID" -------------
+	var sandboxID SandboxID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sandboxID", c.Param("sandboxID"), &sandboxID, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter sandboxID: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(AdminTokenAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PostInternalSandboxesSandboxIDPauseSnapshot(c, sandboxID)
+}
+
+// DeleteInternalSandboxesSandboxIDSnapshot operation middleware
+func (siw *ServerInterfaceWrapper) DeleteInternalSandboxesSandboxIDSnapshot(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "sandboxID" -------------
+	var sandboxID SandboxID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sandboxID", c.Param("sandboxID"), &sandboxID, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter sandboxID: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(AdminTokenAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteInternalSandboxesSandboxIDSnapshot(c, sandboxID)
+}
+
+// GetInternalSandboxesSandboxIDSnapshotState operation middleware
+func (siw *ServerInterfaceWrapper) GetInternalSandboxesSandboxIDSnapshotState(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "sandboxID" -------------
+	var sandboxID SandboxID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sandboxID", c.Param("sandboxID"), &sandboxID, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter sandboxID: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(AdminTokenAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetInternalSandboxesSandboxIDSnapshotState(c, sandboxID)
+}
+
+// PostInternalSandboxesSandboxIDSnapshotTemplates operation middleware
+func (siw *ServerInterfaceWrapper) PostInternalSandboxesSandboxIDSnapshotTemplates(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "sandboxID" -------------
+	var sandboxID SandboxID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sandboxID", c.Param("sandboxID"), &sandboxID, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter sandboxID: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(AdminTokenAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PostInternalSandboxesSandboxIDSnapshotTemplates(c, sandboxID)
+}
+
+// DeleteInternalSnapshotTemplatesSnapshotID operation middleware
+func (siw *ServerInterfaceWrapper) DeleteInternalSnapshotTemplatesSnapshotID(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "snapshotID" -------------
+	var snapshotID SnapshotID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "snapshotID", c.Param("snapshotID"), &snapshotID, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter snapshotID: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(AdminTokenAuthScopes, []string{})
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteInternalSnapshotTemplatesSnapshotIDParams
+
+	// ------------- Required query parameter "team_id" -------------
+
+	if paramValue := c.Query("team_id"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Query argument team_id is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "team_id", c.Request.URL.Query(), &params.TeamId)
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter team_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteInternalSnapshotTemplatesSnapshotID(c, snapshotID, params)
+}
+
+// GetInternalSnapshotsSnapshotIDResolve operation middleware
+func (siw *ServerInterfaceWrapper) GetInternalSnapshotsSnapshotIDResolve(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "snapshotID" -------------
+	var snapshotID SnapshotID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "snapshotID", c.Param("snapshotID"), &snapshotID, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter snapshotID: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(AdminTokenAuthScopes, []string{})
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetInternalSnapshotsSnapshotIDResolveParams
+
+	// ------------- Required query parameter "team_id" -------------
+
+	if paramValue := c.Query("team_id"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Query argument team_id is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "team_id", c.Request.URL.Query(), &params.TeamId)
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter team_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetInternalSnapshotsSnapshotIDResolve(c, snapshotID, params)
+}
+
+// DeleteInternalTemplatesTemplateID operation middleware
+func (siw *ServerInterfaceWrapper) DeleteInternalTemplatesTemplateID(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "templateID" -------------
+	var templateID TemplateID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "templateID", c.Param("templateID"), &templateID, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter templateID: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(AdminTokenAuthScopes, []string{})
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteInternalTemplatesTemplateIDParams
+
+	// ------------- Required query parameter "team_id" -------------
+
+	if paramValue := c.Query("team_id"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Query argument team_id is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "team_id", c.Request.URL.Query(), &params.TeamId)
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter team_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteInternalTemplatesTemplateID(c, templateID, params)
 }
 
 // GetNodes operation middleware
@@ -12039,6 +13978,15 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api-keys/:apiKeyID", wrapper.DeleteApiKeysApiKeyID)
 	router.PATCH(options.BaseURL+"/api-keys/:apiKeyID", wrapper.PatchApiKeysApiKeyID)
 	router.GET(options.BaseURL+"/health", wrapper.GetHealth)
+	router.POST(options.BaseURL+"/internal/builds/:buildID/status", wrapper.PostInternalBuildsBuildIDStatus)
+	router.GET(options.BaseURL+"/internal/sandboxes/:sandboxID/last-snapshot", wrapper.GetInternalSandboxesSandboxIDLastSnapshot)
+	router.POST(options.BaseURL+"/internal/sandboxes/:sandboxID/pause-snapshot", wrapper.PostInternalSandboxesSandboxIDPauseSnapshot)
+	router.DELETE(options.BaseURL+"/internal/sandboxes/:sandboxID/snapshot", wrapper.DeleteInternalSandboxesSandboxIDSnapshot)
+	router.GET(options.BaseURL+"/internal/sandboxes/:sandboxID/snapshot-state", wrapper.GetInternalSandboxesSandboxIDSnapshotState)
+	router.POST(options.BaseURL+"/internal/sandboxes/:sandboxID/snapshot-templates", wrapper.PostInternalSandboxesSandboxIDSnapshotTemplates)
+	router.DELETE(options.BaseURL+"/internal/snapshot-templates/:snapshotID", wrapper.DeleteInternalSnapshotTemplatesSnapshotID)
+	router.GET(options.BaseURL+"/internal/snapshots/:snapshotID/resolve", wrapper.GetInternalSnapshotsSnapshotIDResolve)
+	router.DELETE(options.BaseURL+"/internal/templates/:templateID", wrapper.DeleteInternalTemplatesTemplateID)
 	router.GET(options.BaseURL+"/nodes", wrapper.GetNodes)
 	router.GET(options.BaseURL+"/nodes/:nodeID", wrapper.GetNodesNodeID)
 	router.POST(options.BaseURL+"/nodes/:nodeID", wrapper.PostNodesNodeID)
@@ -12089,165 +14037,193 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"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",
+	"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",
+	"ln+XQsC3+/8XAAD//4fyWD89WwEA",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

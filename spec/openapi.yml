@@ -145,6 +145,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    "422":
+      description: Team ownership mismatch
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     "500":
       description: Server error
       content:
@@ -1873,6 +1879,227 @@ components:
       required:
         - name
 
+    RuntimeSnapshotMetadata:
+      description: Runtime metadata collected by the in-cluster webhook service for a Pause/Checkpoint operation
+      type: object
+      required:
+        - operation_id
+        - team_id
+        - base_template_id
+        - source_pod_uid
+        - source_node_name
+        - sandbox_started_at
+        - vcpu
+        - ram_mb
+        - total_disk_size_mb
+        - kernel_version
+        - firecracker_version
+        - envd_version
+        - secure
+      properties:
+        operation_id:
+          type: string
+          description: Idempotency key of the operation (logged; idempotency is provided by the underlying SQL)
+        team_id:
+          type: string
+          format: uuid
+          description: Team that owns the sandbox
+        base_template_id:
+          type: string
+          description: Original product template ID
+        source_pod_uid:
+          type: string
+          description: UID of the source Pod
+        source_node_name:
+          type: string
+          description: Name of the node the sandbox ran on (stored as origin_node_id)
+        sandbox_started_at:
+          type: string
+          format: date-time
+          description: Start time of the current sandbox run
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: User-provided sandbox metadata
+        vcpu:
+          type: integer
+          format: int64
+        ram_mb:
+          type: integer
+          format: int64
+        total_disk_size_mb:
+          type: integer
+          format: int64
+        kernel_version:
+          type: string
+        firecracker_version:
+          type: string
+        envd_version:
+          type: string
+        secure:
+          type: boolean
+          description: Whether envd requires an access token
+        allow_internet_access:
+          type: boolean
+        auto_pause:
+          type: boolean
+        network:
+          type: object
+          additionalProperties: {}
+          description: Network configuration (PausedSandboxConfig.network)
+        auto_resume:
+          type: object
+          additionalProperties: {}
+          description: Auto-resume policy (PausedSandboxConfig.autoResume)
+        volume_mounts:
+          type: array
+          items:
+            type: object
+            additionalProperties: {}
+          description: Volume mounts (PausedSandboxConfig.volumeMounts)
+        source_machine_info:
+          type: object
+          additionalProperties: {}
+          description: CPU info of the source node (cpu_architecture/cpu_family/cpu_model/cpu_model_name/cpu_flags)
+
+    PauseSnapshotResponse:
+      type: object
+      required:
+        - template_id
+        - build_id
+      properties:
+        template_id:
+          type: string
+          description: Internal snapshot template ID (envs.id, source='snapshot')
+        build_id:
+          type: string
+          format: uuid
+          description: New build ID with status=snapshotting
+
+    SnapshotTemplateResponse:
+      type: object
+      required:
+        - snapshot_id
+        - template_id
+        - build_id
+      properties:
+        snapshot_id:
+          type: string
+          description: User-visible snapshot reference (template_id:default)
+        template_id:
+          type: string
+          description: Snapshot template env ID
+        build_id:
+          type: string
+          format: uuid
+          description: New build ID with status=snapshotting
+
+    ResumeMetadata:
+      type: object
+      required:
+        - template_id
+        - build_id
+        - origin_node
+        - vcpu
+        - ram_mb
+        - kernel_version
+        - firecracker_version
+        - env_secure
+        - auto_pause
+        - sandbox_started_at
+      properties:
+        template_id:
+          type: string
+          description: Snapshot template env ID used to resume
+        build_id:
+          type: string
+          format: uuid
+          description: Last ready build ID
+        base_template_id:
+          type: string
+          description: Original product template ID (empty for checkpoint templates)
+        aliases:
+          type: array
+          items:
+            type: string
+          description: Aliases of the base env (empty for checkpoint templates)
+        origin_node:
+          type: string
+          description: Node the snapshot was taken on
+        vcpu:
+          type: integer
+          format: int64
+        ram_mb:
+          type: integer
+          format: int64
+        total_disk_size_mb:
+          type: integer
+          format: int64
+        kernel_version:
+          type: string
+        firecracker_version:
+          type: string
+        envd_version:
+          type: string
+        env_secure:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        auto_pause:
+          type: boolean
+        network:
+          type: object
+          additionalProperties: {}
+        auto_resume:
+          type: object
+          additionalProperties: {}
+        volume_mounts:
+          type: array
+          items:
+            type: object
+            additionalProperties: {}
+        sandbox_started_at:
+          type: string
+          format: date-time
+        machine_info:
+          type: object
+          additionalProperties: {}
+          description: CPU info of the node the snapshot was taken on
+
+    BuildStatusRequest:
+      type: object
+      required:
+        - operation_id
+        - status
+      properties:
+        operation_id:
+          type: string
+          description: Idempotency key of the operation
+        status:
+          type: string
+          enum: [success, failed]
+          description: Terminal build status
+        error:
+          type: string
+          description: Failure reason
+
+    SnapshotStateResponse:
+      type: object
+      required:
+        - paused
+      properties:
+        paused:
+          type: boolean
+          description: Whether the sandbox has a live paused snapshot
+        template_id:
+          type: string
+        build_id:
+          type: string
+          format: uuid
+
 tags:
   - name: templates
   - name: sandboxes
@@ -3450,5 +3677,267 @@ paths:
           $ref: "#/components/responses/401"
         "404":
           $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /internal/sandboxes/{sandboxID}/pause-snapshot:
+    post:
+      summary: Write pause snapshot metadata
+      description: Allocates an internal snapshot template and build for a Pause operation. Internal endpoint for the in-cluster webhook service.
+      tags: [internal]
+      security:
+        - AdminTokenAuth: []
+      parameters:
+        - $ref: "#/components/parameters/sandboxID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuntimeSnapshotMetadata"
+      responses:
+        "200":
+          description: Pause snapshot metadata written
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PauseSnapshotResponse"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "409":
+          $ref: "#/components/responses/409"
+        "422":
+          $ref: "#/components/responses/422"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /internal/sandboxes/{sandboxID}/snapshot-templates:
+    post:
+      summary: Write checkpoint snapshot template metadata
+      description: Creates a persistent snapshot template and build for a user Checkpoint operation. Internal endpoint for the in-cluster webhook service.
+      tags: [internal]
+      security:
+        - AdminTokenAuth: []
+      parameters:
+        - $ref: "#/components/parameters/sandboxID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuntimeSnapshotMetadata"
+      responses:
+        "200":
+          description: Checkpoint snapshot template metadata written
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotTemplateResponse"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "409":
+          $ref: "#/components/responses/409"
+        "422":
+          $ref: "#/components/responses/422"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /internal/sandboxes/{sandboxID}/last-snapshot:
+    get:
+      summary: Get resume metadata of the last paused snapshot
+      description: Returns the resume metadata of the sandbox's last paused snapshot. Internal endpoint for the in-cluster webhook service.
+      tags: [internal]
+      security:
+        - AdminTokenAuth: []
+      parameters:
+        - $ref: "#/components/parameters/sandboxID"
+      responses:
+        "200":
+          description: Resume metadata of the last snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResumeMetadata"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /internal/builds/{buildID}/status:
+    post:
+      summary: Write back the terminal status of a snapshot build
+      description: Marks a snapshot build as success or failed. Internal endpoint for the in-cluster webhook service.
+      tags: [internal]
+      security:
+        - AdminTokenAuth: []
+      parameters:
+        - $ref: "#/components/parameters/buildID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BuildStatusRequest"
+      responses:
+        "200":
+          description: Build status updated (or idempotent repeat with the same value)
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "409":
+          $ref: "#/components/responses/409"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /internal/sandboxes/{sandboxID}/snapshot-state:
+    get:
+      summary: Get the pause state of a sandbox
+      description: Returns whether the sandbox has a live paused snapshot. Internal endpoint for the in-cluster webhook service.
+      tags: [internal]
+      security:
+        - AdminTokenAuth: []
+      parameters:
+        - $ref: "#/components/parameters/sandboxID"
+      responses:
+        "200":
+          description: Pause state of the sandbox
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotStateResponse"
+        "401":
+          $ref: "#/components/responses/401"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /internal/sandboxes/{sandboxID}/snapshot:
+    delete:
+      summary: Delete paused snapshot metadata
+      description: Soft-deletes the sandbox's paused snapshot and its internal restore template. Internal endpoint for the in-cluster webhook service.
+      tags: [internal]
+      security:
+        - AdminTokenAuth: []
+      parameters:
+        - $ref: "#/components/parameters/sandboxID"
+      responses:
+        "204":
+          description: Snapshot metadata deleted
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "409":
+          $ref: "#/components/responses/409"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /internal/snapshot-templates/{snapshotID}:
+    delete:
+      summary: Delete checkpoint snapshot template metadata
+      description: Resolves a user snapshot reference and soft-deletes the checkpoint snapshot template. Internal endpoint for the in-cluster webhook service.
+      tags: [internal]
+      security:
+        - AdminTokenAuth: []
+      parameters:
+        - $ref: "#/components/parameters/snapshotID"
+        - name: team_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Team ID used for alias namespace resolution and ownership check
+      responses:
+        "204":
+          description: Snapshot template metadata deleted
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "409":
+          $ref: "#/components/responses/409"
+        "422":
+          $ref: "#/components/responses/422"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /internal/snapshots/{snapshotID}/resolve:
+    get:
+      summary: Resolve a user snapshot reference
+      description: Resolves a snapshot reference to its template and ready build and returns the resume metadata. Internal endpoint for the in-cluster webhook service.
+      tags: [internal]
+      security:
+        - AdminTokenAuth: []
+      parameters:
+        - $ref: "#/components/parameters/snapshotID"
+        - name: team_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Team ID used for alias namespace resolution and ownership check
+      responses:
+        "200":
+          description: Resume metadata of the resolved snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResumeMetadata"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "422":
+          $ref: "#/components/responses/422"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /internal/templates/{templateID}:
+    delete:
+      summary: Delete base template metadata
+      description: Soft-deletes a base template without checking running sandboxes (handled by the webhook beforehand). Internal endpoint for the in-cluster webhook service.
+      tags: [internal]
+      security:
+        - AdminTokenAuth: []
+      parameters:
+        - $ref: "#/components/parameters/templateID"
+        - name: team_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Team ID used for alias namespace resolution and ownership check
+      responses:
+        "204":
+          description: Template metadata deleted
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "409":
+          $ref: "#/components/responses/409"
+        "422":
+          $ref: "#/components/responses/422"
         "500":
           $ref: "#/components/responses/500"

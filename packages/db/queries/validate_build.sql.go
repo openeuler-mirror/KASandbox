@@ -19,6 +19,7 @@ SELECT EXISTS (
              JOIN env_builds eb ON eb.id = eba.build_id
     WHERE at.access_token_hash = $1
       AND e.id = $2
+      AND e.deleted_at IS NULL
       AND eb.status_group = 'pending'
 ) AS valid
 `

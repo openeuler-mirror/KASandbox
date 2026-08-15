@@ -321,9 +321,11 @@ func (s *Server) Delete(ctxConn context.Context, in *orchestrator.SandboxDeleteR
 
 	sbx, ok := s.sandboxes.Get(in.GetSandboxId())
 	if !ok {
-		telemetry.ReportCriticalError(ctx, "sandbox not found", nil, telemetry.WithSandboxID(in.GetSandboxId()))
+		// Idempotent delete: a sandbox that is not in the local map (e.g. already
+		// paused, expired, or cleaned up) is already in the desired end state.
+		zap.L().Info("sandbox not found during delete, treating as already deleted", logger.WithSandboxID(in.GetSandboxId()))
 
-		return nil, status.Errorf(codes.NotFound, "sandbox '%s' not found", in.GetSandboxId())
+		return &emptypb.Empty{}, nil
 	}
 
 	sbxlogger.E(sbx).Info(ctx, "Killing sandbox")
@@ -396,12 +398,19 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 	// Stop the old sandbox in background after we're done
 	defer s.stopSandboxAsync(context.WithoutCancel(ctx), sbx)
 
-	// Fire and forget - don't wait for upload to complete
-	_, _, err = s.snapshotAndCacheSandbox(ctx, sbx, in.GetBuildId())
+	// Wait for the snapshot upload to complete before returning - the snapshot
+	// metadata must not be marked as ready before the data is actually persisted.
+	_, waitForUpload, err := s.snapshotAndCacheSandbox(ctx, sbx, in.GetBuildId())
 	if err != nil {
 		telemetry.ReportCriticalError(ctx, "error snapshotting sandbox", err, telemetry.WithSandboxID(in.GetSandboxId()))
 
 		return nil, status.Errorf(codes.Internal, "error snapshotting sandbox '%s': %s", in.GetSandboxId(), err)
+	}
+
+	if err := waitForUpload(); err != nil {
+		telemetry.ReportCriticalError(ctx, "error uploading sandbox snapshot", err, telemetry.WithSandboxID(in.GetSandboxId()))
+
+		return nil, status.Errorf(codes.Internal, "error uploading snapshot for sandbox '%s': %s", in.GetSandboxId(), err)
 	}
 
 	teamID, buildId, eventData := s.prepareSandboxEventData(ctx, sbx)

@@ -21,6 +21,7 @@ WITH new_template AS (
         SELECT id
         FROM "public"."snapshots" s
         WHERE s.sandbox_id = $3
+          AND s.deleted_at IS NULL
     ) RETURNING id
 ),
 
@@ -53,11 +54,16 @@ snapshot as (
             $11
    )
     ON CONFLICT (sandbox_id) DO UPDATE SET
+        -- A soft-deleted row is treated as non-existent: a fresh template env
+        -- was created above, so adopt it and resurrect the row (clear deleted_at).
+        -- For live rows excluded.env_id is the '' placeholder, so keep the old env_id.
+        env_id = COALESCE(NULLIF(excluded.env_id, ''), snapshots.env_id),
         metadata = excluded.metadata,
         sandbox_started_at = excluded.sandbox_started_at,
         origin_node_id = excluded.origin_node_id,
         auto_pause = excluded.auto_pause,
-        config = excluded.config
+        config = excluded.config,
+        deleted_at = NULL
     RETURNING env_id as template_id
 ),
 
