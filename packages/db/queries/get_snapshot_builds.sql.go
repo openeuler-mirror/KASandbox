@@ -17,6 +17,7 @@ LEFT JOIN "public"."env_build_assignments" eba ON eba.env_id = s.env_id AND eba.
 LEFT JOIN "public"."env_builds" eb ON eb.id = eba.build_id
 WHERE s.sandbox_id = $1
 AND s.team_id = $2
+AND s.deleted_at IS NULL
 `
 
 type GetSnapshotBuildsParams struct {

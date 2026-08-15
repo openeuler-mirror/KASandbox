@@ -14,6 +14,7 @@ SELECT EXISTS(
     SELECT 1
     FROM "public"."snapshots"
     WHERE base_env_id = $1
+      AND deleted_at IS NULL
 )
 `
 
