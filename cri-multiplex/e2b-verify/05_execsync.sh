@@ -17,6 +17,12 @@ cleanup_05_tmp() {
 }
 trap cleanup_05_tmp EXIT
 
+#==================== 前置：确保非 CNI 模式 ====================#
+log_step "0.1 前置检查：切换到非 CNI 模式"
+if ! start_non_cni_multiplex "启动 cri-multiplex 非 CNI runtime 模式"; then
+    exit 1
+fi
+
 #==================== 前置：创建 Pod + Container ====================#
 log_step "前置准备：创建 Pod 和 Container"
 prepare_direct_pod_json "execsync" "${BASE_POD_JSON}" || exit 1
