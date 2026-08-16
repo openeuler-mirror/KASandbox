@@ -26,19 +26,24 @@ cri-multiplex \
 - `-socket` — Unix socket this server listens on (default `/run/cri-multiplex.sock`)
 - `-containerd-socket` — upstream containerd socket (default `/run/containerd/containerd.sock`)
 - `-orchestrator-address` — E2B orchestrator gRPC target (default `localhost:5008`)
+- `-admin-socket` — node-local admin gRPC socket for Pause/Checkpoint/GetSandboxRuntime (default `/run/cri-multiplex/admin.sock`)
+- `-node-name` — Kubernetes node name recorded in runtime facts (defaults to `NODE_NAME` env)
 
 Requires root or write access to `/run/` for the socket.
 
 ## Architecture
 
 ```
-cmd/cri-multiplex/main.go   — entrypoint, wires engines + server
+cmd/cri-multiplex/main.go   — entrypoint, wires engines + server + admin server
 pkg/engine/engine.go        — RuntimeEngine interface (all CRI methods)
 pkg/engine/container.go     — ContainerEngine: real gRPC client to containerd
 pkg/engine/e2b.go           — E2BEngine interface + factory
 pkg/engine/grpc_e2b.go      — gRPC backend: orchestrator SandboxService client
+pkg/engine/admin_ops.go     — AdminPause/AdminCheckpoint/AdminGetRuntime + sandbox operation lock
 pkg/orchestrator/           — generated proto types + gRPC client for SandboxService
 proto/orchestrator.proto    — proto source copied from infra/packages/orchestrator/
+pkg/admin/                  — generated admin proto types + node-local admin gRPC server
+proto/admin.proto           — E2BSandboxAdminService proto source (Pause/Checkpoint/GetSandboxRuntime)
 pkg/server/mux.go           — MuxServer: gRPC server, routes by RuntimeHandler
 test/test_pod_default.json  — sample pod sandbox config for manual testing
 ```
@@ -76,6 +81,7 @@ Set on `PodSandboxConfig.Annotations`:
 | `e2b.dev/template-id` | none |
 | `e2b.dev/build-id` | `"latest"` |
 | `e2b.dev/team-id` | `"cri-multiplex"` |
+| `e2b.dev/sandbox-id` | none (derived from Pod UID); stable logical sandbox ID, lowercase letters/digits/`-`, 1-64 chars |
 | `e2b.dev/vcpu` | `1` |
 | `e2b.dev/ram-mb` | `2048` |
 | `e2b.dev/allow-internet` | `false` |
@@ -96,6 +102,17 @@ protoc \
 ```
 
 Keep the proto in sync when the upstream orchestrator proto changes.
+
+`proto/admin.proto` is cri-multiplex's own node-local admin API (E2BSandboxAdminService). Regenerate with the same command, replacing the file name:
+
+```bash
+protoc \
+  --go_out=. --go_opt=module=github.com/cri-multiplex \
+  --go-grpc_out=. --go-grpc_opt=module=github.com/cri-multiplex \
+  --experimental_allow_proto3_optional \
+  -I proto -I /usr/include \
+  proto/admin.proto
+```
 
 ## Key constraints
 

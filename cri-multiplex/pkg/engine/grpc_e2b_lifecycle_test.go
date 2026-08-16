@@ -503,3 +503,102 @@ func TestGRPCE2BSendInputToEnvd(t *testing.T) {
 		}
 	}
 }
+
+func TestGRPCE2BRunPodSandboxSandboxIDAnnotation(t *testing.T) {
+	client := &fakeSandboxServiceClient{}
+	e := newTestGRPCE2BEngine(client)
+	req := e2bRunReq("uid-sbx")
+	req.Config.Annotations[annSandboxID] = "my-sandbox-01"
+	req.Config.Annotations[annExecutionID] = "exec-1"
+
+	if _, err := e.RunPodSandbox(context.Background(), req); err != nil {
+		t.Fatalf("RunPodSandbox: %v", err)
+	}
+	if client.lastCreate == nil || client.lastCreate.Sandbox.SandboxId != "my-sandbox-01" {
+		t.Fatalf("create sandbox id = %+v", client.lastCreate)
+	}
+	pod, ok := e.tracker.Get("uid-sbx")
+	if !ok || pod.e2bSandboxID != "my-sandbox-01" {
+		t.Fatalf("tracker pod mismatch: %+v ok=%v", pod, ok)
+	}
+	if pod.executionID != "exec-1" || pod.teamID != "team-a" {
+		t.Fatalf("pod identity fields mismatch: %+v", pod)
+	}
+	if got, ok := e.tracker.GetByE2B("my-sandbox-01"); !ok || got.sandboxID != "uid-sbx" {
+		t.Fatalf("reverse index mismatch: %+v ok=%v", got, ok)
+	}
+}
+
+func TestGRPCE2BRunPodSandboxInvalidSandboxIDAnnotation(t *testing.T) {
+	for _, bad := range []string{"Bad_ID", "with space", "UPPER", strings.Repeat("a", 65)} {
+		client := &fakeSandboxServiceClient{}
+		e := newTestGRPCE2BEngine(client)
+		req := e2bRunReq("uid-bad")
+		req.Config.Annotations[annSandboxID] = bad
+		if _, err := e.RunPodSandbox(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("annotation %q: code = %v, want InvalidArgument", bad, status.Code(err))
+		}
+		if client.createCalls != 0 {
+			t.Fatalf("annotation %q: create calls = %d, want 0", bad, client.createCalls)
+		}
+	}
+}
+
+func TestGRPCE2BRunPodSandboxIdempotentRetryConfirmedByOrchestrator(t *testing.T) {
+	client := &fakeSandboxServiceClient{listResp: &orchestrator.SandboxListResponse{
+		Sandboxes: []*orchestrator.RunningSandbox{{Config: &orchestrator.SandboxConfig{SandboxId: "e2b-uid-r"}}},
+	}}
+	e := newTestGRPCE2BEngine(client)
+	// 即使是旧的 stopped/paused 记录，只要 orchestrator 侧存在也只能幂等返回，
+	// 不允许再直接改成 running（§14.4）。
+	for _, st := range []e2bState{stateRunning, stateStopped, statePaused} {
+		e.tracker.Add("uid-r", &podInfo{sandboxID: "uid-r", e2bSandboxID: "e2b-uid-r", state: st, createdAt: time.Now()})
+		resp, err := e.RunPodSandbox(context.Background(), e2bRunReq("uid-r"))
+		if err != nil {
+			t.Fatalf("state %v: RunPodSandbox: %v", st, err)
+		}
+		if resp.PodSandboxId != "uid-r" {
+			t.Fatalf("state %v: pod id = %q", st, resp.PodSandboxId)
+		}
+		if client.createCalls != 0 {
+			t.Fatalf("state %v: create calls = %d, want 0", st, client.createCalls)
+		}
+		pod, _ := e.tracker.Get("uid-r")
+		if pod.state != st {
+			t.Fatalf("state %v: pod state changed to %v", st, pod.state)
+		}
+	}
+}
+
+func TestGRPCE2BRunPodSandboxStaleRecordRecreate(t *testing.T) {
+	client := &fakeSandboxServiceClient{listResp: &orchestrator.SandboxListResponse{}}
+	fakeCNI := &fakeCNIManager{}
+	e := newTestGRPCE2BEngine(client)
+	e.cniConfig.Enabled = true
+	e.cniManager = fakeCNI
+	var hostPortCleaned int
+	e.hostPortOps.cleanup = func(string, int, string, int) error {
+		hostPortCleaned++
+		return nil
+	}
+	e.tracker.Add("uid-s", &podInfo{
+		sandboxID: "uid-s", e2bSandboxID: "e2b-uid-s", state: stateStopped, createdAt: time.Now(),
+		hostIP:       "172.16.0.9",
+		portMappings: []PortMapping{{HostPort: 20001, SandboxPort: 49983}},
+		cniRecord:    &CNIRecord{SandboxID: "uid-s", NetNSPath: "/var/run/netns/e2b-uid-s"},
+	})
+
+	if _, err := e.RunPodSandbox(context.Background(), e2bRunReq("uid-s")); err != nil {
+		t.Fatalf("RunPodSandbox: %v", err)
+	}
+	if client.createCalls != 1 {
+		t.Fatalf("create calls = %d, want 1", client.createCalls)
+	}
+	if hostPortCleaned != 1 || fakeCNI.delCalls != 1 {
+		t.Fatalf("stale cleanup = hostport:%d cni:%d, want 1/1", hostPortCleaned, fakeCNI.delCalls)
+	}
+	pod, ok := e.tracker.Get("uid-s")
+	if !ok || pod.state != stateRunning {
+		t.Fatalf("re-created pod mismatch: %+v ok=%v", pod, ok)
+	}
+}
