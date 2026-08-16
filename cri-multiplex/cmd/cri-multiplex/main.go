@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cri-multiplex/pkg/admin"
 	"github.com/cri-multiplex/pkg/engine"
 	"github.com/cri-multiplex/pkg/server"
 )
@@ -21,6 +22,7 @@ const (
 	defaultOrchestratorAddress   = "localhost:5008"
 	defaultOrchestratorProxyAddr = "localhost:5007"
 	defaultStateDir              = "/var/lib/cri-multiplex/state"
+	defaultAdminSocket           = "/run/cri-multiplex/admin.sock"
 )
 
 type stateRestorer interface {
@@ -77,6 +79,8 @@ func main() {
 	orchestratorAddress := flag.String("orchestrator-address", defaultOrchestratorAddress, "E2B orchestrator gRPC address")
 	orchestratorProxyAddr := flag.String("orchestrator-proxy-address", defaultOrchestratorProxyAddr, "E2B orchestrator HTTP proxy address (for envd interaction)")
 	nodeIP := flag.String("node-ip", "", "Node IP for host network mode (auto-detected if empty)")
+	nodeName := flag.String("node-name", os.Getenv("NODE_NAME"), "Kubernetes node name (defaults to NODE_NAME env)")
+	adminSocket := flag.String("admin-socket", defaultAdminSocket, "Unix socket path for the node-local admin service")
 	stateDir := flag.String("state-dir", defaultStateDir, "cri-multiplex persistent state directory")
 	cniEnabled := flag.Bool("cni-enabled", false, "Enable CNI networking for E2B and Android pod sandboxes")
 	cniConfDir := flag.String("cni-conf-dir", "/etc/cni/net.d", "CNI configuration directory")
@@ -119,6 +123,7 @@ func main() {
 		OrchestratorAddr:      *orchestratorAddress,
 		OrchestratorProxyAddr: *orchestratorProxyAddr,
 		NodeIP:                *nodeIP,
+		NodeName:              *nodeName,
 		CNI: engine.CNIConfig{
 			Enabled:  *cniEnabled,
 			ConfDir:  *cniConfDir,
@@ -130,6 +135,17 @@ func main() {
 	}
 	e2bEng := engine.NewE2BEngine(cfg)
 	defer e2bEng.Close()
+
+	// Admin server 是附加管理面（Node Agent 调用），启动失败仅告警，不影响 CRI 主服务。
+	if adminEng, ok := e2bEng.(admin.Engine); ok {
+		adminSrv := admin.NewServer(*adminSocket, adminEng)
+		if err := adminSrv.Start(); err != nil {
+			log.Printf("WARNING: admin server failed to start on %s: %v", *adminSocket, err)
+		} else {
+			defer adminSrv.Stop()
+			log.Printf("admin server listening on %s", *adminSocket)
+		}
+	}
 
 	if *androidEnabled && *androidNodeIP == "" && !*cniEnabled {
 		*androidNodeIP = autoNodeIP()

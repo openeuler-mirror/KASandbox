@@ -39,6 +39,35 @@ func TestPodTrackerListSkipsRemoved(t *testing.T) {
 	}
 }
 
+func TestPodTrackerBidirectionalIndex(t *testing.T) {
+	tracker := newPodTracker()
+	tracker.Add("pod-a", &podInfo{sandboxID: "pod-a", e2bSandboxID: "e2b-a", state: stateRunning})
+	tracker.Add("pod-b", &podInfo{sandboxID: "pod-b", state: stateRunning}) // 无 e2b ID，不索引
+
+	got, ok := tracker.GetByE2B("e2b-a")
+	if !ok || got.sandboxID != "pod-a" {
+		t.Fatalf("GetByE2B returned (%+v, %v), want pod-a", got, ok)
+	}
+	if _, ok := tracker.GetByE2B("pod-b"); ok {
+		t.Fatal("pod without e2bSandboxID should not be indexed")
+	}
+
+	// 覆盖 Add 时旧反查被清掉
+	tracker.Add("pod-a", &podInfo{sandboxID: "pod-a", e2bSandboxID: "e2b-a2", state: stateRunning})
+	if _, ok := tracker.GetByE2B("e2b-a"); ok {
+		t.Fatal("stale e2b index should be removed on re-add")
+	}
+	got, ok = tracker.GetByE2B("e2b-a2")
+	if !ok || got.sandboxID != "pod-a" {
+		t.Fatalf("GetByE2B after re-add returned (%+v, %v), want pod-a", got, ok)
+	}
+
+	tracker.Delete("pod-a")
+	if _, ok := tracker.GetByE2B("e2b-a2"); ok {
+		t.Fatal("e2b index should be removed on delete")
+	}
+}
+
 func TestPodTrackerConcurrentAccess(t *testing.T) {
 	tracker := newPodTracker()
 	var wg sync.WaitGroup

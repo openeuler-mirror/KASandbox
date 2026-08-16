@@ -1,0 +1,620 @@
+2026-08-16T21:05:32.854+0800  [33mWARN[0m  Failed to parse expected migration timestamp  {"service": "orchestration-api", "internal": true, "pid": 1446, "error": "strconv.ParseInt: parsing \"\": invalid syntax"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Warn
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:134
+main.run
+	/home/zrj/KASandbox/packages/api/main.go:294
+main.main
+	/home/zrj/KASandbox/packages/api/main.go:491
+runtime.main
+	/usr/local/go/src/runtime/proc.go:285
+2026-08-16T21:05:32.861+0800  [34mINFO[0m  Database version  {"service": "orchestration-api", "internal": true, "pid": 1446, "version": 20260219120000, "expected_migration": 0}
+2026-08-16T21:05:32.861+0800  [34mINFO[0m  Starting API service...  {"service": "orchestration-api", "internal": true, "pid": 1446, "commit_sha": "", "service.instance.id": "75093cdc-3e3f-46d0-adb0-bdbc3cbef973"}
+2026-08-16T21:05:32.888+0800  [34mINFO[0m  Initializing API store and services  {"service": "orchestration-api", "internal": true, "pid": 1446}
+2026-08-16T21:05:32.889+0800  [34mINFO[0m  Created database client  {"service": "orchestration-api", "internal": true, "pid": 1446}
+2026-08-16T21:05:32.889+0800  [34mINFO[0m  No Posthog API key provided, silencing logs  {"service": "orchestration-api", "internal": true, "pid": 1446}
+[LaunchDarkly] 2026/08/16 21:05:32 INFO: Starting LaunchDarkly client 7.13.0
+2026-08-16T21:05:32.891+0800  [34mINFO[0m  Running dummy implementation of analytics collector client, no host provided  {"service": "orchestration-api", "internal": true, "pid": 1446}
+2026-08-16T21:05:32.891+0800  [34mINFO[0m  Using populate_redis sandbox storage backend  {"service": "orchestration-api", "internal": true, "pid": 1446}
+2026-08-16T21:05:32.891+0800  [34mINFO[0m  Running the initial node sync  {"service": "orchestration-api", "internal": true, "pid": 1446}
+2026-08-16T21:05:32.892+0800  [34mINFO[0m  gRPC service starting  {"service": "orchestration-api", "internal": true, "pid": 1446, "port": 15009}
+2026-08-16T21:05:32.892+0800  [34mINFO[0m  Http service starting  {"service": "orchestration-api", "internal": true, "pid": 1446, "port": 13200}
+2026-08-16T21:05:32.898+0800  [34mINFO[0m  Initializing newly discovered cluster  {"service": "orchestration-api", "internal": true, "pid": 1446, "cluster.id": "00000000-0000-0000-0000-000000000000"}
+2026-08-16T21:05:32.898+0800  [34mINFO[0m  Local cluster initialized successfully  {"service": "orchestration-api", "internal": true, "pid": 1446, "cluster.id": "00000000-0000-0000-0000-000000000000"}
+2026-08-16T21:05:32.899+0800  [31mERROR[0m  Error listing orchestrator nodes  {"service": "orchestration-api", "internal": true, "pid": 1446, "error": "Get \"http://localhost:4646/v1/nodes?filter=Status+%3D%3D+%22ready%22\": dial tcp [::1]:4646: connect: connection refused"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Error
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:138
+github.com/e2b-dev/infra/packages/api/internal/orchestrator.(*Orchestrator).syncNodes
+	/home/zrj/KASandbox/packages/api/internal/orchestrator/cache.go:67
+github.com/e2b-dev/infra/packages/api/internal/orchestrator.(*Orchestrator).keepInSync
+	/home/zrj/KASandbox/packages/api/internal/orchestrator/cache.go:34
+2026-08-16T21:05:32.899+0800  [31mERROR[0m  Cluster instances: Initial sync failed  {"service": "orchestration-api", "internal": true, "pid": 1446, "error": "failed to get cluster instances from service discovery: failed to list allocations in service discovery: failed to list Nomad allocations in service discovery: Get \"http://localhost:4646/v1/allocations?filter=ClientStatus+%3D%3D+%22running%22+and+TaskGroup+%3D%3D+%22template-manager%22+and+JobID+contains+%22template-manager%22&resources=true\": dial tcp [::1]:4646: connect: connection refused"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Error
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:138
+github.com/e2b-dev/infra/packages/shared/pkg/synchronization.(*Synchronize[...]).Start
+	/home/zrj/KASandbox/packages/shared/pkg/synchronization/synchronization.go:57
+2026-08-16T21:05:33.940+0800  [33mWARN[0m  authorization header is missing  {"service": "orchestration-api", "internal": true, "pid": 1446, "error.message": "Invalid Access token.", "error": "authorization header is missing"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Warn
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:134
+github.com/e2b-dev/infra/packages/shared/pkg/telemetry.ReportError
+	/home/zrj/KASandbox/packages/shared/pkg/telemetry/tracing.go:48
+github.com/e2b-dev/infra/packages/auth/pkg/auth.(*CommonAuthenticator[...]).Authenticate
+	/home/zrj/KASandbox/packages/auth/pkg/auth/middleware.go:76
+main.NewGinServer.CreateAuthenticationFunc.func7
+	/home/zrj/KASandbox/packages/auth/pkg/auth/middleware.go:227
+github.com/getkin/kin-openapi/openapi3filter.validateSecurityRequirement
+	/root/go/pkg/mod/github.com/getkin/kin-openapi@v0.133.0/openapi3filter/validate_request.go:470
+github.com/getkin/kin-openapi/openapi3filter.ValidateSecurityRequirements
+	/root/go/pkg/mod/github.com/getkin/kin-openapi@v0.133.0/openapi3filter/validate_request.go:381
+github.com/getkin/kin-openapi/openapi3filter.ValidateRequest
+	/root/go/pkg/mod/github.com/getkin/kin-openapi@v0.133.0/openapi3filter/validate_request.go:53
+github.com/oapi-codegen/gin-middleware.ValidateRequestFromContext
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:148
+github.com/oapi-codegen/gin-middleware.OapiRequestValidatorWithOptions.func1
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:89
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.RequestSizeLimiter.func8
+	/root/go/pkg/mod/github.com/gin-contrib/size@v1.0.2/size.go:88
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/recovery.go:102
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.IncludeRoutes.func6
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:28
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing.Middleware.func1
+	/home/zrj/KASandbox/packages/api/internal/middleware/otel/tracing/middleware.go:110
+main.NewGinServer.ExcludeRoutes.func5
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:644
+github.com/gin-gonic/gin.(*Engine).ServeHTTP
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:600
+net/http.serverHandler.ServeHTTP
+	/usr/local/go/src/net/http/server.go:3340
+net/http.(*conn).serve
+	/usr/local/go/src/net/http/server.go:2109
+2026-08-16T21:05:33.940+0800  [33mWARN[0m  error in openapi3filter.SecurityRequirementsError: security requirements failed: authorization header is missing  {"service": "orchestration-api", "internal": true, "pid": 1446, "http.status_code": 401, "error": "OpenAPI validation error: error in openapi3filter.SecurityRequirementsError: security requirements failed: authorization header is missing, data: "}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Warn
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:134
+github.com/e2b-dev/infra/packages/shared/pkg/telemetry.ReportError
+	/home/zrj/KASandbox/packages/shared/pkg/telemetry/tracing.go:48
+github.com/e2b-dev/infra/packages/api/internal/utils.ErrorHandler
+	/home/zrj/KASandbox/packages/api/internal/utils/error.go:47
+main.NewGinServer.func1
+	/home/zrj/KASandbox/packages/api/main.go:152
+github.com/oapi-codegen/gin-middleware.OapiRequestValidatorWithOptions.func1
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:97
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.RequestSizeLimiter.func8
+	/root/go/pkg/mod/github.com/gin-contrib/size@v1.0.2/size.go:88
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/recovery.go:102
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.IncludeRoutes.func6
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:28
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing.Middleware.func1
+	/home/zrj/KASandbox/packages/api/internal/middleware/otel/tracing/middleware.go:110
+main.NewGinServer.ExcludeRoutes.func5
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:644
+github.com/gin-gonic/gin.(*Engine).ServeHTTP
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:600
+net/http.serverHandler.ServeHTTP
+	/usr/local/go/src/net/http/server.go:3340
+net/http.(*conn).serve
+	/usr/local/go/src/net/http/server.go:2109
+2026-08-16T21:05:33.940+0800  [33mWARN[0m  validation error  {"service": "orchestration-api", "internal": true, "pid": 1446, "error.message": "Invalid Access token.", "http.status_code": 401, "http.status_text": "Unauthorized", "error": "invalid access token"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Warn
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:134
+github.com/e2b-dev/infra/packages/shared/pkg/telemetry.ReportError
+	/home/zrj/KASandbox/packages/shared/pkg/telemetry/tracing.go:48
+github.com/e2b-dev/infra/packages/auth/pkg/auth.(*CommonAuthenticator[...]).Authenticate
+	/home/zrj/KASandbox/packages/auth/pkg/auth/middleware.go:91
+main.NewGinServer.CreateAuthenticationFunc.func7
+	/home/zrj/KASandbox/packages/auth/pkg/auth/middleware.go:227
+github.com/getkin/kin-openapi/openapi3filter.validateSecurityRequirement
+	/root/go/pkg/mod/github.com/getkin/kin-openapi@v0.133.0/openapi3filter/validate_request.go:470
+github.com/getkin/kin-openapi/openapi3filter.ValidateSecurityRequirements
+	/root/go/pkg/mod/github.com/getkin/kin-openapi@v0.133.0/openapi3filter/validate_request.go:381
+github.com/getkin/kin-openapi/openapi3filter.ValidateRequest
+	/root/go/pkg/mod/github.com/getkin/kin-openapi@v0.133.0/openapi3filter/validate_request.go:53
+github.com/oapi-codegen/gin-middleware.ValidateRequestFromContext
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:148
+github.com/oapi-codegen/gin-middleware.OapiRequestValidatorWithOptions.func1
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:89
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.RequestSizeLimiter.func8
+	/root/go/pkg/mod/github.com/gin-contrib/size@v1.0.2/size.go:88
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/recovery.go:102
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.IncludeRoutes.func6
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:28
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing.Middleware.func1
+	/home/zrj/KASandbox/packages/api/internal/middleware/otel/tracing/middleware.go:110
+main.NewGinServer.ExcludeRoutes.func5
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:644
+github.com/gin-gonic/gin.(*Engine).ServeHTTP
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:600
+net/http.serverHandler.ServeHTTP
+	/usr/local/go/src/net/http/server.go:3340
+net/http.(*conn).serve
+	/usr/local/go/src/net/http/server.go:2109
+2026-08-16T21:05:33.940+0800  [33mWARN[0m  error in openapi3filter.SecurityRequirementsError: security requirements failed: Invalid Access token.
+Invalid Access token. (invalid access token)  {"service": "orchestration-api", "internal": true, "pid": 1446, "http.status_code": 401, "error": "OpenAPI validation error: error in openapi3filter.SecurityRequirementsError: security requirements failed: Invalid Access token.\nInvalid Access token. (invalid access token), data: "}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Warn
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:134
+github.com/e2b-dev/infra/packages/shared/pkg/telemetry.ReportError
+	/home/zrj/KASandbox/packages/shared/pkg/telemetry/tracing.go:48
+github.com/e2b-dev/infra/packages/api/internal/utils.ErrorHandler
+	/home/zrj/KASandbox/packages/api/internal/utils/error.go:47
+main.NewGinServer.func1
+	/home/zrj/KASandbox/packages/api/main.go:152
+github.com/oapi-codegen/gin-middleware.OapiRequestValidatorWithOptions.func1
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:97
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.RequestSizeLimiter.func8
+	/root/go/pkg/mod/github.com/gin-contrib/size@v1.0.2/size.go:88
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/recovery.go:102
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.IncludeRoutes.func6
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:28
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing.Middleware.func1
+	/home/zrj/KASandbox/packages/api/internal/middleware/otel/tracing/middleware.go:110
+main.NewGinServer.ExcludeRoutes.func5
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:644
+github.com/gin-gonic/gin.(*Engine).ServeHTTP
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:600
+net/http.serverHandler.ServeHTTP
+	/usr/local/go/src/net/http/server.go:3340
+net/http.(*conn).serve
+	/usr/local/go/src/net/http/server.go:2109
+2026-08-16T21:05:33.944+0800  [34mINFO[0m  /internal/sandboxes/stub-sandbox-0001/snapshot-state  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 200, "method": "GET", "path": "/internal/sandboxes/stub-sandbox-0001/snapshot-state", "query": "", "user-agent": "Go-http-client/1.1", "latency": "2.903424ms", "time": "2026-08-16T13:05:33.944290671Z"}
+2026-08-16T21:05:33.947+0800  [33mWARN[0m  error in openapi3filter.RequestError: request body has an error: doesn't match schema #/components/schemas/RuntimeSnapshotMetadata: Error at "/team_id": property "team_id" is missing  {"service": "orchestration-api", "internal": true, "pid": 1446, "http.status_code": 400, "error": "OpenAPI validation error: error in openapi3filter.RequestError: request body has an error: doesn't match schema #/components/schemas/RuntimeSnapshotMetadata: Error at \"/team_id\": property \"team_id\" is missing, data: {\"allow_internet_access\":true,\"auto_pause\":false,\"base_template_id\":\"stub-base-env-01\",\"envd_version\":\"v0.3.0\",\"firecracker_version\":\"v1.10.1\",\"kernel_version\":\"vmlinux-6.1.158\",\"metadata\":{\"stub\":\"op-validation-0001\"},\"operation_id\":\"op-validation-0001\",\"ram_mb\":512,\"sandbox_started_at\":\"2026-08-16T13:00:33Z\",\"secure\":false,\"source_node_name\":\"stub-node-a\",\"source_pod_uid\":\"pod-uid-op-validation-0001\",\"total_disk_size_mb\":1024,\"vcpu\":2}"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Warn
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:134
+github.com/e2b-dev/infra/packages/shared/pkg/telemetry.ReportError
+	/home/zrj/KASandbox/packages/shared/pkg/telemetry/tracing.go:48
+github.com/e2b-dev/infra/packages/api/internal/utils.ErrorHandler
+	/home/zrj/KASandbox/packages/api/internal/utils/error.go:47
+main.NewGinServer.func1
+	/home/zrj/KASandbox/packages/api/main.go:152
+github.com/oapi-codegen/gin-middleware.OapiRequestValidatorWithOptions.func1
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:97
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.RequestSizeLimiter.func8
+	/root/go/pkg/mod/github.com/gin-contrib/size@v1.0.2/size.go:88
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/recovery.go:102
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.IncludeRoutes.func6
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:28
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing.Middleware.func1
+	/home/zrj/KASandbox/packages/api/internal/middleware/otel/tracing/middleware.go:110
+main.NewGinServer.ExcludeRoutes.func5
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:644
+github.com/gin-gonic/gin.(*Engine).ServeHTTP
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:600
+net/http.serverHandler.ServeHTTP
+	/usr/local/go/src/net/http/server.go:3340
+net/http.(*conn).serve
+	/usr/local/go/src/net/http/server.go:2109
+2026-08-16T21:05:33.948+0800  [34mINFO[0m  Writing pause snapshot metadata  {"service": "orchestration-api", "internal": true, "pid": 1446, "sandbox.id": "stub-sandbox-0001", "team.id": "11111111-1111-1111-1111-111111111111", "operationID": "op-pause-0001"}
+2026-08-16T21:05:33.954+0800  [34mINFO[0m  /internal/sandboxes/stub-sandbox-0001/pause-snapshot  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 200, "method": "POST", "path": "/internal/sandboxes/stub-sandbox-0001/pause-snapshot", "query": "", "user-agent": "Go-http-client/1.1", "latency": "5.944996ms", "time": "2026-08-16T13:05:33.954394082Z"}
+2026-08-16T21:05:33.954+0800  [34mINFO[0m  Writing back build status  {"service": "orchestration-api", "internal": true, "pid": 1446, "buildID": "ba2e2a3c-8681-4dd3-b578-3c52db44007d", "operationID": "op-pause-0001", "status": "success"}
+2026-08-16T21:05:33.955+0800  [34mINFO[0m  /internal/builds/ba2e2a3c-8681-4dd3-b578-3c52db44007d/status  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 200, "method": "POST", "path": "/internal/builds/ba2e2a3c-8681-4dd3-b578-3c52db44007d/status", "query": "", "user-agent": "Go-http-client/1.1", "latency": "1.018548ms", "time": "2026-08-16T13:05:33.955756179Z"}
+2026-08-16T21:05:33.956+0800  [34mINFO[0m  /internal/sandboxes/stub-sandbox-0001/snapshot-state  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 200, "method": "GET", "path": "/internal/sandboxes/stub-sandbox-0001/snapshot-state", "query": "", "user-agent": "Go-http-client/1.1", "latency": "362.01µs", "time": "2026-08-16T13:05:33.956376544Z"}
+2026-08-16T21:05:33.959+0800  [34mINFO[0m  /internal/sandboxes/stub-sandbox-0001/last-snapshot  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 200, "method": "GET", "path": "/internal/sandboxes/stub-sandbox-0001/last-snapshot", "query": "", "user-agent": "Go-http-client/1.1", "latency": "3.035461ms", "time": "2026-08-16T13:05:33.95966738Z"}
+2026-08-16T21:05:33.960+0800  [34mINFO[0m  Writing pause snapshot metadata  {"service": "orchestration-api", "internal": true, "pid": 1446, "sandbox.id": "stub-sandbox-0001", "team.id": "11111111-1111-1111-1111-111111111111", "operationID": "op-pause-0002"}
+2026-08-16T21:05:33.961+0800  [34mINFO[0m  /internal/sandboxes/stub-sandbox-0001/pause-snapshot  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 200, "method": "POST", "path": "/internal/sandboxes/stub-sandbox-0001/pause-snapshot", "query": "", "user-agent": "Go-http-client/1.1", "latency": "1.177516ms", "time": "2026-08-16T13:05:33.96126182Z"}
+2026-08-16T21:05:33.961+0800  [34mINFO[0m  Writing back build status  {"service": "orchestration-api", "internal": true, "pid": 1446, "buildID": "0dbbf7fd-b541-411c-9492-5e7c529d4470", "operationID": "op-pause-0002", "status": "success"}
+2026-08-16T21:05:33.962+0800  [34mINFO[0m  /internal/builds/0dbbf7fd-b541-411c-9492-5e7c529d4470/status  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 200, "method": "POST", "path": "/internal/builds/0dbbf7fd-b541-411c-9492-5e7c529d4470/status", "query": "", "user-agent": "Go-http-client/1.1", "latency": "565.342µs", "time": "2026-08-16T13:05:33.962073966Z"}
+2026-08-16T21:05:33.962+0800  [34mINFO[0m  Writing back build status  {"service": "orchestration-api", "internal": true, "pid": 1446, "buildID": "0dbbf7fd-b541-411c-9492-5e7c529d4470", "operationID": "op-pause-0002", "status": "success"}
+2026-08-16T21:05:33.962+0800  [34mINFO[0m  /internal/builds/0dbbf7fd-b541-411c-9492-5e7c529d4470/status  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 200, "method": "POST", "path": "/internal/builds/0dbbf7fd-b541-411c-9492-5e7c529d4470/status", "query": "", "user-agent": "Go-http-client/1.1", "latency": "230.163µs", "time": "2026-08-16T13:05:33.962568444Z"}
+2026-08-16T21:05:33.962+0800  [34mINFO[0m  Writing back build status  {"service": "orchestration-api", "internal": true, "pid": 1446, "buildID": "0dbbf7fd-b541-411c-9492-5e7c529d4470", "operationID": "op-pause-0002", "status": "failed"}
+2026-08-16T21:05:33.963+0800  [33mWARN[0m  /internal/builds/0dbbf7fd-b541-411c-9492-5e7c529d4470/status  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 409, "method": "POST", "path": "/internal/builds/0dbbf7fd-b541-411c-9492-5e7c529d4470/status", "query": "", "user-agent": "Go-http-client/1.1", "latency": "232.203µs", "time": "2026-08-16T13:05:33.96302908Z", "error": "Build '0dbbf7fd-b541-411c-9492-5e7c529d4470' is already in terminal state 'success'"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Log
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:154
+main.NewGinServer.func2.LoggingMiddleware.1
+	/home/zrj/KASandbox/packages/api/internal/middleware/logging.go:110
+main.NewGinServer.func2
+	/home/zrj/KASandbox/packages/api/main.go:186
+main.NewGinServer.ExcludeRoutes.func9
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware.InitLaunchDarklyContext
+	/home/zrj/KASandbox/packages/api/internal/middleware/launchdarkly.go:27
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/oapi-codegen/gin-middleware.OapiRequestValidatorWithOptions.func1
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:108
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.RequestSizeLimiter.func8
+	/root/go/pkg/mod/github.com/gin-contrib/size@v1.0.2/size.go:88
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/recovery.go:102
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.IncludeRoutes.func6
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:28
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing.Middleware.func1
+	/home/zrj/KASandbox/packages/api/internal/middleware/otel/tracing/middleware.go:110
+main.NewGinServer.ExcludeRoutes.func5
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:644
+github.com/gin-gonic/gin.(*Engine).ServeHTTP
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:600
+net/http.serverHandler.ServeHTTP
+	/usr/local/go/src/net/http/server.go:3340
+net/http.(*conn).serve
+	/usr/local/go/src/net/http/server.go:2109
+2026-08-16T21:05:33.963+0800  [34mINFO[0m  Writing checkpoint snapshot template metadata  {"service": "orchestration-api", "internal": true, "pid": 1446, "sandbox.id": "stub-sandbox-0002", "team.id": "11111111-1111-1111-1111-111111111111", "operationID": "op-checkpoint-0001"}
+2026-08-16T21:05:33.966+0800  [34mINFO[0m  /internal/sandboxes/stub-sandbox-0002/snapshot-templates  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 200, "method": "POST", "path": "/internal/sandboxes/stub-sandbox-0002/snapshot-templates", "query": "", "user-agent": "Go-http-client/1.1", "latency": "2.700802ms", "time": "2026-08-16T13:05:33.966091133Z"}
+2026-08-16T21:05:33.966+0800  [34mINFO[0m  Writing back build status  {"service": "orchestration-api", "internal": true, "pid": 1446, "buildID": "34502b01-0dac-4490-a990-41a393ab66fa", "operationID": "op-checkpoint-0001", "status": "success"}
+2026-08-16T21:05:33.966+0800  [34mINFO[0m  /internal/builds/34502b01-0dac-4490-a990-41a393ab66fa/status  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 200, "method": "POST", "path": "/internal/builds/34502b01-0dac-4490-a990-41a393ab66fa/status", "query": "", "user-agent": "Go-http-client/1.1", "latency": "507.429µs", "time": "2026-08-16T13:05:33.966861267Z"}
+2026-08-16T21:05:33.975+0800  [34mINFO[0m  /internal/snapshots/h967vmcd1yrxoy4qkm9b:default/resolve  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 200, "method": "GET", "path": "/internal/snapshots/h967vmcd1yrxoy4qkm9b:default/resolve", "query": "team_id=11111111-1111-1111-1111-111111111111", "user-agent": "Go-http-client/1.1", "latency": "8.265497ms", "time": "2026-08-16T13:05:33.975300824Z"}
+2026-08-16T21:05:33.978+0800  [34mINFO[0m  Deleted snapshot template metadata  {"service": "orchestration-api", "internal": true, "pid": 1446, "template.id": "h967vmcd1yrxoy4qkm9b", "team.id": "11111111-1111-1111-1111-111111111111"}
+2026-08-16T21:05:33.978+0800  [34mINFO[0m  /internal/snapshot-templates/h967vmcd1yrxoy4qkm9b:default  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 204, "method": "DELETE", "path": "/internal/snapshot-templates/h967vmcd1yrxoy4qkm9b:default", "query": "team_id=11111111-1111-1111-1111-111111111111", "user-agent": "Go-http-client/1.1", "latency": "3.067583ms", "time": "2026-08-16T13:05:33.978647453Z"}
+2026-08-16T21:05:33.980+0800  [34mINFO[0m  /internal/snapshot-templates/h967vmcd1yrxoy4qkm9b:default  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 204, "method": "DELETE", "path": "/internal/snapshot-templates/h967vmcd1yrxoy4qkm9b:default", "query": "team_id=11111111-1111-1111-1111-111111111111", "user-agent": "Go-http-client/1.1", "latency": "2.060406ms", "time": "2026-08-16T13:05:33.980874279Z"}
+2026-08-16T21:05:33.981+0800  [33mWARN[0m  /internal/snapshots/h967vmcd1yrxoy4qkm9b:default/resolve  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 404, "method": "GET", "path": "/internal/snapshots/h967vmcd1yrxoy4qkm9b:default/resolve", "query": "team_id=11111111-1111-1111-1111-111111111111", "user-agent": "Go-http-client/1.1", "latency": "796.755µs", "time": "2026-08-16T13:05:33.981860475Z", "error": "template 'h967vmcd1yrxoy4qkm9b' not found"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Log
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:154
+main.NewGinServer.func2.LoggingMiddleware.1
+	/home/zrj/KASandbox/packages/api/internal/middleware/logging.go:110
+main.NewGinServer.func2
+	/home/zrj/KASandbox/packages/api/main.go:186
+main.NewGinServer.ExcludeRoutes.func9
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware.InitLaunchDarklyContext
+	/home/zrj/KASandbox/packages/api/internal/middleware/launchdarkly.go:27
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/oapi-codegen/gin-middleware.OapiRequestValidatorWithOptions.func1
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:108
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.RequestSizeLimiter.func8
+	/root/go/pkg/mod/github.com/gin-contrib/size@v1.0.2/size.go:88
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/recovery.go:102
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.IncludeRoutes.func6
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:28
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing.Middleware.func1
+	/home/zrj/KASandbox/packages/api/internal/middleware/otel/tracing/middleware.go:110
+main.NewGinServer.ExcludeRoutes.func5
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:644
+github.com/gin-gonic/gin.(*Engine).ServeHTTP
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:600
+net/http.serverHandler.ServeHTTP
+	/usr/local/go/src/net/http/server.go:3340
+net/http.(*conn).serve
+	/usr/local/go/src/net/http/server.go:2109
+2026-08-16T21:05:33.983+0800  [34mINFO[0m  Deleted paused snapshot metadata  {"service": "orchestration-api", "internal": true, "pid": 1446, "sandbox.id": "stub-sandbox-0001", "template.id": "o24hv139xuzow21j45oo"}
+2026-08-16T21:05:33.983+0800  [34mINFO[0m  /internal/sandboxes/stub-sandbox-0001/snapshot  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 204, "method": "DELETE", "path": "/internal/sandboxes/stub-sandbox-0001/snapshot", "query": "", "user-agent": "Go-http-client/1.1", "latency": "1.616132ms", "time": "2026-08-16T13:05:33.98371531Z"}
+2026-08-16T21:05:33.984+0800  [33mWARN[0m  /internal/sandboxes/stub-sandbox-0001/snapshot  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 404, "method": "DELETE", "path": "/internal/sandboxes/stub-sandbox-0001/snapshot", "query": "", "user-agent": "Go-http-client/1.1", "latency": "230.633µs", "time": "2026-08-16T13:05:33.984113312Z", "error": "No paused snapshot found for sandbox 'stub-sandbox-0001'"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Log
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:154
+main.NewGinServer.func2.LoggingMiddleware.1
+	/home/zrj/KASandbox/packages/api/internal/middleware/logging.go:110
+main.NewGinServer.func2
+	/home/zrj/KASandbox/packages/api/main.go:186
+main.NewGinServer.ExcludeRoutes.func9
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware.InitLaunchDarklyContext
+	/home/zrj/KASandbox/packages/api/internal/middleware/launchdarkly.go:27
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/oapi-codegen/gin-middleware.OapiRequestValidatorWithOptions.func1
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:108
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.RequestSizeLimiter.func8
+	/root/go/pkg/mod/github.com/gin-contrib/size@v1.0.2/size.go:88
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/recovery.go:102
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.IncludeRoutes.func6
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:28
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing.Middleware.func1
+	/home/zrj/KASandbox/packages/api/internal/middleware/otel/tracing/middleware.go:110
+main.NewGinServer.ExcludeRoutes.func5
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:644
+github.com/gin-gonic/gin.(*Engine).ServeHTTP
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:600
+net/http.serverHandler.ServeHTTP
+	/usr/local/go/src/net/http/server.go:3340
+net/http.(*conn).serve
+	/usr/local/go/src/net/http/server.go:2109
+2026-08-16T21:05:33.984+0800  [34mINFO[0m  /internal/sandboxes/stub-sandbox-0001/snapshot-state  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 200, "method": "GET", "path": "/internal/sandboxes/stub-sandbox-0001/snapshot-state", "query": "", "user-agent": "Go-http-client/1.1", "latency": "295.356µs", "time": "2026-08-16T13:05:33.984626281Z"}
+2026-08-16T21:05:33.985+0800  [33mWARN[0m  /internal/sandboxes/stub-sandbox-0001/last-snapshot  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 404, "method": "GET", "path": "/internal/sandboxes/stub-sandbox-0001/last-snapshot", "query": "", "user-agent": "Go-http-client/1.1", "latency": "819.826µs", "time": "2026-08-16T13:05:33.985632988Z", "error": "No paused snapshot found for sandbox 'stub-sandbox-0001'"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Log
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:154
+main.NewGinServer.func2.LoggingMiddleware.1
+	/home/zrj/KASandbox/packages/api/internal/middleware/logging.go:110
+main.NewGinServer.func2
+	/home/zrj/KASandbox/packages/api/main.go:186
+main.NewGinServer.ExcludeRoutes.func9
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware.InitLaunchDarklyContext
+	/home/zrj/KASandbox/packages/api/internal/middleware/launchdarkly.go:27
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/oapi-codegen/gin-middleware.OapiRequestValidatorWithOptions.func1
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:108
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.RequestSizeLimiter.func8
+	/root/go/pkg/mod/github.com/gin-contrib/size@v1.0.2/size.go:88
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/recovery.go:102
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.IncludeRoutes.func6
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:28
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing.Middleware.func1
+	/home/zrj/KASandbox/packages/api/internal/middleware/otel/tracing/middleware.go:110
+main.NewGinServer.ExcludeRoutes.func5
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:644
+github.com/gin-gonic/gin.(*Engine).ServeHTTP
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:600
+net/http.serverHandler.ServeHTTP
+	/usr/local/go/src/net/http/server.go:3340
+net/http.(*conn).serve
+	/usr/local/go/src/net/http/server.go:2109
+2026-08-16T21:05:33.988+0800  [33mWARN[0m  /internal/snapshots/nonexistent-snapshot-zz/resolve  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 404, "method": "GET", "path": "/internal/snapshots/nonexistent-snapshot-zz/resolve", "query": "team_id=11111111-1111-1111-1111-111111111111", "user-agent": "Go-http-client/1.1", "latency": "2.384085ms", "time": "2026-08-16T13:05:33.988223965Z", "error": "template 'nonexistent-snapshot-zz' not found"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Log
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:154
+main.NewGinServer.func2.LoggingMiddleware.1
+	/home/zrj/KASandbox/packages/api/internal/middleware/logging.go:110
+main.NewGinServer.func2
+	/home/zrj/KASandbox/packages/api/main.go:186
+main.NewGinServer.ExcludeRoutes.func9
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware.InitLaunchDarklyContext
+	/home/zrj/KASandbox/packages/api/internal/middleware/launchdarkly.go:27
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/oapi-codegen/gin-middleware.OapiRequestValidatorWithOptions.func1
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:108
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.RequestSizeLimiter.func8
+	/root/go/pkg/mod/github.com/gin-contrib/size@v1.0.2/size.go:88
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/recovery.go:102
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.IncludeRoutes.func6
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:28
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing.Middleware.func1
+	/home/zrj/KASandbox/packages/api/internal/middleware/otel/tracing/middleware.go:110
+main.NewGinServer.ExcludeRoutes.func5
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:644
+github.com/gin-gonic/gin.(*Engine).ServeHTTP
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:600
+net/http.serverHandler.ServeHTTP
+	/usr/local/go/src/net/http/server.go:3340
+net/http.(*conn).serve
+	/usr/local/go/src/net/http/server.go:2109
+2026-08-16T21:05:33.988+0800  [33mWARN[0m  /internal/snapshots/stub-base-env-01:default/resolve  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 404, "method": "GET", "path": "/internal/snapshots/stub-base-env-01:default/resolve", "query": "team_id=22222222-2222-2222-2222-222222222222", "user-agent": "Go-http-client/1.1", "latency": "492.698µs", "time": "2026-08-16T13:05:33.988943105Z", "error": "team '22222222-2222-2222-2222-222222222222' not found"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Log
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:154
+main.NewGinServer.func2.LoggingMiddleware.1
+	/home/zrj/KASandbox/packages/api/internal/middleware/logging.go:110
+main.NewGinServer.func2
+	/home/zrj/KASandbox/packages/api/main.go:186
+main.NewGinServer.ExcludeRoutes.func9
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware.InitLaunchDarklyContext
+	/home/zrj/KASandbox/packages/api/internal/middleware/launchdarkly.go:27
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/oapi-codegen/gin-middleware.OapiRequestValidatorWithOptions.func1
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:108
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.RequestSizeLimiter.func8
+	/root/go/pkg/mod/github.com/gin-contrib/size@v1.0.2/size.go:88
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/recovery.go:102
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.IncludeRoutes.func6
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:28
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing.Middleware.func1
+	/home/zrj/KASandbox/packages/api/internal/middleware/otel/tracing/middleware.go:110
+main.NewGinServer.ExcludeRoutes.func5
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:644
+github.com/gin-gonic/gin.(*Engine).ServeHTTP
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:600
+net/http.serverHandler.ServeHTTP
+	/usr/local/go/src/net/http/server.go:3340
+net/http.(*conn).serve
+	/usr/local/go/src/net/http/server.go:2109
+2026-08-16T21:05:33.991+0800  [33mWARN[0m  /internal/templates/stub-base-env-01  {"service": "orchestration-api", "internal": true, "pid": 1446, "status": 409, "method": "DELETE", "path": "/internal/templates/stub-base-env-01", "query": "team_id=11111111-1111-1111-1111-111111111111", "user-agent": "Go-http-client/1.1", "latency": "2.201954ms", "time": "2026-08-16T13:05:33.991379503Z", "error": "cannot delete template 'stub-base-env-01' because there are paused sandboxes using it"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Log
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:154
+main.NewGinServer.func2.LoggingMiddleware.1
+	/home/zrj/KASandbox/packages/api/internal/middleware/logging.go:110
+main.NewGinServer.func2
+	/home/zrj/KASandbox/packages/api/main.go:186
+main.NewGinServer.ExcludeRoutes.func9
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware.InitLaunchDarklyContext
+	/home/zrj/KASandbox/packages/api/internal/middleware/launchdarkly.go:27
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/oapi-codegen/gin-middleware.OapiRequestValidatorWithOptions.func1
+	/root/go/pkg/mod/github.com/oapi-codegen/gin-middleware@v1.0.2/oapi_validate.go:108
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.RequestSizeLimiter.func8
+	/root/go/pkg/mod/github.com/gin-contrib/size@v1.0.2/size.go:88
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/recovery.go:102
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+main.NewGinServer.IncludeRoutes.func6
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:28
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing.Middleware.func1
+	/home/zrj/KASandbox/packages/api/internal/middleware/otel/tracing/middleware.go:110
+main.NewGinServer.ExcludeRoutes.func5
+	/home/zrj/KASandbox/packages/api/internal/middleware/exclude.go:14
+github.com/gin-gonic/gin.(*Context).Next
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/context.go:185
+github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:644
+github.com/gin-gonic/gin.(*Engine).ServeHTTP
+	/root/go/pkg/mod/github.com/gin-gonic/gin@v1.10.1/gin.go:600
+net/http.serverHandler.ServeHTTP
+	/usr/local/go/src/net/http/server.go:3340
+net/http.(*conn).serve
+	/usr/local/go/src/net/http/server.go:2109
+[LaunchDarkly] 2026/08/16 21:05:34 WARN: Received HTTP error 401 (invalid SDK key) for sending events - giving up permanently
+2026-08-16T21:05:37.902+0800  [31mERROR[0m  Cluster instances: Failed to synchronize  {"service": "orchestration-api", "internal": true, "pid": 1446, "error": "failed to get cluster instances from service discovery: failed to list allocations in service discovery: failed to list Nomad allocations in service discovery: Get \"http://localhost:4646/v1/allocations?filter=ClientStatus+%3D%3D+%22running%22+and+TaskGroup+%3D%3D+%22template-manager%22+and+JobID+contains+%22template-manager%22&resources=true\": dial tcp [::1]:4646: connect: connection refused"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Error
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:138
+github.com/e2b-dev/infra/packages/shared/pkg/synchronization.(*Synchronize[...]).Start
+	/home/zrj/KASandbox/packages/shared/pkg/synchronization/synchronization.go:75
+[LaunchDarkly] 2026/08/16 21:05:38 WARN: Received HTTP error 401 (invalid SDK key) for sending events - giving up permanently
+2026-08-16T21:05:42.901+0800  [31mERROR[0m  Cluster instances: Failed to synchronize  {"service": "orchestration-api", "internal": true, "pid": 1446, "error": "failed to get cluster instances from service discovery: failed to list allocations in service discovery: failed to list Nomad allocations in service discovery: Get \"http://localhost:4646/v1/allocations?filter=ClientStatus+%3D%3D+%22running%22+and+TaskGroup+%3D%3D+%22template-manager%22+and+JobID+contains+%22template-manager%22&resources=true\": dial tcp [::1]:4646: connect: connection refused"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Error
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:138
+github.com/e2b-dev/infra/packages/shared/pkg/synchronization.(*Synchronize[...]).Start
+	/home/zrj/KASandbox/packages/shared/pkg/synchronization/synchronization.go:75
+2026/08/16 21:05:47 failed to upload metrics: exporter export timeout: rpc error: code = Unavailable desc = delegating_resolver: invalid target address "": missing address
+2026-08-16T21:05:47.900+0800  [31mERROR[0m  Cluster instances: Failed to synchronize  {"service": "orchestration-api", "internal": true, "pid": 1446, "error": "failed to get cluster instances from service discovery: failed to list allocations in service discovery: failed to list Nomad allocations in service discovery: Get \"http://localhost:4646/v1/allocations?filter=ClientStatus+%3D%3D+%22running%22+and+TaskGroup+%3D%3D+%22template-manager%22+and+JobID+contains+%22template-manager%22&resources=true\": dial tcp [::1]:4646: connect: connection refused"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Error
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:138
+github.com/e2b-dev/infra/packages/shared/pkg/synchronization.(*Synchronize[...]).Start
+	/home/zrj/KASandbox/packages/shared/pkg/synchronization/synchronization.go:75
+2026-08-16T21:05:48.996+0800  [34mINFO[0m  Http service shutdown successfully  {"service": "orchestration-api", "internal": true, "pid": 1446, "port": 13200}
+2026-08-16T21:05:48.996+0800  [34mINFO[0m  Stopping status logging  {"service": "orchestration-api", "internal": true, "pid": 1446}
+2026-08-16T21:05:48.996+0800  [34mINFO[0m  Stopping keepInSync  {"service": "orchestration-api", "internal": true, "pid": 1446}
+2026-08-16T21:05:48.996+0800  [34mINFO[0m  Running cleanup operations  {"service": "orchestration-api", "internal": true, "pid": 1446, "count": 1}
+2026-08-16T21:05:48.996+0800  [34mINFO[0m  Shutting down node clients  {"service": "orchestration-api", "internal": true, "pid": 1446, "error_count": 0, "node_count": 0}
+2026-08-16T21:05:52.901+0800  [31mERROR[0m  Cluster instances: Failed to synchronize  {"service": "orchestration-api", "internal": true, "pid": 1446, "error": "failed to get cluster instances from service discovery: failed to list allocations in service discovery: failed to list Nomad allocations in service discovery: Get \"http://localhost:4646/v1/allocations?filter=ClientStatus+%3D%3D+%22running%22+and+TaskGroup+%3D%3D+%22template-manager%22+and+JobID+contains+%22template-manager%22&resources=true\": dial tcp [::1]:4646: connect: connection refused"}
+github.com/e2b-dev/infra/packages/shared/pkg/logger.(*TracedLogger).Error
+	/home/zrj/KASandbox/packages/shared/pkg/logger/logger.go:138
+github.com/e2b-dev/infra/packages/shared/pkg/synchronization.(*Synchronize[...]).Start
+	/home/zrj/KASandbox/packages/shared/pkg/synchronization/synchronization.go:75
+2026/08/16 21:05:57 failed to upload metrics: exporter export timeout: rpc error: code = Unavailable desc = delegating_resolver: invalid target address "": missing address
+2026/08/16 21:05:57 failed to upload metrics: gRPC exporter is shutdown
+2026-08-16T21:05:57.892+0800  [34mINFO[0m  Clusters pool: Background synchronization ended  {"service": "orchestration-api", "internal": true, "pid": 1446}
+2026-08-16T21:05:57.892+0800  [34mINFO[0m  Closing cluster  {"service": "orchestration-api", "internal": true, "pid": 1446, "cluster.id": "00000000-0000-0000-0000-000000000000"}
+2026-08-16T21:05:57.892+0800  [34mINFO[0m  Cluster instances: Background synchronization ended  {"service": "orchestration-api", "internal": true, "pid": 1446}
+2026-08-16T21:05:57.892+0800  [34mINFO[0m  Cleanup operations completed  {"service": "orchestration-api", "internal": true, "pid": 1446, "count": 1, "duration": "8.896513932s"}
