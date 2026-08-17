@@ -171,7 +171,12 @@ render_helm_values() {
 
 install_helm_chart() {
     info "installing with helm ..."
-    helm install e2b-api "$SCRIPT_DIR/helm" --create-namespace -n e2b
+    if helm status e2b-api -n e2b >/dev/null 2>&1; then
+        info "release e2b-api 已存在，执行 helm upgrade ..."
+        helm upgrade e2b-api "$SCRIPT_DIR/helm" -n e2b
+    else
+        helm install e2b-api "$SCRIPT_DIR/helm" --create-namespace -n e2b
+    fi
 }
 
 # webhook 的 Deployment/Service/MutatingWebhookConfiguration 已由 helm 模板安装（受 .Values.webhook.enabled 控制）
