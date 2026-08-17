@@ -77,7 +77,9 @@ download_kubekey() {
     fi
     info "下载 KubeKey $KUBEKEY_VERSION ..."
     export KKZONE=cn
-    curl -sfL "https://get-kk.kubesphere.io" | VERSION="$KUBEKEY_VERSION" sh -
+    if ! curl -sfL "https://get-kk.kubesphere.io" | VERSION="$KUBEKEY_VERSION" sh -; then
+        error "KubeKey 下载失败，请检查网络连接或手动下载: https://get-kk.kubesphere.io"
+    fi
     chmod +x "$SCRIPT_DIR/kk"
     success "KubeKey 下载完成: $SCRIPT_DIR/kk"
 }

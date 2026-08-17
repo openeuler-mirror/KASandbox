@@ -165,8 +165,7 @@ pull_docker_images() {
             $DOCKER_CMD tag "$remote_img" "$local_tag"
             $DOCKER_CMD rmi "$remote_img" >/dev/null 2>&1
         else
-            echo "  [错误] 无法拉取镜像: $remote_img"
-            return 1
+            error "  [错误] 无法拉取镜像: $remote_img"
         fi
     done
     # K8S 模式：将 busybox 导入 containerd
@@ -178,46 +177,91 @@ pull_docker_images() {
 
 install_consul() {
     info "开始安装 Consul..."
-    ./install-consul.sh --version "${CONSUL_VERSION}"
+    ./install-consul.sh --version "${CONSUL_VERSION}" || error "Consul 安装失败"
 }
 
 install_nomad() {
     info "开始安装 Nomad..."
-    ./install-nomad.sh --version "${NOMAD_VERSION}"
+    ./install-nomad.sh --version "${NOMAD_VERSION}" || error "Nomad 安装失败"
 }
 
 install_docker() {
     info "开始安装 Docker..."
-    # 安装 docker 依赖（按包管理器兼容 Ubuntu/CentOS）
+    # 本机可能尚无任何容器运行时（--deploy docker 场景），docker 由本函数自行安装
+    DOCKER_CMD="${DOCKER_CMD:-docker}"
+    DOCKER_COMPOSE_CMD="${DOCKER_COMPOSE_CMD:-docker-compose}"
+
+    # 1. 安装 docker 运行依赖（仅依赖包，docker 本体由下方 tgz 安装）
     if command -v apt-get >/dev/null 2>&1; then
-        apt-get update && apt-get install -y iptables ca-certificates
+        apt-get update -qq && apt-get install -y iptables ca-certificates xz-utils tar || error "安装 docker 依赖失败"
     elif command -v yum >/dev/null 2>&1; then
-        yum install -y iptables ca-certificates
+        yum install -y iptables ca-certificates xz tar || error "安装 docker 依赖失败"
+    else
+        error "不支持的包管理器，仅支持 yum / apt"
     fi
+
+    # 2. 按架构选择 docker-compose 二进制
     local compose_file
     case "$ARCH" in
         x86_64) compose_file="docker-compose-linux-x86_64" ;;
         arm64)  compose_file="docker-compose-linux-aarch64" ;;
+        *)      error "不支持的架构: $ARCH（仅支持 x86_64 / arm64）" ;;
     esac
-    # 检查依赖文件
+
+    # 3. 校验依赖文件齐全
     if [ ! -f "$DEP_DIR/$compose_file" ] || [ ! -f "$DEP_DIR/docker-25.0.5.tgz" ]; then
         error "Docker 依赖文件缺失，请检查 $DEP_DIR 目录"
     fi
 
-    # 安装 docker-compose（标准路径 /usr/local/bin/）
+    # 4. 安装 docker-compose（标准路径 /usr/local/bin/）
     cp -f "$DEP_DIR/$compose_file" /usr/local/bin/docker-compose || error "复制 docker-compose 失败"
     chmod +x /usr/local/bin/docker-compose || error "添加 docker-compose 执行权限失败"
 
-    # 解压并安装 docker
-    tar -xvf "$DEP_DIR/docker-25.0.5.tgz" -C "$DEP_DIR" || error "解压 docker 包失败"
+    # 5. 解压并安装 docker 二进制
+    tar -xzf "$DEP_DIR/docker-25.0.5.tgz" -C "$DEP_DIR" || error "解压 docker 包失败"
     cp -f "$DEP_DIR/docker/"* /usr/bin/ || error "复制 docker 二进制文件失败"
-    systemctl restart docker || error "重启 docker 服务失败"
-    # 验证 docker 是否正常
-    if $DOCKER_CMD --version >/dev/null 2>&1; then
-        success "Docker 安装成功！版本：$($DOCKER_CMD --version | awk '{print $3}')"
-    else
-        error "Docker 安装后验证失败"
+    rm -rf "$DEP_DIR/docker" || true  # 清理解压残留
+
+    # 6. 确保 docker systemd unit 存在（全新机器默认无 docker.service）
+    if [ ! -f /etc/systemd/system/docker.service ] && [ ! -f /usr/lib/systemd/system/docker.service ]; then
+        cat > /etc/systemd/system/docker.service <<'EOF'
+[Unit]
+Description=Docker Application Container Engine
+Documentation=https://docs.docker.com
+After=network-online.target firewalld.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/dockerd
+ExecReload=/bin/kill -s HUP $MAINPID
+LimitNOFILE=infinity
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+Delegate=yes
+KillMode=process
+Restart=always
+RestartSec=2
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        warn "系统无 docker.service，已生成默认 unit（/etc/systemd/system/docker.service）"
     fi
+    systemctl daemon-reload || error "systemd daemon-reload 失败"
+
+    # 7. 启动并设置自启
+    systemctl enable docker >/dev/null 2>&1 || warn "设置 docker 开机自启失败（非致命）"
+    systemctl restart docker || error "重启 docker 服务失败"
+
+    # 8. 验证 docker 守护进程可用（info 校验 daemon 可达，version 只校验客户端）
+    if ! $DOCKER_CMD info >/dev/null 2>&1; then
+        error "Docker 守护进程不可达，建议查看日志：journalctl -u docker -n 50"
+    fi
+    success "Docker 安装成功！版本：$($DOCKER_CMD --version | awk '{print $3}')"
+    info "docker-compose 版本：$($DOCKER_COMPOSE_CMD --version)"
 }
 
 install_minio() {
@@ -1122,7 +1166,7 @@ start() {
         kubectl label node "$node_name" node-role.kubernetes.io/sandbox=true --overwrite
         kubectl label node "$node_name" node-role.kubernetes.io/api= --overwrite
         kubectl label node "$node_name" node-role.kubernetes.io/postgres= --overwrite
-        bash deploy.sh --type k8s
+        bash deploy.sh --type k8s || error "K8S 模式部署失败"
         success "K8S 模式启动完成！"
 
     else
@@ -1480,6 +1524,11 @@ deploy_component() {
                 success "PostgreSQL 部署完成，监听端口 $PG_PORT"
             fi
             ;;
+        docker)
+            info "单独部署 Docker & Docker Compose..."
+            install_docker
+            success "Docker & Docker Compose 部署完成"
+            ;;
         harbor)
             info "单独部署 Harbor..."
             install_harbor
@@ -1493,7 +1542,7 @@ deploy_component() {
             success "服务部署完成"
             ;;
         *)
-            error "未知组件: $comp。支持: nomad, consul, postgres, harbor, services"
+            error "未知组件: $comp。支持: docker, nomad, consul, postgres, harbor, services"
             ;;
     esac
 }
@@ -1547,7 +1596,7 @@ show_help() {
     echo -e "  ${GREEN}--remove <组件名>${NC}  单独卸载指定组件 (支持: nomad, consul, harbor, postgres)"
     echo -e "  ${GREEN}--start${NC}         启动基础服务 (Consul/Nomad/Dnsmasq)"
     echo -e "  ${GREEN}--stop${NC}          停止服务并清理残留的沙箱实例"
-    echo -e "  ${GREEN}--deploy <组件名>${NC}  单独部署指定组件 (支持: nomad, consul, postgres, harbor, services)"
+    echo -e "  ${GREEN}--deploy <组件名>${NC}  单独部署指定组件 (支持: docker, nomad, consul, postgres, harbor, services)"
     echo -e "  ${GREEN}--deploy-plugin${NC} [<target>] [<template>] [<selector>] [<namespace>] 部署 E2B 插件到 OpenClaw 容器 (需先 --start)"
     echo -e "    <target>: 容器/Pod 名 (自动获取)"
     echo -e "    <template>: 模板名 (默认: base)"
@@ -1570,6 +1619,7 @@ show_help() {
     echo -e "  $0 --stop --start"
     echo ""
     echo -e "  ${GREEN}# 单独部署组件:${NC}"
+    echo -e "  $0 --deploy docker        # 安装 Docker & Docker Compose (需先 --download)"
     echo -e "  $0 --deploy postgres      # 重新部署 PostgreSQL"
     echo -e "  $0 --deploy harbor        # 重新部署 Harbor (含 Docker/Nginx)"
     echo -e "  $0 --deploy nomad         # 重新部署 Nomad"
@@ -1747,16 +1797,17 @@ fi
 
 # 仅在需要容器运行时的操作前初始化
 # install-client、download、help 等不依赖容器运行时，避免在无 docker/nerdctl 环境报错
+# 部署 docker 组件本身不需要预装容器运行时（install_docker 会自行安装 docker），故排除
 if [ "$ACTION_INSTALL" = true ] || \
    [ "$ACTION_UNINSTALL" = true ] || \
    [ "$ACTION_START" = true ] || \
    [ "$ACTION_STOP" = true ] || \
-   [ -n "$DEPLOY_COMPONENT" ] || \
    [ "$DEPLOY_PLUGIN" = true ] || \
    [ "$NOMAD_JOB" = true ] || \
    [ -n "$MAKE_TARGET" ] || \
    [ -n "$CREATE_PROJECT" ] || \
-   [ -n "$REMOVE_COMPONENT" ]; then
+   [ -n "$REMOVE_COMPONENT" ] || \
+   ( [ -n "$DEPLOY_COMPONENT" ] && [ "$DEPLOY_COMPONENT" != "docker" ] ); then
     set_container_runtime "$CONTAINER_RUNTIME"
 fi
 

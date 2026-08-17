@@ -212,7 +212,7 @@ K8S 模式包含 Nomad 模式的全部组件（除 Docker/Docker Compose 外）�
 | 组件 | 说明 | 安装方式 |
 |------|------|----------|
 | Kubernetes | K8S 集群（kubelet, kubectl, kubeadm） | 需预先安装，脚本不负责部署 |
-| Nginx Ingress Controller | Ingress 路由控制器 | 内置清单 `dep/ingress-nginx.yaml`，未安装时手动 apply（见 [3.2.3](#323-前置条件)） |
+| Nginx Ingress Controller | Ingress 路由控制器 | 内置清单 `dep/ingress-nginx.yaml`，未安装时手动 apply（见 [3.2.4](#324-前置条件)） |
 | containerd | 容器运行时 | K8S 节点自带 |
 | nerdctl | containerd CLI | 替代 Docker 命令 |
 | helm | K8S 包管理器 | 用于卸载 e2b-api |
@@ -245,7 +245,7 @@ K8S 模式包含 Nomad 模式的全部组件（除 Docker/Docker Compose 外）�
 > **说明**：
 > - 下载后保存为 `dep/e2b-webhook.tar`，`pull_docker_images` 会自动通过 `docker load -i` 导入为本地镜像 `e2b-webhook`
 > - 仅 K8S 模式下载（nomad 模式不需要）
-> - 部署时由 `deploy.sh` 推送到 Harbor，详见 [3.2.2 e2b-webhook](#322-e2b-webhook可选组件)
+> - 部署时由 `deploy.sh` 推送到 Harbor，详见 [3.2.3 e2b-webhook](#323-e2b-webhook可选组件)
 
 #### 2.4.2.5 Python 依赖
 
@@ -424,7 +424,82 @@ HTTP 模式下需配置 Docker 信任（脚本自动完成）：
 
 > **可选组件**：cri-multiplex 是 K8S 模式下的可选组件。如需让 K8S 原生调度 DaemonSet/Deployment 管理 E2B 沙箱 Pod，请在集群就绪后、部署业务服务前完成本节操作；否则可直接跳过。
 
-#### 3.2.1 cri-multiplex（可选组件）
+#### 3.2.1 K8S 集群部署
+
+通过 `k8s-deploy.sh` 使用 KubeKey 部署 K8S 集群（支持 x86_64 / arm64）。
+
+**前置条件**：
+- 系统：openEuler2403sp3（或兼容发行版）
+- 已安装 RPM 包（`k8s-deploy.sh` 位于 `/opt/e2b-infra/`）
+- 可访问外网（下载 KubeKey、CNI 插件）
+- 多节点时需在配置文件中配置节点 SSH 密码
+
+**步骤一：生成集群配置**（`prep`：安装依赖、下载 kk/CNI、生成配置）
+
+```bash
+./k8s-deploy.sh prep
+```
+
+`prep` 会自动：
+- 安装系统依赖（conntrack, socat, ipvsadm, ipset, curl, tar）
+- 下载 KubeKey（默认 v3.1.10，可用 `KUBEKEY_VERSION` 指定）
+- 下载 CNI 插件（默认 v1.6.2，可用 `CNI_PLUGINS_VERSION` 指定）
+- 生成集群配置文件 `config-k8s-arm64.yaml`（自动填充本机 IP）
+
+多节点时可通过环境变量指定 IP 和 SSH 密码：
+
+```bash
+HOST_IP=10.0.0.5 NODE_PASSWORD=secret ./k8s-deploy.sh prep
+```
+
+**步骤二：编辑配置文件**
+
+编辑生成的 `config-k8s-arm64.yaml`，按需修改节点列表、SSH 密码、K8S 版本等。
+
+**步骤三：创建集群**（`create`：创建集群、验证状态、部署 ingress-nginx、配置域名）
+
+```bash
+./k8s-deploy.sh create
+```
+
+或使用 `all` 一步完成（需通过 `CONFIG_FILE` 指定已编辑的配置）：
+
+```bash
+CONFIG_FILE=config-k8s-arm64.yaml ./k8s-deploy.sh all
+```
+
+**可用的子命令**：
+
+| 命令 | 说明 |
+|------|------|
+| `prep` | 安装依赖、下载 kk/CNI、生成集群配置 |
+| `create` | 根据配置创建集群、验证状态、部署 ingress-nginx、配置域名 |
+| `all` | prep + create（需通过 `CONFIG_FILE` 指定已编辑配置） |
+| `configure-domain` | 单独配置 `*.e2b.app` 域名访问 |
+| `cri-multiplex` | 部署 cri-multiplex（见 [3.2.2](#322-cri-multiplex可选组件)） |
+| `buildkit` | 安装并启用 buildkit |
+| `download-cni` | 单独下载并安装 CNI 插件到 `/opt/cni/bin` |
+
+**常用环境变量**：
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `KUBEKEY_VERSION` | KubeKey 版本 | v3.1.10 |
+| `K8S_VERSION` | K8S 版本 | v1.32.5 |
+| `CNI_PLUGINS_VERSION` | CNI 插件版本 | v1.6.2 |
+| `CLUSTER_NAME` | 集群名 | k8s |
+| `CONFIG_FILE` | 配置文件路径（create/all 使用） | - |
+| `HOST_IP` | 本机 IP | 自动探测 |
+| `NODE_PASSWORD` | 节点 SSH 密码（必须提供） | - |
+
+**验证集群**：
+
+```bash
+kubectl get nodes
+kubectl get pods -A
+```
+
+#### 3.2.2 cri-multiplex（可选组件）
 
 cri-multiplex 是 CRI gRPC 多路复用器，让 kubelet 通过单一 Unix socket 调度 **containerd**（普通 Pod）和 **E2B orchestrator**（沙箱 Pod）。
 
@@ -471,7 +546,7 @@ systemctl restart kubelet
 > **注意**：切换 kubelet endpoint 会短暂影响节点上所有 Pod，建议在维护窗口操作；回滚只需改回 `containerd.sock` 并重启 kubelet。
 
 
-#### 3.2.2 e2b-webhook（可选组件）
+#### 3.2.3 e2b-webhook（可选组件）
 
 > **可选组件**：e2b-webhook 是 K8S 模式下的可选准入控制器。用于拦截 BatchSandbox CR 和特定 Pod 的创建请求，自动注入沙箱配置注解。默认关闭，通过 `ENABLE_WEBHOOK` 控制。
 
@@ -500,7 +575,7 @@ kubectl -n e2b get secret e2b-webhook-tls e2b-api-key
 
 > **注意**：关闭时（`ENABLE_WEBHOOK=false`），部署脚本自动清理 Secret 和 MutatingWebhookConfiguration，Helm 资源由 `.Values.webhook.enabled` 同步控制。
 
-#### 3.2.3 前置条件
+#### 3.2.4 前置条件
 
 - K8S 集群已就绪
 - kubectl 可正常访问集群
@@ -546,16 +621,16 @@ kubectl get svc -n ingress-nginx ingress-nginx-controller
 
 > **注意**：
 > - 该清单中 Service 类型为 `LoadBalancer`。裸金属环境若无外部 LB，可改为 `NodePort` 或配合 MetalLB 使用
-> - 默认监听 80/443 端口，与 [3.2.8 配置域名访问](#328-配置域名访问) 中要求的 80 端口监听一致
+> - 默认监听 80/443 端口，与 [3.2.9 配置域名访问](#329-配置域名访问) 中要求的 80 端口监听一致
 > - 镜像需从 `k8s.dockerproxy.net` 拉取，离线环境请预先导入镜像
 
-#### 3.2.4 下载组件
+#### 3.2.5 下载组件
 
 ```bash
 ./build.sh --download
 ```
 
-#### 3.2.5 Master 节点安装
+#### 3.2.6 Master 节点安装
 
 ```bash
 ./build.sh --k8s <节点名> --install
@@ -567,7 +642,7 @@ kubectl get svc -n ingress-nginx ingress-nginx-controller
 ./build.sh --k8s --install
 ```
 
-#### 3.2.6 Master 节点启动
+#### 3.2.7 Master 节点启动
 
 ```bash
 ./build.sh --k8s <节点名> --start
@@ -580,7 +655,7 @@ kubectl get svc -n ingress-nginx ingress-nginx-controller
 - 节点标签设置（sandbox=true, api=）
 - K8S Deployment 部署
 
-#### 3.2.7 Worker 节点部署
+#### 3.2.8 Worker 节点部署
 
 ```bash
 # 单节点部署
@@ -600,7 +675,7 @@ Worker 节点部署内容：
 - 远程执行安装和初始化
 - 设置节点标签
 
-#### 3.2.8 配置域名访问
+#### 3.2.9 配置域名访问
 
 K8S 模式下需配置三层域名解析，确保宿主机和集群内部 Pod 均可通过 `*.e2b.app` 访问 API。
 
@@ -620,7 +695,7 @@ kubectl edit configmap coredns -n kube-system
 kubectl rollout restart deployment coredns -n kube-system
 ```
 
-#### 3.2.9 验证
+#### 3.2.10 验证
 
 ```bash
 # 检查 K8S 节点状态
