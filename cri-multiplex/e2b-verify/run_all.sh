@@ -59,7 +59,7 @@ SCRIPTS=(
     "08|Exec 能力 kubelet 验证|${SCRIPT_DIR}/08_exec_kubelet.sh"
     "09|ExecSync 能力 kubelet 验证|${SCRIPT_DIR}/09_execsync_kubelet.sh"
     "10|Attach 能力 kubelet 验证|${SCRIPT_DIR}/10_attach_kubelet.sh"
-    "11|Calico CNI PodIP 访问 E2B 沙箱验证|${SCRIPT_DIR}/11_cni_podip_access.sh"
+    "11|CNI PodIP 访问 E2B 沙箱验证（Calico/bridge 自适应）|${SCRIPT_DIR}/11_cni_podip_access.sh"
     "12|Android RuntimeClass kubelet 沙箱创建验证|${SCRIPT_DIR}/12_android_kubelet_sandbox.sh"
     "13|Android 多实例 kubelet 沙箱创建验证|${SCRIPT_DIR}/13_android_multi_sandbox.sh"
     "14|E2B CNI Service/DNS 行为验证|${SCRIPT_DIR}/14_cni_service_dns.sh"
@@ -70,6 +70,7 @@ SCRIPTS=(
     "19|状态持久化完整场景矩阵验证|${SCRIPT_DIR}/19_state_persistence_matrix.sh"
 	"20|清理与孤儿资源回收验证|${SCRIPT_DIR}/20_cleanup_orphan_recovery.sh"
 	"21|cri-multiplex 多 Runtime 路由验证|${SCRIPT_DIR}/21_mux_multi_runtime_routing.sh"
+	"22|Pause Checkpoint Resume 全流程端到端验证|${SCRIPT_DIR}/22_pause_checkpoint_resume.sh"
 )
 
 #==================== 执行 ====================#
@@ -83,7 +84,10 @@ mkdir -p "${LOG_DIR}"
 parse_count_from_log() {
     local log_file="$1"
     local key="$2"
-    grep -aoP "${key}:\\s*\\K[0-9]+" "${log_file}" 2>/dev/null | tail -1 || echo "0"
+    # 同时兼容 "PASS: 12"（lib/common.sh print_summary）与 "PASS=12"（22 号自包含汇总）两种格式
+    local v
+    v=$(grep -aoP "${key}[:=]\\s*\\K[0-9]+" "${log_file}" 2>/dev/null | tail -1)
+    echo "${v:-0}"
 }
 
 run_streamed() {
@@ -153,7 +157,7 @@ for entry in "${SCRIPTS[@]}"; do
                     continue
                 fi
                 ;;
-            07|08|09|10|11|12|13|14|15|16|17|21)
+            07|08|09|10|11|12|13|14|15|16|17|21|22)
                 log_info "切换 cri-multiplex 到 CNI+Android runtime 模式，用于 07 及之后用例 ..."
                 switch_log="${LOG_DIR}/e2b-verify-switch-cni-android.log"
                 if ! run_streamed "${switch_log}" start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式"; then

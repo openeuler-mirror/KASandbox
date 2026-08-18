@@ -28,6 +28,7 @@ cri-multiplex \
 - `-orchestrator-address` — E2B orchestrator gRPC target (default `localhost:5008`)
 - `-admin-socket` — node-local admin gRPC socket for Pause/Checkpoint/GetSandboxRuntime (default `/run/cri-multiplex/admin.sock`)
 - `-node-name` — Kubernetes node name recorded in runtime facts (defaults to `NODE_NAME` env)
+- `-hide-sandbox-label` — hide E2B sandboxes carrying this label (`key=value`, e.g. `flux-sandbox.io/direct=true`) from `ListPodSandbox`/`ListContainers`, so kubelet's orphan-sandbox GC never sees them (agent-direct `RunPodSandbox` without a K8s Pod object). Empty = visible (default, legacy behavior)
 
 Requires root or write access to `/run/` for the socket.
 

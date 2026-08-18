@@ -16,6 +16,10 @@ type E2BConfig struct {
 	NodeName              string
 	CNI                   CNIConfig
 	StateStore            StateStore
+	// HideLabel 形如 "key=value"；非空时，带该 label 的 E2B sandbox 从
+	// ListPodSandbox/ListContainers 响应中隐藏（kubelet PLEG/runtimeCache 不可见，
+	// 从而不触发孤儿 sandbox 清杀）；为空则保持原有行为。
+	HideLabel string
 }
 
 type CNIConfig struct {
@@ -32,7 +36,7 @@ type E2BEngine interface {
 }
 
 func NewE2BEngine(cfg *E2BConfig) E2BEngine {
-	return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.OrchestratorProxyAddr, cfg.NodeIP, cfg.NodeName, cfg.CNI, cfg.StateStore)
+	return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.OrchestratorProxyAddr, cfg.NodeIP, cfg.NodeName, cfg.CNI, cfg.StateStore, cfg.HideLabel)
 }
 
 type e2bState int

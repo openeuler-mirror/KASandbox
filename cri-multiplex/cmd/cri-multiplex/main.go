@@ -101,6 +101,7 @@ func main() {
 	orphanGracePeriod := flag.Duration("orphan-grace-period", 120*time.Second, "Grace period before reclaiming orphan resources")
 	cleanupMaxRetries := flag.Int("cleanup-max-retries", 10, "Maximum cleanup retry attempts")
 	cleanupDryRun := flag.Bool("cleanup-dry-run", false, "Log orphan cleanup actions without deleting resources")
+	hideSandboxLabel := flag.String("hide-sandbox-label", "", "Hide E2B sandboxes carrying this label (key=value, e.g. flux-sandbox.io/direct=true) from ListPodSandbox/ListContainers, so kubelet does not garbage-collect them as orphans; empty keeps them visible")
 	flag.Parse()
 
 	stateStore, err := engine.NewJSONStateStore(*stateDir)
@@ -132,6 +133,7 @@ func main() {
 			NetNSDir: *cniNetNSDir,
 		},
 		StateStore: stateStore,
+		HideLabel:  *hideSandboxLabel,
 	}
 	e2bEng := engine.NewE2BEngine(cfg)
 	defer e2bEng.Close()
