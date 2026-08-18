@@ -131,9 +131,13 @@ type grpcE2BEngine struct {
 	cniConfig       CNIConfig
 	cniManager      cniNetworkManager
 	cleanupManager  *CleanupManager
+
+	// 非空时，labels 匹配 hideLabelKey=hideLabelValue 的 sandbox 对 CRI List 接口隐藏
+	hideLabelKey   string
+	hideLabelValue string
 }
 
-func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName string, cniConfig CNIConfig, store StateStore) *grpcE2BEngine {
+func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName string, cniConfig CNIConfig, store StateStore, hideLabel string) *grpcE2BEngine {
 	log.Printf("[GrpcE2BEngine] orchestrator address: %s, proxy: %s, nodeIP: %s, nodeName: %s, cni_enabled: %v", orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName, cniConfig.Enabled)
 	e := &grpcE2BEngine{
 		orchestratorAddr:      orchestratorAddr,
@@ -150,6 +154,16 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName 
 		attachReqs:            make(map[string]*attachStreamRequest),
 		hostPortManager:       NewHostPortManager(20000, 29999), // 避开 NodePort 范围
 	}
+	if hideLabel != "" {
+		key, value, found := strings.Cut(hideLabel, "=")
+		if !found || key == "" {
+			log.Printf("[GrpcE2BEngine] WARNING: invalid hide-sandbox-label %q (want key=value), disabled", hideLabel)
+		} else {
+			e.hideLabelKey = key
+			e.hideLabelValue = value
+			log.Printf("[GrpcE2BEngine] sandboxes with label %s=%s will be hidden from CRI list", key, value)
+		}
+	}
 	if cniConfig.Enabled {
 		cniManager, err := NewCNIManager(cniConfig)
 		if err != nil {
@@ -159,6 +173,17 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName 
 		}
 	}
 	return e
+}
+
+// hiddenFromCRIList 判断该 pod 是否应从 ListPodSandbox/ListContainers 响应中隐藏。
+// 隐藏后 kubelet 的 runtimeCache/PLEG 看不到它，HandlePodCleanups 的孤儿清杀不会命中；
+// 按 ID 的定向接口（PodSandboxStatus/StopPodSandbox/Admin 等）不受影响。
+func (e *grpcE2BEngine) hiddenFromCRIList(pod *podInfo) bool {
+	if e.hideLabelKey == "" || pod == nil {
+		return false
+	}
+	v, ok := pod.labels[e.hideLabelKey]
+	return ok && v == e.hideLabelValue
 }
 
 func (e *grpcE2BEngine) markPendingNetNS(name string) {
@@ -705,6 +730,9 @@ func (e *grpcE2BEngine) ListPodSandbox(ctx context.Context, req *runtime.ListPod
 	active := activeSandboxIDs(list.Sandboxes)
 	var items []*runtime.PodSandbox
 	for _, pod := range e.tracker.List() {
+		if e.hiddenFromCRIList(pod) {
+			continue
+		}
 		state := inferPodSandboxState(pod.state)
 		if _, ok := active[pod.envdSandboxID()]; !ok && pod.state == stateRunning {
 			state = runtime.PodSandboxState_SANDBOX_NOTREADY
@@ -815,6 +843,9 @@ func (e *grpcE2BEngine) ListContainers(ctx context.Context, req *runtime.ListCon
 	log.Println("[GrpcE2BEngine] ListContainers")
 	var items []*runtime.Container
 	for _, pod := range e.tracker.List() {
+		if e.hiddenFromCRIList(pod) {
+			continue
+		}
 		if pod.containerState == containerStateRemoved || pod.containerName == "" {
 			continue
 		}

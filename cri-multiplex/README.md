@@ -29,7 +29,10 @@ Kubelet ──Unix socket──▶ cri-multiplex
   -orchestrator-address   host:port            (default "localhost:5008")
   -admin-socket           /run/cri-multiplex/admin.sock
   -node-name              $NODE_NAME
+  -hide-sandbox-label     key=value            (default ""; hide matching E2B sandboxes from CRI list)
 ```
+
+`-hide-sandbox-label`（如 `flux-sandbox.io/direct=true`)：携带该 label 的 E2B sandbox 会从 `ListPodSandbox`/`ListContainers` 响应中剔除。kubelet 的 PLEG/runtimeCache 因此看不到它们，`HandlePodCleanups` 的孤儿 sandbox 清杀不会命中——供 sandbox-agent 直连 `RunPodSandbox`（无 K8s Pod 对象）的场景使用。按 ID 的定向接口（`PodSandboxStatus`/`StopPodSandbox`/`RemovePodSandbox`/Admin API）不受影响。默认为空，即全部可见（原行为）。
 
 ### Admin API
 
