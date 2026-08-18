@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
-source /opt/e2b-infra/.env
+# .env 路径可通过 E2B_ENV_FILE 覆盖（便于测试/自定义部署）
+ENV_FILE="${E2B_ENV_FILE:-/opt/e2b-infra/.env}"
+if [ -f "$ENV_FILE" ]; then
+    source "$ENV_FILE"
+else
+    echo "[deploy-worker] 警告: 未找到 env 文件: $ENV_FILE，部分配置将使用默认值" >&2
+fi
 # ========== 全局配置 ==========
 SSH_KEY="${HOME}/.ssh/id_rsa"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes"
@@ -8,12 +14,12 @@ SSH_CONTROL_PATH="${HOME}/.ssh/ctrl-%h-%p-%r"
 SSH_MUX_OPTS="-o ControlMaster=auto -o ControlPath=${SSH_CONTROL_PATH} -o ControlPersist=60"
 REGISTRY="${SERVER_IP}:30443"
 IMAGE="e2b-orchestration/orchestrator:latest"
-CERT_SRC="/etc/containerd/certs.d/${REGISTRY}"
+CERT_SRC="${CERT_SRC:-/etc/containerd/certs.d/${REGISTRY}}"
 INFRA_SRC="${E2B_INFRA_SRC:-/home/e2b}"
 REMOTE_INFRA_DIR="/home/e2b"
 DEPLOY_DIR="/opt/e2b-infra"
-HARBOR_CERTS="/etc/harbor/certs/harbor.crt"
-E2B_API_TOKEN="/root/.e2b/config.json"
+HARBOR_CERTS="${HARBOR_CERTS:-/etc/harbor/certs/harbor.crt}"
+E2B_API_TOKEN="${E2B_API_TOKEN:-/root/.e2b/config.json}"
 HTTP_PROXY="${HTTP_PROXY:-}"
 CRI_MULTIPLEX_BIN="${CRI_MULTIPLEX_BIN:-/opt/e2b-infra/bin/cri-multiplex}"
 CRI_MULTIPLEX_ORCHESTRATOR="${CRI_MULTIPLEX_ORCHESTRATOR:-localhost:5008}"
@@ -208,11 +214,41 @@ unset https_proxy
 mkdir -p /fc-versions/v1.13.1/
 cp /home/e2b/firecracker /fc-versions/v1.13.1/ 2>/dev/null || echo "  firecracker 复制失败或不存在"
 
-echo "  重启 kubelet ..."
-systemctl restart kubelet
+#  检查 containerd config.toml 是否已配置 config_path 指向 certs.d 目录
+#   只有配置了 config_path，上面的 hosts.toml 才会生效
+info "检查 containerd config_path 配置..."
+# 注意：该 heredoc 以 `bash -s` 在远端作为脚本执行，不能用 local 声明变量；
+#       且远程内部变量（containerd_config / need_restart）必须用 \$ 转义，
+#       否则会被客户端 set -u 展开并报"未绑定变量"而中止。
+containerd_config="/etc/containerd/config.toml"
+[ ! -f "\$containerd_config" ] && containerd config default > "\$containerd_config"
+cp "\$containerd_config" "\$containerd_config.bak"
+need_restart=false
+if ! grep -q 'config_path = "/etc/containerd/certs.d"' "\$containerd_config"; then
+    info "containerd 未配置 config_path，正在添加..."
+    # 确保存在 [plugins."io.containerd.grpc.v1.cri".registry] 段
+    if ! grep -q '\[plugins."io.containerd.grpc.v1.cri".registry\]' "\$containerd_config"; then
+        cat >> "\$containerd_config" << EOF
+
+[plugins."io.containerd.grpc.v1.cri".registry]
+  config_path = "/etc/containerd/certs.d"
+EOF
+    else
+        # 段已存在但缺少 config_path，在段内追加
+        sed -i '/\[plugins."io.containerd.grpc.v1.cri".registry\]/a\  config_path = "/etc/containerd/certs.d"' "\$containerd_config"
+    fi
+else
+    info "containerd config_path 已配置，跳过"
+fi
+
 
 echo "  重启 containerd ..."
 systemctl restart containerd
+
+echo "  重启 kubelet ..."
+systemctl restart kubelet
+
+
 
 # 部署 cri-multiplex（多 runtime 复用器）
 echo "  部署 cri-multiplex ..."
