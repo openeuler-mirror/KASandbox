@@ -68,12 +68,6 @@ func (s *Server) Stop() {
 }
 
 func (s *Server) PauseSandbox(ctx context.Context, req *PauseSandboxRequest) (*PauseSandboxResponse, error) {
-	if req.GetOperationId() == "" || req.GetCriSandboxId() == "" || req.GetE2BSandboxId() == "" || req.GetTeamId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "operation_id, cri_sandbox_id, e2b_sandbox_id and team_id are required")
-	}
-	if req.GetTemplateId() == "" || req.GetBuildId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "template_id and build_id are required")
-	}
 	startedAt, finishedAt, err := s.eng.AdminPause(ctx, engine.E2BOperation{
 		OperationID:  req.GetOperationId(),
 		CRISandboxID: req.GetCriSandboxId(),
@@ -93,12 +87,6 @@ func (s *Server) PauseSandbox(ctx context.Context, req *PauseSandboxRequest) (*P
 }
 
 func (s *Server) CheckpointSandbox(ctx context.Context, req *CheckpointSandboxRequest) (*CheckpointSandboxResponse, error) {
-	if req.GetOperationId() == "" || req.GetCriSandboxId() == "" || req.GetE2BSandboxId() == "" || req.GetTeamId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "operation_id, cri_sandbox_id, e2b_sandbox_id and team_id are required")
-	}
-	if req.GetBuildId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "build_id is required")
-	}
 	vmResumed, startedAt, finishedAt, err := s.eng.AdminCheckpoint(ctx, engine.E2BOperation{
 		OperationID:  req.GetOperationId(),
 		CRISandboxID: req.GetCriSandboxId(),

@@ -61,6 +61,69 @@ func TestE2BOperationRoundTrip(t *testing.T) {
 	}
 }
 
+func TestInFlightE2BOperationsFailOnRestart(t *testing.T) {
+	dir := t.TempDir()
+	startedAt := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
+	state := persistedState{
+		Version: 1,
+		E2BOperations: map[string]E2BOperation{
+			"op-running": {
+				OperationID: "op-running",
+				State:       OperationStateRunning,
+				StartedAt:   startedAt,
+			},
+			"op-pending": {
+				OperationID: "op-pending",
+				State:       legacyOperationStatePending,
+				StartedAt:   startedAt,
+			},
+			"op-success": {
+				OperationID: "op-success",
+				State:       OperationStateSucceeded,
+				StartedAt:   startedAt,
+				FinishedAt:  startedAt.Add(time.Second),
+			},
+		},
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewJSONStateStore(dir)
+	if err != nil {
+		t.Fatalf("NewJSONStateStore: %v", err)
+	}
+	ops, err := store.LoadE2BOperations()
+	if err != nil {
+		t.Fatalf("LoadE2BOperations: %v", err)
+	}
+	for _, id := range []string{"op-running", "op-pending"} {
+		got := ops[id]
+		if got.State != OperationStateFailed || got.Error != operationRestartError || got.FinishedAt.IsZero() {
+			t.Fatalf("%s not failed after restart: %+v", id, got)
+		}
+	}
+	if got := ops["op-success"]; got.State != OperationStateSucceeded || !got.FinishedAt.Equal(startedAt.Add(time.Second)) {
+		t.Fatalf("terminal operation should be unchanged: %+v", got)
+	}
+
+	reopened, err := NewJSONStateStore(dir)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	ops, err = reopened.LoadE2BOperations()
+	if err != nil {
+		t.Fatalf("LoadE2BOperations after reopen: %v", err)
+	}
+	if ops["op-running"].State != OperationStateFailed || ops["op-pending"].State != OperationStateFailed {
+		t.Fatalf("recovered operation state was not persisted: %+v", ops)
+	}
+}
+
 func TestE2BPodStateNewFieldsRoundTrip(t *testing.T) {
 	store := newStateStoreTestStore(t)
 	pod := E2BPodState{

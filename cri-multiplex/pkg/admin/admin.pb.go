@@ -693,7 +693,7 @@ type GetSandboxRuntimeResponse struct {
 	TemplateId       string             `protobuf:"bytes,8,opt,name=template_id,json=templateId,proto3" json:"template_id,omitempty"`
 	BuildId          string             `protobuf:"bytes,9,opt,name=build_id,json=buildId,proto3" json:"build_id,omitempty"`
 	ExecutionId      string             `protobuf:"bytes,10,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
-	RuntimeState     string             `protobuf:"bytes,11,opt,name=runtime_state,json=runtimeState,proto3" json:"runtime_state,omitempty"` // Running / Stopping / Removing / Pausing / Checkpointing
+	RuntimeState     string             `protobuf:"bytes,11,opt,name=runtime_state,json=runtimeState,proto3" json:"runtime_state,omitempty"` // Running / Stopped / Paused / Removed
 	Cni              *CNIRecord         `protobuf:"bytes,12,opt,name=cni,proto3" json:"cni,omitempty"`
 	Hostports        []*HostPortMapping `protobuf:"bytes,13,rep,name=hostports,proto3" json:"hostports,omitempty"`
 	ActiveOperations []*OperationRecord `protobuf:"bytes,14,rep,name=active_operations,json=activeOperations,proto3" json:"active_operations,omitempty"` // 进行中的 Pause/Checkpoint operation

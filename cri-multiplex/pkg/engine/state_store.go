@@ -124,12 +124,18 @@ type AndroidPodState struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// E2BOperation 状态取值
+// E2BOperation 状态取值。
+// "Pending" 是早期保留值，当前代码不再创建 Pending operation；启动恢复仍会识别
+// 旧 state.json 中的 Pending 并按未完成操作处理。
 const (
-	OperationStatePending   = "Pending"
 	OperationStateRunning   = "Running"
 	OperationStateSucceeded = "Succeeded"
 	OperationStateFailed    = "Failed"
+)
+
+const (
+	legacyOperationStatePending = "Pending"
+	operationRestartError       = "process restarted during operation"
 )
 
 // E2BOperation 是节点侧 Pause/Checkpoint 操作记录，供 operation_id 幂等和
@@ -223,7 +229,33 @@ func NewJSONStateStore(dir string) (*JSONStateStore, error) {
 	if store.state.Version == 0 {
 		store.state.Version = 1
 	}
+	if store.failInFlightOperationsAfterRestart() {
+		if err := store.flushLocked(); err != nil {
+			return nil, fmt.Errorf("recover in-flight operations: %w", err)
+		}
+	}
 	return store, nil
+}
+
+func (s *JSONStateStore) failInFlightOperationsAfterRestart() bool {
+	if len(s.state.E2BOperations) == 0 {
+		return false
+	}
+	now := time.Now()
+	changed := false
+	for id, op := range s.state.E2BOperations {
+		if op.State != OperationStateRunning && op.State != legacyOperationStatePending {
+			continue
+		}
+		op.State = OperationStateFailed
+		op.Error = operationRestartError
+		if op.FinishedAt.IsZero() {
+			op.FinishedAt = now
+		}
+		s.state.E2BOperations[id] = op
+		changed = true
+	}
+	return changed
 }
 
 func (s *JSONStateStore) SaveRoute(r RouteRecord) error {

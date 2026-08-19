@@ -91,7 +91,7 @@ message GetSandboxRuntimeResponse {
   string template_id = 8;
   string build_id = 9;
   string execution_id = 10;
-  string runtime_state = 11;  // Running / Stopping / Removing / Pausing / Checkpointing
+  string runtime_state = 11;  // Running / Stopped / Paused / Removed
   CNIRecord cni = 12;
   repeated HostPortMapping hostports = 13;
   repeated OperationRecord active_operations = 14;  // 进行中的 Pause/Checkpoint operation
