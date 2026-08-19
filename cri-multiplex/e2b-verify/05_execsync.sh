@@ -17,6 +17,16 @@ cleanup_05_tmp() {
 }
 trap cleanup_05_tmp EXIT
 
+prepare_execsync_fixture() {
+    local suffix="$1"
+    prepare_direct_pod_json "execsync-${suffix}" "${BASE_POD_JSON}" || return 1
+    local pod_uid
+    pod_uid=$(run_pod_sandbox) || return 1
+    local container_id
+    container_id=$(create_and_start_container "${pod_uid}") || return 1
+    echo "${pod_uid} ${container_id}"
+}
+
 #==================== 前置：确保非 CNI 模式 ====================#
 log_step "0.1 前置检查：切换到非 CNI 模式"
 if ! start_non_cni_multiplex "启动 cri-multiplex 非 CNI runtime 模式"; then
@@ -25,21 +35,16 @@ fi
 
 #==================== 前置：创建 Pod + Container ====================#
 log_step "前置准备：创建 Pod 和 Container"
-prepare_direct_pod_json "execsync" "${BASE_POD_JSON}" || exit 1
-POD_UID=$(run_pod_sandbox) || {
-    log_fail "创建 Pod 失败"
-    exit 1
-}
-CONTAINER_ID=$(create_and_start_container "${POD_UID}") || {
-    log_fail "创建并启动 Container 失败"
-    exit 1
-}
-export POD_UID CONTAINER_ID
-log_info "Pod: ${POD_UID}, Container: ${CONTAINER_ID}"
 
 #==================== 5.1 ExecSync ====================#
 
 log_step "5.1.1 ExecSync — echo hello"
+read -r POD_UID CONTAINER_ID < <(prepare_execsync_fixture "echo-hello") || {
+    log_fail "创建 ExecSync fixture 失败"
+    exit 1
+}
+export POD_UID CONTAINER_ID
+log_info "Pod: ${POD_UID}, Container: ${CONTAINER_ID}"
 output=$(grpc_call "runtime.v1.RuntimeService/ExecSync" \
     "{\"container_id\": \"${CONTAINER_ID}\", \"cmd\": [\"echo\", \"hello\"]}") || true
 if echo "${output}" | grep -q "stdout"; then
@@ -53,8 +58,16 @@ if echo "${output}" | grep -q "stdout"; then
 else
     log_fail "ExecSync echo hello 异常: ${output}"
 fi
+cleanup_container "${CONTAINER_ID}"
+cleanup_pod "${POD_UID}"
 
 log_step "5.1.2 ExecSync — 多条命令"
+read -r POD_UID CONTAINER_ID < <(prepare_execsync_fixture "multi-cmd") || {
+    log_fail "创建 ExecSync fixture 失败"
+    exit 1
+}
+export POD_UID CONTAINER_ID
+log_info "Pod: ${POD_UID}, Container: ${CONTAINER_ID}"
 output=$(grpc_call "runtime.v1.RuntimeService/ExecSync" \
     "{\"container_id\": \"${CONTAINER_ID}\", \"cmd\": [\"sh\", \"-c\", \"echo line1; echo line2\"]}") || true
 if echo "${output}" | grep -q "stdout"; then
@@ -68,8 +81,16 @@ if echo "${output}" | grep -q "stdout"; then
 else
     log_fail "ExecSync 多条命令异常: ${output}"
 fi
+cleanup_container "${CONTAINER_ID}"
+cleanup_pod "${POD_UID}"
 
 log_step "5.1.3 ExecSync — 检查 exitCode"
+read -r POD_UID CONTAINER_ID < <(prepare_execsync_fixture "exit-code") || {
+    log_fail "创建 ExecSync fixture 失败"
+    exit 1
+}
+export POD_UID CONTAINER_ID
+log_info "Pod: ${POD_UID}, Container: ${CONTAINER_ID}"
 output=$(grpc_call "runtime.v1.RuntimeService/ExecSync" \
     "{\"container_id\": \"${CONTAINER_ID}\", \"cmd\": [\"sh\", \"-c\", \"exit 42\"]}") || true
 # grpcurl 返回 JSON，exitCode 可能在字段中；sandbox 可能不严格返回非零 exit code
@@ -90,8 +111,16 @@ else
         log_fail "ExecSync exitCode 异常: ${output}"
     fi
 fi
+cleanup_container "${CONTAINER_ID}"
+cleanup_pod "${POD_UID}"
 
 log_step "5.1.4 ExecSync — cat /etc/os-release"
+read -r POD_UID CONTAINER_ID < <(prepare_execsync_fixture "os-release") || {
+    log_fail "创建 ExecSync fixture 失败"
+    exit 1
+}
+export POD_UID CONTAINER_ID
+log_info "Pod: ${POD_UID}, Container: ${CONTAINER_ID}"
 output=$(grpc_call "runtime.v1.RuntimeService/ExecSync" \
     "{\"container_id\": \"${CONTAINER_ID}\", \"cmd\": [\"cat\", \"/etc/os-release\"]}") || true
 if echo "${output}" | grep -q "stdout"; then
@@ -105,11 +134,11 @@ if echo "${output}" | grep -q "stdout"; then
 else
     log_fail "ExecSync cat /etc/os-release 异常: ${output}"
 fi
+cleanup_container "${CONTAINER_ID}"
+cleanup_pod "${POD_UID}"
 
 #==================== 清理 ====================#
 log_step "清理资源"
-cleanup_container "${CONTAINER_ID}"
-cleanup_pod "${POD_UID}"
 log_info "清理完成"
 
 print_summary

@@ -21,6 +21,7 @@ JOIN LATERAL (
 ) eb ON TRUE
 WHERE
     s.team_id = @team_id
+    AND s.deleted_at IS NULL
     AND (
         -- When metadata arg is empty json, accept all as row metadata column can be empty json or NULL
         -- And NULL does not match with empty json

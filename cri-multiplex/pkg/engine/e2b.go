@@ -13,8 +13,13 @@ type E2BConfig struct {
 	OrchestratorAddr      string
 	OrchestratorProxyAddr string
 	NodeIP                string
+	NodeName              string
 	CNI                   CNIConfig
 	StateStore            StateStore
+	// HideLabel 形如 "key=value"；非空时，带该 label 的 E2B sandbox 从
+	// ListPodSandbox/ListContainers 响应中隐藏（kubelet PLEG/runtimeCache 不可见，
+	// 从而不触发孤儿 sandbox 清杀）；为空则保持原有行为。
+	HideLabel string
 }
 
 type CNIConfig struct {
@@ -31,7 +36,7 @@ type E2BEngine interface {
 }
 
 func NewE2BEngine(cfg *E2BConfig) E2BEngine {
-	return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.OrchestratorProxyAddr, cfg.NodeIP, cfg.CNI, cfg.StateStore)
+	return newGRPCE2BEngine(cfg.OrchestratorAddr, cfg.OrchestratorProxyAddr, cfg.NodeIP, cfg.NodeName, cfg.CNI, cfg.StateStore, cfg.HideLabel)
 }
 
 type e2bState int
@@ -65,6 +70,9 @@ type podInfo struct {
 	state           e2bState
 	templateID      string
 	buildID         string
+	executionID     string
+	teamID          string
+	nodeName        string
 	imageRef        string
 	envdAccessToken string
 
@@ -136,6 +144,9 @@ func (p *podInfo) toPersistedState() E2BPodState {
 		State:                p.state,
 		TemplateID:           p.templateID,
 		BuildID:              p.buildID,
+		ExecutionID:          p.executionID,
+		TeamID:               p.teamID,
+		NodeName:             p.nodeName,
 		ImageRef:             p.imageRef,
 		EnvdAccessToken:      p.envdAccessToken,
 		ContainerLabels:      copyStringMap(p.containerLabels),
@@ -173,6 +184,9 @@ func podInfoFromPersistedState(p E2BPodState) *podInfo {
 		state:           p.State,
 		templateID:      p.TemplateID,
 		buildID:         p.BuildID,
+		executionID:     p.ExecutionID,
+		teamID:          p.TeamID,
+		nodeName:        p.NodeName,
 		imageRef:        p.ImageRef,
 		envdAccessToken: p.EnvdAccessToken,
 

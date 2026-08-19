@@ -45,6 +45,9 @@ type E2BPodState struct {
 	State           e2bState          `json:"state"`
 	TemplateID      string            `json:"template_id"`
 	BuildID         string            `json:"build_id"`
+	ExecutionID     string            `json:"execution_id,omitempty"`
+	TeamID          string            `json:"team_id,omitempty"`
+	NodeName        string            `json:"node_name,omitempty"`
 	ImageRef        string            `json:"image_ref"`
 	EnvdAccessToken string            `json:"envd_access_token,omitempty"`
 
@@ -121,6 +124,36 @@ type AndroidPodState struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// E2BOperation 状态取值。
+// "Pending" 是早期保留值，当前代码不再创建 Pending operation；启动恢复仍会识别
+// 旧 state.json 中的 Pending 并按未完成操作处理。
+const (
+	OperationStateRunning   = "Running"
+	OperationStateSucceeded = "Succeeded"
+	OperationStateFailed    = "Failed"
+)
+
+const (
+	legacyOperationStatePending = "Pending"
+	operationRestartError       = "process restarted during operation"
+)
+
+// E2BOperation 是节点侧 Pause/Checkpoint 操作记录，供 operation_id 幂等和
+// webhook 崩溃恢复时查询节点事实。
+type E2BOperation struct {
+	OperationID  string    `json:"operation_id"`
+	Action       string    `json:"action"`
+	CRISandboxID string    `json:"cri_sandbox_id,omitempty"`
+	E2BSandboxID string    `json:"e2b_sandbox_id,omitempty"`
+	TeamID       string    `json:"team_id,omitempty"`
+	TemplateID   string    `json:"template_id,omitempty"`
+	BuildID      string    `json:"build_id,omitempty"`
+	State        string    `json:"state"`
+	Error        string    `json:"error,omitempty"`
+	StartedAt    time.Time `json:"started_at,omitempty"`
+	FinishedAt   time.Time `json:"finished_at,omitempty"`
+}
+
 type persistedE2BState struct {
 	Pods   []E2BPodState `json:"pods,omitempty"`
 	Images []string      `json:"images,omitempty"`
@@ -131,11 +164,12 @@ type persistedAndroidState struct {
 }
 
 type persistedState struct {
-	Version      int                   `json:"version"`
-	Routes       []RouteRecord         `json:"routes,omitempty"`
-	E2B          persistedE2BState     `json:"e2b"`
-	Android      persistedAndroidState `json:"android"`
-	CleanupTasks []CleanupTask         `json:"cleanup_tasks,omitempty"`
+	Version       int                     `json:"version"`
+	Routes        []RouteRecord           `json:"routes,omitempty"`
+	E2B           persistedE2BState       `json:"e2b"`
+	Android       persistedAndroidState   `json:"android"`
+	CleanupTasks  []CleanupTask           `json:"cleanup_tasks,omitempty"`
+	E2BOperations map[string]E2BOperation `json:"e2b_operations,omitempty"`
 }
 
 type StateStore interface {
@@ -158,6 +192,10 @@ type StateStore interface {
 	SaveCleanupTask(CleanupTask) error
 	DeleteCleanupTask(id string) error
 	LoadCleanupTasks() ([]CleanupTask, error)
+
+	SaveE2BOperation(E2BOperation) error
+	DeleteE2BOperation(operationID string) error
+	LoadE2BOperations() (map[string]E2BOperation, error)
 }
 
 type JSONStateStore struct {
@@ -191,7 +229,33 @@ func NewJSONStateStore(dir string) (*JSONStateStore, error) {
 	if store.state.Version == 0 {
 		store.state.Version = 1
 	}
+	if store.failInFlightOperationsAfterRestart() {
+		if err := store.flushLocked(); err != nil {
+			return nil, fmt.Errorf("recover in-flight operations: %w", err)
+		}
+	}
 	return store, nil
+}
+
+func (s *JSONStateStore) failInFlightOperationsAfterRestart() bool {
+	if len(s.state.E2BOperations) == 0 {
+		return false
+	}
+	now := time.Now()
+	changed := false
+	for id, op := range s.state.E2BOperations {
+		if op.State != OperationStateRunning && op.State != legacyOperationStatePending {
+			continue
+		}
+		op.State = OperationStateFailed
+		op.Error = operationRestartError
+		if op.FinishedAt.IsZero() {
+			op.FinishedAt = now
+		}
+		s.state.E2BOperations[id] = op
+		changed = true
+	}
+	return changed
 }
 
 func (s *JSONStateStore) SaveRoute(r RouteRecord) error {
@@ -355,6 +419,44 @@ func (s *JSONStateStore) LoadCleanupTasks() ([]CleanupTask, error) {
 	defer s.mu.Unlock()
 	out := make([]CleanupTask, len(s.state.CleanupTasks))
 	copy(out, s.state.CleanupTasks)
+	return out, nil
+}
+
+func (s *JSONStateStore) SaveE2BOperation(op E2BOperation) error {
+	if s == nil || s.disabled || op.OperationID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Version = 1
+	if s.state.E2BOperations == nil {
+		s.state.E2BOperations = make(map[string]E2BOperation)
+	}
+	s.state.E2BOperations[op.OperationID] = op
+	return s.flushLocked()
+}
+
+func (s *JSONStateStore) DeleteE2BOperation(operationID string) error {
+	if s == nil || s.disabled || operationID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Version = 1
+	delete(s.state.E2BOperations, operationID)
+	return s.flushLocked()
+}
+
+func (s *JSONStateStore) LoadE2BOperations() (map[string]E2BOperation, error) {
+	if s == nil || s.disabled {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]E2BOperation, len(s.state.E2BOperations))
+	for k, v := range s.state.E2BOperations {
+		out[k] = v
+	}
 	return out, nil
 }
 

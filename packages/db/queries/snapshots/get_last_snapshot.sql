@@ -12,5 +12,7 @@ LEFT JOIN LATERAL (
     WHERE env_id = s.base_env_id
 ) ea ON TRUE
 WHERE s.sandbox_id = $1 AND eb.status_group = 'ready'
+  AND s.deleted_at IS NULL
+  AND e.deleted_at IS NULL
 ORDER BY eba.created_at DESC
 LIMIT 1;

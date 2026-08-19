@@ -68,6 +68,7 @@ type Env struct {
 	CreatedBy     *uuid.UUID
 	ClusterID     *uuid.UUID
 	Source        string
+	DeletedAt     *time.Time
 }
 
 type EnvAlias struct {
@@ -130,6 +131,7 @@ type Snapshot struct {
 	AutoPause           bool
 	TeamID              uuid.UUID
 	Config              types.JSONBStringMap
+	DeletedAt           *time.Time
 }
 
 type SnapshotTemplate struct {

@@ -53,6 +53,7 @@ const (
 	annNetwork            = "e2b.dev/network"
 	annVolumeMounts       = "e2b.dev/volume-mounts"
 	annAutoResume         = "e2b.dev/auto-resume"
+	annSandboxID          = "e2b.dev/sandbox-id"
 )
 
 var defaultSandboxConfig = struct {
@@ -104,6 +105,7 @@ type grpcE2BEngine struct {
 	orchestratorAddr      string
 	orchestratorProxyAddr string
 	nodeIP                string
+	nodeName              string
 	hostPortOps           hostPortMappingOps
 	stateStore            StateStore
 	mu                    sync.Mutex
@@ -116,6 +118,9 @@ type grpcE2BEngine struct {
 	imageMu               sync.RWMutex
 	envdHTTPClient        *http.Client
 
+	// sandbox 级 operation lock（key = CRI sandboxID），TryLock 语义
+	opLocks sync.Map
+
 	streamingListener net.Listener
 	streamingReqs     map[string]*execStreamRequest
 	attachReqs        map[string]*attachStreamRequest
@@ -126,14 +131,19 @@ type grpcE2BEngine struct {
 	cniConfig       CNIConfig
 	cniManager      cniNetworkManager
 	cleanupManager  *CleanupManager
+
+	// 非空时，labels 匹配 hideLabelKey=hideLabelValue 的 sandbox 对 CRI List 接口隐藏
+	hideLabelKey   string
+	hideLabelValue string
 }
 
-func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP string, cniConfig CNIConfig, store StateStore) *grpcE2BEngine {
-	log.Printf("[GrpcE2BEngine] orchestrator address: %s, proxy: %s, nodeIP: %s, cni_enabled: %v", orchestratorAddr, orchestratorProxyAddr, nodeIP, cniConfig.Enabled)
+func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName string, cniConfig CNIConfig, store StateStore, hideLabel string) *grpcE2BEngine {
+	log.Printf("[GrpcE2BEngine] orchestrator address: %s, proxy: %s, nodeIP: %s, nodeName: %s, cni_enabled: %v", orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName, cniConfig.Enabled)
 	e := &grpcE2BEngine{
 		orchestratorAddr:      orchestratorAddr,
 		orchestratorProxyAddr: orchestratorProxyAddr,
 		nodeIP:                nodeIP,
+		nodeName:              nodeName,
 		hostPortOps:           defaultHostPortMappingOps(),
 		stateStore:            store,
 		pendingNetNS:          make(map[string]struct{}),
@@ -144,6 +154,16 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP string, cn
 		attachReqs:            make(map[string]*attachStreamRequest),
 		hostPortManager:       NewHostPortManager(20000, 29999), // 避开 NodePort 范围
 	}
+	if hideLabel != "" {
+		key, value, found := strings.Cut(hideLabel, "=")
+		if !found || key == "" {
+			log.Printf("[GrpcE2BEngine] WARNING: invalid hide-sandbox-label %q (want key=value), disabled", hideLabel)
+		} else {
+			e.hideLabelKey = key
+			e.hideLabelValue = value
+			log.Printf("[GrpcE2BEngine] sandboxes with label %s=%s will be hidden from CRI list", key, value)
+		}
+	}
 	if cniConfig.Enabled {
 		cniManager, err := NewCNIManager(cniConfig)
 		if err != nil {
@@ -153,6 +173,28 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP string, cn
 		}
 	}
 	return e
+}
+
+// hiddenFromCRIList 判断该 pod 是否应从 ListPodSandbox/ListContainers 响应中隐藏。
+// 隐藏后 kubelet 的 runtimeCache/PLEG 看不到它，HandlePodCleanups 的孤儿清杀不会命中；
+// 按 ID 的定向接口（PodSandboxStatus/StopPodSandbox/Admin 等）不受影响。
+func (e *grpcE2BEngine) hiddenFromCRIList(pod *podInfo) bool {
+	if e.hideLabelKey == "" || pod == nil {
+		return false
+	}
+	v, ok := pod.labels[e.hideLabelKey]
+	return ok && v == e.hideLabelValue
+}
+
+// revealsHiddenFromCRIList 判断调用方是否显式请求查看被隐藏的直连 sandbox。
+// 只有 label selector 精确包含 hide-sandbox-label 的 key=value 时才放行；
+// kubelet 的常规空 List 不会触发该分支。
+func (e *grpcE2BEngine) revealsHiddenFromCRIList(labelSelector map[string]string) bool {
+	if e.hideLabelKey == "" || labelSelector == nil {
+		return false
+	}
+	v, ok := labelSelector[e.hideLabelKey]
+	return ok && v == e.hideLabelValue
 }
 
 func (e *grpcE2BEngine) markPendingNetNS(name string) {
@@ -399,22 +441,29 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		return nil, mapE2BError(err)
 	}
 	if existing, ok := e.tracker.Get(req.Config.Metadata.Uid); ok && existing.state != stateRemoved {
-		if existing.state == stateStopped || existing.state == statePaused {
-			existing.state = stateRunning
-			existing.endedAt = nil
-			e.persistPodState(existing)
-			log.Printf("[GrpcE2BEngine] RunPodSandbox: sandbox %s exists in stopped state, marking running without orchestrator checkpoint", req.Config.Metadata.Uid)
+		// 同一 CRI ID 的重复 RunPodSandbox 只能是同一次 kubelet 请求的幂等重试，
+		// 必须确认 orchestrator 侧 sandbox 确实存在；不存在则清掉残留后走正常新建流程。
+		exists, err := e.orchestratorSandboxExists(ctx, existing.envdSandboxID())
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "verify existing sandbox %s in orchestrator: %v", existing.envdSandboxID(), err)
+		}
+		if exists {
+			log.Printf("[GrpcE2BEngine] RunPodSandbox: sandbox %s already exists, returning idempotently", req.Config.Metadata.Uid)
 			return &runtime.RunPodSandboxResponse{PodSandboxId: req.Config.Metadata.Uid}, nil
 		}
-		log.Printf("[GrpcE2BEngine] RunPodSandbox: sandbox %s already exists, returning idempotently", req.Config.Metadata.Uid)
-		return &runtime.RunPodSandboxResponse{PodSandboxId: req.Config.Metadata.Uid}, nil
+		log.Printf("[GrpcE2BEngine] RunPodSandbox: sandbox %s missing in orchestrator (e2b_id=%s), cleaning stale record before re-create",
+			req.Config.Metadata.Uid, existing.envdSandboxID())
+		e.cleanupStalePodResources(existing)
 	}
 	templateID, buildID, teamID, err := e.validateAnnotations(req.Config.Annotations)
 	if err != nil {
 		return nil, err
 	}
 	sandboxID := req.Config.Metadata.Uid
-	e2bSandboxID := e2bSandboxIDFromCRI(sandboxID)
+	e2bSandboxID, err := e2bSandboxIDFromAnnotations(req.Config.Annotations, sandboxID)
+	if err != nil {
+		return nil, err
+	}
 	alias := req.Config.Metadata.Name
 	now := time.Now()
 	cfg := e.annotationsToSandboxConfig(req.Config.Annotations, e2bSandboxID, alias, req.Config.Labels)
@@ -531,6 +580,9 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		state:           stateRunning,
 		templateID:      templateID,
 		buildID:         buildID,
+		executionID:     cfg.ExecutionId,
+		teamID:          teamID,
+		nodeName:        e.nodeName,
 		envdAccessToken: envdToken,
 
 		hostIP:       hostIP,
@@ -687,8 +739,16 @@ func (e *grpcE2BEngine) ListPodSandbox(ctx context.Context, req *runtime.ListPod
 		return nil, mapE2BError(err)
 	}
 	active := activeSandboxIDs(list.Sandboxes)
+	var filter *runtime.PodSandboxFilter
+	if req != nil {
+		filter = req.Filter
+	}
+	revealHidden := filter != nil && e.revealsHiddenFromCRIList(filter.LabelSelector)
 	var items []*runtime.PodSandbox
 	for _, pod := range e.tracker.List() {
+		if e.hiddenFromCRIList(pod) && !revealHidden {
+			continue
+		}
 		state := inferPodSandboxState(pod.state)
 		if _, ok := active[pod.envdSandboxID()]; !ok && pod.state == stateRunning {
 			state = runtime.PodSandboxState_SANDBOX_NOTREADY
@@ -706,7 +766,7 @@ func (e *grpcE2BEngine) ListPodSandbox(ctx context.Context, req *runtime.ListPod
 			Annotations: pod.annotations,
 		})
 	}
-	items = filterPodSandbox(items, req.Filter)
+	items = filterPodSandbox(items, filter)
 	return &runtime.ListPodSandboxResponse{Items: items}, nil
 }
 
@@ -797,8 +857,16 @@ func (e *grpcE2BEngine) RemoveContainer(ctx context.Context, req *runtime.Remove
 
 func (e *grpcE2BEngine) ListContainers(ctx context.Context, req *runtime.ListContainersRequest) (*runtime.ListContainersResponse, error) {
 	log.Println("[GrpcE2BEngine] ListContainers")
+	var filter *runtime.ContainerFilter
+	if req != nil {
+		filter = req.Filter
+	}
+	revealHidden := filter != nil && e.revealsHiddenFromCRIList(filter.LabelSelector)
 	var items []*runtime.Container
 	for _, pod := range e.tracker.List() {
+		if e.hiddenFromCRIList(pod) && !revealHidden {
+			continue
+		}
 		if pod.containerState == containerStateRemoved || pod.containerName == "" {
 			continue
 		}
@@ -819,7 +887,7 @@ func (e *grpcE2BEngine) ListContainers(ctx context.Context, req *runtime.ListCon
 			Annotations: pod.containerAnnotations,
 		})
 	}
-	items = filterContainers(items, req.Filter)
+	items = filterContainers(items, filter)
 	return &runtime.ListContainersResponse{Containers: items}, nil
 }
 
@@ -1705,6 +1773,67 @@ func stripContainerSuffix(containerID string) string {
 		return containerID[:len(containerID)-2]
 	}
 	return containerID
+}
+
+// e2bSandboxIDFromAnnotations 解析稳定逻辑 sandbox ID：优先 e2b.dev/sandbox-id
+// annotation（仅允许小写字母/数字/'-'，长度 1-64），缺省从 CRI ID 派生。
+func e2bSandboxIDFromAnnotations(annotations map[string]string, criID string) (string, error) {
+	id := annotations[annSandboxID]
+	if id == "" {
+		return e2bSandboxIDFromCRI(criID), nil
+	}
+	if len(id) > 64 {
+		return "", status.Errorf(codes.InvalidArgument, "invalid %s annotation %q: length must be 1-64", annSandboxID, id)
+	}
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			continue
+		}
+		return "", status.Errorf(codes.InvalidArgument, "invalid %s annotation %q: only lowercase letters, digits and '-' are allowed", annSandboxID, id)
+	}
+	return id, nil
+}
+
+// orchestratorSandboxExists 通过 List 确认 orchestrator 侧该 sandbox 是否仍存在。
+func (e *grpcE2BEngine) orchestratorSandboxExists(ctx context.Context, e2bSandboxID string) (bool, error) {
+	list, err := e.client.List(ctx, &emptypb.Empty{})
+	if err != nil {
+		return false, err
+	}
+	_, ok := activeSandboxIDs(list.Sandboxes)[e2bSandboxID]
+	return ok, nil
+}
+
+// cleanupStalePodResources 清理 orchestrator 已不存在 sandbox 的本地残留：
+// HostPort 映射与 CNI 记录复用现有清理辅助函数，随后删除 tracker 与持久化状态。
+// 不调 orchestrator Delete（目标已不存在）。
+func (e *grpcE2BEngine) cleanupStalePodResources(pod *podInfo) {
+	if pod == nil {
+		return
+	}
+	if pod.hostIP != "" {
+		for _, m := range pod.portMappings {
+			if err := e.hostPortOps.cleanup(e.nodeIP, m.HostPort, pod.hostIP, m.SandboxPort); err != nil {
+				log.Printf("[GrpcE2BEngine] WARNING: stale cleanup mapping %d->%d for %s: %v", m.HostPort, m.SandboxPort, pod.sandboxID, err)
+			}
+		}
+	}
+	ports := make([]int, 0, len(pod.portMappings))
+	for _, m := range pod.portMappings {
+		ports = append(ports, m.SandboxPort)
+	}
+	if len(ports) > 0 && e.hostPortManager != nil {
+		e.hostPortManager.ReleasePorts(pod.sandboxID, ports)
+	}
+	if pod.cniRecord != nil && e.cniManager != nil {
+		if err := e.cniManager.Del(context.Background(), pod.cniRecord, pod.toPodSandboxConfig()); err != nil && !isCleanupNotFound(err) {
+			log.Printf("[GrpcE2BEngine] WARNING: stale CNI DEL failed for %s: %v", pod.sandboxID, err)
+		}
+	}
+	if err := e.deleteE2BStateAndRoutes(pod.sandboxID, pod.sandboxID+"-c"); err != nil {
+		log.Printf("[GrpcE2BEngine] WARNING: stale state delete failed for %s: %v", pod.sandboxID, err)
+	}
+	e.tracker.Delete(pod.sandboxID)
 }
 
 func e2bSandboxIDFromCRI(criID string) string {

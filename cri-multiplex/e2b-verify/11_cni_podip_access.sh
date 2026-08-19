@@ -1,6 +1,6 @@
 #!/bin/bash
 ###############################################################################
-# 11_cni_podip_access.sh — Calico CNI PodIP 访问 E2B 沙箱验证
+# 11_cni_podip_access.sh — CNI PodIP 访问 E2B 沙箱验证（兼容 Calico / bridge+host-local）
 #
 # 验证目标：
 #   1. RuntimeClass=e2b Pod 通过 kubelet 创建并进入 Running
@@ -16,7 +16,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
-log_section "11 — Calico CNI PodIP 访问 E2B 沙箱验证"
+log_section "11 — CNI PodIP 访问 E2B 沙箱验证（Calico / bridge 自适应）"
 
 #==================== 配置 ====================#
 POD_NAME="${POD_NAME:-e2b-cni-podip-test}"
@@ -49,11 +49,19 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 log_pass "curl 可用"
 
-if [ ! -d /etc/cni/net.d ] || [ ! -x /opt/cni/bin/calico ] || [ ! -x /opt/cni/bin/calico-ipam ]; then
-    log_fail "Calico CNI 配置或二进制不完整"
+# 探测当前 CNI 环境：存在 calico 二进制按 Calico 检查，否则按 bridge + host-local 检查
+if [ ! -d /etc/cni/net.d ]; then
+    log_fail "CNI 配置目录不存在: /etc/cni/net.d"
     exit 1
 fi
-log_pass "Calico CNI 配置和二进制存在"
+if [ -x /opt/cni/bin/calico ] && [ -x /opt/cni/bin/calico-ipam ]; then
+    log_pass "Calico CNI 配置和二进制存在"
+elif [ -x /opt/cni/bin/bridge ] && [ -x /opt/cni/bin/host-local ]; then
+    log_pass "bridge + host-local CNI 配置和二进制存在"
+else
+    log_fail "CNI 二进制不完整（既非完整 Calico 也非完整 bridge/host-local）"
+    exit 1
+fi
 
 #==================== 清理旧 Pod ====================#
 log_step "1.2 清理旧 Pod"
@@ -172,10 +180,11 @@ if ! NETNS_ADDR_OUTPUT=$(ip netns exec "${NETNS_NAME}" ip addr show 2>&1); then
         echo "${NETNS_ADDR_OUTPUT}" >&2
     fi
 else
-    if grep -q "${POD_IP}/32" <<< "${NETNS_ADDR_OUTPUT}"; then
-        log_pass "netns eth0 持有 CNI PodIP: ${POD_IP}/32"
+    # Calico 下 eth0 地址为 /32，bridge+host-local 下为子网前缀（如 /18），统一只匹配 IP 本身
+    if grep -q "${POD_IP}/" <<< "${NETNS_ADDR_OUTPUT}"; then
+        log_pass "netns eth0 持有 CNI PodIP: ${POD_IP}"
     else
-        log_fail "netns eth0 未持有 CNI PodIP: ${POD_IP}/32"
+        log_fail "netns eth0 未持有 CNI PodIP: ${POD_IP}"
         echo "${NETNS_ADDR_OUTPUT}" >&2
     fi
 
