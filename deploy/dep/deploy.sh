@@ -7,6 +7,7 @@ set -euo pipefail
 #   ./deploy.sh --type k8s --db-mode container  # K8S 部署但使用容器模式初始化数据库
 #   ./deploy.sh --type nomad --db-mode k8s      # Nomad 部署但使用 k8s pod 模式初始化数据库
 #   ./deploy.sh createapikey --type k8s # 仅执行数据库初始化（跳过 build/push/deploy）
+#   ./deploy.sh deploy-webhook          # 仅部署 e2b-webhook（构建镜像 + 渲染模板 + kubectl apply，不经 helm）
 #   ./deploy.sh --build-image api,orchestrator  # 仅构建指定镜像（默认 nomad，可加 --type k8s）
 #   ./deploy.sh --build-image ""                # 构建所有镜像
 
@@ -17,6 +18,7 @@ DEPLOY_TYPE="nomad"
 DB_MODE=""
 CREATE_API_KEY_MODE=false
 BUILD_ONLY_MODE=false
+DEPLOY_WEBHOOK_MODE=false
 BUILD_IMAGES=""
 REGISTRY_URL=""
 
@@ -34,6 +36,7 @@ Options:
   --type <k8s|nomad>          Deployment type (default: nomad)
   --db-mode <container|k8s>   Database initialization mode
   createapikey                Only initialize database (skip build/push/deploy)
+  deploy-webhook              Deploy only e2b-webhook (build image + render template + kubectl apply)
   --build-image <images>      Only build specified images, comma separated;
                               use empty string "" to build all images
   -h, --help                  Show this help message
@@ -43,6 +46,7 @@ Examples:
   ./deploy.sh --type nomad
   ./deploy.sh --type k8s --db-mode container
   ./deploy.sh createapikey --type k8s
+  ./deploy.sh deploy-webhook
   ./deploy.sh --build-image api,orchestrator
   ./deploy.sh --build-image ""
 EOF
@@ -62,6 +66,10 @@ parse_args() {
                 ;;
             createapikey)
                 CREATE_API_KEY_MODE=true
+                shift
+                ;;
+            deploy-webhook)
+                DEPLOY_WEBHOOK_MODE=true
                 shift
                 ;;
             --build-image)
@@ -290,6 +298,51 @@ deploy_k8s() {
     wait_for_pods
 }
 
+# 单独部署 e2b-webhook（不影响其它组件）
+# 流程：构建推送镜像 → 仅渲染 e2b-webhook.yaml 模板并 kubectl apply（不执行 helm install/upgrade）
+#      → 生成证书并注入 caBundle → 更新 API Key Secret → 等待就绪
+deploy_webhook() {
+    if [ "${ENABLE_WEBHOOK:-false}" != "true" ]; then
+        warn "ENABLE_WEBHOOK=false，跳过 e2b-webhook 部署（请在 .env 中设置 ENABLE_WEBHOOK=true）"
+        exit 1
+    fi
+
+    info "deploy-webhook mode: 仅部署 e2b-webhook（不通过 helm，避免影响其它 Pod）"
+
+    # 1. 构建并推送 e2b-webhook 镜像
+    build_and_push_dockerfiles true "e2b-webhook"
+
+    # 2. 渲染 helm values（供 helm template 渲染模板使用）
+    render_helm_values
+
+    # 3. 仅渲染 e2b-webhook.yaml 模板并直接应用，不执行 helm install/upgrade
+    local manifest="$SCRIPT_DIR/rendered-e2b-webhook.yaml"
+    helm template e2b-api "$SCRIPT_DIR/helm" \
+        --show-only templates/e2b-webhook.yaml \
+        > "$manifest"
+    info "applying e2b-webhook manifest ..."
+    kubectl apply -f "$manifest"
+    rm -f "$manifest"
+
+    # 4. 生成 TLS 证书、创建 Secret、注入 caBundle 到 MutatingWebhookConfiguration
+    setup_webhook_certificates
+
+    # 5. 用当前 config.json 中的 teamApiKey 更新 Secret，并重启 webhook 使其生效
+    local api_key
+    api_key=$(python3 -c "import json; print(json.load(open('/root/.e2b/config.json')).get('teamApiKey',''))" 2>/dev/null || true)
+    if [ -n "$api_key" ]; then
+        kubectl -n e2b delete secret e2b-api-key --ignore-not-found=true >/dev/null 2>&1 || true
+        kubectl -n e2b create secret generic e2b-api-key \
+            --from-literal=api-key="$api_key" >/dev/null
+        info "e2b-api-key secret updated"
+    fi
+
+    # 6. 等待 webhook 部署就绪
+    info "waiting for e2b-webhook deployment to be ready (timeout: 5min)..."
+    kubectl rollout status deployment/e2b-webhook -n e2b --timeout=300s || exit 1
+    info "e2b-webhook deploy complete!"
+}
+
 # ===================== Nomad 部署 =====================
 # envsubst 渲染所需的全部环境变量（新增 .env 变量时需同步追加到此列表）
 render_hcl_files() {
@@ -505,6 +558,11 @@ init_database() {
 main() {
     parse_args "$@"
     load_env
+
+    if [ "$DEPLOY_WEBHOOK_MODE" = true ]; then
+        deploy_webhook
+        return
+    fi
 
     if [ "$BUILD_ONLY_MODE" = true ]; then
         info "build mode: only build images, skip push/deploy/init"

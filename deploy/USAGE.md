@@ -945,9 +945,24 @@ python3 create_template.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
 
 ---
 
-## 5. 沙箱使用
+## 5. 创建沙箱
 
-### 5.1 创建沙箱
+沙箱支持两种创建方式：
+
+| 方式 | 入口 | 适用模式 | 说明 |
+|------|------|----------|------|
+| **SDK 创建** | E2B Python SDK / `create_sandbox.py` | Nomad / K8S | 通过 API 服务创建，返回沙箱 ID，可在脚本/程序中调用 |
+| **CR 创建** | `kubectl apply` BatchSandbox 自定义资源 | 仅 K8S | 以 Pod 形式由 K8S 原生调度，webhook 自动注入沙箱配置 |
+
+### 5.1 方式一：SDK 创建
+
+#### 5.1.1 前提条件
+
+- API 服务已启动（见 [3. 部署](#3-部署)）
+- 已安装 Python SDK：`pip install e2b==2.20.0 e2b_code_interpreter==2.4.1`
+- 认证信息已写入 `/root/.e2b/config.json`（部署时自动生成，见 [5.4 认证信息](#54-认证信息)）
+
+#### 5.1.2 一键脚本
 
 ```bash
 python3 create_sandbox.py --server-ip <SERVER_IP>
@@ -955,41 +970,38 @@ python3 create_sandbox.py --server-ip <SERVER_IP>
 
 脚本内部流程：
 1. 读取 `/root/.e2b/config.json` 获取认证信息
-2. 设置环境变量
+2. 设置环境变量（`E2B_API_URL`、`E2B_HTTP_SSL`、`E2B_DOMAIN`、`E2B_ACCESS_TOKEN`、`E2B_API_KEY`）
 3. 调用 `Sandbox.create("openclaw")` 创建沙箱
-4. 返回沙箱 ID
+4. 输出沙箱 ID，并执行 `whoami` 验证
 
-**Python SDK 方式**：
+#### 5.1.3 Python SDK 完整示例
 
 ```python
 import os
 import json
 from e2b import Sandbox
 
-# 设置环境变量
+# 1. 设置环境变量
 os.environ["E2B_API_URL"] = "http://<SERVER_IP>:3000"
 os.environ["E2B_HTTP_SSL"] = "false"
 os.environ["E2B_DOMAIN"] = "e2b.app"
 
-# 读取认证信息
+# 2. 读取认证信息
 with open("/root/.e2b/config.json") as f:
     data = json.load(f)
 os.environ["E2B_ACCESS_TOKEN"] = data["accessToken"]
 os.environ["E2B_API_KEY"] = data["teamApiKey"]
 
-# 创建沙箱
+# 3. 创建沙箱（模板名 openclaw）
 sbx = Sandbox.create("openclaw")
 print(f"沙箱 ID: {sbx.sandbox_id}")
 
-# 执行命令
-result = sbx.commands.run("whoami")
-print(result)
 
-# 关闭沙箱
-sbx.close()
+# 4. 关闭沙箱
+sbx.kill()
 ```
 
-### 5.2 SSH 连接沙箱
+#### 5.1.4 SSH 连接沙箱
 
 通过 websocat 代理连接沙箱的 SSH 服务：
 
@@ -1007,6 +1019,61 @@ ssh -o "ProxyCommand=websocat --binary -B 65536 ws://8081-${SANDBOX_ID}.e2b.app"
     user@8081-${SANDBOX_ID}.e2b.app
 ```
 
+### 5.2 方式二：CR 创建（K8S 模式）
+
+通过 K8S 自定义资源（CR）`BatchSandbox` 创建沙箱，沙箱以 Pod 形式由 K8S 原生调度。
+
+#### 5.2.1 前置条件
+
+- K8S 模式部署完成，`cri-multiplex` 已部署并创建 RuntimeClass `e2b`（见 [3.2.2 cri-multiplex](#322-cri-multiplex可选组件)）
+- `ENABLE_WEBHOOK=true` 且 e2b-webhook 已部署（见 [3.2.3 e2b-webhook](#323-e2b-webhook可选组件)）
+- 目标模板已存在（如 `openclaw`）
+
+#### 5.2.2 创建 BatchSandbox
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: spotbox-example-0
+  namespace: test
+  generateName: spotbox-abc123-          # spotbox Pod 标识
+  labels:
+    batch-sandbox.sandbox.opensandbox.io/pod-index: "0"   # 必填: webhook objectSelector 依赖此 label
+spec:
+  restartPolicy: Never
+  containers:
+    - name: sandbox
+      image: e2b.dev/k9tscfp28i8tjmm97c9b:6858033e-db33-40df-87ca-7734c94031d9
+      env:
+        - name: TEMPLATE_NAME            # 必填: webhook 据此调用 transform API
+          value: "openclaw"
+```
+
+```bash
+kubectl apply -f sandbox-demo.yaml
+```
+
+创建流程：
+1. `kubectl` 提交 `BatchSandbox` CR，e2b-webhook 拦截 CREATE 请求
+2. webhook 从 `containers[0].env` 读取 `TEMPLATE_NAME`，调用 API `POST /sandboxes/transform` 获取沙箱配置
+3. webhook 将配置注入为 `e2b.dev/*` 注解，并设置 `runtimeClassName: e2b`
+4. cri-multiplex 将带 `runtimeClassName: e2b` 的 Pod 调度到 E2B orchestrator，以 Firecracker 微虚拟机启动沙箱
+
+#### 5.2.3 验证
+
+```bash
+# 查看 CR
+kubectl get batchsandbox
+
+# 查看沙箱 Pod
+kubectl get pods -l batch-sandbox.sandbox.opensandbox.io/pod-index
+
+# 查看注入的沙箱配置注解
+kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
+    -o jsonpath='{.items[0].metadata.annotations}'
+```
+
 ### 5.3 环境变量说明
 
 | 变量 | 说明 | 示例 |
@@ -1016,6 +1083,8 @@ ssh -o "ProxyCommand=websocat --binary -B 65536 ws://8081-${SANDBOX_ID}.e2b.app"
 | `E2B_DOMAIN` | E2B 域名 | `e2b.app` |
 | `E2B_ACCESS_TOKEN` | 访问令牌 | 从 `/root/.e2b/config.json` 获取 |
 | `E2B_API_KEY` | 团队 API Key | 从 `/root/.e2b/config.json` 获取 |
+
+### 5.4 认证信息
 
 认证信息存储在 `/root/.e2b/config.json`：
 
