@@ -934,8 +934,8 @@ func TestSandboxConfig_ToE2BAnnotations_NilOptionals(t *testing.T) {
 	}
 	annos := cfg.toE2BAnnotations()
 
-	if annos["e2b.dev/allow-internet"] != "false" {
-		t.Errorf("nil allow_internet_access should default to false, got %q", annos["e2b.dev/allow-internet"])
+	if annos["e2b.dev/allow-internet"] != "true" {
+		t.Errorf("nil allow_internet_access should default to true, got %q", annos["e2b.dev/allow-internet"])
 	}
 	if annos["e2b.dev/envd-access-token"] != "" {
 		t.Errorf("nil envd_access_token should default to empty, got %q", annos["e2b.dev/envd-access-token"])
