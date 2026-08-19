@@ -35,30 +35,30 @@ type sandboxTransformResponse struct {
 // sandboxConfig 是 API 返回的沙箱配置。
 // JSON tag 为驼峰, 与 e2b API 实际返回字段对齐 (api.SandboxConfigGrpc)。
 type sandboxConfig struct {
-	Alias               string                     `json:"alias,omitempty"`
-	AllowInternetAccess *bool                      `json:"allowInternetAccess,omitempty"`
-	AutoPause           bool                       `json:"autoPause"`
-	AutoResume          *sandboxAutoResumeConfig   `json:"autoResume,omitempty"`
-	BaseTemplateID      string                     `json:"baseTemplateId"`
-	BuildID             string                     `json:"buildId"`
-	EnvVars             map[string]string          `json:"envVars,omitempty"`
-	EnvdAccessToken     *string                    `json:"envdAccessToken,omitempty"`
-	EnvdVersion         string                     `json:"envdVersion"`
-	ExecutionID         string                     `json:"executionId"`
-	FirecrackerVersion  string                     `json:"firecrackerVersion"`
-	HugePages           bool                       `json:"hugePages"`
-	KernelVersion       string                     `json:"kernelVersion"`
-	MaxSandboxLength    int                        `json:"maxSandboxLength"`
-	Metadata            map[string]string          `json:"metadata,omitempty"`
-	Network             *sandboxNetworkConfig      `json:"network,omitempty"`
-	RAMMB               int                        `json:"ramMb"`
-	SandboxID           string                     `json:"sandboxId,omitempty"`
-	Snapshot            bool                       `json:"snapshot"`
-	TeamID              string                     `json:"teamId"`
-	TemplateID          string                     `json:"templateId"`
-	TotalDiskSizeMB     int                        `json:"totalDiskSizeMb"`
-	Vcpu                int                        `json:"vcpu"`
-	VolumeMounts        []sandboxVolumeMount       `json:"volumeMounts,omitempty"`
+	Alias               string                   `json:"alias,omitempty"`
+	AllowInternetAccess *bool                    `json:"allowInternetAccess,omitempty"`
+	AutoPause           bool                     `json:"autoPause"`
+	AutoResume          *sandboxAutoResumeConfig `json:"autoResume,omitempty"`
+	BaseTemplateID      string                   `json:"baseTemplateId"`
+	BuildID             string                   `json:"buildId"`
+	EnvVars             map[string]string        `json:"envVars,omitempty"`
+	EnvdAccessToken     *string                  `json:"envdAccessToken,omitempty"`
+	EnvdVersion         string                   `json:"envdVersion"`
+	ExecutionID         string                   `json:"executionId"`
+	FirecrackerVersion  string                   `json:"firecrackerVersion"`
+	HugePages           bool                     `json:"hugePages"`
+	KernelVersion       string                   `json:"kernelVersion"`
+	MaxSandboxLength    int                      `json:"maxSandboxLength"`
+	Metadata            map[string]string        `json:"metadata,omitempty"`
+	Network             *sandboxNetworkConfig    `json:"network,omitempty"`
+	RAMMB               int                      `json:"ramMb"`
+	SandboxID           string                   `json:"sandboxId,omitempty"`
+	Snapshot            bool                     `json:"snapshot"`
+	TeamID              string                   `json:"teamId"`
+	TemplateID          string                   `json:"templateId"`
+	TotalDiskSizeMB     int                      `json:"totalDiskSizeMb"`
+	Vcpu                int                      `json:"vcpu"`
+	VolumeMounts        []sandboxVolumeMount     `json:"volumeMounts,omitempty"`
 }
 
 // sandboxAutoResumeConfig 镜像 api.SandboxAutoResumeConfigGrpc。
@@ -110,11 +110,11 @@ func (cfg *sandboxConfig) toE2BAnnotations() map[string]string {
 		"e2b.dev/execution-id":        cfg.ExecutionID,
 	}
 
-	// allow_internet_access: nil → "false"
+	// allow_internet_access: nil → "true"
 	if cfg.AllowInternetAccess != nil {
 		annos["e2b.dev/allow-internet"] = strconv.FormatBool(*cfg.AllowInternetAccess)
 	} else {
-		annos["e2b.dev/allow-internet"] = "false"
+		annos["e2b.dev/allow-internet"] = "true"
 	}
 
 	// envd_access_token: nil → ""
