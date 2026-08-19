@@ -50,7 +50,7 @@ Control sandbox parameters via `PodSandboxConfig.Annotations`:
 | `e2b.dev/sandbox-id` | derived from Pod UID |
 | `e2b.dev/vcpu` | `1` |
 | `e2b.dev/ram-mb` | `2048` |
-| `e2b.dev/allow-internet` | `false` |
+| `e2b.dev/allow-internet` | `true` |
 
 ## Build
 

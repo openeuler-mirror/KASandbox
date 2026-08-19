@@ -85,7 +85,7 @@ Set on `PodSandboxConfig.Annotations`:
 | `e2b.dev/sandbox-id` | none (derived from Pod UID); stable logical sandbox ID, lowercase letters/digits/`-`, 1-64 chars |
 | `e2b.dev/vcpu` | `1` |
 | `e2b.dev/ram-mb` | `2048` |
-| `e2b.dev/allow-internet` | `false` |
+| `e2b.dev/allow-internet` | `true` |
 
 CRI `Labels` → SandboxConfig `Metadata` (gRPC backend). CRI `Metadata.Uid` → `SandboxId`, `Metadata.Name` → `Alias`.
 

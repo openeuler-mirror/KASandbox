@@ -73,7 +73,7 @@ var defaultSandboxConfig = struct {
 	RAMMB:            2048,
 	EnvdVersion:      "latest",
 	MaxSandboxLength: 24,
-	AllowInternet:    false,
+	AllowInternet:    true,
 }
 
 type e2bImageMeta struct {
@@ -466,7 +466,10 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 	}
 	alias := req.Config.Metadata.Name
 	now := time.Now()
-	cfg := e.annotationsToSandboxConfig(req.Config.Annotations, e2bSandboxID, alias, req.Config.Labels)
+	cfg, err := e.annotationsToSandboxConfig(req.Config.Annotations, e2bSandboxID, alias, req.Config.Labels)
+	if err != nil {
+		return nil, err
+	}
 	cfg.TemplateId = templateID
 	cfg.BuildId = buildID
 	cfg.TeamId = teamID
@@ -1667,7 +1670,7 @@ func (e *grpcE2BEngine) UpdateRuntimeConfig(ctx context.Context, req *runtime.Up
 	return &runtime.UpdateRuntimeConfigResponse{}, nil
 }
 
-func (e *grpcE2BEngine) annotationsToSandboxConfig(annotations map[string]string, sandboxID, alias string, labels map[string]string) *orchestrator.SandboxConfig {
+func (e *grpcE2BEngine) annotationsToSandboxConfig(annotations map[string]string, sandboxID, alias string, labels map[string]string) (*orchestrator.SandboxConfig, error) {
 	cfg := &orchestrator.SandboxConfig{
 		SandboxId:          sandboxID,
 		Alias:              &alias,
@@ -1687,30 +1690,55 @@ func (e *grpcE2BEngine) annotationsToSandboxConfig(annotations map[string]string
 		cfg.AllowInternetAccess = &v
 	}
 	if annotations == nil {
-		return cfg
+		return cfg, nil
 	}
 	setStr := func(key string, target *string) {
 		if v, ok := annotations[key]; ok {
 			*target = v
 		}
 	}
-	setInt := func(key string, target *int64) {
+	parseBoolAnnotation := func(key, v string) (bool, error) {
+		switch v {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		default:
+			return false, status.Errorf(codes.InvalidArgument, "invalid boolean annotation %s=%q: expected true or false", key, v)
+		}
+	}
+	setPositiveInt := func(key string, target *int64) error {
 		if v, ok := annotations[key]; ok {
-			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-				*target = n
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				return status.Errorf(codes.InvalidArgument, "invalid integer annotation %s=%q", key, v)
 			}
+			if n <= 0 {
+				return status.Errorf(codes.InvalidArgument, "invalid integer annotation %s=%q: expected positive integer", key, v)
+			}
+			*target = n
 		}
+		return nil
 	}
-	setBool := func(key string, target *bool) {
+	setBool := func(key string, target *bool) error {
 		if v, ok := annotations[key]; ok {
-			*target = v == "true" || v == "1"
+			b, err := parseBoolAnnotation(key, v)
+			if err != nil {
+				return err
+			}
+			*target = b
 		}
+		return nil
 	}
-	setOptionalBool := func(key string, target **bool) {
+	setOptionalBool := func(key string, target **bool) error {
 		if v, ok := annotations[key]; ok {
-			b := v == "true" || v == "1"
+			b, err := parseBoolAnnotation(key, v)
+			if err != nil {
+				return err
+			}
 			*target = &b
 		}
+		return nil
 	}
 	setOptionalStr := func(key string, target **string) {
 		if v, ok := annotations[key]; ok && v != "" {
@@ -1720,17 +1748,33 @@ func (e *grpcE2BEngine) annotationsToSandboxConfig(annotations map[string]string
 	setStr(annTemplateID, &cfg.TemplateId)
 	setStr(annBuildID, &cfg.BuildId)
 	setStr(annTeamID, &cfg.TeamId)
-	setInt(annVCPU, &cfg.Vcpu)
-	setInt(annRAMMB, &cfg.RamMb)
+	if err := setPositiveInt(annVCPU, &cfg.Vcpu); err != nil {
+		return nil, err
+	}
+	if err := setPositiveInt(annRAMMB, &cfg.RamMb); err != nil {
+		return nil, err
+	}
 	setStr(annEnvdVersion, &cfg.EnvdVersion)
-	setInt(annMaxSandboxLength, &cfg.MaxSandboxLength)
-	setOptionalBool(annAllowInternet, &cfg.AllowInternetAccess)
+	if err := setPositiveInt(annMaxSandboxLength, &cfg.MaxSandboxLength); err != nil {
+		return nil, err
+	}
+	if err := setOptionalBool(annAllowInternet, &cfg.AllowInternetAccess); err != nil {
+		return nil, err
+	}
 	setStr(annKernelVersion, &cfg.KernelVersion)
 	setStr(annFirecrackerVersion, &cfg.FirecrackerVersion)
-	setInt(annTotalDiskSizeMB, &cfg.TotalDiskSizeMb)
-	setBool(annHugePages, &cfg.HugePages)
-	setBool(annAutoPause, &cfg.AutoPause)
-	setBool(annSnapshot, &cfg.Snapshot)
+	if err := setPositiveInt(annTotalDiskSizeMB, &cfg.TotalDiskSizeMb); err != nil {
+		return nil, err
+	}
+	if err := setBool(annHugePages, &cfg.HugePages); err != nil {
+		return nil, err
+	}
+	if err := setBool(annAutoPause, &cfg.AutoPause); err != nil {
+		return nil, err
+	}
+	if err := setBool(annSnapshot, &cfg.Snapshot); err != nil {
+		return nil, err
+	}
 	setStr(annBaseTemplateID, &cfg.BaseTemplateId)
 	setStr(annExecutionID, &cfg.ExecutionId)
 	setOptionalStr(annEnvdAccessToken, &cfg.EnvdAccessToken)
@@ -1754,11 +1798,19 @@ func (e *grpcE2BEngine) annotationsToSandboxConfig(annotations map[string]string
 	}
 	if v, ok := annotations[annAutoResume]; ok && v != "" && v != "<nil>" {
 		var autoResume orchestrator.SandboxAutoResumeConfig
-		if err := json.Unmarshal([]byte(v), &autoResume); err == nil {
-			cfg.AutoResume = &autoResume
+		if err := json.Unmarshal([]byte(v), &autoResume); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid JSON annotation %s: %v", annAutoResume, err)
 		}
+		policy := strings.TrimSpace(autoResume.Policy)
+		switch policy {
+		case "any", "off":
+			autoResume.Policy = policy
+		default:
+			return nil, status.Errorf(codes.InvalidArgument, "invalid auto-resume policy annotation %s=%q: expected any or off", annAutoResume, autoResume.Policy)
+		}
+		cfg.AutoResume = &autoResume
 	}
-	return cfg
+	return cfg, nil
 }
 
 func strDeref(s *string) string {
