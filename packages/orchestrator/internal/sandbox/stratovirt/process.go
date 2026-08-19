@@ -267,10 +267,10 @@ func (p *Process) Resume(
 
 	cmd := exec.CommandContext(p.execCtx, "unshare", "-m", "--", "bash", "-c", cmdResult.Value)
 	sysProcAttr := &syscall.SysProcAttr{Setsid: true}
-	if cgroupFD >= 0 {
-		sysProcAttr.UseCgroupFD = true
-		sysProcAttr.CgroupFD = cgroupFD
-	}
+	// if cgroupFD >= 0 {
+	// 	sysProcAttr.UseCgroupFD = true
+	// 	sysProcAttr.CgroupFD = cgroupFD
+	// }
 	cmd.SysProcAttr = sysProcAttr
 
 	phaseStart = time.Now()
