@@ -7,6 +7,8 @@ set -euo pipefail
 #   ./k8s-deploy.sh prep     # 安装依赖、下载 kk/cni、生成集群配置（生成后需手动编辑节点信息）
 #   ./k8s-deploy.sh create   # 根据配置文件创建集群
 #   ./k8s-deploy.sh all      # prep + create（需先通过 -c 指定已编辑的配置文件）
+#   ./k8s-deploy.sh cri-multiplex   # 部署 cri-multiplex
+#   ./k8s-deploy.sh kubelet-endpoint  # 仅切换 kubelet endpoint 并重启
 
 KUBEKEY_VERSION="${KUBEKEY_VERSION:-v3.1.10}"
 K8S_VERSION="${K8S_VERSION:-v1.32.5}"
@@ -327,6 +329,37 @@ configure_domain_access() {
     success "wildcard Ingress 创建完成"
 }
 
+# 切换 kubelet 运行时 endpoint（containerd.sock -> cri-multiplex.sock），幂等
+# 节点级操作，可单独通过子命令 kubelet-endpoint 执行，或配合 ssh 分发到其它节点
+switch_kubelet_endpoint() {
+    local mux_socket="/run/cri-multiplex.sock"
+    local flags_file="${KUBELET_FLAGS_FILE:-/var/lib/kubelet/kubeadm-flags.env}"
+
+    info "修改 kubelet 运行时 endpoint ..."
+    if [ ! -f "$flags_file" ]; then
+        warn "未找到 $flags_file，请确认 kubelet 已通过 kubeadm 初始化"
+        return
+    fi
+    if grep -q "unix://${mux_socket}" "$flags_file"; then
+        success "kubelet 已使用 cri-multiplex endpoint，跳过修改"
+    else
+        # 备份后替换
+        cp -a "$flags_file" "${flags_file}.bak.$(date +%s)"
+        sed -i "s#--container-runtime-endpoint=[^ \"']*#--container-runtime-endpoint=unix://${mux_socket}#g" "$flags_file"
+        success "kubeadm-flags.env 已更新: endpoint=${mux_socket}"
+    fi
+
+    # 重启 kubelet 使配置生效
+    info "重启 kubelet ..."
+    systemctl restart kubelet
+    sleep 3
+    if systemctl is-active --quiet kubelet; then
+        success "kubelet 已重启并运行中"
+    else
+        warn "kubelet 未正常运行，请检查: journalctl -u kubelet -n 50"
+    fi
+}
+
 # 部署 cri-multiplex（多 runtime 复用器，让 kubelet 通过单一 socket 调度 containerd / 自定义 runtime）
 # 流程: 创建 systemd 服务 -> 启动 cri-multiplex -> 切换 kubelet endpoint -> 重启 kubelet -> 创建 RuntimeClass
 deploy_cri_multiplex() {
@@ -334,7 +367,6 @@ deploy_cri_multiplex() {
     local mux_socket="/run/cri-multiplex.sock"
     local containerd_socket="/run/containerd/containerd.sock"
     local orchestrator_addr="${CRI_MULTIPLEX_ORCHESTRATOR:-localhost:5008}"
-    local flags_file="${KUBELET_FLAGS_FILE:-/var/lib/kubelet/kubeadm-flags.env}"
     local unit_file="/etc/systemd/system/cri-multiplex.service"
 
     info "部署 cri-multiplex ..."
@@ -365,7 +397,8 @@ ExecStart=${bin} -socket ${mux_socket} -containerd-socket ${containerd_socket} -
   -cni-conf-dir /etc/cni/net.d \
   -cni-bin-dir /opt/cni/bin \
   -cni-ifname eth0 \
-  -cni-netns-dir /var/run/netns
+  -cni-netns-dir /var/run/netns \
+  -hide-sandbox-label flux-sandbox.io/direct=true
 Restart=always
 RestartSec=3
 # 运行时 socket 目录
@@ -384,30 +417,6 @@ EOF
     done
     success "cri-multiplex socket 已就绪: $mux_socket"
 
-    # ③ 修改 kubelet endpoint: containerd.sock -> cri-multiplex.sock（幂等）
-    info "修改 kubelet 运行时 endpoint ..."
-    if [ ! -f "$flags_file" ]; then
-        warn "未找到 $flags_file，请确认 kubelet 已通过 kubeadm 初始化"
-        return
-    fi
-    if grep -q "unix://${mux_socket}" "$flags_file"; then
-        success "kubelet 已使用 cri-multiplex endpoint，跳过修改"
-    else
-        # 备份后替换
-        cp -a "$flags_file" "${flags_file}.bak.$(date +%s)"
-        sed -i "s#--container-runtime-endpoint=[^ \"']*#--container-runtime-endpoint=unix://${mux_socket}#g" "$flags_file"
-        success "kubeadm-flags.env 已更新: endpoint=${mux_socket}"
-    fi
-
-    # ④ 重启 kubelet 使配置生效
-    info "重启 kubelet ..."
-    systemctl restart kubelet
-    sleep 3
-    if systemctl is-active --quiet kubelet; then
-        success "kubelet 已重启并运行中"
-    else
-        warn "kubelet 未正常运行，请检查: journalctl -u kubelet -n 50"
-    fi
 
     # ⑤ 创建 RuntimeClass（android / e2b）
     if ! command -v kubectl >/dev/null 2>&1; then
@@ -531,6 +540,11 @@ main() {
             # 部署 cri-multiplex 并切换 kubelet endpoint（节点级操作，每个节点执行）
             deploy_cri_multiplex
             ;;
+        kubelet-endpoint)
+            # 单独切换 kubelet 运行时 endpoint（containerd.sock -> cri-multiplex.sock）并重启 kubelet
+            # 适用于 cri-multiplex 已部署、仅需切换 endpoint 的场景
+            switch_kubelet_endpoint
+            ;;
         buildkit)
             # 安装 buildkit（节点级操作）
             install_buildkit
@@ -540,7 +554,7 @@ main() {
             download_cni_plugins
             ;;
         help|--help|-h)
-            echo "用法: $0 <prep|create|all|configure-domain|cri-multiplex|buildkit|download-cni>"
+            echo "用法: $0 <prep|create|all|configure-domain|cri-multiplex|kubelet-endpoint|buildkit|download-cni>"
             echo ""
             echo "  prep              安装依赖、下载 kk 和 CNI 插件、生成集群配置（需手动编辑节点信息）"
             echo "  create            根据配置文件创建集群、验证状态、部署 ingress-nginx、配置域名访问"
@@ -549,6 +563,8 @@ main() {
             echo "                    （e2b 部署后执行以补建 wildcard Ingress）"
             echo "  cri-multiplex     部署 cri-multiplex、切换 kubelet endpoint、创建 RuntimeClass"
             echo "                    （节点级操作，需在每个节点执行；需先安装 cri-multiplex 二进制）"
+            echo "  kubelet-endpoint  单独切换 kubelet 运行时 endpoint 并重启 kubelet"
+            echo "                    （cri-multiplex 已部署、仅需切换 endpoint 时使用）"
             echo "  buildkit          安装并启用 buildkit"
             echo "  download-cni      单独下载并安装 CNI 插件到 /opt/cni/bin"
             echo ""
@@ -571,10 +587,11 @@ main() {
             echo "  HOST_IP=10.0.0.5 NODE_PASSWORD=secret $0 prep   # 指定 IP 和密码生成配置"
             echo "  $0 buildkit                              # 安装 buildkit"
             echo "  $0 download-cni                          # 下载 CNI 插件"
+            echo "  $0 kubelet-endpoint                      # 单独切换 kubelet endpoint 并重启"
             echo "  CNI_PLUGINS_VERSION=v1.6.2 $0 download-cni      # 指定版本下载 CNI 插件"
             ;;
         *)
-            error "未知操作: $action（支持: prep / create / all / configure-domain / cri-multiplex / buildkit / download-cni / help）"
+            error "未知操作: $action（支持: prep / create / all / configure-domain / cri-multiplex / kubelet-endpoint / buildkit / download-cni / help）"
             ;;
     esac
 }
