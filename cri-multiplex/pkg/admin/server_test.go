@@ -67,15 +67,13 @@ func (f *fakeEngine) AdminGetRuntime(criID, e2bID string) (*engine.RuntimeInfo, 
 }
 
 func TestPauseSandboxValidation(t *testing.T) {
-	s := NewServer("/tmp/unused.sock", &fakeEngine{})
+	eng := &fakeEngine{pauseErr: status.Error(codes.InvalidArgument, "operation_id, cri_sandbox_id and e2b_sandbox_id are required")}
+	s := NewServer("/tmp/unused.sock", eng)
 	if _, err := s.PauseSandbox(context.Background(), &PauseSandboxRequest{}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("empty request code = %v, want InvalidArgument", status.Code(err))
 	}
-	req := &PauseSandboxRequest{
-		OperationId: "op-1", CriSandboxId: "cri-a", E2BSandboxId: "e2b-a", TeamId: "team-a",
-	}
-	if _, err := s.PauseSandbox(context.Background(), req); status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("missing template/build code = %v, want InvalidArgument", status.Code(err))
+	if eng.pauseCalls != 1 {
+		t.Fatalf("server should delegate validation to engine, calls=%d", eng.pauseCalls)
 	}
 }
 
@@ -113,11 +111,6 @@ func TestPauseSandboxErrorPassthrough(t *testing.T) {
 func TestCheckpointSandboxDelegates(t *testing.T) {
 	eng := &fakeEngine{}
 	s := NewServer("/tmp/unused.sock", eng)
-	if _, err := s.CheckpointSandbox(context.Background(), &CheckpointSandboxRequest{
-		OperationId: "op-1", CriSandboxId: "cri-a", E2BSandboxId: "e2b-a", TeamId: "team-a",
-	}); status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("missing build code = %v, want InvalidArgument", status.Code(err))
-	}
 	resp, err := s.CheckpointSandbox(context.Background(), &CheckpointSandboxRequest{
 		OperationId: "op-1", CriSandboxId: "cri-a", E2BSandboxId: "e2b-a", TeamId: "team-a", BuildId: "build-snap",
 	})

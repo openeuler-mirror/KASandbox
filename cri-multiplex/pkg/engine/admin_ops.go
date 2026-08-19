@@ -38,11 +38,11 @@ func runtimeStateString(s e2bState) string {
 	case stateRunning:
 		return "Running"
 	case stateStopped:
-		return "Stopping"
+		return "Stopped"
 	case statePaused:
 		return "Paused"
 	case stateRemoved:
-		return "Removing"
+		return "Removed"
 	default:
 		return "Unknown"
 	}
@@ -113,7 +113,7 @@ func (e *grpcE2BEngine) beginAdminOperation(op E2BOperation) (*sync.Mutex, E2BOp
 		switch rec.State {
 		case OperationStateSucceeded:
 			return nil, rec, errOperationAlreadySucceeded
-		case OperationStateRunning, OperationStatePending:
+		case OperationStateRunning, legacyOperationStatePending:
 			return nil, rec, status.Errorf(codes.Aborted, "operation %s is already %s", op.OperationID, rec.State)
 		}
 		// Failed：允许重试，覆盖记录重新开始
@@ -247,7 +247,7 @@ func (e *grpcE2BEngine) AdminCheckpoint(ctx context.Context, op E2BOperation, ti
 }
 
 // AdminGetRuntime 返回节点运行事实；active operations = op store 中该 CRI ID
-// 且 State 为 Running/Pending 的记录。
+// 且 State 为 Running 的记录。
 func (e *grpcE2BEngine) AdminGetRuntime(criID, e2bID string) (*RuntimeInfo, []E2BOperation, error) {
 	if criID == "" && e2bID == "" {
 		return nil, nil, status.Error(codes.InvalidArgument, "cri_sandbox_id or e2b_sandbox_id is required")
@@ -286,7 +286,7 @@ func (e *grpcE2BEngine) AdminGetRuntime(criID, e2bID string) (*RuntimeInfo, []E2
 			log.Printf("[GrpcE2BEngine] WARNING: load e2b operations failed: %v", err)
 		}
 		for _, op := range ops {
-			if op.CRISandboxID == pod.sandboxID && (op.State == OperationStateRunning || op.State == OperationStatePending) {
+			if op.CRISandboxID == pod.sandboxID && op.State == OperationStateRunning {
 				active = append(active, op)
 			}
 		}
