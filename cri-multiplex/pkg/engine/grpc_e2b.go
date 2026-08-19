@@ -186,6 +186,17 @@ func (e *grpcE2BEngine) hiddenFromCRIList(pod *podInfo) bool {
 	return ok && v == e.hideLabelValue
 }
 
+// revealsHiddenFromCRIList 判断调用方是否显式请求查看被隐藏的直连 sandbox。
+// 只有 label selector 精确包含 hide-sandbox-label 的 key=value 时才放行；
+// kubelet 的常规空 List 不会触发该分支。
+func (e *grpcE2BEngine) revealsHiddenFromCRIList(labelSelector map[string]string) bool {
+	if e.hideLabelKey == "" || labelSelector == nil {
+		return false
+	}
+	v, ok := labelSelector[e.hideLabelKey]
+	return ok && v == e.hideLabelValue
+}
+
 func (e *grpcE2BEngine) markPendingNetNS(name string) {
 	if e == nil || name == "" {
 		return
@@ -728,9 +739,14 @@ func (e *grpcE2BEngine) ListPodSandbox(ctx context.Context, req *runtime.ListPod
 		return nil, mapE2BError(err)
 	}
 	active := activeSandboxIDs(list.Sandboxes)
+	var filter *runtime.PodSandboxFilter
+	if req != nil {
+		filter = req.Filter
+	}
+	revealHidden := filter != nil && e.revealsHiddenFromCRIList(filter.LabelSelector)
 	var items []*runtime.PodSandbox
 	for _, pod := range e.tracker.List() {
-		if e.hiddenFromCRIList(pod) {
+		if e.hiddenFromCRIList(pod) && !revealHidden {
 			continue
 		}
 		state := inferPodSandboxState(pod.state)
@@ -750,7 +766,7 @@ func (e *grpcE2BEngine) ListPodSandbox(ctx context.Context, req *runtime.ListPod
 			Annotations: pod.annotations,
 		})
 	}
-	items = filterPodSandbox(items, req.Filter)
+	items = filterPodSandbox(items, filter)
 	return &runtime.ListPodSandboxResponse{Items: items}, nil
 }
 
@@ -841,9 +857,14 @@ func (e *grpcE2BEngine) RemoveContainer(ctx context.Context, req *runtime.Remove
 
 func (e *grpcE2BEngine) ListContainers(ctx context.Context, req *runtime.ListContainersRequest) (*runtime.ListContainersResponse, error) {
 	log.Println("[GrpcE2BEngine] ListContainers")
+	var filter *runtime.ContainerFilter
+	if req != nil {
+		filter = req.Filter
+	}
+	revealHidden := filter != nil && e.revealsHiddenFromCRIList(filter.LabelSelector)
 	var items []*runtime.Container
 	for _, pod := range e.tracker.List() {
-		if e.hiddenFromCRIList(pod) {
+		if e.hiddenFromCRIList(pod) && !revealHidden {
 			continue
 		}
 		if pod.containerState == containerStateRemoved || pod.containerName == "" {
@@ -866,7 +887,7 @@ func (e *grpcE2BEngine) ListContainers(ctx context.Context, req *runtime.ListCon
 			Annotations: pod.containerAnnotations,
 		})
 	}
-	items = filterContainers(items, req.Filter)
+	items = filterContainers(items, filter)
 	return &runtime.ListContainersResponse{Containers: items}, nil
 }
 

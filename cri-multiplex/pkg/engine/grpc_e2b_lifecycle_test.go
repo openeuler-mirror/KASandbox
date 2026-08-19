@@ -248,6 +248,110 @@ func TestGRPCE2BListPodSandboxMarksMissingActiveSandboxNotReady(t *testing.T) {
 	}
 }
 
+func TestGRPCE2BListPodSandboxRevealsHiddenWithDirectSelector(t *testing.T) {
+	client := &fakeSandboxServiceClient{listResp: &orchestrator.SandboxListResponse{
+		Sandboxes: []*orchestrator.RunningSandbox{
+			{Config: &orchestrator.SandboxConfig{SandboxId: "visible-e2b"}},
+			{Config: &orchestrator.SandboxConfig{SandboxId: "hidden-e2b"}},
+		},
+	}}
+	e := newTestGRPCE2BEngine(client)
+	e.hideLabelKey = "flux-sandbox.io/direct"
+	e.hideLabelValue = "true"
+	now := time.Now()
+	e.tracker.Add("visible", &podInfo{
+		sandboxID:    "visible",
+		e2bSandboxID: "visible-e2b",
+		name:         "visible",
+		labels:       map[string]string{"flux-sandbox.io/runtime": "e2b"},
+		createdAt:    now,
+		state:        stateRunning,
+	})
+	e.tracker.Add("hidden", &podInfo{
+		sandboxID:    "hidden",
+		e2bSandboxID: "hidden-e2b",
+		name:         "hidden",
+		labels: map[string]string{
+			"flux-sandbox.io/runtime": "e2b",
+			"flux-sandbox.io/direct":  "true",
+		},
+		createdAt: now,
+		state:     stateRunning,
+	})
+
+	resp, err := e.ListPodSandbox(context.Background(), &runtime.ListPodSandboxRequest{})
+	if err != nil {
+		t.Fatalf("ListPodSandbox without filter: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].Id != "visible" {
+		t.Fatalf("unfiltered ListPodSandbox = %+v, want only visible pod", resp.Items)
+	}
+
+	resp, err = e.ListPodSandbox(context.Background(), &runtime.ListPodSandboxRequest{
+		Filter: &runtime.PodSandboxFilter{LabelSelector: map[string]string{"flux-sandbox.io/runtime": "e2b"}},
+	})
+	if err != nil {
+		t.Fatalf("ListPodSandbox runtime filter: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].Id != "visible" {
+		t.Fatalf("runtime-filtered ListPodSandbox = %+v, want only visible pod", resp.Items)
+	}
+
+	resp, err = e.ListPodSandbox(context.Background(), &runtime.ListPodSandboxRequest{
+		Filter: &runtime.PodSandboxFilter{LabelSelector: map[string]string{
+			"flux-sandbox.io/runtime": "e2b",
+			"flux-sandbox.io/direct":  "true",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ListPodSandbox direct filter: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].Id != "hidden" {
+		t.Fatalf("direct-filtered ListPodSandbox = %+v, want hidden pod", resp.Items)
+	}
+}
+
+func TestGRPCE2BListContainersRevealsHiddenWithDirectSelector(t *testing.T) {
+	e := newTestGRPCE2BEngine(&fakeSandboxServiceClient{})
+	e.hideLabelKey = "flux-sandbox.io/direct"
+	e.hideLabelValue = "true"
+	e.tracker.Add("hidden", &podInfo{
+		sandboxID:      "hidden",
+		name:           "hidden",
+		labels:         map[string]string{"flux-sandbox.io/direct": "true"},
+		createdAt:      time.Now(),
+		state:          stateRunning,
+		containerName:  "app",
+		containerState: containerStateRunning,
+		containerLabels: map[string]string{
+			"flux-sandbox.io/runtime": "e2b",
+			"flux-sandbox.io/direct":  "true",
+		},
+		imageRef: "e2b.dev/tmpl:build",
+	})
+
+	resp, err := e.ListContainers(context.Background(), &runtime.ListContainersRequest{})
+	if err != nil {
+		t.Fatalf("ListContainers without filter: %v", err)
+	}
+	if len(resp.Containers) != 0 {
+		t.Fatalf("unfiltered ListContainers = %+v, want hidden container omitted", resp.Containers)
+	}
+
+	resp, err = e.ListContainers(context.Background(), &runtime.ListContainersRequest{
+		Filter: &runtime.ContainerFilter{LabelSelector: map[string]string{
+			"flux-sandbox.io/runtime": "e2b",
+			"flux-sandbox.io/direct":  "true",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ListContainers direct filter: %v", err)
+	}
+	if len(resp.Containers) != 1 || resp.Containers[0].PodSandboxId != "hidden" {
+		t.Fatalf("direct-filtered ListContainers = %+v, want hidden container", resp.Containers)
+	}
+}
+
 func TestGRPCE2BRemovePodSandboxDeletesOrchestratorAndCNI(t *testing.T) {
 	client := &fakeSandboxServiceClient{}
 	fakeCNI := &fakeCNIManager{}

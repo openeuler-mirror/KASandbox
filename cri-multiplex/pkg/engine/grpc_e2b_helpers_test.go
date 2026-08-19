@@ -324,6 +324,27 @@ func TestHiddenFromCRIList(t *testing.T) {
 	}
 }
 
+func TestRevealsHiddenFromCRIList(t *testing.T) {
+	e := &grpcE2BEngine{}
+	if e.revealsHiddenFromCRIList(map[string]string{"flux-sandbox.io/direct": "true"}) {
+		t.Fatal("no hide label configured, selector must not reveal hidden pods")
+	}
+
+	e = &grpcE2BEngine{hideLabelKey: "flux-sandbox.io/direct", hideLabelValue: "true"}
+	if !e.revealsHiddenFromCRIList(map[string]string{"flux-sandbox.io/direct": "true"}) {
+		t.Fatal("matching selector must reveal hidden pods")
+	}
+	if e.revealsHiddenFromCRIList(map[string]string{"flux-sandbox.io/direct": "false"}) {
+		t.Fatal("different selector value must not reveal hidden pods")
+	}
+	if e.revealsHiddenFromCRIList(map[string]string{"flux-sandbox.io/runtime": "e2b"}) {
+		t.Fatal("runtime-only selector must not reveal hidden pods")
+	}
+	if e.revealsHiddenFromCRIList(nil) {
+		t.Fatal("nil selector must not reveal hidden pods")
+	}
+}
+
 func TestNewGRPCE2BEngineHideLabelParsing(t *testing.T) {
 	e := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "flux-sandbox.io/direct=true")
 	if e.hideLabelKey != "flux-sandbox.io/direct" || e.hideLabelValue != "true" {
