@@ -54,23 +54,29 @@ func (f *fakeCNIManager) Del(ctx context.Context, rec *CNIRecord, podCfg *runtim
 }
 
 type fakeSandboxServiceClient struct {
-	createResp *orchestrator.SandboxCreateResponse
-	createErr  error
-	updateErr  error
-	listResp   *orchestrator.SandboxListResponse
-	listErr    error
-	deleteErr  error
-	buildsResp *orchestrator.SandboxListCachedBuildsResponse
-	buildsErr  error
+	createResp    *orchestrator.SandboxCreateResponse
+	createErr     error
+	updateErr     error
+	listResp      *orchestrator.SandboxListResponse
+	listErr       error
+	deleteErr     error
+	pauseErr      error
+	checkpointErr error
+	buildsResp    *orchestrator.SandboxListCachedBuildsResponse
+	buildsErr     error
 
-	createCalls int
-	updateCalls int
-	listCalls   int
-	deleteCalls int
-	buildsCalls int
+	createCalls     int
+	updateCalls     int
+	listCalls       int
+	deleteCalls     int
+	pauseCalls      int
+	checkpointCalls int
+	buildsCalls     int
 
-	lastCreate *orchestrator.SandboxCreateRequest
-	lastDelete *orchestrator.SandboxDeleteRequest
+	lastCreate     *orchestrator.SandboxCreateRequest
+	lastDelete     *orchestrator.SandboxDeleteRequest
+	lastPause      *orchestrator.SandboxPauseRequest
+	lastCheckpoint *orchestrator.SandboxCheckpointRequest
 }
 
 func (f *fakeSandboxServiceClient) Create(ctx context.Context, in *orchestrator.SandboxCreateRequest, opts ...grpc.CallOption) (*orchestrator.SandboxCreateResponse, error) {
@@ -108,10 +114,17 @@ func (f *fakeSandboxServiceClient) Delete(ctx context.Context, in *orchestrator.
 }
 
 func (f *fakeSandboxServiceClient) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
-	return &emptypb.Empty{}, nil
+	f.pauseCalls++
+	f.lastPause = in
+	return &emptypb.Empty{}, f.pauseErr
 }
 
 func (f *fakeSandboxServiceClient) Checkpoint(ctx context.Context, in *orchestrator.SandboxCheckpointRequest, opts ...grpc.CallOption) (*orchestrator.SandboxCheckpointResponse, error) {
+	f.checkpointCalls++
+	f.lastCheckpoint = in
+	if f.checkpointErr != nil {
+		return nil, f.checkpointErr
+	}
 	return &orchestrator.SandboxCheckpointResponse{}, nil
 }
 

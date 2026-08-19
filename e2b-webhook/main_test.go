@@ -868,6 +868,7 @@ func TestSandboxConfig_ToE2BAnnotations(t *testing.T) {
 	internetTrue := true
 	token := "secret-token"
 	cfg := sandboxConfig{
+		SandboxID:           "sbx-1",
 		BaseTemplateID:      "base-1",
 		TemplateID:          "tpl-xyz",
 		BuildID:             "build-1",
@@ -895,6 +896,7 @@ func TestSandboxConfig_ToE2BAnnotations(t *testing.T) {
 	annos := cfg.toE2BAnnotations()
 
 	cases := map[string]string{
+		"e2b.dev/sandbox-id":          "sbx-1",
 		"e2b.dev/base_template_id":    "base-1",
 		"e2b.dev/template-id":         "tpl-xyz",
 		"e2b.dev/build-id":            "build-1",
@@ -940,6 +942,9 @@ func TestSandboxConfig_ToE2BAnnotations_NilOptionals(t *testing.T) {
 	}
 	if annos["e2b.dev/network"] != `{"egress":{},"ingress":{}}` {
 		t.Errorf("empty network should default to empty object, got %q", annos["e2b.dev/network"])
+	}
+	if _, ok := annos["e2b.dev/sandbox-id"]; ok {
+		t.Errorf("empty SandboxID should not produce e2b.dev/sandbox-id annotation")
 	}
 }
 

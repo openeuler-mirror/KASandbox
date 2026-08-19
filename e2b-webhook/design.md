@@ -139,7 +139,7 @@ e2b API 返回 SandboxConfig {
     │
     ▼  toE2BAnnotations()
     ▼
-map[string]string (22 个 e2b.dev/* 注解)
+map[string]string (23 个 e2b.dev/* 注解)
     │
     ▼  JSONPatch "add"
     ▼
@@ -152,7 +152,7 @@ metadata.annotations (Pod)
 
 ## 五、注入的注解清单
 
-> 以下注解由 [annotations.go](annotations.go) 的 `toE2BAnnotations()` 生成，共 22 个。
+> 以下注解由 [annotations.go](annotations.go) 的 `toE2BAnnotations()` 生成，共 23 个（`metadata`/`sandbox-id` 为空时省略）。
 
 | 注解 key | 来源字段 | 示例值 |
 |----------|----------|--------|
@@ -178,6 +178,7 @@ metadata.annotations (Pod)
 | `e2b.dev/volume-mounts` | VolumeMounts（JSON，空→`[]`） | `[]` |
 | `e2b.dev/auto-resume` | AutoResume（JSON，nil→`{"policy":"off"}`） | `{"policy":"off"}` |
 | `e2b.dev/metadata` | Metadata（JSON，空时省略） | `{"owner":"alice"}` |
+| `e2b.dev/sandbox-id` | SandboxID（空时省略） | `i0x1x7jk8qdux6b9f2pu1` |
 
 ---
 

@@ -171,6 +171,13 @@ func (cfg *sandboxConfig) toE2BAnnotations() map[string]string {
 		}
 	}
 
+	// sandbox-id: API 服务端生成的稳定逻辑 sandbox ID。注入后 cri-multiplex
+	// 优先于 Pod UID 派生 ID 使用, 是 Pause/Resume 跨 Pod 重建保持身份的关键;
+	// 同时作为 webhook 调 E2B API internal 快照接口 (pause-snapshot 等) 的身份键。
+	if cfg.SandboxID != "" {
+		annos["e2b.dev/sandbox-id"] = cfg.SandboxID
+	}
+
 	return annos
 }
 

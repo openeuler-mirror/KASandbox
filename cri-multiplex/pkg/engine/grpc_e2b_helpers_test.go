@@ -299,3 +299,60 @@ func TestCNIPodIP(t *testing.T) {
 		t.Fatalf("cniPodIP = %q", got)
 	}
 }
+
+func TestHiddenFromCRIList(t *testing.T) {
+	// 未配置 hide label：一切可见（修改前行为）
+	e := &grpcE2BEngine{}
+	pod := &podInfo{labels: map[string]string{"flux-sandbox.io/direct": "true"}}
+	if e.hiddenFromCRIList(pod) {
+		t.Fatal("no hide label configured, pod must be visible")
+	}
+
+	// 配置 hide label：匹配的隐藏，不匹配/无该 label 的可见
+	e2 := &grpcE2BEngine{hideLabelKey: "flux-sandbox.io/direct", hideLabelValue: "true"}
+	if !e2.hiddenFromCRIList(pod) {
+		t.Fatal("pod with matching label must be hidden")
+	}
+	if e2.hiddenFromCRIList(&podInfo{labels: map[string]string{"flux-sandbox.io/direct": "false"}}) {
+		t.Fatal("pod with different label value must stay visible")
+	}
+	if e2.hiddenFromCRIList(&podInfo{labels: map[string]string{"app": "x"}}) {
+		t.Fatal("pod without the hide label must stay visible")
+	}
+	if e2.hiddenFromCRIList(nil) {
+		t.Fatal("nil pod must stay visible")
+	}
+}
+
+func TestRevealsHiddenFromCRIList(t *testing.T) {
+	e := &grpcE2BEngine{}
+	if e.revealsHiddenFromCRIList(map[string]string{"flux-sandbox.io/direct": "true"}) {
+		t.Fatal("no hide label configured, selector must not reveal hidden pods")
+	}
+
+	e = &grpcE2BEngine{hideLabelKey: "flux-sandbox.io/direct", hideLabelValue: "true"}
+	if !e.revealsHiddenFromCRIList(map[string]string{"flux-sandbox.io/direct": "true"}) {
+		t.Fatal("matching selector must reveal hidden pods")
+	}
+	if e.revealsHiddenFromCRIList(map[string]string{"flux-sandbox.io/direct": "false"}) {
+		t.Fatal("different selector value must not reveal hidden pods")
+	}
+	if e.revealsHiddenFromCRIList(map[string]string{"flux-sandbox.io/runtime": "e2b"}) {
+		t.Fatal("runtime-only selector must not reveal hidden pods")
+	}
+	if e.revealsHiddenFromCRIList(nil) {
+		t.Fatal("nil selector must not reveal hidden pods")
+	}
+}
+
+func TestNewGRPCE2BEngineHideLabelParsing(t *testing.T) {
+	e := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "flux-sandbox.io/direct=true")
+	if e.hideLabelKey != "flux-sandbox.io/direct" || e.hideLabelValue != "true" {
+		t.Fatalf("hide label parsed wrong: %q=%q", e.hideLabelKey, e.hideLabelValue)
+	}
+	// 非法格式：告警并禁用
+	e2 := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "no-equals-sign")
+	if e2.hideLabelKey != "" {
+		t.Fatalf("invalid hide label should be disabled, got key=%q", e2.hideLabelKey)
+	}
+}

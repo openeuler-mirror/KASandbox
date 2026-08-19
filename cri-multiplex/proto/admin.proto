@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package crimultiplex.admin.v1;
+
+option go_package = "github.com/cri-multiplex/pkg/admin;admin";
+
+// E2BSandboxAdminService 是节点本地管理面，仅供 Node Agent 通过 unix socket 调用。
+service E2BSandboxAdminService {
+  // 为指定 E2B sandbox 执行 Pause：拍快照并等待持久化，随后 VM 由 Orchestrator 停止
+  rpc PauseSandbox(PauseSandboxRequest) returns (PauseSandboxResponse);
+  // 为指定 E2B sandbox 执行 Checkpoint：拍快照、等待持久化、VM 原地恢复继续运行
+  rpc CheckpointSandbox(CheckpointSandboxRequest) returns (CheckpointSandboxResponse);
+  // 查询节点运行事实（身份、状态、CNI、HostPort、进行中操作）
+  rpc GetSandboxRuntime(GetSandboxRuntimeRequest) returns (GetSandboxRuntimeResponse);
+}
+
+message PauseSandboxRequest {
+  string operation_id = 1;    // 幂等键，来自 webhook
+  string cri_sandbox_id = 2;  // 当前 Pod UID 对应的 CRI ID
+  string e2b_sandbox_id = 3;  // 稳定逻辑 sandbox ID
+  string team_id = 4;         // ownership 校验
+  string template_id = 5;     // E2B API 预分配的 snapshot 模板 ID
+  string build_id = 6;        // E2B API 预分配的 build ID
+  uint64 timeout_seconds = 7;
+}
+
+message PauseSandboxResponse {
+  bool snapshot_persisted = 1;  // 快照已确认写入对象存储
+  int64 started_at_unix = 2;
+  int64 finished_at_unix = 3;
+}
+
+message CheckpointSandboxRequest {
+  string operation_id = 1;
+  string cri_sandbox_id = 2;
+  string e2b_sandbox_id = 3;
+  string team_id = 4;
+  string build_id = 5;        // E2B API 预分配的 build ID
+  uint64 timeout_seconds = 6;
+}
+
+message CheckpointSandboxResponse {
+  bool snapshot_persisted = 1;  // 快照已确认写入对象存储
+  bool vm_resumed = 2;          // Orchestrator 已原地恢复 VM
+  int64 started_at_unix = 3;
+  int64 finished_at_unix = 4;
+}
+
+message GetSandboxRuntimeRequest {
+  oneof target {
+    string cri_sandbox_id = 1;
+    string e2b_sandbox_id = 2;
+  }
+}
+
+message CNIRecord {
+  string netns_path = 1;
+  string if_name = 2;
+  string pod_ip = 3;
+  string gateway = 4;
+  repeated string dns_servers = 5;
+  uint32 mtu = 6;
+}
+
+message HostPortMapping {
+  uint32 host_port = 1;
+  uint32 sandbox_port = 2;
+}
+
+message OperationRecord {
+  string operation_id = 1;
+  string action = 2;
+  string cri_sandbox_id = 3;
+  string e2b_sandbox_id = 4;
+  string template_id = 5;
+  string build_id = 6;
+  string state = 7;
+  string error = 8;
+  int64 started_at_unix = 9;
+  int64 finished_at_unix = 10;
+}
+
+message GetSandboxRuntimeResponse {
+  string cri_sandbox_id = 1;
+  string e2b_sandbox_id = 2;
+  string team_id = 3;
+  string pod_name = 4;
+  string pod_namespace = 5;
+  string pod_uid = 6;
+  string node_name = 7;
+  string template_id = 8;
+  string build_id = 9;
+  string execution_id = 10;
+  string runtime_state = 11;  // Running / Stopped / Paused / Removed
+  CNIRecord cni = 12;
+  repeated HostPortMapping hostports = 13;
+  repeated OperationRecord active_operations = 14;  // 进行中的 Pause/Checkpoint operation
+}
