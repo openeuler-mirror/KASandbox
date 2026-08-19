@@ -171,7 +171,7 @@ metadata.annotations (Pod)
 | `e2b.dev/kernel-version` | KernelVersion | `vmlinux-6.1.158` |
 | `e2b.dev/firecracker-version` | FirecrackerVersion | `v1.13.1` |
 | `e2b.dev/execution-id` | ExecutionID | `exec-9f8e7d6c` |
-| `e2b.dev/allow-internet` | AllowInternetAccess（nil→`false`） | `true` |
+| `e2b.dev/allow-internet` | AllowInternetAccess（nil→`true`） | `true` |
 | `e2b.dev/envd-access-token` | EnvdAccessToken（nil→`""`） | `eyJhbGciOi...` |
 | `e2b.dev/network` | Network（JSON，空→`{"egress":{},"ingress":{}}`） | `{"egress":{"allowedCidrs":["0.0.0.0/0"]},"ingress":{}}` |
 | `e2b.dev/env-vars` | EnvVars（JSON，空→`{}`） | `{"PATH":"/usr/local/bin:/usr/bin:/bin"}` |

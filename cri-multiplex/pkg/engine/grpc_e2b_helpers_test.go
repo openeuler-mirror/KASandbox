@@ -40,7 +40,7 @@ func TestValidateAnnotations(t *testing.T) {
 func TestAnnotationsToSandboxConfig(t *testing.T) {
 	e := &grpcE2BEngine{}
 	envdToken := "token-a"
-	cfg := e.annotationsToSandboxConfig(map[string]string{
+	cfg, err := e.annotationsToSandboxConfig(map[string]string{
 		annTemplateID:         "tmpl",
 		annBuildID:            "build",
 		annTeamID:             "team",
@@ -53,13 +53,16 @@ func TestAnnotationsToSandboxConfig(t *testing.T) {
 		annFirecrackerVersion: "fc-a",
 		annTotalDiskSizeMB:    "1024",
 		annHugePages:          "true",
-		annAutoPause:          "1",
+		annAutoPause:          "true",
 		annSnapshot:           "true",
 		annBaseTemplateID:     "base",
 		annExecutionID:        "exec",
 		annEnvdAccessToken:    envdToken,
 		annEnvVars:            `{"A":"B"}`,
 	}, "sandbox-a", "alias-a", map[string]string{"l": "v"})
+	if err != nil {
+		t.Fatalf("annotationsToSandboxConfig: %v", err)
+	}
 
 	if cfg.SandboxId != "sandbox-a" || strDeref(cfg.Alias) != "alias-a" {
 		t.Fatalf("identity mismatch: %+v", cfg)
@@ -83,11 +86,14 @@ func TestAnnotationsToSandboxConfig(t *testing.T) {
 
 func TestAnnotationsToSandboxConfigUsesDefaultsWhenOptionalAnnotationsOmitted(t *testing.T) {
 	e := &grpcE2BEngine{}
-	cfg := e.annotationsToSandboxConfig(map[string]string{
+	cfg, err := e.annotationsToSandboxConfig(map[string]string{
 		annTemplateID: "tmpl",
 		annBuildID:    "build",
 		annTeamID:     "team",
 	}, "sandbox-a", "alias-a", map[string]string{"app": "e2b"})
+	if err != nil {
+		t.Fatalf("annotationsToSandboxConfig: %v", err)
+	}
 
 	if cfg.TemplateId != "tmpl" || cfg.BuildId != "build" || cfg.TeamId != "team" {
 		t.Fatalf("required fields mismatch: %+v", cfg)
@@ -98,8 +104,8 @@ func TestAnnotationsToSandboxConfigUsesDefaultsWhenOptionalAnnotationsOmitted(t 
 		cfg.MaxSandboxLength != defaultSandboxConfig.MaxSandboxLength {
 		t.Fatalf("optional numeric/string defaults mismatch: %+v", cfg)
 	}
-	if cfg.AllowInternetAccess != nil {
-		t.Fatalf("allow internet should remain unset when default is false and annotation is omitted: %+v", cfg.AllowInternetAccess)
+	if cfg.AllowInternetAccess == nil || !*cfg.AllowInternetAccess {
+		t.Fatalf("allow internet should default to true when annotation is omitted: %+v", cfg.AllowInternetAccess)
 	}
 	if cfg.HugePages || cfg.AutoPause || cfg.Snapshot || cfg.TotalDiskSizeMb != 0 ||
 		cfg.BaseTemplateId != "" || cfg.ExecutionId != "" || cfg.EnvdAccessToken != nil {
@@ -113,19 +119,81 @@ func TestAnnotationsToSandboxConfigUsesDefaultsWhenOptionalAnnotationsOmitted(t 
 	}
 }
 
-func TestAnnotationsToSandboxConfigIgnoresInvalidValues(t *testing.T) {
+func TestAnnotationsToSandboxConfigAllowsExplicitFalseBool(t *testing.T) {
 	e := &grpcE2BEngine{}
-	cfg := e.annotationsToSandboxConfig(map[string]string{
-		annVCPU:    "bad",
-		annRAMMB:   "bad",
-		annEnvVars: "{bad",
+	cfg, err := e.annotationsToSandboxConfig(map[string]string{
+		annAllowInternet: "false",
 	}, "sandbox-a", "alias-a", nil)
-
-	if cfg.Vcpu != defaultSandboxConfig.VCPU || cfg.RamMb != defaultSandboxConfig.RAMMB {
-		t.Fatalf("invalid numeric annotations should keep defaults: %+v", cfg)
+	if err != nil {
+		t.Fatalf("annotationsToSandboxConfig: %v", err)
 	}
-	if cfg.EnvVars != nil {
-		t.Fatalf("invalid env vars should be ignored, got %v", cfg.EnvVars)
+
+	if cfg.AllowInternetAccess == nil || *cfg.AllowInternetAccess {
+		t.Fatalf("allow internet false annotation should set explicit false: %+v", cfg.AllowInternetAccess)
+	}
+}
+
+func TestAnnotationsToSandboxConfigRejectsInvalidValues(t *testing.T) {
+	e := &grpcE2BEngine{}
+	tests := []struct {
+		name string
+		anns map[string]string
+	}{
+		{name: "vcpu integer", anns: map[string]string{annVCPU: "bad"}},
+		{name: "ram integer", anns: map[string]string{annRAMMB: "bad"}},
+		{name: "max sandbox length integer", anns: map[string]string{annMaxSandboxLength: "bad"}},
+		{name: "total disk size integer", anns: map[string]string{annTotalDiskSizeMB: "bad"}},
+		{name: "vcpu zero", anns: map[string]string{annVCPU: "0"}},
+		{name: "ram negative", anns: map[string]string{annRAMMB: "-1"}},
+		{name: "allow internet boolean", anns: map[string]string{annAllowInternet: "invalid"}},
+		{name: "allow internet numeric boolean", anns: map[string]string{annAllowInternet: "1"}},
+		{name: "huge pages boolean", anns: map[string]string{annHugePages: "invalid"}},
+		{name: "auto pause boolean", anns: map[string]string{annAutoPause: "invalid"}},
+		{name: "snapshot boolean", anns: map[string]string{annSnapshot: "invalid"}},
+		{name: "auto resume json", anns: map[string]string{annAutoResume: "{bad"}},
+		{name: "auto resume empty policy", anns: map[string]string{annAutoResume: `{}`}},
+		{name: "auto resume invalid policy", anns: map[string]string{annAutoResume: `{"policy":"garbage"}`}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := e.annotationsToSandboxConfig(tt.anns, "sandbox-a", "alias-a", nil)
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("invalid annotation error code = %v, want InvalidArgument (err=%v)", status.Code(err), err)
+			}
+		})
+	}
+}
+
+func TestAnnotationsToSandboxConfigDoesNotValidateDeferredJSONAnnotations(t *testing.T) {
+	e := &grpcE2BEngine{}
+	cfg, err := e.annotationsToSandboxConfig(map[string]string{
+		annEnvVars:      "{bad",
+		annNetwork:      "{bad",
+		annVolumeMounts: "{bad",
+	}, "sandbox-a", "alias-a", nil)
+	if err != nil {
+		t.Fatalf("annotationsToSandboxConfig: %v", err)
+	}
+	if cfg.EnvVars != nil || cfg.Network != nil || cfg.VolumeMounts != nil {
+		t.Fatalf("invalid deferred JSON annotations should be ignored: env=%v network=%v mounts=%v", cfg.EnvVars, cfg.Network, cfg.VolumeMounts)
+	}
+}
+
+func TestAnnotationsToSandboxConfigValidatesAutoResumePolicy(t *testing.T) {
+	e := &grpcE2BEngine{}
+	for _, policy := range []string{"any", "off"} {
+		t.Run(policy, func(t *testing.T) {
+			cfg, err := e.annotationsToSandboxConfig(map[string]string{
+				annAutoResume: `{"policy":"` + policy + `"}`,
+			}, "sandbox-a", "alias-a", nil)
+			if err != nil {
+				t.Fatalf("annotationsToSandboxConfig: %v", err)
+			}
+			if cfg.AutoResume == nil || cfg.AutoResume.Policy != policy {
+				t.Fatalf("auto resume policy = %+v, want %q", cfg.AutoResume, policy)
+			}
+		})
 	}
 }
 
