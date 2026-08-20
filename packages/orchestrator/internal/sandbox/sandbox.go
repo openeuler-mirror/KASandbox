@@ -823,11 +823,6 @@ func (f *Factory) ResumeSandbox(
 			zap.String("sandbox_id", runtime.SandboxID),
 			zap.String("proxy_addr", proxyAddr),
 		)
-		rilCtx, cancelRIL := context.WithTimeout(ctx, f.config.ReadyCheckTimeout)
-		defer cancelRIL()
-		if err := androidServices.WaitForModemConnection(rilCtx); err != nil {
-			return nil, fmt.Errorf("guest RIL did not reconnect to modem simulator: %w", err)
-		}
 	}
 
 	zap.L().Sugar().Infof("[ResumeSandbox] resume VM cost: %d ms, traceID=%s", time.Since(phaseStart).Milliseconds(), traceID)
