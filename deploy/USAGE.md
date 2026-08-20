@@ -511,7 +511,9 @@ Kubelet ──Unix socket──▶ cri-multiplex
 
 **前置条件**：K8S 集群已就绪、kubelet 通过 kubeadm 初始化、containerd 运行中、orchestrator 可达（默认 `localhost:5008`）、二进制已随 RPM 安装至 `/opt/e2b-infra/bin/cri-multiplex`。
 
-**部署**（每个节点执行一次）：
+**部署流程**（拆分为两步，每个节点依次执行）：
+
+**① 部署 cri-multiplex 服务**（检查二进制、创建 systemd 服务、创建 RuntimeClass）：
 
 ```bash
 ./k8s-deploy.sh cri-multiplex
@@ -520,10 +522,24 @@ Kubelet ──Unix socket──▶ cri-multiplex
 | 步骤 | 操作 |
 |------|------|
 | ① 检查二进制 | `/opt/e2b-infra/bin/cri-multiplex`，不存在则跳过 |
-| ② 创建 systemd 服务 | 开机自启 + 崩溃自动重启 |
-| ③ 切换 kubelet endpoint | `containerd.sock` → `cri-multiplex.sock`，自动备份原文件 |
-| ④ 重启 kubelet | 使新 endpoint 生效 |
+| ② 创建 systemd 服务 | 开机自启 + 崩溃自动重启，等待 `/run/cri-multiplex.sock` 就绪 |
 | ⑤ 创建 RuntimeClass | `android`、`e2b`，Pod 通过 `runtimeClassName` 选择后端 |
+
+**② 切换 kubelet endpoint**（把 kubelet 从 `containerd.sock` 切到 `cri-multiplex.sock` 并重启，使调度走 cri-multiplex）：
+
+```bash
+./k8s-deploy.sh kubelet-endpoint
+```
+
+| 步骤 | 操作 |
+|------|------|
+| ③ 修改 kubelet 启动参数 | 将 runtime-endpoint 切到 `unix:///run/cri-multiplex.sock`（幂等，自动备份原文件）。默认改 `/var/lib/kubelet/kubeadm-flags.env`，**具体路径取决于 kubelet 启动方式**，见下方说明 |
+| ④ 重启 kubelet | 使新 endpoint 生效，并确认 kubelet 运行中 |
+
+> **说明**：
+>
+> 1. kubelet 启动方式不同，配置位置/参数形式可能不同——kubeadm 初始化的一般是 `/var/lib/kubelet/kubeadm-flags.env`（默认路径）；若是自定义 systemd unit 或其它方式启动，runtime-endpoint 可能写在启动参数或独立配置文件中。脚本默认处理 kubeadm 方式，其它场景需按实际启动方式调整，也可用 `KUBELET_FLAGS_FILE` 指定配置文件路径。
+> 2. `cri-multiplex` 只负责部署服务，不切换 endpoint；`kubelet-endpoint` 幂等，若已指向 `cri-multiplex.sock` 则跳过修改。两者配合使用即为完整的 cri-multiplex 接入。也可通过 SSH 将 `kubelet-endpoint` 单独分发给其它节点执行。
 
 **验证**：
 
@@ -574,6 +590,17 @@ kubectl -n e2b get secret e2b-webhook-tls e2b-api-key
 ```
 
 > **注意**：关闭时（`ENABLE_WEBHOOK=false`），部署脚本自动清理 Secret 和 MutatingWebhookConfiguration，Helm 资源由 `.Values.webhook.enabled` 同步控制。
+
+> **忘记部署怎么办**：若主流程部署时未启用或未成功部署 e2b-webhook，可后续单独部署，不影响其它组件：
+>
+> ```bash
+> # 1. 确保 .env 中 ENABLE_WEBHOOK=true
+> # 2. 单独部署 e2b-webhook（构建推送镜像 → 渲染 e2b-webhook.yaml → kubectl apply，
+> #    不经 helm install/upgrade，避免影响其它 Pod）
+> ./deploy.sh deploy-webhook
+> ```
+>
+> 命令内部会自动完成：构建并推送镜像、生成自签证书并注入 caBundle、用 `/root/.e2b/config.json` 的 `teamApiKey` 更新 `e2b-api-key` Secret、等待 Deployment 就绪。
 
 #### 3.2.4 前置条件
 
@@ -675,9 +702,27 @@ Worker 节点部署内容：
 - 远程执行安装和初始化
 - 设置节点标签
 
-#### 3.2.9 配置域名访问
+#### 3.2.9 配置域名访问(可选，通过sdk执行沙箱命令)
 
-K8S 模式下需配置三层域名解析，确保宿主机和集群内部 Pod 均可通过 `*.e2b.app` 访问 API。
+K8S 模式下需配置三层域名解析，确保宿主机和集群内部 Pod 均可通过 `*.e2b.app` 访问 API。可选自动或手动两种方式。
+
+**方式一：自动部署（推荐）**
+
+```bash
+./k8s-deploy.sh configure-domain
+```
+
+脚本一键完成三层配置：
+
+| 步骤 | 操作 |
+|------|------|
+| ① 检查 Ingress Controller | 验证 `ingress-nginx-controller` 是否暴露 80 端口，未暴露则告警提示 |
+| ② 配置 CoreDNS 重写 | 自动在 Corefile 中添加 `rewrite name regex .*\.e2b\.app\.$ edge-api.e2b.svc.cluster.local` 并重启 coredns（幂等） |
+| ③ 创建 wildcard Ingress | `kubectl apply -f dep/wildcard-ingress.yaml`，将 `*.e2b.app` 转发到 `edge-api:3002`（依赖 `e2b` 命名空间，未部署则跳过） |
+
+> 若 `e2b` 命名空间尚未创建，第 ③ 步会跳过并提示；待 e2b 部署完成后重新执行 `./k8s-deploy.sh configure-domain` 补建即可。
+
+**方式二：手动部署（分三步）**
 
 **① Ingress Controller 监听 80 端口**
 
@@ -686,7 +731,16 @@ kubectl edit svc -n ingress-nginx ingress-nginx-controller
 # 在 ports 中增加 HTTP 80 端口映射
 ```
 
-**② CoreDNS 重写规则**
+**② 部署 wildcard Ingress**
+
+创建 `*.e2b.app` 通配符 Ingress，将请求转发到 `edge-api:3002`：
+
+```bash
+# 按实际环境修改 dep/wildcard-ingress.yaml 中的 namespace（edge-api 所在命名空间）和服务名后应用
+kubectl apply -f dep/wildcard-ingress.yaml
+```
+
+**③ CoreDNS 重写规则**
 
 ```bash
 kubectl edit configmap coredns -n kube-system
@@ -695,23 +749,38 @@ kubectl edit configmap coredns -n kube-system
 kubectl rollout restart deployment coredns -n kube-system
 ```
 
+
+
 #### 3.2.10 验证
 
+验证 K8S 是否部署成功，检查以下组件是否正常运行。
+
+**① 核心组件（必须正常运行，位于 `e2b` 命名空间）**
+
 ```bash
-# 检查 K8S 节点状态
-kubectl get nodes --show-labels
-
-# 检查 Ingress
-kubectl get ingress -n e2b
-
-# 检查 Pod 状态
-kubectl get pods -n e2b
-
-# 检查域名解析
-dig *.e2b.app @127.0.0.1
+kubectl get pods -n e2b -o wide
 ```
 
----
+期望看到以下 Pod 均为 `Running` 且 `READY 1/1`：
+
+| Pod | 说明 |
+|-----|------|
+| `postgres-*` | 元数据存储（teams / users / templates / 沙箱配额） |
+| `redis-*` | 缓存 / 会话存储 |
+| `api-*` | API 服务（端口 3000） |
+| `edge-*` | 客户端代理（端口 3002） |
+| `template-manager-*` | 模板管理 / 沙箱生命周期管理（端口 5008） |
+
+**② 可选组件（按需启用/部署）**
+
+| 组件 | 命名空间 | 检查命令 | 期望 |
+|------|---------|----------|------|
+| e2b-webhook | `e2b` | `kubectl get pods -n e2b -l app.kubernetes.io/name=e2b-webhook` | Running（启用 `ENABLE_WEBHOOK=true` 时） |
+| ingress-nginx | `ingress-nginx` | `kubectl get pods -n ingress-nginx` | Running |
+| coredns | `kube-system` | `kubectl get pods -n kube-system \| grep coredns` | Running |
+| wildcard-e2b-app | `e2b`（Ingress） | `kubectl get ingress -n e2b` | 存在 `wildcard-e2b-app`（域名访问配置后） |
+
+
 
 ## 4. 模板管理
 
