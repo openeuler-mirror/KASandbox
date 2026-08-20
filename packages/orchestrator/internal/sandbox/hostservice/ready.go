@@ -27,6 +27,13 @@ func (r *ADBProxyReady) Check(ctx context.Context) error {
 
 func (r *ADBProxyReady) String() string { return "adb-vsock-proxy" }
 
+// ProcessAlive checks initial process liveness when no readiness protocol exists.
+type ProcessAlive struct{}
+
+func (r *ProcessAlive) Check(context.Context) error { return nil }
+
+func (r *ProcessAlive) String() string { return "process-alive" }
+
 type ConfigServerReady struct {
 	Path string
 }

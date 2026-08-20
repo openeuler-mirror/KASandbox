@@ -43,9 +43,8 @@ func secureEnvPipeDir(sandboxHostDir string) string {
 // BuildSecureEnvService builds the secure_env daemon service and owns its
 // FIFO lifecycle (PrepareSecureEnvFds creates/opens, CloseParentResources
 // closes). Required for Android 15+ only. Fds are inherited as fds 3..15
-// in the order documented on SecureEnvFds. No ReadyCheck: readiness is only
-// provable after the guest client connects post-restore; crashes are handled
-// by RestartOnCrash.
+// in the order documented on SecureEnvFds. With no readiness protocol,
+// secure_env only checks initial process liveness.
 func BuildSecureEnvService(
 	config cfg.BuilderConfig,
 	androidVersion string,
@@ -145,6 +144,7 @@ func BuildSecureEnvService(
 			}
 		},
 		RestartPolicy: RestartOnCrash,
+		ReadyCheck:    &ProcessAlive{},
 	}, nil
 }
 
