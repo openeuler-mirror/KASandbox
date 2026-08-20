@@ -57,9 +57,9 @@ func BuildVsockProxyService(config cfg.BuilderConfig, androidVersion string, cid
 	}
 
 	return Service{
-		Name:   fmt.Sprintf("socket_vsock_proxy:adb:%s", sandboxID),
-		Binary: binaryPath,
-		Args:   args,
+		Name:      fmt.Sprintf("socket_vsock_proxy:adb:%s", sandboxID),
+		Binary:    binaryPath,
+		Args:      args,
 		NetNSName: netNSName,
 		Env: []string{
 			fmt.Sprintf("HOME=%s", hostPackageDir),
@@ -68,12 +68,8 @@ func BuildVsockProxyService(config cfg.BuilderConfig, androidVersion string, cid
 		},
 		ExtraFiles:    []*os.File{listenerFile},
 		RestartPolicy: RestartOnCrash,
-		// This only verifies that the proxy survives its first second; it does not
-		// check guest adbd. End-to-end readiness is still checked after the VMM
-		// starts by PollVsockProxyReady.
-		ReadyCheck: &ADBProxyReady{
-			Delay: time.Second,
-		},
+		// End-to-end ADB readiness is checked after envd initialization.
+		ReadyCheck: &ProcessAlive{},
 	}, nil
 }
 
