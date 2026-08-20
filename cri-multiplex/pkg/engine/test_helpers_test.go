@@ -45,6 +45,13 @@ func (f *fakeCNIManager) Add(ctx context.Context, sandboxID string, podCfg *runt
 	}, nil
 }
 
+func (f *fakeCNIManager) NetNSName(sandboxID string) string {
+	if f.addRecord != nil && f.addRecord.NetNSName != "" {
+		return f.addRecord.NetNSName
+	}
+	return "test-" + shortID(sandboxID)
+}
+
 func (f *fakeCNIManager) Del(ctx context.Context, rec *CNIRecord, podCfg *runtime.PodSandboxConfig) error {
 	f.delCalls++
 	if rec != nil {

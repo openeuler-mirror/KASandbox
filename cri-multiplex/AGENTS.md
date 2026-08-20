@@ -29,6 +29,8 @@ cri-multiplex \
 - `-admin-socket` — node-local admin gRPC socket for Pause/Checkpoint/GetSandboxRuntime (default `/run/cri-multiplex/admin.sock`)
 - `-node-name` — Kubernetes node name recorded in runtime facts (defaults to `NODE_NAME` env)
 - `-hide-sandbox-label` — hide E2B sandboxes carrying this label (`key=value`, e.g. `flux-sandbox.io/direct=true`) from `ListPodSandbox`/`ListContainers`, so kubelet's orphan-sandbox GC never sees them (agent-direct `RunPodSandbox` without a K8s Pod object). Empty = visible (default, legacy behavior)
+- `-cni-pool-enabled` — E2B CNI netns/veth 预热池总开关（默认 false = 关闭）。需与 `-cni-pool-size > 0` 同时设置才生效。开启后后台协程提前执行完整 CNI ADD（netns 创建 + veth 配对 + host-local IPAM 分配），`RunPodSandbox` 直接从池中取用，规避并发创建时 CNI 插件链的串行瓶颈；有 RunPodSandbox 在途时预热自动暂停，创建优先；池空时回退为实时 CNI ADD。进程启动时自动清理上一轮遗留的预热池 entry（新命名可完整 CNI DEL 释放 IPAM，旧命名仅删 netns）。详见《CNI 并发创建优化与池化改造.md》
+- `-cni-pool-size` — E2B CNI netns/veth 预热池容量（默认 0 = 关闭），仅在 `-cni-pool-enabled` 同时开启时生效
 
 Requires root or write access to `/run/` for the socket.
 
