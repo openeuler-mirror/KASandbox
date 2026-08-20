@@ -68,8 +68,8 @@ Dials the E2B orchestrator's `SandboxService` gRPC (port 5008).
 | CRI method | Orchestrator RPC | Notes |
 |---|---|---|
 | `RunPodSandbox` | `Create` | sandboxID = `e2b-{UID}`; E2B config extracted from CRI annotations |
-| `StopPodSandbox` | `Update` (set end_time=now) | Soft-stop via deadline |
-| `RemovePodSandbox` | `Delete` | Hard destroy |
+| `StopPodSandbox` | `Delete` | Destroy VM at stop time (idempotent, async in orchestrator); CNI DEL / port / route cleanup stays in `RemovePodSandbox` |
+| `RemovePodSandbox` | `Delete` | Hard destroy (idempotent no-op if already deleted at stop) + CNI DEL + route cleanup, via CleanupManager with retry |
 | `PodSandboxStatus` | `List` + client-side filter | No Get-by-ID RPC exists |
 | `ListPodSandbox` | `List` | Maps `RunningSandbox` → CRI `PodSandbox` |
 
