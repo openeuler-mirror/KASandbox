@@ -289,7 +289,63 @@ else
 fi
 rm -f /tmp/e2b-defaults.json
 
-log_step "6.3 删除不存在的 Pod（幂等）"
+run_invalid_annotation_case() {
+    local name="$1"
+    local key="$2"
+    local value="$3"
+    local tmp="/tmp/e2b-invalid-${name}-$$.json"
+    local output=""
+    local created_id=""
+
+    cp "${BASE_POD_JSON}" "${tmp}"
+    sync_e2b_pod_json_from_kubelet_yaml /tmp/e2b-kubelet-pod.yaml "${tmp}" || true
+    python3 - "${tmp}" "${key}" "${value}" <<'PY'
+import json
+import sys
+import time
+
+path, key, value = sys.argv[1:4]
+with open(path, encoding="utf-8") as source:
+    pod = json.load(source)
+uid = f"e2b-invalid-{int(time.time())}-{abs(hash((key, value))) % 100000}"
+pod["metadata"] = {
+    "name": f"invalid-{uid}",
+    "namespace": "default",
+    "uid": uid,
+}
+annotations = pod.setdefault("annotations", {})
+annotations[key] = value
+with open(path, "w", encoding="utf-8") as target:
+    json.dump(pod, target, indent=2, ensure_ascii=True)
+    target.write("\n")
+PY
+
+    output=$(${CRICTL} runp -r e2b "${tmp}" 2>&1) || true
+    if echo "${output}" | grep -qE "^[a-z0-9-]+$" && ! echo "${output}" | grep -qi "error\|fata"; then
+        created_id=$(echo "${output}" | head -1 | tr -d '[:space:]')
+        log_fail "${name} 未被拒绝，反而创建成功: ${created_id}"
+        cleanup_pod "${created_id}"
+    elif echo "${output}" | grep -qiE "InvalidArgument|invalid|error|FATA"; then
+        log_pass "${name} 返回校验错误"
+    else
+        log_fail "${name} 输出不符合预期: ${output}"
+    fi
+    rm -f "${tmp}"
+}
+
+log_step "6.3 annotation 校验"
+run_invalid_annotation_case "vcpu=0" "e2b.dev/vcpu" "0"
+run_invalid_annotation_case "ram-mb=-1" "e2b.dev/ram-mb" "-1"
+run_invalid_annotation_case "max-sandbox-length=0" "e2b.dev/max-sandbox-length" "0"
+run_invalid_annotation_case "total-disk-size-mb=0" "e2b.dev/total-disk-size-mb" "0"
+run_invalid_annotation_case "allow-internet=invalid" "e2b.dev/allow-internet" "invalid"
+run_invalid_annotation_case "huge-pages=invalid" "e2b.dev/huge-pages" "invalid"
+run_invalid_annotation_case "auto-pause=invalid" "e2b.dev/auto-pause" "invalid"
+run_invalid_annotation_case "snapshot=invalid" "e2b.dev/snapshot" "invalid"
+run_invalid_annotation_case "auto-resume=bad-json" "e2b.dev/auto-resume" "{bad"
+run_invalid_annotation_case "auto-resume=bad-policy" "e2b.dev/auto-resume" "{\"policy\":\"invalid\"}"
+
+log_step "6.4 删除不存在的 Pod（幂等）"
 output=$(grpc_call "runtime.v1.RuntimeService/RemovePodSandbox" '{"pod_sandbox_id": "e2b-not-exist-999"}') || true
 if echo "${output}" | grep -q "^{}\|^$"; then
     log_pass "删除不存在的 Pod 成功（幂等）"
