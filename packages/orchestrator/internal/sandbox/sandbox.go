@@ -753,6 +753,10 @@ func (f *Factory) ResumeSandbox(
 		if err != nil {
 			return nil, err
 		}
+		logger.L().Info(ctx, "android host services started",
+			zap.String("sandbox_id", runtime.SandboxID),
+			zap.String("proxy_addr", androidServices.ADBAddress),
+		)
 	}
 
 	// ==================== 6. 恢复 VM ====================
@@ -814,17 +818,6 @@ func (f *Factory) ResumeSandbox(
 	if vmmStartErr != nil {
 		return nil, fmt.Errorf("failed to start VMM: %w", vmmStartErr)
 	}
-	if androidServices != nil {
-		proxyAddr := androidServices.ADBAddress
-		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, f.config.ReadyCheckTimeout); err != nil {
-			return nil, fmt.Errorf("vsock proxy not ready (guest adbd unreachable): %w", err)
-		}
-		logger.L().Info(ctx, "android host services ready",
-			zap.String("sandbox_id", runtime.SandboxID),
-			zap.String("proxy_addr", proxyAddr),
-		)
-	}
-
 	zap.L().Sugar().Infof("[ResumeSandbox] resume VM cost: %d ms, traceID=%s", time.Since(phaseStart).Milliseconds(), traceID)
 	telemetry.ReportEvent(ctx, "initialized VMM")
 
@@ -889,6 +882,13 @@ func (f *Factory) ResumeSandbox(
 	}
 
 	telemetry.ReportEvent(execCtx, "envd initialized")
+
+	if androidServices != nil {
+		// Avoid ADB traffic during early lazy restore.
+		if err := androidServices.WaitForADBReady(ctx, f.config.ReadyCheckTimeout); err != nil {
+			return nil, fmt.Errorf("Android ADB not ready: %w", err)
+		}
+	}
 
 	if f.featureFlags.BoolFlag(execCtx, featureflags.HostStatsEnabled) {
 		samplingInterval := time.Duration(f.featureFlags.IntFlag(execCtx, featureflags.HostStatsSamplingInterval)) * time.Millisecond

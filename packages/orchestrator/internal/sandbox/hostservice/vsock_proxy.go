@@ -2,8 +2,8 @@ package hostservice
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -77,45 +77,58 @@ func BuildVsockProxyService(config cfg.BuilderConfig, androidVersion string, cid
 	}, nil
 }
 
-// PollVsockProxyReady polls the socket_vsock_proxy until the end-to-end path
-// to the guest's adbd is verified working. It does a TCP connect to the proxy
-// port, then waits briefly: if the connection stays open (read timeout) or
-// returns data, the vsock dial to the guest succeeded and adbd is reachable.
-// If the connection is closed immediately (EOF), the vsock dial failed and we
-// retry. Returns nil once the path is confirmed, or an error on timeout.
+// PollVsockProxyReady waits until an A_CNXN exchange succeeds through
+// socket_vsock_proxy, proving that the complete proxy-to-adbd path is ready.
 func PollVsockProxyReady(ctx context.Context, proxyAddr string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	var lastErr error
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for guest adbd via vsock proxy at %s after %s", proxyAddr, timeout)
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("timeout waiting for guest adbd via vsock proxy at %s after %s: %w", proxyAddr, timeout, lastErr)
 		}
-
-		conn, err := net.DialTimeout("tcp", proxyAddr, 1*time.Second)
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(500 * time.Millisecond):
-			}
-			continue
-		}
-
-		buf := make([]byte, 1)
-		_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-		n, readErr := conn.Read(buf)
-		_ = conn.Close()
-
-		if n > 0 || readErr == nil || errors.Is(readErr, os.ErrDeadlineExceeded) {
+		if err := probeADBPath(ctx, proxyAddr); err == nil {
 			return nil
+		} else {
+			lastErr = err
 		}
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+func probeADBPath(ctx context.Context, proxyAddr string) error {
+	dialer := net.Dialer{Timeout: time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", proxyAddr)
+	if err != nil {
+		return fmt.Errorf("connect vsock proxy: %w", err)
+	}
+	defer conn.Close()
+
+	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		return fmt.Errorf("set ADB handshake deadline: %w", err)
+	}
+	if _, err := conn.Write(adbClientCNXN()); err != nil {
+		return fmt.Errorf("send A_CNXN: %w", err)
+	}
+
+	header := make([]byte, adbHeaderSize)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return fmt.Errorf("read ADB reply: %w", err)
+	}
+	command, err := adbReplyCommand(header)
+	if err != nil {
+		return err
+	}
+	if !adbReplyProvesPath(command) {
+		return fmt.Errorf("unexpected ADB reply command %#x", command)
+	}
+
+	return nil
 }
