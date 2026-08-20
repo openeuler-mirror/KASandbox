@@ -87,6 +87,8 @@ func main() {
 	cniBinDir := flag.String("cni-bin-dir", "/opt/cni/bin", "CNI plugin binary directory")
 	cniIfName := flag.String("cni-ifname", "eth0", "CNI interface name inside the pod netns")
 	cniNetNSDir := flag.String("cni-netns-dir", "/var/run/netns", "Directory for named CNI network namespaces")
+	cniPoolEnabled := flag.Bool("cni-pool-enabled", false, "Enable the E2B CNI netns/veth prewarm pool (only takes effect together with -cni-pool-size > 0)")
+	cniPoolSize := flag.Int("cni-pool-size", 0, "E2B CNI netns/veth prewarm pool size (0 disables pooling; warm entries are reused by RunPodSandbox to skip serial CNI ADD under concurrency)")
 	androidEnabled := flag.Bool("android-enabled", false, "Enable Android Cuttlefish runtime")
 	androidArtifactsDir := flag.String("android-artifacts-dir", "/home/fjq/cf17", "Android Cuttlefish artifacts directory")
 	androidNodeIP := flag.String("android-node-ip", "", "Node IP for Android ADB/WebRTC access (auto-detected if empty)")
@@ -130,7 +132,9 @@ func main() {
 			ConfDir:  *cniConfDir,
 			BinDir:   *cniBinDir,
 			IfName:   *cniIfName,
-			NetNSDir: *cniNetNSDir,
+			NetNSDir:    *cniNetNSDir,
+			PoolEnabled: *cniPoolEnabled,
+			PoolSize:    *cniPoolSize,
 		},
 		StateStore: stateStore,
 		HideLabel:  *hideSandboxLabel,
