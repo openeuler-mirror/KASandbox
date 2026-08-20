@@ -18,6 +18,7 @@ CNI_ENABLED="${CNI_ENABLED:-1}"
 E2B_FORCE_RESTART="${E2B_FORCE_RESTART:-0}"
 E2B_FORCE_BUILD="${E2B_FORCE_BUILD:-0}"
 E2B_SKIP_BUILD="${E2B_SKIP_BUILD:-0}"
+HIDE_SANDBOX_LABEL="${HIDE_SANDBOX_LABEL:-}"
 STATE_DIR="${STATE_DIR:-/var/lib/cri-multiplex/state}"
 NODE_IP="${NODE_IP:-}"
 ANDROID_ENABLED="${ANDROID_ENABLED:-0}"
@@ -150,6 +151,9 @@ args=(
 )
 if [ -n "${NODE_IP}" ]; then
     args+=(-node-ip "${NODE_IP}")
+fi
+if [ -n "${HIDE_SANDBOX_LABEL}" ]; then
+    args+=(-hide-sandbox-label "${HIDE_SANDBOX_LABEL}")
 fi
 if [ "${CNI_ENABLED}" = "1" ]; then
     args+=(

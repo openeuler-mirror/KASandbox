@@ -69,8 +69,9 @@ SCRIPTS=(
 	"18|cri-multiplex 重启恢复验证|${SCRIPT_DIR}/18_state_restore.sh"
     "19|状态持久化完整场景矩阵验证|${SCRIPT_DIR}/19_state_persistence_matrix.sh"
 	"20|清理与孤儿资源回收验证|${SCRIPT_DIR}/20_cleanup_orphan_recovery.sh"
-	"21|cri-multiplex 多 Runtime 路由验证|${SCRIPT_DIR}/21_mux_multi_runtime_routing.sh"
-	"22|Pause Checkpoint Resume 全流程端到端验证|${SCRIPT_DIR}/22_pause_checkpoint_resume.sh"
+    "21|cri-multiplex 多 Runtime 路由验证|${SCRIPT_DIR}/21_mux_multi_runtime_routing.sh"
+    "22|Pause Checkpoint Resume 全流程端到端验证|${SCRIPT_DIR}/22_pause_checkpoint_resume.sh"
+    "23|重启 cri-multiplex 并隐藏 direct sandbox|${SCRIPT_DIR}/23_restart_multiplex_hide_direct.sh"
 )
 
 #==================== 执行 ====================#
