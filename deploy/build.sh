@@ -344,6 +344,11 @@ install_harbor_certs() {
     success "Harbor SSL 证书生成完成: $HARBOR_CERTS_DIR/"
 
     if [ "$DEPLOY_MODE" = "k8s" ]; then
+        # 确保 e2b 命名空间存在，不存在则创建
+        if ! kubectl get namespace e2b >/dev/null 2>&1; then
+            info "命名空间 e2b 不存在，创建 ..."
+            kubectl create namespace e2b || error "创建命名空间 e2b 失败"
+        fi
         if ! kubectl create configmap harbor-ca-cert \
             --from-file=harbor.crt="$HARBOR_CERTS_DIR/harbor.crt" \
             -n e2b \
@@ -962,9 +967,16 @@ EOF
             [ ! -f "$containerd_config" ] && containerd config default > "$containerd_config"
             cp "$containerd_config" "$containerd_config.bak"
             local need_restart=false
-            if ! grep -q 'config_path = "/etc/containerd/certs.d"' "$containerd_config"; then
+            if grep -q 'config_path = "/etc/containerd/certs.d"' "$containerd_config"; then
+                info "containerd config_path 已指向 certs.d，跳过"
+            elif grep -q 'config_path =' "$containerd_config"; then
+                # config_path 已存在但指向其它目录，替换其值为 certs.d
+                info "containerd config_path 指向其它目录，替换为 certs.d ..."
+                sed -i 's#config_path = .*#config_path = "/etc/containerd/certs.d"#' "$containerd_config"
+                need_restart=true
+            else
+                # 没有 config_path，确保存在 [plugins."io.containerd.grpc.v1.cri".registry] 段后添加
                 info "containerd 未配置 config_path，正在添加..."
-                # 确保存在 [plugins."io.containerd.grpc.v1.cri".registry] 段
                 if ! grep -q '\[plugins."io.containerd.grpc.v1.cri".registry\]' "$containerd_config"; then
                     cat >> "$containerd_config" << EOF
 
@@ -976,21 +988,23 @@ EOF
                     sed -i '/\[plugins."io.containerd.grpc.v1.cri".registry\]/a\  config_path = "/etc/containerd/certs.d"' "$containerd_config"
                 fi
                 need_restart=true
-            else
-                info "containerd config_path 已配置，跳过"
-            fi
-
-            # 3. 清理旧的 registry.mirrors/configs 配置（与 config_path 方式冲突）
-            if grep -q '\[plugins."io.containerd.grpc.v1.cri".registry.mirrors.' "$containerd_config"; then
-                warn "发现旧的 registry.mirrors 配置，正在清理（与 config_path 方式冲突）..."
-                sed -i '/\[plugins."io.containerd.grpc.v1.cri".registry.mirrors\./,/^$/d' "$containerd_config"
-                sed -i '/\[plugins."io.containerd.grpc.v1.cri".registry.configs\./,/^$/d' "$containerd_config"
-                need_restart=true
             fi
 
             if [ "$need_restart" = true ]; then
                 systemctl daemon-reload
                 systemctl restart containerd
+                # 等待 containerd 启动成功（socket 就绪），带超时
+                info "等待 containerd 启动 ..."
+                local _wait=0
+                while [ ! -S /run/containerd/containerd.sock ] && [ "$_wait" -lt 30 ]; do
+                    sleep 1
+                    _wait=$((_wait+1))
+                done
+                if systemctl is-active --quiet containerd && [ -S /run/containerd/containerd.sock ]; then
+                    success "containerd 已启动"
+                else
+                    error "containerd 未启动成功，请检查: journalctl -u containerd -n 50"
+                fi
             fi
         fi
         if [ "$DOCKER_CMD" = "docker" ]; then
@@ -1003,23 +1017,6 @@ EOF
         fi
     else
         sed -i '/^https:/,/^$/ s/^/#/' "$harbor_config"
-    fi
-
-    # --- 配置 Docker insecure registries (HTTP 模式需要) ---
-    if [ "$enable_http" = true ]; then
-        local daemon_json="/etc/docker/daemon.json"
-        [ ! -f "$daemon_json" ] && echo "{}" > "$daemon_json"
-        local registry_entry="$HOST_IP:$HARBOR_HTTP_PORT"
-        if jq -e --arg ip "$registry_entry" '."insecure-registries" // [] | index($ip)' "$daemon_json" >/dev/null 2>&1; then
-            info "insecure-registries 已包含 $registry_entry，跳过"
-        else
-            local tmp
-            tmp=$(mktemp)
-            jq --arg ip "$registry_entry" '."insecure-registries" += [$ip] | ."insecure-registries" |= unique' "$daemon_json" > "$tmp" && mv "$tmp" "$daemon_json"
-            systemctl daemon-reload
-            systemctl restart "$CONTAINERD_SERVICE"
-            info "Docker insecure-registries 已添加: $registry_entry"
-        fi
     fi
 
     # 修正 /etc/hosts (追加 harbor 映射)
@@ -1164,7 +1161,8 @@ start() {
 
         echo "当前节点名称：$node_name"
         kubectl label node "$node_name" node-role.kubernetes.io/sandbox=true --overwrite
-        kubectl label node "$node_name" node-role.kubernetes.io/api= --overwrite
+        kubectl label node "$node_name" node-role.kubernetes.io/$API_NODE_POOL= --overwrite
+        kubectl label node "$node_name" node-role.kubernetes.io/$BUILD_NODE_POOL= --overwrite
         kubectl label node "$node_name" node-role.kubernetes.io/postgres= --overwrite
         bash deploy.sh --type k8s || error "K8S 模式部署失败"
         success "K8S 模式启动完成！"

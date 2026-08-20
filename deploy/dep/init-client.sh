@@ -357,13 +357,20 @@ if [ "$DEPLOY_MODE" = "nomad" ]; then
         echo "配置已存在于 $CONF_FILE，无需重复添加"
     fi
 else
-    DNS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.clusterIP}')
-fi
-CONF_FILE="/etc/dnsmasq.conf"
-if [ ! -f "$CONF_FILE" ]; then
-    echo "address=/.e2b.app/$DNS_IP" > "$CONF_FILE"
-elif ! grep -qxF "address=/.e2b.app/$DNS_IP" "$CONF_FILE"; then
-    echo "address=/.e2b.app/$DNS_IP" >> "$CONF_FILE"
+    # k8s 模式：DNS 指向 ingress-nginx-controller 的 ClusterIP
+    # 未安装 ingress-nginx-controller 时，DNS_IP 为空，跳过域名解析配置
+    DNS_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
 fi
 
-systemctl restart dnsmasq
+if [ -n "$DNS_IP" ]; then
+    CONF_FILE="/etc/dnsmasq.conf"
+    if [ ! -f "$CONF_FILE" ]; then
+        echo "address=/.e2b.app/$DNS_IP" > "$CONF_FILE"
+    elif ! grep -qxF "address=/.e2b.app/$DNS_IP" "$CONF_FILE"; then
+        echo "address=/.e2b.app/$DNS_IP" >> "$CONF_FILE"
+    fi
+
+    systemctl restart dnsmasq
+else
+    echo "⚠️ 未检测到 ingress-nginx-controller，跳过 dnsmasq 域名解析配置"
+fi

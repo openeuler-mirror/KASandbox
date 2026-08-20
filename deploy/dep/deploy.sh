@@ -21,6 +21,8 @@ BUILD_ONLY_MODE=false
 DEPLOY_WEBHOOK_MODE=false
 BUILD_IMAGES=""
 REGISTRY_URL=""
+CONTAINER_RUNTIME=""
+DOCKER_CMD=""
 
 # ===================== 输出函数 =====================
 info()  { echo "==> $*"; }
@@ -77,6 +79,10 @@ parse_args() {
                 BUILD_IMAGES="$2"
                 shift 2
                 ;;
+            --runtime)
+                CONTAINER_RUNTIME="$2"
+                shift 2
+                ;;
             -h|--help)
                 show_help
                 exit 0
@@ -104,6 +110,49 @@ load_env() {
     export REGISTRY_URL
 }
 
+# ===================== 容器运行时 =====================
+# 设置容器运行时命令（build/push/exec 用）
+# 优先使用 docker，若不存在则回退到 nerdctl（通常用于 k8s 节点）
+# 可通过 --runtime docker|nerdctl 显式指定
+set_container_runtime() {
+    local explicit_runtime="${1:-}"
+
+    if [ -n "$explicit_runtime" ]; then
+        case "$explicit_runtime" in
+            docker)
+                if ! command -v docker >/dev/null 2>&1; then
+                    echo "==> ERROR: 显式指定 docker，但系统中未找到 docker 命令"
+                    exit 1
+                fi
+                DOCKER_CMD="docker"
+                ;;
+            nerdctl)
+                if ! command -v nerdctl >/dev/null 2>&1; then
+                    echo "==> ERROR: 显式指定 nerdctl，但系统中未找到 nerdctl 命令"
+                    exit 1
+                fi
+                DOCKER_CMD="nerdctl"
+                ;;
+            *)
+                echo "==> ERROR: 不支持的容器运行时: $explicit_runtime（仅支持 docker/nerdctl）"
+                exit 1
+                ;;
+        esac
+        echo "==> 使用显式指定的容器运行时: $DOCKER_CMD"
+        return
+    fi
+
+    if command -v docker >/dev/null 2>&1; then
+        DOCKER_CMD="docker"
+    elif command -v nerdctl >/dev/null 2>&1; then
+        DOCKER_CMD="nerdctl"
+    else
+        echo "==> ERROR: 未检测到可用的容器运行时（docker/nerdctl）"
+        exit 1
+    fi
+    echo "==> 使用容器运行时: $DOCKER_CMD"
+}
+
 # ===================== 镜像构建与推送 =====================
 # 构建 bin 目录下的 *.Dockerfile 并推送到 Harbor
 build_and_push_dockerfiles() {
@@ -121,18 +170,18 @@ build_and_push_dockerfiles() {
         fi
         tag="${REGISTRY_URL}/${name,,}"
         step "检查镜像 $tag 是否存在"
-        if docker image inspect "$name" >/dev/null 2>&1; then
-            docker tag "$name" "$tag"
+        if $DOCKER_CMD image inspect "$name" >/dev/null 2>&1; then
+            $DOCKER_CMD tag "$name" "$tag"
             step "镜像 $name 已存在，跳过构建"
-        elif docker image inspect "$tag" >/dev/null 2>&1; then
+        elif $DOCKER_CMD image inspect "$tag" >/dev/null 2>&1; then
             step "镜像 $tag 已存在，跳过构建"
         else
             step "构建镜像 $tag"
-            docker build --pull=false -t "$tag" -f "$dockerfile" .
+            $DOCKER_CMD build --pull=false -t "$tag" -f "$dockerfile" .
         fi
         if [ "$push_images" = true ]; then
             step "推送镜像 $tag"
-            docker push "$tag"
+            $DOCKER_CMD push "$tag"
         fi
     done
 }
@@ -159,9 +208,9 @@ push_prebuilt_images() {
         src="${imgs[$name]}"
         tag="${REGISTRY_URL}/${src}"
         step2 "$src  ->  $tag"
-        docker tag "$src" "$tag"
+        $DOCKER_CMD tag "$src" "$tag"
         if [ "$push_images" = true ]; then
-            docker push "$tag"
+            $DOCKER_CMD push "$tag"
         fi
     done
 }
@@ -389,7 +438,7 @@ deploy_nomad() {
 
 # ===================== 数据库初始化 =====================
 # 检查 E2B 团队是否已初始化，未初始化则导入默认用户并调整 sandbox 配额
-# 容器模式：直接 docker exec 进 postgres 容器执行
+# 容器模式：直接 $DOCKER_CMD exec 进 postgres 容器执行
 init_database_container() {
     local pg_container="postgres"
     local pg_user="postgres"
@@ -398,7 +447,7 @@ init_database_container() {
 
     # --tuples-only 只输出数据行；-q 静默模式；xargs 清理首尾空格
     local result
-    result=$(docker exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -q --tuples-only -c "$query" 2>/dev/null | xargs)
+    result=$($DOCKER_CMD exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -q --tuples-only -c "$query" 2>/dev/null | xargs)
 
     if [ "$result" != "t" ]; then
         info "importing default E2B user..."
@@ -433,11 +482,11 @@ EOF
         info "config.json 写入完成"
 
         info "Setting sandbox timeout to 10000 hours"
-        docker exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -c "UPDATE tiers SET max_length_hours = 10000 WHERE id = 'base_v1';"
+        $DOCKER_CMD exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -c "UPDATE tiers SET max_length_hours = 10000 WHERE id = 'base_v1';"
         info "Setting sandbox timeout to 10000 hours done!"
 
         info "Setting sandbox concurrent instances to 10000"
-        docker exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -c "UPDATE tiers SET concurrent_instances = 10000 WHERE id = 'base_v1';"
+        $DOCKER_CMD exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -c "UPDATE tiers SET concurrent_instances = 10000 WHERE id = 'base_v1';"
         info "Setting sandbox concurrent instances to 10000 done!"
     fi
 }
@@ -558,6 +607,7 @@ init_database() {
 main() {
     parse_args "$@"
     load_env
+    set_container_runtime "$CONTAINER_RUNTIME"
 
     if [ "$DEPLOY_WEBHOOK_MODE" = true ]; then
         deploy_webhook
