@@ -643,7 +643,37 @@ func (e *grpcE2BEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 	now := time.Now()
 	pod.endedAt = &now
 	e.persistPodState(pod)
+
+	// Stop 时即销毁 VM，即时释放 vCPU/RAM/hugepages，不再等到 RemovePodSandbox。
+	// orchestrator Delete 幂等且异步（对不存在沙箱返回成功，后台 kill VMM）；
+	// CNI DEL / 端口 / 路由清理仍留在 RemovePodSandbox。
+	// 与 AdminPause/AdminCheckpoint 互斥：拿不到沙箱操作锁说明有管理操作进行中，
+	// 跳过本次 Delete，由 RemovePodSandbox / orphan reconcile 兜底。
+	if mu, locked := e.tryLockSandbox(req.PodSandboxId); locked {
+		e.deleteOrchestratorSandbox(ctx, pod, "stop")
+		mu.Unlock()
+	} else {
+		log.Printf("[GrpcE2BEngine] StopPodSandbox: sandbox %s has an in-flight admin operation, delete deferred to remove/reconcile", req.PodSandboxId)
+	}
 	return &runtime.StopPodSandboxResponse{}, nil
+}
+
+// deleteOrchestratorSandbox 尽力删除 orchestrator 侧沙箱；失败仅记录日志，
+// 由 RemovePodSandbox 的 CleanupManager 重试与 orphan reconcile 兜底。
+func (e *grpcE2BEngine) deleteOrchestratorSandbox(ctx context.Context, pod *podInfo, reason string) {
+	if pod == nil {
+		return
+	}
+	if err := e.ensureConn(); err != nil {
+		log.Printf("[GrpcE2BEngine] delete sandbox %s (%s) skipped: orchestrator unreachable: %v", pod.sandboxID, reason, err)
+		return
+	}
+	if _, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: pod.envdSandboxID()}); err != nil {
+		log.Printf("[GrpcE2BEngine] WARNING: delete sandbox %s (e2b_id=%s, reason=%s) failed: %v (will retry in remove/reconcile)",
+			pod.sandboxID, pod.e2bSandboxID, reason, err)
+		return
+	}
+	log.Printf("[GrpcE2BEngine] sandbox deleted on %s: cri_id=%s, e2b_id=%s", reason, pod.sandboxID, pod.e2bSandboxID)
 }
 
 func (e *grpcE2BEngine) RemovePodSandbox(ctx context.Context, req *runtime.RemovePodSandboxRequest) (*runtime.RemovePodSandboxResponse, error) {
