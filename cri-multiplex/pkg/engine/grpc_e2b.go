@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -132,6 +133,16 @@ type grpcE2BEngine struct {
 	cniManager      cniNetworkManager
 	cleanupManager  *CleanupManager
 
+	// CNI 预热池（实现见 cni_pool.go）：PoolEnabled && PoolSize>0 时启用
+	cniPoolReady chan *CNIRecord
+	cniPoolStop  chan struct{}
+	cniPoolWG    sync.WaitGroup
+	cniPoolSeq   int64
+
+	// 在途 RunPodSandbox 计数：>0 时 CNI 预热暂停，
+	// 避免与创建请求争抢 CNI 插件链的串行资源（IPAM 锁/netlink/udev）
+	inflightRunPod int64
+
 	// 非空时，labels 匹配 hideLabelKey=hideLabelValue 的 sandbox 对 CRI List 接口隐藏
 	hideLabelKey   string
 	hideLabelValue string
@@ -171,6 +182,13 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName 
 		} else {
 			e.cniManager = cniManager
 		}
+	}
+	if e.cniManager != nil {
+		// 进程重启后内存中的池即失效，先清理上一轮遗留的预热池 entry
+		e.cleanupStaleCNIPool()
+	}
+	if e.cniManager != nil && cniConfig.PoolEnabled && cniConfig.PoolSize > 0 {
+		e.startCNIPool(cniConfig.PoolSize)
 	}
 	return e
 }
@@ -437,6 +455,8 @@ func (e *grpcE2BEngine) validateAnnotations(anns map[string]string) (templateID,
 
 func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRequest) (*runtime.RunPodSandboxResponse, error) {
 	log.Printf("[GrpcE2BEngine] RunPodSandbox: name=%s, handler=%s", req.Config.Metadata.Name, req.RuntimeHandler)
+	atomic.AddInt64(&e.inflightRunPod, 1)
+	defer atomic.AddInt64(&e.inflightRunPod, -1)
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
@@ -479,13 +499,30 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 		if e.cniManager == nil {
 			return nil, status.Errorf(codes.Unavailable, "e2b cni is enabled but cni manager is not initialized")
 		}
-		cniRecord, err = e.cniManager.Add(ctx, sandboxID, req.Config)
-		if err != nil {
-			log.Printf("[GrpcE2BEngine] RunPodSandbox: CNI ADD failed for %s: %v", sandboxID, err)
-			return nil, status.Errorf(codes.Unavailable, "cni add failed: %v", err)
+		cniSource := "pool"
+		var cniAddMs int64
+		cniRecord = e.acquireCNIFromPool()
+		if cniRecord != nil {
+			// 池化 entry 在预热时已持有 pending 标记，沿用至本函数返回；
+			// 其 netns/veth/IPAM 已就绪，cni_add_ms 记 0。
+			defer e.unmarkPendingNetNS(cniRecord.NetNSName)
+		} else {
+			// pending 标记必须先于 Add：netns 文件在 Add 内部一开头就创建，
+			// 而 orphan reconciler 扫描无宽限期，若在 CNI 插件执行期间扫描到
+			// 未标记的 netns 会当孤儿删除，导致 orchestrator 打开 netns 报 ENOENT。
+			cniSource = "direct"
+			pendingNetNSName := e.cniManager.NetNSName(sandboxID)
+			e.markPendingNetNS(pendingNetNSName)
+			defer e.unmarkPendingNetNS(pendingNetNSName)
+			cniStart := time.Now()
+			var addErr error
+			cniRecord, addErr = e.cniManager.Add(ctx, sandboxID, req.Config)
+			cniAddMs = time.Since(cniStart).Milliseconds()
+			if addErr != nil {
+				log.Printf("[GrpcE2BEngine] RunPodSandbox: CNI ADD failed for %s (cni_add_ms=%d): %v", sandboxID, cniAddMs, addErr)
+				return nil, status.Errorf(codes.Unavailable, "cni add failed: %v", addErr)
+			}
 		}
-		e.markPendingNetNS(cniRecord.NetNSName)
-		defer e.unmarkPendingNetNS(cniRecord.NetNSName)
 		cfg.RuntimeNetwork = &orchestrator.SandboxRuntimeNetworkConfig{
 			Mode:       orchestrator.SandboxRuntimeNetworkConfig_CNI_EXTERNAL_NETNS,
 			NetnsPath:  cniRecord.NetNSPath,
@@ -494,7 +531,8 @@ func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSa
 			Gateway:    cniRecord.Gateway,
 			DnsServers: cniRecord.DNS,
 		}
-		log.Printf("[GrpcE2BEngine] CNI ADD: sandbox=%s network=%s netns=%s podIP=%s", sandboxID, cniRecord.Network, cniRecord.NetNSPath, cniRecord.PodIP)
+		log.Printf("[GrpcE2BEngine] CNI ADD: sandbox=%s source=%s network=%s netns=%s podIP=%s cni_add_ms=%d",
+			sandboxID, cniSource, cniRecord.Network, cniRecord.NetNSPath, cniRecord.PodIP, cniAddMs)
 	}
 
 	maxLen := cfg.MaxSandboxLength
@@ -2066,6 +2104,7 @@ func cniPodIP(rec *CNIRecord) string {
 }
 
 func (e *grpcE2BEngine) Close() error {
+	e.stopCNIPool()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.conn != nil {

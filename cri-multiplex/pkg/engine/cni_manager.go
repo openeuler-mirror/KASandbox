@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,6 +33,9 @@ type CNIManager struct {
 type cniNetworkManager interface {
 	Add(ctx context.Context, sandboxID string, podCfg *runtime.PodSandboxConfig) (*CNIRecord, error)
 	Del(ctx context.Context, rec *CNIRecord, podCfg *runtime.PodSandboxConfig) error
+	// NetNSName 返回 sandboxID 对应的 netns 名（与 Add 内部一致），
+	// 供调用方在 Add 之前提前标记 pending。
+	NetNSName(sandboxID string) string
 }
 
 type CNIRecord struct {
@@ -103,12 +108,18 @@ func loadDefaultNetworkConf(confDir string) (*libcni.NetworkConfigList, error) {
 	return libcni.ConfListFromConf(conf)
 }
 
+// NetNSName 返回 sandboxID 对应的 netns 名，与 Add 内部使用的命名一致，
+// 供调用方在 Add 之前提前标记 pending（防止 orphan reconciler 误删创建中的 netns）。
+func (m *CNIManager) NetNSName(sandboxID string) string {
+	return m.prefix + shortID(sandboxID)
+}
+
 func (m *CNIManager) Add(ctx context.Context, sandboxID string, podCfg *runtime.PodSandboxConfig) (*CNIRecord, error) {
 	if podCfg == nil || podCfg.GetMetadata() == nil {
 		return nil, fmt.Errorf("pod sandbox metadata is required for cni add")
 	}
 
-	netnsName := m.prefix + shortID(sandboxID)
+	netnsName := m.NetNSName(sandboxID)
 	netnsPath := filepath.Join(m.netNSDir, netnsName)
 
 	goruntime.LockOSThread()
@@ -243,12 +254,18 @@ func firstIPv4(result *current.Result) (string, string) {
 	return "", ""
 }
 
+// shortID 生成 netns 名用的短 ID。直接截断前 12 字符在批量创建时会碰撞
+// （脚本生成的 UID 形如 e2bbulk-direct-100-<idx><epoch><rand>，前 12 字符完全相同），
+// 导致不同 sandbox 得到同一个 netns 名、互相 DEL 踩踏，orchestrator 侧报
+// "cannot open external network namespace ...: no such file or directory"。
+// 超长时改为「前 6 字符 + sha256 前 6 位 hex」，保持确定性且基本唯一。
 func shortID(id string) string {
 	id = strings.TrimSpace(id)
 	if len(id) <= 12 {
 		return id
 	}
-	return id[:12]
+	sum := sha256.Sum256([]byte(id))
+	return id[:6] + hex.EncodeToString(sum[:])[:6]
 }
 
 func ensureNetNSLoopbackUp(netnsName string) error {

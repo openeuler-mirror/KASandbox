@@ -29,6 +29,13 @@ type CNIConfig struct {
 	IfName      string
 	NetNSDir    string
 	NetNSPrefix string
+	// PoolEnabled 为预热池总开关（仅 E2B 引擎使用）；false 时即使 PoolSize>0 也不启用池化。
+	PoolEnabled bool
+	// PoolSize 为 netns/veth 预热池目标容量（仅 E2B 引擎使用）：
+	// 后台预热协程提前完成 CNI ADD（netns 创建 + veth 配对 + IPAM 分配），
+	// RunPodSandbox 直接从池中取用，把并发创建时的串行 CNI 开销挡在池外。
+	// 0 表示关闭池化，每次创建走实时 CNI ADD。
+	PoolSize int
 }
 
 type E2BEngine interface {

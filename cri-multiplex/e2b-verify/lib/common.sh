@@ -933,7 +933,8 @@ run_pod_sandbox() {
 
     while [ $attempt -le $max_retries ]; do
         log_info "RunPodSandbox 尝试 ${attempt}/${max_retries}..."
-        output=$(${CRICTL} runp -r e2b "${POD_JSON}" 2>&1) || true
+        # 高并发创建时 CNI ADD 近乎串行（200 并发 p50≈200s），把取消时限放宽到 900s
+        output=$(${CRICTL} runp -T 900s -r e2b "${POD_JSON}" 2>&1) || true
 
         # 检查是否成功（纯 ID 字符串）
         if echo "${output}" | grep -qE "^[a-z0-9-]+$" && ! echo "${output}" | grep -qi "error\|FATA"; then

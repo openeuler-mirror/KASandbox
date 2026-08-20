@@ -33,6 +33,8 @@ ORPHAN_RECONCILE_ENABLED="${ORPHAN_RECONCILE_ENABLED:-1}"
 ORPHAN_RECONCILE_INTERVAL="${ORPHAN_RECONCILE_INTERVAL:-60s}"
 ORPHAN_GRACE_PERIOD="${ORPHAN_GRACE_PERIOD:-120s}"
 CLEANUP_MAX_RETRIES="${CLEANUP_MAX_RETRIES:-10}"
+CNI_POOL_SIZE="${CNI_POOL_SIZE:-0}"
+CNI_POOL_ENABLED="${CNI_POOL_ENABLED:-0}"
 E2B_NON_VALIDATION_STARTUP="${E2B_NON_VALIDATION_STARTUP:-0}"
 
 startup_pass() {
@@ -163,6 +165,12 @@ if [ "${CNI_ENABLED}" = "1" ]; then
         -cni-ifname "${CNI_IFNAME}"
         -cni-netns-dir "${CNI_NETNS_DIR}"
     )
+    if [ "${CNI_POOL_SIZE}" != "0" ]; then
+        args+=(-cni-pool-size "${CNI_POOL_SIZE}")
+        if [ "${CNI_POOL_ENABLED}" = "1" ]; then
+            args+=(-cni-pool-enabled)
+        fi
+    fi
 fi
 if [ "${ANDROID_ENABLED}" = "1" ]; then
     args+=(

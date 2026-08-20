@@ -4,11 +4,16 @@
 #
 # 在 01_start_multiplex.sh 的现有参数基础上，追加：
 #   -hide-sandbox-label flux-sandbox.io/direct=true
+#
+# 并发创建性能测试已拆出：
+#   24_bulk_direct_concurrency.sh      — 不带预热池
+#   25_bulk_direct_concurrency_pool.sh — 带预热池
 ###############################################################################
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
+source "${SCRIPT_DIR}/lib/bulk_direct.sh"
 
 log_section "23 — 重启 cri-multiplex 并隐藏 direct sandbox"
 
@@ -39,20 +44,7 @@ fi
 
 log_step "1.2 创建 bypasskubelet/direct Pod"
 prepare_direct_pod_json "hide-direct" "${BASE_POD_JSON}" || exit 1
-python3 - "${POD_JSON}" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path, encoding="utf-8") as source:
-    pod = json.load(source)
-labels = pod.setdefault("labels", {})
-labels["flux-sandbox.io/direct"] = "true"
-labels["flux-sandbox.io/runtime"] = "e2b"
-with open(path, "w", encoding="utf-8") as target:
-    json.dump(pod, target, indent=2, ensure_ascii=True)
-    target.write("\n")
-PY
+add_direct_label_to_pod_json "${POD_JSON}"
 DIRECT_POD_ID="$(run_pod_sandbox)" || {
     log_fail "创建 bypasskubelet/direct Pod 失败"
     print_summary
