@@ -1,0 +1,151 @@
+{
+  "schema_version": "20260218120000",
+  "teams": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "slug": "builder",
+      "name": "Builder Team"
+    }
+  ],
+  "templates": [
+    {
+      "id": "tpl-python",
+      "created_at": "2026-08-03T07:00:00Z",
+      "updated_at": "2026-08-03T07:01:00Z",
+      "public": true,
+      "team_id": "11111111-1111-4111-8111-111111111111",
+      "source": "template",
+      "build_count": 2,
+      "spawn_count": 5
+    },
+    {
+      "id": "tpl-checkpoint",
+      "created_at": "2026-08-03T07:02:00Z",
+      "updated_at": "2026-08-03T07:03:00Z",
+      "public": false,
+      "team_id": "11111111-1111-4111-8111-111111111111",
+      "source": "snapshot_template",
+      "build_count": 1
+    }
+  ],
+  "aliases": [
+    {
+      "id": "aaaaaaaa-0000-4000-8000-000000000001",
+      "template_id": "tpl-python",
+      "namespace": "builder",
+      "alias": "python",
+      "is_renamable": true
+    },
+    {
+      "id": "aaaaaaaa-0000-4000-8000-000000000002",
+      "template_id": "tpl-python",
+      "alias": "python-global",
+      "is_renamable": false
+    },
+    {
+      "id": "aaaaaaaa-0000-4000-8000-000000000003",
+      "template_id": "tpl-python",
+      "namespace": "legacy",
+      "alias": "python-legacy",
+      "is_renamable": false
+    },
+    {
+      "id": "aaaaaaaa-0000-4000-8000-000000000004",
+      "template_id": "tpl-checkpoint",
+      "namespace": "builder",
+      "alias": "checkpoint",
+      "is_renamable": false
+    }
+  ],
+  "builds": [
+    {
+      "id": "00112233-4455-6677-8899-aabbccddeeff",
+      "created_at": "2026-08-03T07:10:00Z",
+      "updated_at": "2026-08-03T07:11:00Z",
+      "finished_at": "2026-08-03T07:11:00Z",
+      "status": "uploaded",
+      "status_group": "ready",
+      "vcpu": 2,
+      "ram_mb": 512,
+      "free_disk_size_mb": 64,
+      "total_disk_size_mb": 128,
+      "kernel_version": "vmlinux-demo",
+      "firecracker_version": "v1-demo",
+      "envd_version": "0.1.0",
+      "reason": {},
+      "version": "v2",
+      "cpu_architecture": "x86_64",
+      "team_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "id": "11112233-4455-6677-8899-aabbccddeeff",
+      "created_at": "2026-08-03T07:20:00Z",
+      "updated_at": "2026-08-03T07:21:00Z",
+      "finished_at": "2026-08-03T07:21:00Z",
+      "status": "uploaded",
+      "status_group": "ready",
+      "vcpu": 2,
+      "ram_mb": 512,
+      "free_disk_size_mb": 64,
+      "total_disk_size_mb": 128,
+      "kernel_version": "vmlinux-demo",
+      "firecracker_version": "v1-demo",
+      "envd_version": "0.1.0",
+      "reason": {},
+      "version": "v2",
+      "cpu_architecture": "x86_64",
+      "team_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "id": "22222233-4455-6677-8899-aabbccddeeff",
+      "created_at": "2026-08-03T07:30:00Z",
+      "updated_at": "2026-08-03T07:31:00Z",
+      "status": "building",
+      "status_group": "in_progress",
+      "vcpu": 2,
+      "ram_mb": 512,
+      "free_disk_size_mb": 64,
+      "total_disk_size_mb": 128,
+      "kernel_version": "vmlinux-demo",
+      "firecracker_version": "v1-demo",
+      "envd_version": "0.1.0",
+      "reason": {},
+      "version": "v2",
+      "cpu_architecture": "x86_64",
+      "team_id": "11111111-1111-4111-8111-111111111111"
+    }
+  ],
+  "assignments": [
+    {
+      "id": "bbbbbbbb-0000-4000-8000-000000000001",
+      "template_id": "tpl-python",
+      "build_id": "00112233-4455-6677-8899-aabbccddeeff",
+      "tag": "default",
+      "source": "app",
+      "created_at": "2026-08-03T07:10:00Z"
+    },
+    {
+      "id": "bbbbbbbb-0000-4000-8000-000000000002",
+      "template_id": "tpl-python",
+      "build_id": "22222233-4455-6677-8899-aabbccddeeff",
+      "tag": "default",
+      "source": "app",
+      "created_at": "2026-08-03T07:30:00Z"
+    },
+    {
+      "id": "bbbbbbbb-0000-4000-8000-000000000003",
+      "template_id": "tpl-checkpoint",
+      "build_id": "11112233-4455-6677-8899-aabbccddeeff",
+      "tag": "default",
+      "source": "app",
+      "created_at": "2026-08-03T07:20:00Z"
+    }
+  ],
+  "snapshot_templates": [
+    {
+      "template_id": "tpl-checkpoint",
+      "sandbox_id": "sandbox-source",
+      "created_at": "2026-08-03T07:02:00Z"
+    }
+  ]
+}

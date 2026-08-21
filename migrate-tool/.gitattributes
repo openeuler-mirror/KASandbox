@@ -1,0 +1,8 @@
+# migrate-tool 的脚本与源码都在 Linux 上运行，工作副本统一用 LF。
+# Windows 上 core.autocrlf=true 的检出若把 LF 转成 CRLF，会破坏 shell 脚本
+# （internal/cli/line_endings_test.go 会失败）和 fixture 的 SHA-256。
+* text=auto eol=lf
+
+# 内容寻址的确定性 fixture：任何行尾转换都会改变摘要，必须逐字节原样存取。
+testdata/demo/golden/** -text
+testdata/demo/source/objects/** -text
