@@ -579,8 +579,10 @@ install_client() {
     pip install e2b==2.20.0
     pip install e2b_code_interpreter==2.4.1
     python3 $E2B_DIR/patch_e2b.py
-    
+    # 配置harbor证书
+    configure_harbor_cert_trust
     cp -fv "$DEP_DIR/init-client.sh" "$E2B_DIR/init-client.sh"
+    bash $E2B_DIR/init-client.sh || error "初始化客户端组件失败"
     success "===== 所有客户端组件安装完成 ====="
 }
 
@@ -946,75 +948,7 @@ start_harbor() {
         sed -i "s|^  #*private_key: .*|  private_key: /etc/harbor/certs/harbor.key|" "$harbor_config"
 
         # 根据容器运行时配置 HTTPS 证书信任
-        # nerdctl（通常为 k8s 节点）直接配置 containerd；docker 则配置 Docker daemon
-        if [ "$DEPLOY_MODE" = "k8s" ]; then
-            # 1. 准备 certs.d 目录与 hosts.toml（containerd 现代配置方式）
-            mkdir -p "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT"
-            cp -f "$HARBOR_CERTS_DIR/harbor.crt" "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.crt" || error "复制 harbor.crt 失败"
-            cp -f "$HARBOR_CERTS_DIR/harbor.key" "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.key" || error "复制 harbor.key 失败"
-            cat > "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/hosts.toml" << EOF
-server = "https://$HOST_IP:$HARBOR_HTTPS_PORT"
-[host."https://$HOST_IP:$HARBOR_HTTPS_PORT"]
-  capabilities = ["pull", "resolve", "push"]
-  ca = "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.crt"
-  skip_verify = false
-EOF
-
-            # 2. 检查 containerd config.toml 是否已配置 config_path 指向 certs.d 目录
-            #    只有配置了 config_path，上面的 hosts.toml 才会生效
-            info "检查 containerd config_path 配置..."
-            local containerd_config="/etc/containerd/config.toml"
-            [ ! -f "$containerd_config" ] && containerd config default > "$containerd_config"
-            cp "$containerd_config" "$containerd_config.bak"
-            local need_restart=false
-            if grep -q 'config_path = "/etc/containerd/certs.d"' "$containerd_config"; then
-                info "containerd config_path 已指向 certs.d，跳过"
-            elif grep -q 'config_path =' "$containerd_config"; then
-                # config_path 已存在但指向其它目录，替换其值为 certs.d
-                info "containerd config_path 指向其它目录，替换为 certs.d ..."
-                sed -i 's#config_path = .*#config_path = "/etc/containerd/certs.d"#' "$containerd_config"
-                need_restart=true
-            else
-                # 没有 config_path，确保存在 [plugins."io.containerd.grpc.v1.cri".registry] 段后添加
-                info "containerd 未配置 config_path，正在添加..."
-                if ! grep -q '\[plugins."io.containerd.grpc.v1.cri".registry\]' "$containerd_config"; then
-                    cat >> "$containerd_config" << EOF
-
-[plugins."io.containerd.grpc.v1.cri".registry]
-  config_path = "/etc/containerd/certs.d"
-EOF
-                else
-                    # 段已存在但缺少 config_path，在段内追加
-                    sed -i '/\[plugins."io.containerd.grpc.v1.cri".registry\]/a\  config_path = "/etc/containerd/certs.d"' "$containerd_config"
-                fi
-                need_restart=true
-            fi
-
-            if [ "$need_restart" = true ]; then
-                systemctl daemon-reload
-                systemctl restart containerd
-                # 等待 containerd 启动成功（socket 就绪），带超时
-                info "等待 containerd 启动 ..."
-                local _wait=0
-                while [ ! -S /run/containerd/containerd.sock ] && [ "$_wait" -lt 30 ]; do
-                    sleep 1
-                    _wait=$((_wait+1))
-                done
-                if systemctl is-active --quiet containerd && [ -S /run/containerd/containerd.sock ]; then
-                    success "containerd 已启动"
-                else
-                    error "containerd 未启动成功，请检查: journalctl -u containerd -n 50"
-                fi
-            fi
-        fi
-        if [ "$DOCKER_CMD" = "docker" ]; then
-            # Docker 模式：配置 Docker 信任 Harbor HTTPS 证书
-            info "配置 Docker 信任 Harbor HTTPS 证书..."
-            mkdir -p "/etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT"
-            cp -f "$HARBOR_CERTS_DIR/harbor.crt" "/etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/ca.crt" || error "复制 ca.crt 失败"
-            systemctl restart "$CONTAINERD_SERVICE"
-            info "Docker Harbor HTTPS 证书已配置: /etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/ca.crt"
-        fi
+        configure_harbor_cert_trust
     else
         sed -i '/^https:/,/^$/ s/^/#/' "$harbor_config"
     fi
@@ -1029,6 +963,79 @@ EOF
     fi
 
     bash install.sh || error "Harbor 安装脚本执行失败"
+}
+
+# 根据容器运行时配置 Harbor HTTPS 证书信任
+# nerdctl（通常为 k8s 节点）直接配置 containerd；docker 则配置 Docker daemon
+configure_harbor_cert_trust() {
+    if [ "$DEPLOY_MODE" = "k8s" ]; then
+        # 1. 准备 certs.d 目录与 hosts.toml（containerd 现代配置方式）
+        mkdir -p "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT"
+        cp -f "$HARBOR_CERTS_DIR/harbor.crt" "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.crt" || error "复制 harbor.crt 失败"
+        cp -f "$HARBOR_CERTS_DIR/harbor.key" "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.key" || error "复制 harbor.key 失败"
+        cat > "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/hosts.toml" << EOF
+server = "https://$HOST_IP:$HARBOR_HTTPS_PORT"
+[host."https://$HOST_IP:$HARBOR_HTTPS_PORT"]
+  capabilities = ["pull", "resolve", "push"]
+  ca = "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.crt"
+  skip_verify = false
+EOF
+
+        # 2. 检查 containerd config.toml 是否已配置 config_path 指向 certs.d 目录
+        #    只有配置了 config_path，上面的 hosts.toml 才会生效
+        info "检查 containerd config_path 配置..."
+        local containerd_config="/etc/containerd/config.toml"
+        [ ! -f "$containerd_config" ] && containerd config default > "$containerd_config"
+        cp "$containerd_config" "$containerd_config.bak"
+        local need_restart=false
+        if grep -q 'config_path = "/etc/containerd/certs.d"' "$containerd_config"; then
+            info "containerd config_path 已指向 certs.d，跳过"
+        elif grep -q 'config_path =' "$containerd_config"; then
+            # config_path 已存在但指向其它目录，替换其值为 certs.d
+            info "containerd config_path 指向其它目录，替换为 certs.d ..."
+            sed -i 's#config_path = .*#config_path = "/etc/containerd/certs.d"#' "$containerd_config"
+            need_restart=true
+        else
+            # 没有 config_path，确保存在 [plugins."io.containerd.grpc.v1.cri".registry] 段后添加
+            info "containerd 未配置 config_path，正在添加..."
+            if ! grep -q '\[plugins."io.containerd.grpc.v1.cri".registry\]' "$containerd_config"; then
+                cat >> "$containerd_config" << EOF
+
+[plugins."io.containerd.grpc.v1.cri".registry]
+  config_path = "/etc/containerd/certs.d"
+EOF
+            else
+                # 段已存在但缺少 config_path，在段内追加
+                sed -i '/\[plugins."io.containerd.grpc.v1.cri".registry\]/a\  config_path = "/etc/containerd/certs.d"' "$containerd_config"
+            fi
+            need_restart=true
+        fi
+
+        if [ "$need_restart" = true ]; then
+            systemctl daemon-reload
+            systemctl restart containerd
+            # 等待 containerd 启动成功（socket 就绪），带超时
+            info "等待 containerd 启动 ..."
+            local _wait=0
+            while [ ! -S /run/containerd/containerd.sock ] && [ "$_wait" -lt 30 ]; do
+                sleep 1
+                _wait=$((_wait+1))
+            done
+            if systemctl is-active --quiet containerd && [ -S /run/containerd/containerd.sock ]; then
+                success "containerd 已启动"
+            else
+                error "containerd 未启动成功，请检查: journalctl -u containerd -n 50"
+            fi
+        fi
+    fi
+    if [ "$DOCKER_CMD" = "docker" ]; then
+        # Docker 模式：配置 Docker 信任 Harbor HTTPS 证书
+        info "配置 Docker 信任 Harbor HTTPS 证书..."
+        mkdir -p "/etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT"
+        cp -f "$HARBOR_CERTS_DIR/harbor.crt" "/etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/ca.crt" || error "复制 ca.crt 失败"
+        systemctl restart "$CONTAINERD_SERVICE"
+        info "Docker Harbor HTTPS 证书已配置: /etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/ca.crt"
+    fi
 }
 
 harbor_get_url() {
