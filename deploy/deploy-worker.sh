@@ -1,20 +1,31 @@
 #!/bin/bash
 set -euo pipefail
-source /opt/e2b-infra/.env
+# .env 路径可通过 E2B_ENV_FILE 覆盖（便于测试/自定义部署）
+ENV_FILE="${E2B_ENV_FILE:-/opt/e2b-infra/.env}"
+if [ -f "$ENV_FILE" ]; then
+    source "$ENV_FILE"
+else
+    echo "[deploy-worker] 警告: 未找到 env 文件: $ENV_FILE，部分配置将使用默认值" >&2
+fi
 # ========== 全局配置 ==========
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REMOTE_SETUP_SCRIPT="${SCRIPT_DIR}/remote-worker-setup.sh"
 SSH_KEY="${HOME}/.ssh/id_rsa"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes"
 SSH_CONTROL_PATH="${HOME}/.ssh/ctrl-%h-%p-%r"
 SSH_MUX_OPTS="-o ControlMaster=auto -o ControlPath=${SSH_CONTROL_PATH} -o ControlPersist=60"
 REGISTRY="${SERVER_IP}:30443"
 IMAGE="e2b-orchestration/orchestrator:latest"
-CERT_SRC="/etc/containerd/certs.d/${REGISTRY}"
+CERT_SRC="${CERT_SRC:-/etc/containerd/certs.d/${REGISTRY}}"
 INFRA_SRC="${E2B_INFRA_SRC:-/home/e2b}"
 REMOTE_INFRA_DIR="/home/e2b"
 DEPLOY_DIR="/opt/e2b-infra"
-HARBOR_CERTS="/etc/nginx/ssl/harbor.crt"
-E2B_API_TOKEN="/root/.e2b/config.json"
+HARBOR_CERTS="${HARBOR_CERTS:-/etc/harbor/certs/harbor.crt}"
+E2B_API_TOKEN="${E2B_API_TOKEN:-/root/.e2b/config.json}"
 HTTP_PROXY="${HTTP_PROXY:-}"
+CRI_MULTIPLEX_BIN="${CRI_MULTIPLEX_BIN:-/opt/e2b-infra/bin/cri-multiplex}"
+CRI_MULTIPLEX_ORCHESTRATOR="${CRI_MULTIPLEX_ORCHESTRATOR:-localhost:5008}"
+KUBELET_FLAGS_FILE="${KUBELET_FLAGS_FILE:-/var/lib/kubelet/kubeadm-flags.env}"
 PARALLEL=1
 
 # ========== 颜色定义 ==========
@@ -149,8 +160,8 @@ deploy_node() {
 
     # ---------- 步骤 3：复制 harbor 证书 ----------
     log_step "3/${step_total}" "复制 harbor 证书到 $node ..."
-    ssh_run "${node_ip}" "mkdir -p /etc/nginx/ssl" 2>/dev/null || true
-    if scp_to "${node_ip}" "$HARBOR_CERTS" "root@${node_ip}:/etc/nginx/ssl/"; then
+    ssh_run "${node_ip}" "mkdir -p /etc/harbor/certs" 2>/dev/null || true
+    if scp_to "${node_ip}" "$HARBOR_CERTS" "root@${node_ip}:/etc/harbor/certs/"; then
         log_info "Harbor 证书复制完成"
     else
         log_error "Harbor 证书复制失败"
@@ -171,52 +182,8 @@ deploy_node() {
 
     # ---------- 步骤 5：远程执行构建、重启服务 ----------
     log_step "5/${step_total}" "远程执行部署命令..."
-    if ssh_run "${node_ip}" bash -s <<REMOTE_EOF; then
-set -euo pipefail
-echo "[\$(date '+%H:%M:%S')] 开始远程配置"
-export http_proxy="${HTTP_PROXY}"
-export https_proxy="${HTTP_PROXY}"
-mkdir -p ${DEPLOY_DIR}
-
-if [ "${REMOTE_INFRA_DIR}" != "${DEPLOY_DIR}" ]; then
-    cp -r ${REMOTE_INFRA_DIR}/* ${DEPLOY_DIR}/ 2>/dev/null || true
-fi
-
-if ls /home/e2b/*.rpm >/dev/null 2>&1; then
-    rpm -ivh /home/e2b/*.rpm --force
-else
-    echo "  无 rpm 包需要安装"
-fi
-
-cd ${DEPLOY_DIR}
-cp dep/.env "dep/.env.bak.\$(date +%Y%m%d%H%M%S)"
-sed -i "s/^export SERVER_IP=.*/export SERVER_IP=${node_ip}/" dep/.env
-sed -i 's/^export DEPLOY_MODE=.*/export DEPLOY_MODE=k8s/' dep/.env
-echo "  .env 已更新:"
-grep -E "^export SERVER_IP|^export DEPLOY_MODE" dep/.env
-
-echo "  执行 build.sh --install-client ..."
-bash build.sh --install-client
-
-echo "  执行 init-client.sh ..."
-bash init-client.sh || echo "  init-client.sh 执行失败（可能已初始化）"
-unset http_proxy
-unset https_proxy
-mkdir -p /fc-versions/v1.13.1/
-cp /home/e2b/firecracker /fc-versions/v1.13.1/ 2>/dev/null || echo "  firecracker 复制失败或不存在"
-
-echo "  重启 kubelet ..."
-systemctl restart kubelet
-
-echo "  重启 containerd ..."
-systemctl restart containerd
-
-echo "  测试镜像拉取 ${REGISTRY}/${IMAGE} ..."
-crictl pull ${REGISTRY}/${IMAGE}
-echo "  镜像拉取成功"
-
-exit 0
-REMOTE_EOF
+    # 通过远程脚本 remote-worker-setup.sh 执行，本机配置以环境变量注入
+    if ssh_run "${node_ip}" "HTTP_PROXY='${HTTP_PROXY}' SERVER_IP='${node_ip}' DEPLOY_DIR='${DEPLOY_DIR}' REMOTE_INFRA_DIR='${REMOTE_INFRA_DIR}' CRI_MULTIPLEX_BIN='${CRI_MULTIPLEX_BIN}' CRI_MULTIPLEX_ORCHESTRATOR='${CRI_MULTIPLEX_ORCHESTRATOR}' KUBELET_FLAGS_FILE='${KUBELET_FLAGS_FILE}' REGISTRY='${REGISTRY}' IMAGE='${IMAGE}' bash -s" < "${REMOTE_SETUP_SCRIPT}"; then
         log_info "远程命令执行成功"
     else
         log_error "远程命令执行失败"
