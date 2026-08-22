@@ -37,6 +37,7 @@ Usage: ./deploy.sh [OPTIONS]
 Options:
   --type <k8s|nomad>          Deployment type (default: nomad)
   --db-mode <container|k8s>   Database initialization mode
+  --runtime <docker|nerdctl>  Container runtime (default: auto-detect docker/nerdctl)
   createapikey                Only initialize database (skip build/push/deploy)
   deploy-webhook              Deploy only e2b-webhook (build image + render template + kubectl apply)
   --build-image <images>      Only build specified images, comma separated;
@@ -47,6 +48,7 @@ Examples:
   ./deploy.sh --type k8s
   ./deploy.sh --type nomad
   ./deploy.sh --type k8s --db-mode container
+  ./deploy.sh --type nomad --runtime nerdctl
   ./deploy.sh createapikey --type k8s
   ./deploy.sh deploy-webhook
   ./deploy.sh --build-image api,orchestrator
