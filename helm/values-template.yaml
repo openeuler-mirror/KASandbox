@@ -160,3 +160,5 @@ build:
   pool: ${BUILD_NODE_POOL}
 default:
   pool: default
+postgres:
+  pool: postgres

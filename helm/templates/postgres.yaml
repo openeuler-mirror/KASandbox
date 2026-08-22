@@ -15,14 +15,13 @@ spec:
         app: postgres
     spec:
       # 对齐 edge 节点亲和规则，调度到同一节点池
-      hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
             - matchExpressions:
-              - key: node-role.kubernetes.io/{{ .Values.api.pool }}
+              - key: node-role.kubernetes.io/{{ .Values.postgres.pool }}
                 operator: Exists
 
       containers:
@@ -39,6 +38,8 @@ spec:
           value: "{{ .Values.postgresUser }}"
         - name: POSTGRES_PASSWORD
           value: "{{ .Values.postgresPassword }}"
+        - name: POSTGRES_DB
+          value: "mydatabase"
 
         # 资源配额（和 edge 风格统一，使用 Values 注入）
         resources:

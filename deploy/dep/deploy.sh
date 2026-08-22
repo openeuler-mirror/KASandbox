@@ -1,17 +1,60 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 用法:
+#   ./deploy.sh --type k8s              # K8S 部署，自动使用 k8s pod 模式初始化数据库
+#   ./deploy.sh --type nomad            # Nomad 部署，自动使用容器模式初始化数据库
+#   ./deploy.sh --type k8s --db-mode container  # K8S 部署但使用容器模式初始化数据库
+#   ./deploy.sh --type nomad --db-mode k8s      # Nomad 部署但使用 k8s pod 模式初始化数据库
+#   ./deploy.sh createapikey --type k8s # 仅执行数据库初始化（跳过 build/push/deploy）
+#   ./deploy.sh deploy-webhook          # 仅部署 e2b-webhook（构建镜像 + 渲染模板 + kubectl apply，不经 helm）
+#   ./deploy.sh --build-image api,orchestrator  # 仅构建指定镜像（默认 nomad，可加 --type k8s）
+#   ./deploy.sh --build-image ""                # 构建所有镜像
+
 # ===================== 基础配置 =====================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$SCRIPT_DIR/bin"
 DEPLOY_TYPE="nomad"
+DB_MODE=""
+CREATE_API_KEY_MODE=false
+BUILD_ONLY_MODE=false
+DEPLOY_WEBHOOK_MODE=false
+BUILD_IMAGES=""
 REGISTRY_URL=""
+CONTAINER_RUNTIME=""
+DOCKER_CMD=""
 
 # ===================== 输出函数 =====================
 info()  { echo "==> $*"; }
 warn()  { echo "==> WARN: $*"; }
 step()  { echo "------> $*"; }
 step2() { echo "======  $*  ======"; }
+
+show_help() {
+    cat <<'EOF'
+Usage: ./deploy.sh [OPTIONS]
+
+Options:
+  --type <k8s|nomad>          Deployment type (default: nomad)
+  --db-mode <container|k8s>   Database initialization mode
+  --runtime <docker|nerdctl>  Container runtime (default: auto-detect docker/nerdctl)
+  createapikey                Only initialize database (skip build/push/deploy)
+  deploy-webhook              Deploy only e2b-webhook (build image + render template + kubectl apply)
+  --build-image <images>      Only build specified images, comma separated;
+                              use empty string "" to build all images
+  -h, --help                  Show this help message
+
+Examples:
+  ./deploy.sh --type k8s
+  ./deploy.sh --type nomad
+  ./deploy.sh --type k8s --db-mode container
+  ./deploy.sh --type nomad --runtime nerdctl
+  ./deploy.sh createapikey --type k8s
+  ./deploy.sh deploy-webhook
+  ./deploy.sh --build-image api,orchestrator
+  ./deploy.sh --build-image ""
+EOF
+}
 
 # ===================== 参数解析 =====================
 parse_args() {
@@ -21,8 +64,34 @@ parse_args() {
                 DEPLOY_TYPE="$2"
                 shift 2
                 ;;
+            --db-mode)
+                DB_MODE="$2"
+                shift 2
+                ;;
+            createapikey)
+                CREATE_API_KEY_MODE=true
+                shift
+                ;;
+            deploy-webhook)
+                DEPLOY_WEBHOOK_MODE=true
+                shift
+                ;;
+            --build-image)
+                BUILD_ONLY_MODE=true
+                BUILD_IMAGES="$2"
+                shift 2
+                ;;
+            --runtime)
+                CONTAINER_RUNTIME="$2"
+                shift 2
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
             *)
                 echo "Unknown parameter: $1"
+                show_help
                 exit 1
                 ;;
         esac
@@ -43,33 +112,86 @@ load_env() {
     export REGISTRY_URL
 }
 
+# ===================== 容器运行时 =====================
+# 设置容器运行时命令（build/push/exec 用）
+# 优先使用 docker，若不存在则回退到 nerdctl（通常用于 k8s 节点）
+# 可通过 --runtime docker|nerdctl 显式指定
+set_container_runtime() {
+    local explicit_runtime="${1:-}"
+
+    if [ -n "$explicit_runtime" ]; then
+        case "$explicit_runtime" in
+            docker)
+                if ! command -v docker >/dev/null 2>&1; then
+                    echo "==> ERROR: 显式指定 docker，但系统中未找到 docker 命令"
+                    exit 1
+                fi
+                DOCKER_CMD="docker"
+                ;;
+            nerdctl)
+                if ! command -v nerdctl >/dev/null 2>&1; then
+                    echo "==> ERROR: 显式指定 nerdctl，但系统中未找到 nerdctl 命令"
+                    exit 1
+                fi
+                DOCKER_CMD="nerdctl"
+                ;;
+            *)
+                echo "==> ERROR: 不支持的容器运行时: $explicit_runtime（仅支持 docker/nerdctl）"
+                exit 1
+                ;;
+        esac
+        echo "==> 使用显式指定的容器运行时: $DOCKER_CMD"
+        return
+    fi
+
+    if command -v docker >/dev/null 2>&1; then
+        DOCKER_CMD="docker"
+    elif command -v nerdctl >/dev/null 2>&1; then
+        DOCKER_CMD="nerdctl"
+    else
+        echo "==> ERROR: 未检测到可用的容器运行时（docker/nerdctl）"
+        exit 1
+    fi
+    echo "==> 使用容器运行时: $DOCKER_CMD"
+}
+
 # ===================== 镜像构建与推送 =====================
 # 构建 bin 目录下的 *.Dockerfile 并推送到 Harbor
 build_and_push_dockerfiles() {
+    local push_images="${1:-true}"
+    local filter="${2:-}"
     cd "$BIN_DIR"
     local dockerfile name tag
     for dockerfile in *.Dockerfile; do
         # 无 Dockerfile 时 glob 返回字面量，跳过
         [ -e "$dockerfile" ] || continue
         name="${dockerfile%.Dockerfile}"
+        # 如果指定了镜像过滤，只构建匹配的镜像
+        if [ -n "$filter" ] && [[ ",${filter}," != *,${name},* ]]; then
+            continue
+        fi
         tag="${REGISTRY_URL}/${name,,}"
         step "检查镜像 $tag 是否存在"
-        if docker image inspect "$name" >/dev/null 2>&1; then
-            docker tag "$name" "$tag"
+        if $DOCKER_CMD image inspect "$name" >/dev/null 2>&1; then
+            $DOCKER_CMD tag "$name" "$tag"
             step "镜像 $name 已存在，跳过构建"
-        elif docker image inspect "$tag" >/dev/null 2>&1; then
+        elif $DOCKER_CMD image inspect "$tag" >/dev/null 2>&1; then
             step "镜像 $tag 已存在，跳过构建"
         else
             step "构建镜像 $tag"
-            docker build --pull=false -t "$tag" -f "$dockerfile" .
+            $DOCKER_CMD build --pull=false -t "$tag" -f "$dockerfile" .
         fi
-        step "推送镜像 $tag"
-        docker push "$tag"
+        if [ "$push_images" = true ]; then
+            step "推送镜像 $tag"
+            $DOCKER_CMD push "$tag"
+        fi
     done
 }
 
 # 推送预构建镜像（redis/postgres/busybox）到 Harbor
 push_prebuilt_images() {
+    local push_images="${1:-true}"
+    local filter="${2:-}"
     declare -A imgs=(
         [redis]="redis:${REDIS_VERSION}"
         [postgres]="postgres:latest"
@@ -81,11 +203,17 @@ push_prebuilt_images() {
     )
     local name src tag
     for name in "${!imgs[@]}"; do
+        # 如果指定了镜像过滤，只处理匹配的预构建镜像
+        if [ -n "$filter" ] && [[ ",${filter}," != *,${name},* ]]; then
+            continue
+        fi
         src="${imgs[$name]}"
         tag="${REGISTRY_URL}/${src}"
         step2 "$src  ->  $tag"
-        docker tag "$src" "$tag"
-        docker push "$tag"
+        $DOCKER_CMD tag "$src" "$tag"
+        if [ "$push_images" = true ]; then
+            $DOCKER_CMD push "$tag"
+        fi
     done
 }
 
@@ -102,7 +230,12 @@ render_helm_values() {
 
 install_helm_chart() {
     info "installing with helm ..."
-    helm install e2b-api "$SCRIPT_DIR/helm" --create-namespace -n e2b
+    if helm status e2b-api -n e2b >/dev/null 2>&1; then
+        info "release e2b-api 已存在，执行 helm upgrade ..."
+        helm upgrade e2b-api "$SCRIPT_DIR/helm" -n e2b
+    else
+        helm install e2b-api "$SCRIPT_DIR/helm" --create-namespace -n e2b
+    fi
 }
 
 # webhook 的 Deployment/Service/MutatingWebhookConfiguration 已由 helm 模板安装（受 .Values.webhook.enabled 控制）
@@ -216,6 +349,51 @@ deploy_k8s() {
     wait_for_pods
 }
 
+# 单独部署 e2b-webhook（不影响其它组件）
+# 流程：构建推送镜像 → 仅渲染 e2b-webhook.yaml 模板并 kubectl apply（不执行 helm install/upgrade）
+#      → 生成证书并注入 caBundle → 更新 API Key Secret → 等待就绪
+deploy_webhook() {
+    if [ "${ENABLE_WEBHOOK:-false}" != "true" ]; then
+        warn "ENABLE_WEBHOOK=false，跳过 e2b-webhook 部署（请在 .env 中设置 ENABLE_WEBHOOK=true）"
+        exit 1
+    fi
+
+    info "deploy-webhook mode: 仅部署 e2b-webhook（不通过 helm，避免影响其它 Pod）"
+
+    # 1. 构建并推送 e2b-webhook 镜像
+    build_and_push_dockerfiles true "e2b-webhook"
+
+    # 2. 渲染 helm values（供 helm template 渲染模板使用）
+    render_helm_values
+
+    # 3. 仅渲染 e2b-webhook.yaml 模板并直接应用，不执行 helm install/upgrade
+    local manifest="$SCRIPT_DIR/rendered-e2b-webhook.yaml"
+    helm template e2b-api "$SCRIPT_DIR/helm" \
+        --show-only templates/e2b-webhook.yaml \
+        > "$manifest"
+    info "applying e2b-webhook manifest ..."
+    kubectl apply -f "$manifest"
+    rm -f "$manifest"
+
+    # 4. 生成 TLS 证书、创建 Secret、注入 caBundle 到 MutatingWebhookConfiguration
+    setup_webhook_certificates
+
+    # 5. 用当前 config.json 中的 teamApiKey 更新 Secret，并重启 webhook 使其生效
+    local api_key
+    api_key=$(python3 -c "import json; print(json.load(open('/root/.e2b/config.json')).get('teamApiKey',''))" 2>/dev/null || true)
+    if [ -n "$api_key" ]; then
+        kubectl -n e2b delete secret e2b-api-key --ignore-not-found=true >/dev/null 2>&1 || true
+        kubectl -n e2b create secret generic e2b-api-key \
+            --from-literal=api-key="$api_key" >/dev/null
+        info "e2b-api-key secret updated"
+    fi
+
+    # 6. 等待 webhook 部署就绪
+    info "waiting for e2b-webhook deployment to be ready (timeout: 5min)..."
+    kubectl rollout status deployment/e2b-webhook -n e2b --timeout=300s || exit 1
+    info "e2b-webhook deploy complete!"
+}
+
 # ===================== Nomad 部署 =====================
 # envsubst 渲染所需的全部环境变量（新增 .env 变量时需同步追加到此列表）
 render_hcl_files() {
@@ -262,7 +440,8 @@ deploy_nomad() {
 
 # ===================== 数据库初始化 =====================
 # 检查 E2B 团队是否已初始化，未初始化则导入默认用户并调整 sandbox 配额
-init_database() {
+# 容器模式：直接 $DOCKER_CMD exec 进 postgres 容器执行
+init_database_container() {
     local pg_container="postgres"
     local pg_user="postgres"
     local pg_db="mydatabase"
@@ -270,7 +449,7 @@ init_database() {
 
     # --tuples-only 只输出数据行；-q 静默模式；xargs 清理首尾空格
     local result
-    result=$(docker exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -q --tuples-only -c "$query" 2>/dev/null | xargs)
+    result=$($DOCKER_CMD exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -q --tuples-only -c "$query" 2>/dev/null | xargs)
 
     if [ "$result" != "t" ]; then
         info "importing default E2B user..."
@@ -305,32 +484,164 @@ EOF
         info "config.json 写入完成"
 
         info "Setting sandbox timeout to 10000 hours"
-        docker exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -c "UPDATE tiers SET max_length_hours = 10000 WHERE id = 'base_v1';"
+        $DOCKER_CMD exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -c "UPDATE tiers SET max_length_hours = 10000 WHERE id = 'base_v1';"
         info "Setting sandbox timeout to 10000 hours done!"
 
         info "Setting sandbox concurrent instances to 10000"
-        docker exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -c "UPDATE tiers SET concurrent_instances = 10000 WHERE id = 'base_v1';"
+        $DOCKER_CMD exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -c "UPDATE tiers SET concurrent_instances = 10000 WHERE id = 'base_v1';"
         info "Setting sandbox concurrent instances to 10000 done!"
     fi
+}
+
+# K8S Pod 模式：通过 kubectl exec + port-forward 初始化
+init_database_k8s() {
+    NAMESPACE="e2b"
+    PG_USER="postgres"
+    PG_DB="mydatabase"
+    SCRIPT_DIR="/root/.e2b"
+    SEED_DB="/opt/e2b-infra/bin/seed-db"
+    POSTGRES_PASSWORD="local"
+
+    # 获取 postgres pod
+    PG_POD=$(kubectl get pod -n "$NAMESPACE" -l app=postgres -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -z "$PG_POD" ]; then
+        echo "ERROR: No postgres pod found in namespace $NAMESPACE"
+        exit 1
+    fi
+    info "Postgres pod: $PG_POD"
+
+    # 1. 创建数据库
+    info "Creating database if not exists..."
+    kubectl exec -n "$NAMESPACE" "$PG_POD" -- psql -U "$PG_USER" -d postgres -c "CREATE DATABASE $PG_DB;" 2>/dev/null || true
+
+    # 2. 检查是否已初始化
+    query="SELECT EXISTS (SELECT 1 FROM teams WHERE name = 'E2B');"
+    result=$(kubectl exec -n "$NAMESPACE" "$PG_POD" -- psql -U "$PG_USER" -d "$PG_DB" -q --tuples-only -c "$query" 2>/dev/null | xargs || true)
+
+    if [ "$result" == "t" ]; then
+        info "E2B team already exists, skipping."
+        exit 0
+    fi
+
+    # 3. 找一个能运行 seed-db 的 pod（api pod 即可）
+    API_POD=$(kubectl get pod -n "$NAMESPACE" -l app=api -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -z "$API_POD" ]; then
+        echo "ERROR: No api pod found. Make sure e2b is deployed."
+        exit 1
+    fi
+    info "API pod: $API_POD"
+
+    # 4. 复制 seed-db 到 pod
+    info "Copying seed-db to api pod..."
+    kubectl cp "$SEED_DB" "$NAMESPACE/$API_POD:/tmp/seed-db"
+    kubectl exec -n "$NAMESPACE" "$API_POD" -- chmod +x /tmp/seed-db
+
+    # 5. 在 pod 内运行 seed-db（使用 K8s 内部 DNS，无需 port-forward）
+    info "Running seed-db inside api pod..."
+    mkdir -p "$SCRIPT_DIR"
+
+    # 关键：用 here-string <<< 传递交互输入，避免管道子 shell 污染
+    kubectl exec -i -n "$NAMESPACE" "$API_POD" -- \
+        bash -c "POSTGRES_CONNECTION_STRING='postgresql://${PG_USER}:${POSTGRES_PASSWORD}@postgres.${NAMESPACE}.svc.cluster.local:5432/${PG_DB}?sslmode=disable' /tmp/seed-db" \
+        > "$SCRIPT_DIR/user.txt" 2>&1 <<< "admin@e2b.dev" || {
+            echo "ERROR: seed-db failed, output:"
+            cat "$SCRIPT_DIR/user.txt"
+            exit 1
+        }
+
+    # 6. 提取变量（|| true 防止 grep 失败触发 set -e）
+    team_id=$(grep "Team ID:" "$SCRIPT_DIR/user.txt" | awk -F': ' '{print $2}' || true)
+    token=$(grep "Access Token:" "$SCRIPT_DIR/user.txt" | awk -F': ' '{print $2}' || true)
+    api_key=$(grep "Team API Key:" "$SCRIPT_DIR/user.txt" | awk -F': ' '{print $2}' || true)
+
+    if [ -z "$team_id" ] || [ -z "$token" ] || [ -z "$api_key" ]; then
+        echo "ERROR: Failed to extract credentials from seed-db output:"
+        cat "$SCRIPT_DIR/user.txt"
+        exit 1
+    fi
+
+    cat > /root/.e2b/config.json <<EOF
+{
+    "teamId": "$team_id",
+    "accessToken": "$token",
+    "teamApiKey": "$api_key"
+}
+EOF
+    info "config.json written successfully"
+    info "Access Token: $token"
+    info "Team API Key: $api_key"
+
+    # 7. 更新 tiers
+    info "Updating tiers..."
+    kubectl exec -n "$NAMESPACE" "$PG_POD" -- \
+        psql -U "$PG_USER" -d "$PG_DB" -c "UPDATE tiers SET max_length_hours = 10000 WHERE id = 'base_v1';"
+    kubectl exec -n "$NAMESPACE" "$PG_POD" -- \
+        psql -U "$PG_USER" -d "$PG_DB" -c "UPDATE tiers SET concurrent_instances = 10000 WHERE id = 'base_v1';"
+
+    info "Initialization complete!"
+}
+
+# 根据 DEPLOY_TYPE 或 --db-mode 参数选择初始化方式
+init_database() {
+    case "$DB_MODE" in
+        container)
+            init_database_container
+            ;;
+        k8s)
+            init_database_k8s
+            ;;
+        "")
+            # 未显式指定时，根据部署类型自动选择
+            case "$DEPLOY_TYPE" in
+                k8s)   init_database_k8s ;;
+                nomad) init_database_container ;;
+                *)     init_database_container ;;
+            esac
+            ;;
+        *)
+            echo "Unknown db mode: $DB_MODE (supported: container, k8s)"
+            exit 1
+            ;;
+    esac
 }
 
 # ===================== 主流程 =====================
 main() {
     parse_args "$@"
     load_env
-    build_and_push_dockerfiles
-    push_prebuilt_images
+    set_container_runtime "$CONTAINER_RUNTIME"
 
-    case "$DEPLOY_TYPE" in
-        k8s)   deploy_k8s ;;
-        nomad) deploy_nomad ;;
-        *)
-            echo "Unknown deploy type: $DEPLOY_TYPE"
-            exit 1
-            ;;
-    esac
+    if [ "$DEPLOY_WEBHOOK_MODE" = true ]; then
+        deploy_webhook
+        return
+    fi
 
-    init_database
+    if [ "$BUILD_ONLY_MODE" = true ]; then
+        info "build mode: only build images, skip push/deploy/init"
+        build_and_push_dockerfiles false "$BUILD_IMAGES"
+        push_prebuilt_images false "$BUILD_IMAGES"
+        info "images build complete"
+        return
+    fi
+
+    if [ "$CREATE_API_KEY_MODE" = true ]; then
+        info "createapikey mode: skipping build/push/deploy"
+        init_database
+    else
+        build_and_push_dockerfiles true "$BUILD_IMAGES"
+        push_prebuilt_images true "$BUILD_IMAGES"
+
+        case "$DEPLOY_TYPE" in
+            k8s)   deploy_k8s ;;
+            nomad) deploy_nomad ;;
+            *)
+                echo "Unknown deploy type: $DEPLOY_TYPE"
+                exit 1
+                ;;
+        esac
+
+        init_database
+    fi
 
     # init_database 生成了 teamApiKey → 更新 Secret 并重启 webhook 使其生效
     if [ "$DEPLOY_TYPE" = "k8s" ] && [ "${ENABLE_WEBHOOK:-false}" = "true" ]; then

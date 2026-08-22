@@ -48,6 +48,7 @@ spec:
           mountPropagation: HostToContainer
         - name: harbor-ca-cert
           mountPath: /etc/nginx/ssl/harbor.crt
+          subPath: harbor.crt
           readOnly: true
         securityContext:
           privileged: true
@@ -201,9 +202,9 @@ spec:
           path: /var/run/netns
           type: DirectoryOrCreate
       - name: harbor-ca-cert
-        hostPath:
-          path: /etc/harbor/certs/harbor.crt
-          type: File
+        configMap:
+          name: harbor-ca-cert
+          defaultMode: 0444
 ---
 apiVersion: v1
 kind: Service
