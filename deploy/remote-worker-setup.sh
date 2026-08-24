@@ -13,10 +13,6 @@ export http_proxy="${HTTP_PROXY}"
 export https_proxy="${HTTP_PROXY}"
 mkdir -p ${DEPLOY_DIR}
 
-if [ "${REMOTE_INFRA_DIR}" != "${DEPLOY_DIR}" ]; then
-    cp -r ${REMOTE_INFRA_DIR}/* ${DEPLOY_DIR}/ 2>/dev/null || true
-fi
-
 if ls /home/e2b/*.rpm >/dev/null 2>&1; then
     rpm -ivh /home/e2b/*.rpm --force
 else
