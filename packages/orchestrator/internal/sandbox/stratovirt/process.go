@@ -34,7 +34,7 @@ var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/interna
 
 const (
 	windowsUEFIFirmwareFile = "QEMU_EFI-pflash.raw"
-	androidBootloaderFile   = "bootloader.qemu"
+	androidBootloaderFile   = "bootloader.stratovirt"
 )
 
 var _ vmm.Process = (*Process)(nil)
