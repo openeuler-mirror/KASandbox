@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 type FileStore struct {
@@ -140,6 +141,25 @@ func localFileInfo(key string, stat os.FileInfo) Info {
 		ETag:         localFileVersion(stat),
 		LastModified: modified,
 	}
+}
+
+// 工具只支持 Linux(与运行时一致)。inode/device 能识别同路径替换,
+// ctime 能识别保留 mtime 的原地改写。
+func localFileVersion(stat os.FileInfo) string {
+	raw, ok := stat.Sys().(*syscall.Stat_t)
+	if !ok {
+		return metadataFileVersion(stat)
+	}
+	return fmt.Sprintf(
+		"file-%x-%x-%x-%x-%x-%x-%x",
+		raw.Dev,
+		raw.Ino,
+		stat.Size(),
+		stat.ModTime().UTC().UnixNano(),
+		raw.Ctim.Sec,
+		raw.Ctim.Nsec,
+		raw.Nlink,
+	)
 }
 
 func metadataFileVersion(stat os.FileInfo) string {

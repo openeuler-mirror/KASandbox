@@ -172,7 +172,7 @@ func (s *S3Store) Put(ctx context.Context, key string, input io.Reader, size int
 	if err != nil {
 		return Info{}, fmt.Errorf("recheck uploaded S3 object %q: %w", key, err)
 	}
-	if !info.SameVersion(after) {
+	if !info.SameObjectVersion(after) {
 		return Info{}, fmt.Errorf("uploaded S3 object %q changed during verification", key)
 	}
 

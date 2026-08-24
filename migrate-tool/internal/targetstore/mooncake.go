@@ -13,6 +13,13 @@ import (
 	"gitcode.com/openeuler/KASandbox/migrate-tool/internal/bundle"
 )
 
+// mooncakeChunkSize 必须等于 KASandbox 运行时 packages/shared/pkg/storage
+// 的 MemoryChunkSize(storage.go,4 MiB)。Mooncake 本身是纯 KV 存储,
+// "大对象按 4 MiB 分片、分片 key 为 <key>#c#<offset>、逻辑 key 存
+// size/chunk_size 元数据"是 E2B 在其上自定的应用层布局,编译在运行时读端
+// (storage_mooncake.go)里,没有可在线查询的接口,只能照读端源码对齐。
+// 读端虽会从元数据读回 chunk_size,但其缓冲池按 MemoryChunkSize 固定分配,
+// 4 MiB 是唯一安全值;写端(本工具)偏离读端会导致导入的对象运行时读不出来。
 const mooncakeChunkSize int64 = 4 * 1024 * 1024
 
 type mooncakeObjectMetadata struct {

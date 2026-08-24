@@ -11,12 +11,17 @@ Mooncake 配置与常见错误。项目简介与快速开始见 [README.md](READ
 
 `template-migrate` 把 E2B Template 的 ready Build 从一个环境迁移到另一个环境:
 Template ID 和 Build UUID 保持不变,Team/Cluster 所有权重新绑定到目标 Team,
-历史 Build Node 清空。
+历史 Build Node 清空。工具**仅支持 Linux**(与运行时一致)。
+
+生产迁移路径只有一条:
 
 | | 源端 | 目标端 |
 | --- | --- | --- |
-| Catalog | 本地 JSON 文件、PostgreSQL 15+ | 本地 JSON 文件、PostgreSQL 15+ |
-| 对象存储 | 本地目录、S3/MinIO | 本地目录、S3/MinIO、**Mooncake**(仅目标端) |
+| Catalog | PostgreSQL 15+ | PostgreSQL 15+ |
+| 对象存储 | S3/MinIO | **Mooncake** |
+
+本地 JSON Catalog 与本地目录对象存储端点(第三节)同样可用,但定位是
+**单元测试与本地调试设施**,不是生产路径;Mooncake 只能作导入目标,不支持导出。
 
 迁移范围:
 
@@ -29,49 +34,43 @@ Bundle 是一个**目录**,不是 tar/zip 或单个镜像文件。
 
 ## 二、二进制与构建
 
-两个制品:
-
-| 制品 | 能力 |
-| --- | --- |
-| `template-migrate` | File、PostgreSQL、S3/MinIO |
-| `template-migrate-mooncake` | 以上全部 + `mooncake://` 导入目标(Linux/ARM64 CGO) |
-
-普通制品收到 `mooncake://` 时会明确报错 `Mooncake support is not included in
-this binary`,此时改用 Mooncake 制品。
-
-普通版本构建:
+发布制品只有一个:`bin/template-migrate`,以 `-tags mooncake` 构建,同时支持
+PostgreSQL、S3/MinIO、File 与 `mooncake://` 导入目标。Mooncake 客户端是 CGO
+绑定,必须在已安装 Mooncake 头文件与动态库的 Linux/ARM64 主机上原生构建:
 
 ```bash
 ./build.sh
-BIN="$PWD/bin/template-migrate"   # 本手册后续示例统一用 $BIN 指向所选制品
+BIN="$PWD/bin/template-migrate"   # 本手册后续示例统一用 $BIN 指向该制品
 ```
 
 `migrate-tool` 是独立 Go 模块,**不在仓库根 `go.work` 的 `use` 列表里**(与
 `cri-multiplex` 相同)。仓库内脚本都已 `export GOWORK=off`;直接敲 `go` 命令时
 必须自己带上,否则报 `directory prefix . does not contain modules listed in
-go.work`:
+go.work`。
+
+开发自测可在任意 Linux(含 WSL)上不带 `mooncake` tag 构建与测试,此时
+Mooncake 支持编译为 stub,单元测试不依赖任何外部服务:
 
 ```bash
 GOWORK=off go build -buildvcs=false -trimpath -o bin/template-migrate ./cmd/template-migrate
-GOWORK=off go test ./...
+./run-ut.sh
 ```
 
-Mooncake 版本必须在已安装 Mooncake 头文件和动态库的 Linux/ARM64 主机上构建:
-
-```bash
-./scripts/build-mooncake.sh
-# 输出: bin/template-migrate-mooncake(同时覆盖普通版本的全部能力)
-```
+不带 tag 的开发构建收到 `mooncake://` 时会明确报错 `Mooncake support is not
+included in this binary`;生产环境一律使用 `./build.sh` 的发布制品。
 
 ## 三、端点写法
 
 ### Catalog 端点
 
 ```text
-/path/to/catalog.json
-file:///path/to/catalog.json
 postgresql://USER@DB_HOST:5432/DB_NAME?sslmode=require
+/path/to/catalog.json                # 测试/调试用
+file:///path/to/catalog.json         # 同上
 ```
+
+生产迁移的 Catalog 端点是 PostgreSQL;本地 JSON 文件形式供单元测试与本地
+调试使用。
 
 PostgreSQL 密码**不要写进 URI**(会进入 shell history):用 `~/.pgpass`
 (`PGPASSFILE`)、`PGSERVICE` 或 `PGPASSWORD` 环境变量提供。`sslmode` 按目标库
@@ -85,10 +84,10 @@ migration baseline `20260218120000`、既定表/列/约束/触发器全部存在
 ### 对象存储端点
 
 ```text
-/path/to/objects
-file:///path/to/objects
-s3://BUCKET/PREFIX?region=REGION
-mooncake://NAMESPACE          # 仅 import --store 可用
+s3://BUCKET/PREFIX?region=REGION     # 源端
+mooncake://NAMESPACE                 # 目标端,仅 import --store 可用
+/path/to/objects                     # 测试/调试用
+file:///path/to/objects              # 同上
 ```
 
 S3 URI 只接受 `region`、`endpoint`、`path_style` 三个查询参数,不接受凭证。
@@ -150,7 +149,7 @@ BUNDLE="$PWD/run/export-$(date +%Y%m%d-%H%M%S).bundle"
 
 # 5. dry-run 预览计划(默认行为,不写任何数据)
 #    Bundle 含 literal namespace 时,dry-run 和 apply 都必须追加
-#    --literal-namespace SOURCE=TARGET(仓库 fixture 需要 legacy=archive)
+#    --literal-namespace SOURCE=TARGET
 "$BIN" import "$BUNDLE" \
   --catalog "$TM_TARGET_CATALOG" \
   --store "$TM_TARGET_STORE" \
@@ -200,6 +199,23 @@ export [--catalog ENDPOINT] [--store ENDPOINT] --out DIR [选择参数]
 
 与 `list` 不同,`export` **必须**显式给出至少一个 Template 选择参数
 (`--template-id`/`--name`/`--name-glob`/`--all` 之一)。
+
+**一次导出可以携带多个 Template**:选择参数均可重复,也可用 glob 或 `--all`
+批量选择;所有选中的 Template 及其 ready Build 打进同一个 Bundle:
+
+```bash
+# 按 ID 逐个点名
+"$BIN" export --template-id tpl-python --template-id tpl-node --out "$BUNDLE"
+
+# 按 Alias 名/通配批量选择
+"$BIN" export --name builder/python --name-glob 'builder/data-*' --out "$BUNDLE"
+
+# 全量导出
+"$BIN" export --all --all-tags --out "$BUNDLE"
+```
+
+`import` 一次导入整个 Bundle,Bundle 里有多少 Template 就迁移多少,无需逐个
+执行。
 
 ### inspect — 快速检查 Bundle
 
@@ -251,6 +267,9 @@ version
 ```
 
 ## 六、选择参数(list 与 export 共用)
+
+选择器可以重复与组合,结果取并集:一次命令即可选中多个 Template(多选导出
+示例见第五节 `export`)。
 
 | 参数 | 说明 |
 | --- | --- |
@@ -309,7 +328,7 @@ Alias 名的写法:Team/literal Alias 用 `NAMESPACE/ALIAS`,全局 Alias 直接�
 
 ## 八、导入到 Mooncake
 
-前提:使用 `template-migrate-mooncake` 制品。**连接类**变量(master、metadata、
+前提:使用 `./build.sh` 构建的发布制品(已含 Mooncake 支持)。**连接类**变量(master、metadata、
 hostname、protocol、device)与目标 E2B Job 一致(`env | sort | grep '^MOONCAKE_'`
 检查);**容量类**变量按迁移器自身角色设置——迁移器是纯客户端,不贡献内存段,
 `MOONCAKE_GLOBAL_SEGMENT_SIZE` 应设为 `0`,`MOONCAKE_MOUNT_SEGMENT_SIZE` 保持
@@ -363,7 +382,7 @@ namespace 即可读取迁移结果。
 | `legacy_headerless_build` | 源桶中缺该 Build 的 Header 对象;当前版本不支持迁移此类 Build,确认桶/前缀是否正确或改用包含完整对象的存储 |
 | `target team ... was not found` | 目标 Catalog 中不存在该 Team,先核对 slug/UUID |
 | `literal namespace ... requires an explicit SOURCE=TARGET mapping` | 补 `--literal-namespace` 映射 |
-| `Mooncake support is not included in this binary` | 用了普通制品,改用 `template-migrate-mooncake` |
+| `Mooncake support is not included in this binary` | 用了不带 `mooncake` tag 的开发构建,改用 `./build.sh` 产出的发布制品 |
 | `connect to MOONCAKE_MASTER_ADDR ...` / metadata 超时 | 确认 `MOONCAKE_*` 变量指向正确的集群且网络可达 |
 | 导入返回 `conflicts` | 查看 dry-run 输出的 `conflicts` 明细;Mooncake 测试换新 namespace |
 | `target changed after dry-run` | 同一次 apply 从读取目标快照到提交事务的窗口内,目标 PostgreSQL Catalog 出现了并发写入;重试导入。File Catalog 无此检测 |

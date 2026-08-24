@@ -50,8 +50,8 @@ func TestFileStoreDetectsChangeWithoutContentHashInStat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.SameVersion(after) {
-		t.Fatalf("SameVersion(%#v, %#v) = true", before, after)
+	if before.SameObjectVersion(after) {
+		t.Fatalf("SameObjectVersion(%#v, %#v) = true", before, after)
 	}
 }
 
@@ -80,7 +80,7 @@ func TestFileStoreUsesMetadataAsLocalVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !written.SameVersion(current) {
+	if !written.SameObjectVersion(current) {
 		t.Fatalf("Put returned %#v, Stat returned %#v", written, current)
 	}
 }
@@ -130,7 +130,7 @@ func TestFileStoreOpenRejectsStaleVersion(t *testing.T) {
 	if string(content) != "bbbb" {
 		t.Fatalf("Open read %q, want %q", content, "bbbb")
 	}
-	if !current.SameVersion(opened) {
+	if !current.SameObjectVersion(opened) {
 		t.Fatalf("Stat returned %#v, Open returned %#v", current, opened)
 	}
 }

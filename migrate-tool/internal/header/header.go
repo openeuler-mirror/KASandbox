@@ -1,3 +1,19 @@
+// Package header 只读解析 E2B/KASandbox 的 memfile/rootfs Header(v3)。
+//
+// 迁移工具必须解析 Header,不能把一个 Build 当作"5 个不透明文件"整体搬运:
+// KASandbox 的 Build 是差量存储,diff Build 的 Header 里,mapping 会把逻辑
+// 区间指向其他 Build(base 链)的数据对象——运行时构建 diff 时即如此写入
+// (packages/shared/pkg/storage/header/metadata.go 的 ToDiffHeader)。这条
+// 跨 Build 数据依赖只记录在 Header 字节里,Catalog(数据库)中没有任何对应
+// 信息。导出时不解析 Header 就无法算出必须一并复制的历史 Build 对象闭包;
+// 漏拷会让导入"成功",但 sandbox 启动时运行时按 Header 找不到 base 数据
+// 对象,模板不可用。即便只迁移自包含 Build,也必须先解析 Header 才能证明
+// 它自包含。
+//
+// 二进制布局与运行时 packages/shared/pkg/storage/header 的 serialization.go
+// 和 mapping.go 保持一致:little-endian,64 字节 Metadata + N×40 字节
+// BuildMap。不直接 import 运行时包,是因为其依赖树携带 GCP SDK、OTel 等
+// 重依赖,而迁移工具只需要只读解析;字节级一致性由 golden 测试锚定。
 package header
 
 import (

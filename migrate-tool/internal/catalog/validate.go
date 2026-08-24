@@ -6,6 +6,18 @@ import (
 	"gitcode.com/openeuler/KASandbox/migrate-tool/internal/model"
 )
 
+// Validate 校验一份 Catalog 快照的引用完整性与唯一性不变量,覆盖六类实体:
+//
+//   - Team:ID/slug 非空,ID 与 slug 各自唯一;
+//   - Template:ID 唯一,source ∈ {template, snapshot_template},team 引用存在;
+//   - Alias:ID 唯一,(namespace, alias) 唯一(对应数据库唯一键),template 引用存在;
+//   - Build:ID 唯一,team 引用存在(历史 NULL 容忍),status↔status_group 映射一致;
+//   - Assignment:ID 唯一,template/build 引用存在,tag/source 非空;
+//   - SnapshotTemplate:与 template 一对一,只能挂在 snapshot_template 上。
+//
+// File Catalog 加载后、PostgreSQL 快照读取末尾、导入 Commit 写入前都会调用,
+// 使文件与 PostgreSQL 两种 Catalog 遵守同一套不变量:坏数据在读入口显式
+// 失败,而不是在写出口扩散进目标环境。
 func Validate(data *model.CatalogData) error {
 	if data == nil {
 		return fmt.Errorf("catalog is nil")

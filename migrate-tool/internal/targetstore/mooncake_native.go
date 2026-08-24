@@ -12,6 +12,11 @@ import (
 )
 
 const (
+	// 与 KASandbox 运行时 packages/shared/pkg/storage/storage_mooncake.go 中
+	// MOONCAKE_GLOBAL_SEGMENT_SIZE / MOONCAKE_LOCAL_BUFFER_SIZE 的默认值逐字
+	// 一致(1 GiB / 128 MiB)。两者是 Mooncake 客户端的资源参数,不影响写出
+	// 的数据布局;实际取值优先读同名环境变量,常量只是未设置时的兜底,
+	// 保证同一主机上迁移工具与运行时行为一致。
 	defaultMooncakeGlobalSegmentSize = 1_073_741_824
 	defaultMooncakeLocalBufferSize   = 134_217_728
 )

@@ -289,7 +289,7 @@ func (e *Exporter) copyObject(ctx context.Context, stage, key, objectType string
 			lastErr = err
 			continue
 		}
-		if written != before.Size || !before.SameVersion(after) {
+		if written != before.Size || !before.SameObjectVersion(after) {
 			_ = os.Remove(temp.Name())
 			lastErr = fmt.Errorf("source object changed while being read")
 			continue

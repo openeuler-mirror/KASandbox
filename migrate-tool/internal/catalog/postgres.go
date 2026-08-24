@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -12,41 +13,43 @@ import (
 	"gitcode.com/openeuler/KASandbox/migrate-tool/internal/model"
 )
 
-const (
-	MinimumPostgresSchema = int64(20260218120000)
-	postgresBuildsQuery   = `
-SELECT DISTINCT
-    b.id::text,
-    b.created_at,
-    b.updated_at,
-    b.finished_at,
-    b.status,
-    b.status_group,
-    b.dockerfile,
-    b.start_cmd,
-    b.ready_cmd,
-    b.vcpu,
-    b.ram_mb,
-    b.free_disk_size_mb,
-    b.total_disk_size_mb,
-    b.kernel_version,
-    b.firecracker_version,
-    b.env_id,
-    b.envd_version,
-    b.cluster_node_id,
-    b.reason::text,
-    b.version,
-    b.cpu_architecture,
-    b.cpu_family,
-    b.cpu_model,
-    b.cpu_model_name,
-    COALESCE(b.cpu_flags, '{}'::text[]),
-    COALESCE(b.team_id::text, '')
-FROM public.env_builds b
-JOIN public.env_build_assignments a ON a.build_id = b.id
-JOIN public.envs e ON e.id = a.env_id
-WHERE e.source IN ('template', 'snapshot_template')
-ORDER BY b.id::text`
+const MinimumPostgresSchema = int64(20260218120000)
+
+// 全部 SQL 语句以原样 .sql 文件维护在 internal/catalog/sql/ 下,Go 侧只做
+// 参数绑定与行扫描。列规格的唯一权威是 requiredPostgresColumns;
+// sql_spec_test.go 强制各 .sql 的列清单与规格表一致,schema 变更时同步修改
+// .sql 与规格表即可,任何漂移都会让单测显式失败。
+var (
+	//go:embed sql/preflight_server_version.sql
+	sqlPreflightServerVersion string
+	//go:embed sql/preflight_migration.sql
+	sqlPreflightMigration string
+	//go:embed sql/preflight_columns.sql
+	sqlPreflightColumns string
+	//go:embed sql/preflight_capabilities.sql
+	sqlPreflightCapabilities string
+	//go:embed sql/select_teams.sql
+	sqlSelectTeams string
+	//go:embed sql/select_templates.sql
+	sqlSelectTemplates string
+	//go:embed sql/select_aliases.sql
+	sqlSelectAliases string
+	//go:embed sql/select_builds.sql
+	sqlSelectBuilds string
+	//go:embed sql/select_assignments.sql
+	sqlSelectAssignments string
+	//go:embed sql/select_snapshot_templates.sql
+	sqlSelectSnapshotTemplates string
+	//go:embed sql/insert_template.sql
+	sqlInsertTemplate string
+	//go:embed sql/insert_build.sql
+	sqlInsertBuild string
+	//go:embed sql/insert_assignment.sql
+	sqlInsertAssignment string
+	//go:embed sql/insert_alias.sql
+	sqlInsertAlias string
+	//go:embed sql/insert_snapshot_template.sql
+	sqlInsertSnapshotTemplate string
 )
 
 type postgresColumnSpec struct {
@@ -209,7 +212,7 @@ func postgresPreflight(ctx context.Context, query pgQuery) (string, error) {
 	// 这里检查的是工具真正依赖的数据库能力，而不只是一串 schema 版本号。
 	// 生产部署可能包含额外迁移，但缺列、缺约束或 RLS 未旁路都不能继续。
 	var serverVersionText string
-	if err := query.QueryRow(ctx, `SHOW server_version_num`).Scan(&serverVersionText); err != nil {
+	if err := query.QueryRow(ctx, sqlPreflightServerVersion).Scan(&serverVersionText); err != nil {
 		return "", fmt.Errorf("read PostgreSQL version: %w", err)
 	}
 	if err := validatePostgresVersion(serverVersionText); err != nil {
@@ -217,7 +220,7 @@ func postgresPreflight(ctx context.Context, query pgQuery) (string, error) {
 	}
 
 	var migration int64
-	if err := query.QueryRow(ctx, `SELECT COALESCE(MAX(version_id) FILTER (WHERE is_applied), 0) FROM public._migrations`).Scan(&migration); err != nil {
+	if err := query.QueryRow(ctx, sqlPreflightMigration).Scan(&migration); err != nil {
 		return "", fmt.Errorf("read public._migrations: %w", err)
 	}
 	if err := validatePostgresMigration(migration); err != nil {
@@ -225,11 +228,7 @@ func postgresPreflight(ctx context.Context, query pgQuery) (string, error) {
 	}
 
 	tables := requiredPostgresTables()
-	rows, err := query.Query(ctx, `
-SELECT table_name, column_name, udt_name, is_nullable
-FROM information_schema.columns
-WHERE table_schema = 'public'
-  AND table_name = ANY($1::text[])`, tables)
+	rows, err := query.Query(ctx, sqlPreflightColumns, tables)
 	if err != nil {
 		return "", fmt.Errorf("inspect PostgreSQL columns: %w", err)
 	}
@@ -252,58 +251,7 @@ WHERE table_schema = 'public'
 	}
 
 	var capabilities postgresCapabilities
-	err = query.QueryRow(ctx, `
-SELECT
-    EXISTS (
-        SELECT 1
-        FROM pg_catalog.pg_class index_class
-        JOIN pg_catalog.pg_index index_data ON index_data.indexrelid = index_class.oid
-        WHERE index_class.oid = to_regclass('public.idx_env_aliases_alias_namespace_unique')
-          AND index_data.indisunique
-          AND index_data.indnullsnotdistinct
-    ),
-    EXISTS (
-        SELECT 1 FROM pg_catalog.pg_constraint
-        WHERE conrelid = 'public.env_build_assignments'::regclass
-          AND confrelid = 'public.env_builds'::regclass
-          AND conname = 'fk_env_build_assignments_build'
-          AND contype = 'f'
-    ),
-    EXISTS (
-        SELECT 1 FROM pg_catalog.pg_constraint
-        WHERE conrelid = 'public.env_build_assignments'::regclass
-          AND confrelid = 'public.envs'::regclass
-          AND conname = 'fk_env_build_assignments_env'
-          AND contype = 'f'
-    ),
-    EXISTS (
-        SELECT 1 FROM pg_catalog.pg_constraint
-        WHERE conrelid = 'public.env_aliases'::regclass
-          AND confrelid = 'public.envs'::regclass
-          AND conname = 'env_aliases_envs_env_aliases'
-          AND contype = 'f'
-    ),
-    EXISTS (
-        SELECT 1 FROM pg_catalog.pg_constraint
-        WHERE conrelid = 'public.snapshot_templates'::regclass
-          AND confrelid = 'public.envs'::regclass
-          AND contype = 'f'
-    ),
-    EXISTS (
-        SELECT 1 FROM pg_catalog.pg_trigger
-        WHERE tgrelid = 'public.env_builds'::regclass
-          AND tgname = 'trg_compute_status_group'
-          AND tgenabled <> 'D'
-          AND NOT tgisinternal
-    ),
-    NOT (
-        row_security_active('public.teams'::regclass)
-        OR row_security_active('public.envs'::regclass)
-        OR row_security_active('public.env_aliases'::regclass)
-        OR row_security_active('public.env_builds'::regclass)
-        OR row_security_active('public.env_build_assignments'::regclass)
-        OR row_security_active('public.snapshot_templates'::regclass)
-    )`).Scan(
+	err = query.QueryRow(ctx, sqlPreflightCapabilities).Scan(
 		&capabilities.aliasNamespaceUnique,
 		&capabilities.assignmentBuildFK,
 		&capabilities.assignmentTemplateFK,
@@ -403,11 +351,7 @@ func validatePostgresCapabilities(capabilities postgresCapabilities) error {
 func loadPostgres(ctx context.Context, query pgQuery, version string) (*model.CatalogData, error) {
 	data := &model.CatalogData{SchemaVersion: version}
 
-	// Team 不属于 Bundle，但导入必须用它解析目标 Team，并取得目标 Cluster。
-	rows, err := query.Query(ctx, `
-SELECT id::text, slug, name, cluster_id::text
-FROM public.teams
-ORDER BY id`)
+	rows, err := query.Query(ctx, sqlSelectTeams)
 	if err != nil {
 		return nil, fmt.Errorf("load teams: %w", err)
 	}
@@ -424,22 +368,7 @@ ORDER BY id`)
 		return nil, fmt.Errorf("load teams: %w", err)
 	}
 
-	rows, err = query.Query(ctx, `
-SELECT
-    id,
-    created_at,
-    updated_at,
-    public,
-    build_count,
-    spawn_count,
-    last_spawned_at,
-    team_id::text,
-    created_by::text,
-    cluster_id::text,
-    source
-FROM public.envs
-WHERE source IN ('template', 'snapshot_template')
-ORDER BY id`)
+	rows, err = query.Query(ctx, sqlSelectTemplates)
 	if err != nil {
 		return nil, fmt.Errorf("load templates: %w", err)
 	}
@@ -468,12 +397,7 @@ ORDER BY id`)
 		return nil, fmt.Errorf("load templates: %w", err)
 	}
 
-	rows, err = query.Query(ctx, `
-SELECT a.id::text, a.env_id, a.namespace, a.alias, a.is_renamable
-FROM public.env_aliases a
-JOIN public.envs e ON e.id = a.env_id
-WHERE e.source IN ('template', 'snapshot_template')
-ORDER BY a.id`)
+	rows, err = query.Query(ctx, sqlSelectAliases)
 	if err != nil {
 		return nil, fmt.Errorf("load aliases: %w", err)
 	}
@@ -490,9 +414,7 @@ ORDER BY a.id`)
 		return nil, fmt.Errorf("load aliases: %w", err)
 	}
 
-	// Build 必须经 Assignment 连接到可迁移 Template。DISTINCT 用来消除同一
-	// Build 被多个 Template/Tag 复用时产生的重复行。
-	rows, err = query.Query(ctx, postgresBuildsQuery)
+	rows, err = query.Query(ctx, sqlSelectBuilds)
 	if err != nil {
 		return nil, fmt.Errorf("load builds: %w", err)
 	}
@@ -542,18 +464,7 @@ ORDER BY a.id`)
 		return nil, fmt.Errorf("load builds: %w", err)
 	}
 
-	rows, err = query.Query(ctx, `
-SELECT
-    a.id::text,
-    a.env_id,
-    a.build_id::text,
-    a.tag,
-    a.source,
-    COALESCE(a.created_at, 'epoch'::timestamptz)
-FROM public.env_build_assignments a
-JOIN public.envs e ON e.id = a.env_id
-WHERE e.source IN ('template', 'snapshot_template')
-ORDER BY a.created_at, a.id`)
+	rows, err = query.Query(ctx, sqlSelectAssignments)
 	if err != nil {
 		return nil, fmt.Errorf("load assignments: %w", err)
 	}
@@ -570,12 +481,7 @@ ORDER BY a.created_at, a.id`)
 		return nil, fmt.Errorf("load assignments: %w", err)
 	}
 
-	rows, err = query.Query(ctx, `
-SELECT s.env_id, s.sandbox_id, COALESCE(s.created_at, 'epoch'::timestamptz)
-FROM public.snapshot_templates s
-JOIN public.envs e ON e.id = s.env_id
-WHERE e.source = 'snapshot_template'
-ORDER BY s.env_id`)
+	rows, err = query.Query(ctx, sqlSelectSnapshotTemplates)
 	if err != nil {
 		return nil, fmt.Errorf("load snapshot templates: %w", err)
 	}
@@ -654,11 +560,7 @@ func insertMissing(ctx context.Context, tx pgx.Tx, current, desired *model.Catal
 	templateIDs := ids(current.Templates, func(v model.Template) string { return v.ID })
 	for _, v := range desired.Templates {
 		if _, ok := templateIDs[v.ID]; !ok {
-			_, err := tx.Exec(ctx, `
-INSERT INTO public.envs (
-    id, created_at, updated_at, public, build_count, spawn_count,
-    last_spawned_at, team_id, created_by, cluster_id, source
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid, $9::uuid, $10::uuid, $11)`,
+			_, err := tx.Exec(ctx, sqlInsertTemplate,
 				v.ID,
 				v.CreatedAt,
 				v.UpdatedAt,
@@ -688,18 +590,7 @@ INSERT INTO public.envs (
 			if reason == "" {
 				reason = "{}"
 			}
-			_, err := tx.Exec(ctx, `
-INSERT INTO public.env_builds (
-    id, created_at, updated_at, finished_at, status, dockerfile, start_cmd,
-    vcpu, ram_mb, free_disk_size_mb, total_disk_size_mb, kernel_version,
-    firecracker_version, env_id, envd_version, ready_cmd, cluster_node_id,
-    reason, version, cpu_architecture, cpu_family, cpu_model, cpu_model_name,
-    cpu_flags, status_group, team_id
-) VALUES (
-    $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-    $14, $15, $16, NULL, $17::jsonb, $18, $19, $20, $21, $22, $23, $24,
-    $25::uuid
-)`,
+			_, err := tx.Exec(ctx, sqlInsertBuild,
 				v.ID,
 				v.CreatedAt,
 				v.UpdatedAt,
@@ -734,9 +625,7 @@ INSERT INTO public.env_builds (
 	assignmentIDs := ids(current.Assignments, func(v model.BuildAssignment) string { return v.ID })
 	for _, v := range desired.Assignments {
 		if _, ok := assignmentIDs[v.ID]; !ok {
-			_, err := tx.Exec(ctx, `
-INSERT INTO public.env_build_assignments (id, env_id, build_id, tag, source, created_at)
-VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6)`,
+			_, err := tx.Exec(ctx, sqlInsertAssignment,
 				v.ID, v.TemplateID, v.BuildID, v.Tag, v.Source, v.CreatedAt,
 			)
 			if err != nil {
@@ -747,9 +636,7 @@ VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6)`,
 	aliasIDs := ids(current.Aliases, func(v model.Alias) string { return v.ID })
 	for _, v := range desired.Aliases {
 		if _, ok := aliasIDs[v.ID]; !ok {
-			_, err := tx.Exec(ctx, `
-INSERT INTO public.env_aliases (id, alias, env_id, is_renamable, namespace)
-VALUES ($1::uuid, $2, $3, $4, $5)`,
+			_, err := tx.Exec(ctx, sqlInsertAlias,
 				v.ID, v.Alias, v.TemplateID, v.IsRenamable, v.Namespace,
 			)
 			if err != nil {
@@ -760,9 +647,7 @@ VALUES ($1::uuid, $2, $3, $4, $5)`,
 	snapshotIDs := ids(current.SnapshotTemplates, func(v model.SnapshotTemplate) string { return v.TemplateID })
 	for _, v := range desired.SnapshotTemplates {
 		if _, ok := snapshotIDs[v.TemplateID]; !ok {
-			_, err := tx.Exec(ctx, `
-INSERT INTO public.snapshot_templates (env_id, sandbox_id, created_at)
-VALUES ($1, $2, $3)`, v.TemplateID, v.SandboxID, v.CreatedAt)
+			_, err := tx.Exec(ctx, sqlInsertSnapshotTemplate, v.TemplateID, v.SandboxID, v.CreatedAt)
 			if err != nil {
 				return fmt.Errorf("insert snapshot template %q: %w", v.TemplateID, err)
 			}

@@ -21,7 +21,7 @@ func TestPostgresBuildsQuery(t *testing.T) {
 	}
 	defer conn.Close(ctx)
 
-	if _, err := conn.Prepare(ctx, "test_postgres_builds_query", postgresBuildsQuery); err != nil {
+	if _, err := conn.Prepare(ctx, "test_postgres_builds_query", sqlSelectBuilds); err != nil {
 		t.Fatalf("prepare PostgreSQL Builds query: %v", err)
 	}
 }

@@ -123,7 +123,7 @@ func TestS3ObjectInfoRequiresStableIdentity(t *testing.T) {
 	}
 }
 
-func TestInfoSameVersion(t *testing.T) {
+func TestInfoSameObjectVersion(t *testing.T) {
 	t.Parallel()
 
 	modified := time.Date(2026, time.August, 3, 4, 0, 0, 0, time.UTC)
@@ -145,8 +145,8 @@ func TestInfoSameVersion(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := test.left.SameVersion(test.right); got != test.want {
-				t.Fatalf("SameVersion() = %t, want %t", got, test.want)
+			if got := test.left.SameObjectVersion(test.right); got != test.want {
+				t.Fatalf("SameObjectVersion() = %t, want %t", got, test.want)
 			}
 		})
 	}

@@ -45,7 +45,7 @@ func (t *objectStoreTarget) Inspect(ctx context.Context, object bundle.ObjectRec
 	if err != nil {
 		return Observation{}, fmt.Errorf("recheck target object %q: %w", object.LogicalKey, err)
 	}
-	if !before.SameVersion(after) {
+	if !before.SameObjectVersion(after) {
 		return Observation{}, fmt.Errorf("target object %q changed while hashing", object.LogicalKey)
 	}
 
@@ -78,7 +78,7 @@ func (t *objectStoreTarget) Recheck(ctx context.Context, object bundle.ObjectRec
 	if err != nil {
 		return fmt.Errorf("recheck target object %q before catalog commit: %w", object.LogicalKey, err)
 	}
-	if !observed.identity.SameVersion(current) {
+	if !observed.identity.SameObjectVersion(current) {
 		return fmt.Errorf("target object %q changed before catalog commit", object.LogicalKey)
 	}
 	return nil
