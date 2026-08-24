@@ -972,7 +972,6 @@ configure_harbor_cert_trust() {
         # 1. 准备 certs.d 目录与 hosts.toml（containerd 现代配置方式）
         mkdir -p "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT"
         cp -f "$HARBOR_CERTS_DIR/harbor.crt" "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.crt" || error "复制 harbor.crt 失败"
-        cp -f "$HARBOR_CERTS_DIR/harbor.key" "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.key" || error "复制 harbor.key 失败"
         cat > "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/hosts.toml" << EOF
 server = "https://$HOST_IP:$HARBOR_HTTPS_PORT"
 [host."https://$HOST_IP:$HARBOR_HTTPS_PORT"]
