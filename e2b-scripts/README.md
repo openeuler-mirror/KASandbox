@@ -411,6 +411,22 @@ bash start.sh run-command \
   --command 'id; command -v sh; stat -c "%U:%G %a %n" /tmp'
 ```
 
+### 7.5 Sandbox.connect 兼容处理
+
+部分环境中的 `e2b 2.20.0` 安装文件可能与 PyPI 发布内容不一致，调用
+`Sandbox.connect()` 时会因未定义的 `envd_version` 抛出 `NameError`。典型表现是
+Sandbox 已创建且 `is_running()` 正常，但 `SB-001`、`SB-002`、`SB-003` 的连接验证失败，
+后续命令和文件用例被跳过。
+
+测试脚本会先调用 SDK 原生连接方法。仅当异常明确指向缺失的 `envd_version` 时，
+才使用项目内兼容逻辑完成连接，并输出以下提示：
+
+```text
+E2B SDK compatibility fallback active: Sandbox.connect() referenced an undefined envd_version; the installed SDK was not modified.
+```
+
+兼容逻辑不会修改 Python SDK 安装目录。鉴权失败、网络异常、Sandbox 不存在等错误仍按原结果返回。
+
 ## 8. 退出码
 
 | 退出码 | 含义 |
