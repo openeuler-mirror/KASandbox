@@ -9,6 +9,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from .e2b_sdk_compat import connect_sandbox
+
 
 def non_empty(value: str) -> str:
     value = value.strip()
@@ -32,12 +34,6 @@ def positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be greater than zero")
     return parsed
-
-
-def connect_sandbox(sandbox_id: str):
-    from e2b import Sandbox
-
-    return Sandbox.connect(sandbox_id)
 
 
 def to_plain_data(value: Any) -> Any:

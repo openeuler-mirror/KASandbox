@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from .e2b_sdk_compat import connect_sandbox
+
 
 def extract_last_json(output: str) -> Any:
     decoder = json.JSONDecoder()
@@ -88,6 +90,6 @@ def kill_sandbox(sandbox_id: str) -> bool:
     if callable(class_kill):
         result = class_kill(sandbox_id)
         return result is not False
-    sandbox = Sandbox.connect(sandbox_id)
+    sandbox = connect_sandbox(sandbox_id)
     result = sandbox.kill()
     return result is not False
