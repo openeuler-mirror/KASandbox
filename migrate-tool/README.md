@@ -75,8 +75,10 @@ Mooncake 写入无仅创建保护)。详见 [usage.md](usage.md) 第十一节。
 
 ## 文档
 
-完整的命令参考、参数说明、端点写法、Mooncake 配置与故障排查见
-**[usage.md](usage.md)**。
+- **[usage.md](usage.md)**:完整的命令参考、参数说明、端点写法、Mooncake
+  配置与故障排查;
+- **[design.md](design.md)**:代码架构、功能清单、导入导出时序图与关键
+  设计决策(对象闭包、幂等语义、与运行时对齐的常量)。
 
 ## 测试
 
