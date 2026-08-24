@@ -59,7 +59,7 @@ var SandboxHttpTransport = otelhttp.NewTransport(
 
 // Http client that should be used for requests to sandboxes.
 var sandboxHttpClient = http.Client{
-	Timeout:   10 * time.Second,
+	Timeout:   20 * time.Second,
 	Transport: SandboxHttpTransport,
 }
 
