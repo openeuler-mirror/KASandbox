@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/shared/pkg/keys"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
 )
@@ -43,9 +44,14 @@ func (p *Process) setMmds(ctx context.Context, metadata sbxlogger.SandboxMetadat
 }
 
 func (p *Process) setMmdsConfig(ctx context.Context) error {
+	interfaces := []string{p.slot.VpeerName()}
+	if p.Versions.OsType.OrDefault() == vmm.OsAndroid {
+		interfaces = append(interfaces, androidMobileNetdevID)
+	}
+
 	payload := map[string]any{
 		"version":            "V2",
-		"network-interfaces": []string{p.slot.VpeerName()},
+		"network-interfaces": interfaces,
 	}
 	return p.qmpClient.executeCommandWithReturn(ctx, "put-mmds-config", payload, nil)
 }

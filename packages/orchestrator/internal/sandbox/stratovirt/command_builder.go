@@ -12,6 +12,8 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 )
 
+const androidMobileNetdevID = "eth1"
+
 type CommandBuilder struct {
 	config cfg.BuilderConfig
 }
@@ -186,7 +188,7 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 			"-device virtio-serial-pci,id=virtio-serial0,bus=pcie.0,addr=0x11,max-ports=31 "+
 			"%s"+
 			"%s"+
-			"-netdev tap,id=netdev0,ifname=%s -device virtio-net-pci,netdev=netdev0,id=eth1,bus=pcie.0,addr=0x8,mac=00:1a:11:e0:cf:00 "+
+			"-netdev tap,id=netdev0,ifname=%s -device virtio-net-pci,netdev=netdev0,id=%s,bus=pcie.0,addr=0x8,mac=00:1a:11:e0:cf:00 "+
 			"-netdev tap,id=netdev1,ifname=%s -device virtio-net-pci,netdev=netdev1,id=%s,bus=pcie.0,addr=0x9,mac=00:1a:11:e1:cf:00 "+
 			"-device virtio-gpu-pci,id=gpu0,bus=pcie.0,addr=0x10,xres=720,yres=1280 "+
 			"-object rng-random,id=objrng0,filename=/dev/urandom -device virtio-rng-pci,id=rng0,rng=objrng0,bus=pcie.0,addr=0x5,max-bytes=1024,period=2000 "+
@@ -207,8 +209,9 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 		virtconsoleArgs,
 		vsockArg,
 		slot.ExtraTapName(), // netdev0 ifname = cvd-mtap
-		slot.TapName(),      // netdev1 ifname = tap0
-		slot.VpeerName(),    // netdev1 id = eth0 (MMDS)
+		androidMobileNetdevID,
+		slot.TapName(),   // netdev1 ifname = tap0
+		slot.VpeerName(), // netdev1 id = eth0 (MMDS)
 		qmpSocket,
 		serialLogPath,
 		incomingArg,
