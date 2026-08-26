@@ -12,9 +12,9 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 PACKAGE_DIR = Path(__file__).resolve().parent
-REQUIREMENTS_FILE = PROJECT_DIR / "requirements.txt"
 MINIMUM_PYTHON = (3, 10)
-MINIMUM_E2B = (2, 0, 0)
+MINIMUM_E2B = (2, 19, 0)
+E2B_REQUIREMENT = "e2b>=2.19.0,<3"
 
 
 def check_python_version() -> None:
@@ -46,11 +46,9 @@ def ensure_dependencies(*, skip_install: bool = False) -> None:
     if e2b_dependency_ready():
         return
     if skip_install:
-        raise RuntimeError("E2B SDK 2.x is not installed and dependency installation was disabled")
-    if not REQUIREMENTS_FILE.is_file():
-        raise FileNotFoundError(f"Requirements file does not exist: {REQUIREMENTS_FILE}")
+        raise RuntimeError("E2B SDK 2.19+ is not installed and dependency installation was disabled")
     completed = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-r", str(REQUIREMENTS_FILE)],
+        [sys.executable, "-m", "pip", "install", E2B_REQUIREMENT],
         cwd=PROJECT_DIR,
         check=False,
     )

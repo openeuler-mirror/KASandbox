@@ -1,4 +1,4 @@
-"""Project-scoped compatibility for known E2B SDK connection defects."""
+"""Runtime compatibility for E2B SDK connection defects."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _connect_with_upstream_logic(
     timeout: int | None,
     options: dict[str, Any],
 ):
-    """Construct the Sandbox using the official E2B 2.20.0 connection logic."""
+    """Reproduce the official SDK connection constructor in project scope."""
     from e2b import Sandbox
     from e2b.api.client.types import Unset
     from e2b.connection_config import ConnectionConfig
@@ -67,7 +67,7 @@ def connect_sandbox(
     timeout: int | None = None,
     **options: Any,
 ):
-    """Use native connect first and handle only the known envd_version NameError."""
+    """Use the native SDK connection and handle only the known envd defect."""
     from e2b import Sandbox
 
     try:

@@ -1,10 +1,11 @@
-"""Detailed data-driven catalog for the seven real E2B business operations."""
+"""Detailed data-driven catalog for real E2B operations and SDK capabilities."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from .e2e_models import Business, TestCase
+from .e2e_extended_cases import build_extended_cases
 
 
 def build_cases(
@@ -138,4 +139,9 @@ def build_cases(
         add(case_id, Business.LIST_TEMPLATES, title, f"验证 list-templates {title}", parameters, "返回合法 JSON 且模板状态可解释", "list_templates", tags=("read-only",))
     add("LTP-006", Business.LIST_TEMPLATES, "max-pages=-1", "验证模板分页下界", {"argv": ["list-templates", "--max-pages", "-1"]}, "客户端拒绝负分页值", "expect_cli_error", tags=("boundary", "expected-error"))
 
+    cases.extend(build_extended_cases(run_id, template=template, base_image=base_image))
+    case_ids = [case.case_id for case in cases]
+    duplicates = sorted({case_id for case_id in case_ids if case_ids.count(case_id) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate E2E case IDs: {', '.join(duplicates)}")
     return cases

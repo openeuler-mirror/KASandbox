@@ -17,6 +17,19 @@ class Business(str, Enum):
     DOWNLOAD_FILE = "download-file"
     LIST_SANDBOXES = "list-sandboxes"
     LIST_TEMPLATES = "list-templates"
+    BACKGROUND_COMMAND = "background-command"
+    FILESYSTEM = "filesystem"
+    FILESYSTEM_WATCH = "filesystem-watch"
+    SIGNED_FILE_URL = "signed-file-url"
+    SANDBOX_INSPECTION = "sandbox-inspection"
+    SANDBOX_LIFECYCLE = "sandbox-lifecycle"
+    METRICS = "metrics"
+    NETWORK = "network"
+    SNAPSHOT = "snapshot"
+    CHECKPOINT_RESTORE = "checkpoint-restore"
+    PAUSE_RESUME = "pause-resume"
+    PTY = "pty"
+    TEMPLATE_SDK = "template-sdk"
 
 
 class CaseStatus(str, Enum):
@@ -50,6 +63,7 @@ class CaseResult:
     evidence: list[str] = field(default_factory=list)
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     error_type: str | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = dataclasses.asdict(self)
