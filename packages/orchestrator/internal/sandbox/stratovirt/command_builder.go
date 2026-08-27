@@ -149,8 +149,9 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 	// Create all FIFOs referenced by pipeByPort: stratovirt's -chardev pipe
 	// opens <name>.in/.out at startup and aborts if they're missing. Port<->FIFO
 	// assignment is e2b-defined (matches upstream cuttlefish only for the stable
-	// ports 3/4/9/10/11); see buildAndroidVirtconsoleArgs.
-	pipeNames := []string{"keymaster_fifo_vm", "gatekeeper_fifo_vm", "oemlock_fifo_vm", "keymint_fifo_vm", "bt_fifo_vm", "gnsshvc_fifo_vm", "locationhvc_fifo_vm", "uwb_fifo_vm", "nfc_fifo_vm", "sensors_control_fifo_vm", "sensors_data_fifo_vm"}
+	// ports 3/4/10/11); the remaining HAL ports (bt/gnsshvc/locationhvc/uwb/
+	// nfc/sensors) are unused by E2B and rendered as -chardev null below.
+	pipeNames := []string{"keymaster_fifo_vm", "gatekeeper_fifo_vm", "oemlock_fifo_vm", "keymint_fifo_vm"}
 	for _, name := range pipeNames {
 		path := filepath.Join(pipeDir, name)
 		fmt.Fprintf(&preamble, "mkfifo -m 600 %s.in %s.out 2>/dev/null || true; ", path, path)
@@ -241,15 +242,8 @@ func buildAndroidVirtconsoleArgs(pipeDir string, logcatPath string) string {
 	pipeByPort := map[int]string{
 		3:  "keymaster_fifo_vm",
 		4:  "gatekeeper_fifo_vm",
-		5:  "bt_fifo_vm",
-		6:  "gnsshvc_fifo_vm",
-		7:  "locationhvc_fifo_vm",
-		9:  "uwb_fifo_vm",
 		10: "oemlock_fifo_vm",
 		11: "keymint_fifo_vm",
-		12: "nfc_fifo_vm",
-		18: "sensors_control_fifo_vm",
-		19: "sensors_data_fifo_vm",
 	}
 	for port := 0; port < 31; port++ {
 		switch port {
