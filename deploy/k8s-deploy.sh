@@ -441,6 +441,62 @@ EOF
     success "RuntimeClass 创建完成"
 }
 
+# 卸载 cri-multiplex
+# 流程: 恢复 kubelet endpoint -> 删除 RuntimeClass -> 停止并移除 systemd 服务 -> 清理状态目录
+uninstall_cri_multiplex() {
+    local mux_socket="/run/cri-multiplex.sock"
+    local unit_file="/etc/systemd/system/cri-multiplex.service"
+
+    info "卸载 cri-multiplex ..."
+
+    # ① 恢复 kubelet 运行时 endpoint（cri-multiplex.sock -> containerd.sock）
+    info "① 恢复 kubelet 运行时 endpoint ..."
+    local flags_file="${KUBELET_FLAGS_FILE:-/var/lib/kubelet/kubeadm-flags.env}"
+    if [ -f "$flags_file" ] && grep -q "unix://${mux_socket}" "$flags_file"; then
+        # 备份后替换回 containerd.sock
+        cp -a "$flags_file" "${flags_file}.bak.$(date +%s)"
+        sed -i "s#--container-runtime-endpoint=[^ \"']*#--container-runtime-endpoint=unix:///run/containerd/containerd.sock#g" "$flags_file"
+        success "kubeadm-flags.env 已恢复: endpoint=/run/containerd/containerd.sock"
+        systemctl restart kubelet
+        sleep 3
+        if systemctl is-active --quiet kubelet; then
+            success "kubelet 已重启并运行中"
+        else
+            warn "kubelet 未正常运行，请检查: journalctl -u kubelet -n 50"
+        fi
+    else
+        info "kubelet 未使用 cri-multiplex endpoint，跳过恢复"
+    fi
+
+    # ② 删除 RuntimeClass（android / e2b）
+    if command -v kubectl >/dev/null 2>&1; then
+        info "② 删除 RuntimeClass (android / e2b) ..."
+        kubectl delete runtimeclass android --ignore-not-found >/dev/null 2>&1 || true
+        kubectl delete runtimeclass e2b --ignore-not-found >/dev/null 2>&1 || true
+        success "RuntimeClass 已删除"
+    else
+        warn "kubectl 未安装，跳过 RuntimeClass 删除（可手动执行: kubectl delete runtimeclass android e2b）"
+    fi
+
+    # ③ 停止并禁用 systemd 服务，删除单元文件
+    info "③ 停止并移除 cri-multiplex 服务 ..."
+    if [ -f "$unit_file" ]; then
+        systemctl stop cri-multiplex >/dev/null 2>&1 || true
+        systemctl disable cri-multiplex >/dev/null 2>&1 || true
+        rm -f "$unit_file"
+        systemctl daemon-reload
+        success "cri-multiplex 服务已停止并移除"
+    else
+        info "未找到 $unit_file，跳过服务卸载"
+    fi
+
+    # ④ 清理状态目录
+    info "④ 清理状态目录 ..."
+    rm -rf /var/lib/cri-multiplex
+
+    success "cri-multiplex 卸载完成"
+}
+
 install_buildkit() {
     case "$(uname -m)" in
         x86_64)
@@ -540,6 +596,10 @@ main() {
             # 部署 cri-multiplex 并切换 kubelet endpoint（节点级操作，每个节点执行）
             deploy_cri_multiplex
             ;;
+        cri-multiplex-uninstall)
+            # 卸载 cri-multiplex：恢复 kubelet endpoint、删除 RuntimeClass、移除 systemd 服务
+            uninstall_cri_multiplex
+            ;;
         kubelet-endpoint)
             # 单独切换 kubelet 运行时 endpoint（containerd.sock -> cri-multiplex.sock）并重启 kubelet
             # 适用于 cri-multiplex 已部署、仅需切换 endpoint 的场景
@@ -554,7 +614,7 @@ main() {
             download_cni_plugins
             ;;
         help|--help|-h)
-            echo "用法: $0 <prep|create|all|configure-domain|cri-multiplex|kubelet-endpoint|buildkit|download-cni>"
+            echo "用法: $0 <prep|create|all|configure-domain|cri-multiplex|cri-multiplex-uninstall|kubelet-endpoint|buildkit|download-cni>"
             echo ""
             echo "  prep              安装依赖、下载 kk 和 CNI 插件、生成集群配置（需手动编辑节点信息）"
             echo "  create            根据配置文件创建集群、验证状态、部署 ingress-nginx、配置域名访问"
@@ -563,6 +623,8 @@ main() {
             echo "                    （e2b 部署后执行以补建 wildcard Ingress）"
             echo "  cri-multiplex     部署 cri-multiplex、切换 kubelet endpoint、创建 RuntimeClass"
             echo "                    （节点级操作，需在每个节点执行；需先安装 cri-multiplex 二进制）"
+            echo "  cri-multiplex-uninstall  卸载 cri-multiplex：恢复 kubelet endpoint、删除 RuntimeClass、"
+            echo "                    移除 systemd 服务（节点级操作，需在每个节点执行）"
             echo "  kubelet-endpoint  单独切换 kubelet 运行时 endpoint 并重启 kubelet"
             echo "                    （cri-multiplex 已部署、仅需切换 endpoint 时使用）"
             echo "  buildkit          安装并启用 buildkit"
@@ -591,7 +653,7 @@ main() {
             echo "  CNI_PLUGINS_VERSION=v1.6.2 $0 download-cni      # 指定版本下载 CNI 插件"
             ;;
         *)
-            error "未知操作: $action（支持: prep / create / all / configure-domain / cri-multiplex / kubelet-endpoint / buildkit / download-cni / help）"
+            error "未知操作: $action（支持: prep / create / all / configure-domain / cri-multiplex / cri-multiplex-uninstall / kubelet-endpoint / buildkit / download-cni / help）"
             ;;
     esac
 }

@@ -520,7 +520,6 @@ uninstall_nomad() {
 }
 
 uninstall_e2b() {
-    uninstall_nomad
     pip uninstall e2b==2.15.3 -y
     pip uninstall e2b_code_interpreter==2.4.1 -y
     info "remove nbd"
@@ -688,6 +687,7 @@ uninstall_docker_resources() {
     # K8S 模式额外清理
     if [ "$DEPLOY_MODE" = "k8s" ]; then
         script_images+=("busybox:latest" "ubuntu:24.04")
+        script_images+=("e2b-webhook:latest")
     fi
     
     # 删除脚本拉取的镜像
@@ -720,11 +720,33 @@ uninstall_docker_resources() {
     # 清理悬空镜像
     info "清理悬空镜像..."
     $DOCKER_CMD image prune -f 2>/dev/null || true
+    # 打印当前镜像列表
+    info "当前镜像列表:"
+    $DOCKER_CMD images
+}
+
+# 卸载 cri-multiplex（K8S 专属组件），调用 k8s-deploy.sh 完成
+uninstall_cri_multiplex() {
+    if [ ! -f "$WORK_DIR/k8s-deploy.sh" ]; then
+        warn "未找到 k8s-deploy.sh，跳过 cri-multiplex 卸载"
+        return
+    fi
+    info "卸载 cri-multiplex ..."
+    bash "$WORK_DIR/k8s-deploy.sh" cri-multiplex-uninstall || error "cri-multiplex 卸载失败"
+    success "cri-multiplex 已卸载"
 }
 
 uninstall() {
     info "===== 开始批量卸载组件 ====="
     stop
+    # Nomad 仅在 nomad 模式下部署，K8S 模式跳过
+    if [ "$DEPLOY_MODE" = "nomad" ]; then
+        uninstall_nomad
+    fi
+    # cri-multiplex 仅在 K8S 模式下部署，nomad 模式跳过
+    if [ "$DEPLOY_MODE" = "k8s" ]; then
+        uninstall_cri_multiplex
+    fi
     uninstall_e2b
     uninstall_fc_directories
     uninstall_harbor
@@ -1196,27 +1218,10 @@ start() {
         rm -fv "$E2B_DIR/bin/orchestrator.Dockerfile"
         info "执行部署脚本..."
         bash "$E2B_DIR/deploy.sh" || error "执行部署脚本失败"
-        iptable_clean
+        iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 3002
+        iptables -t nat -A OUTPUT -p tcp -d 127.0.0.1 --dport 80 -j REDIRECT --to-port 3002
         success "e2b-infra 服务启动完成！所有组件健康检查通过"
     fi
-    # iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 3002
-    iptables -t nat -A OUTPUT -p tcp -d 127.0.0.1 --dport 80 -j REDIRECT --to-port 3002
-}
-
-iptable_clean() {
-    source /opt/e2b-infra/.env
-    local nomad_token="$NOMAD_ACL_TOKEN"
-
-    local jobs
-    jobs=$(nomad job status -token "$nomad_token" -json | jq -r '.[].Allocations[].JobID')
-    local job
-    for job in $jobs; do
-        nomad job stop -token "$nomad_token" "$job"
-    done
-    iptables -F
-    systemctl restart "$CONTAINERD_SERVICE"
-    bash "$WORK_DIR/harbor/install.sh" || error "Harbor 安装脚本执行失败"
-    bash "$E2B_DIR/deploy.sh" || error "执行部署脚本失败"
 }
 
 deploy() {
