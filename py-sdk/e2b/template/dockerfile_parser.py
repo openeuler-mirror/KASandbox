@@ -105,8 +105,8 @@ def parse_dockerfile(
         workdir_changed = False
 
         # Set the user and workdir to the Docker defaults
-        template_builder.set_user("root")
-        template_builder.set_workdir("/")
+        # template_builder.set_user("root")
+        # template_builder.set_workdir("/")
 
         # Process all other instructions
         for instruction_data in dfp.structure:
@@ -135,10 +135,10 @@ def parse_dockerfile(
                 continue
 
     # Set the user and workdir to the E2B defaults
-    if not user_changed:
-        template_builder.set_user("user")
-    if not workdir_changed:
-        template_builder.set_workdir("/home/user")
+    # if not user_changed:
+    #     template_builder.set_user("user")
+    # if not workdir_changed:
+    #     template_builder.set_workdir("/home/user")
 
     return base_image
 
