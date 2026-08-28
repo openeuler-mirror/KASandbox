@@ -33,7 +33,7 @@ class ApiParams(TypedDict, total=False):
     """E2B domain to use for authentication, defaults to `E2B_DOMAIN` environment variable."""
 
     api_url: Optional[str]
-    """URL to use for the API, defaults to `https://api.<domain>`. For internal use only."""
+    """URL to use for the API, defaults to `http://api.<domain>`. For internal use only."""
 
     debug: Optional[bool]
     """Whether to use debug mode, defaults to `E2B_DEBUG` environment variable."""
@@ -114,7 +114,7 @@ class ConnectionConfig:
         self.api_url = (
             api_url
             or ConnectionConfig._api_url()
-            or ("http://localhost:3000" if self.debug else f"https://api.{self.domain}")
+            or ("http://localhost:3000" if self.debug else f"http://api.{self.domain}")
         )
 
         self._sandbox_url: Optional[str] = (
@@ -140,7 +140,7 @@ class ConnectionConfig:
         if self._sandbox_url:
             return self._sandbox_url  # type: ignore[return-value]
 
-        return f"{'http' if self.debug else 'https'}://{self.get_host(sandbox_id, sandbox_domain, self.envd_port)}"
+        return f"{'http' if self.debug else 'http'}://{self.get_host(sandbox_id, sandbox_domain, self.envd_port)}"
 
     def get_host(self, sandbox_id: str, sandbox_domain: str, port: int) -> str:
         """
