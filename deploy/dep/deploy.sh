@@ -188,19 +188,22 @@ build_and_push_dockerfiles() {
     done
 }
 
-# 推送预构建镜像（redis/postgres/busybox）到 Harbor
+# 推送预构建镜像（redis/postgres；busybox 仅 K8S 模式推送）到 Harbor
 push_prebuilt_images() {
     local push_images="${1:-true}"
     local filter="${2:-}"
     declare -A imgs=(
         [redis]="redis:${REDIS_VERSION}"
         [postgres]="postgres:latest"
-        [busybox]="busybox:latest"
         # [vector]="timberio/vector:${LOGS_COLLECTOR_VERSION}"
         # [loki]="grafana/loki:${LOKI_VERSION}"
         # [otel]="otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}"
         # [clickhouse]="clickhouse/clickhouse-server:${CLICKHOUSE_VERSION}"
     )
+    # busybox 为 K8S 专属镜像（helm api init 容器使用），仅 K8S 模式推送
+    if [ "$DEPLOY_TYPE" = "k8s" ]; then
+        imgs[busybox]="busybox:latest"
+    fi
     local name src tag
     for name in "${!imgs[@]}"; do
         # 如果指定了镜像过滤，只处理匹配的预构建镜像
