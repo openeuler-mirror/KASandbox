@@ -314,6 +314,8 @@ export STORAGE_PROVIDER=MooncakeBucket
 | `MC_SLICE_SIZE` | 分片大小 | `1048576`（1MB） |
 | `MC_WORKERS_PER_CTX` | 每上下文工作线程数 | `8` |
 | `MC_MAX_WR` | 最大写并发 | `4` |
+| `MC_URMA_BONDING_MULTIPATH_ENABLE` | URMA bonding 多路径传输开关 | `on` |
+| `MC_UB_NUMA_AFFINITY_ENABLE` | UB NUMA 亲和开关 | `on` |
 
 #### 2.5.4 配置示例
 
