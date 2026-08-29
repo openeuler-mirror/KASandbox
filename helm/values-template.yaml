@@ -133,6 +133,8 @@ mcStoreLocalHotAdmissionThreshold: "${MC_STORE_LOCAL_HOT_ADMISSION_THRESHOLD}"
 mcSliceSize: "${MC_SLICE_SIZE}"
 mcWorkersPerCtx: "${MC_WORKERS_PER_CTX}"
 mcMaxWr: "${MC_MAX_WR}"
+mcUrmaBondingMultipathEnable: "${MC_URMA_BONDING_MULTIPATH_ENABLE}"
+mcUbNumaAffinityEnable: "${MC_UB_NUMA_AFFINITY_ENABLE}"
 
 # --- Ports ---
 apiPort: ${API_PORT}

@@ -158,6 +158,10 @@ spec:
           value: "{{ .Values.mcWorkersPerCtx }}"
         - name: MC_MAX_WR
           value: "{{ .Values.mcMaxWr }}"
+        - name: MC_URMA_BONDING_MULTIPATH_ENABLE
+          value: "{{ .Values.mcUrmaBondingMultipathEnable }}"
+        - name: MC_UB_NUMA_AFFINITY_ENABLE
+          value: "{{ .Values.mcUbNumaAffinityEnable }}"
         resources:
           requests:
             cpu: {{ .Values.templateManagerResourcesCpuCount }}m

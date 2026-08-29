@@ -79,6 +79,8 @@ job "template-manager" {
         MC_SLICE_SIZE                 = "${MC_SLICE_SIZE}"
         MC_WORKERS_PER_CTX            = "${MC_WORKERS_PER_CTX}"
         MC_MAX_WR                     = "${MC_MAX_WR}"
+        MC_URMA_BONDING_MULTIPATH_ENABLE = "${MC_URMA_BONDING_MULTIPATH_ENABLE}"
+        MC_UB_NUMA_AFFINITY_ENABLE         = "${MC_UB_NUMA_AFFINITY_ENABLE}"
      }
 
       config {
