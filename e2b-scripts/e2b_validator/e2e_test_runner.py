@@ -18,6 +18,7 @@ from typing import Callable
 from .e2b_common import collect_pages, to_plain_data
 from .e2b_config import add_config_arguments
 from .e2e_base_image import BaseImageDiscoveryError, discover_base_image
+from .e2e_diagnostics import build_diagnostics, print_case_result, print_run_summary
 from .e2e_models import CaseResult, CaseStatus, RunSummary, TestCase
 from .e2e_report import E2EReporter
 from .e2e_resources import ResourceLedger
@@ -27,9 +28,18 @@ from .e2e_template_fixture import (
     TemplateFixtureError,
     ready_template_names,
     select_fixture,
+    template_id as listed_template_id,
+    template_names,
     templates_from_payload,
 )
 from .e2e_verifiers import extract_last_json, extract_resource_id, item_has_id, kill_sandbox, sha256_file
+from .e2b_sdk_compat import delete_snapshot
+from .e2e_sdk_common import (
+    capability_blocked,
+    sdk_options,
+    sdk_sandbox,
+    suppress_expected_sdk_status,
+)
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -283,8 +293,15 @@ class E2ERunner:
         self.reporter = E2EReporter(result_dir, markdown_path or result_dir / "report.md")
         self.invoker = CLIInvoker(self.reporter)
         self.ledger = ResourceLedger(result_dir / "resources.json", self.run_id)
-        self.context: dict[str, object] = {"sandbox_ids": [], "template_names": []}
+        self.context: dict[str, object] = {
+            "run_id": self.run_id,
+            "sandbox_ids": [],
+            "template_names": [],
+            "sdk_sandboxes": {},
+            "watchers": {},
+        }
         self.cleanup_enabled = cleanup
+        self.cleanup_results: list[dict] = []
         self.fixture_template = fixture_template
         self.fixture_created = fixture_created
         self.context["placement_probe_evidence"] = placement_probe_evidence or []
@@ -304,6 +321,15 @@ class E2ERunner:
             "download_file": self._download_file,
             "list_sandboxes": self._list_sandboxes,
             "list_templates": self._list_templates,
+            "extended-command": self._extended_command,
+            "extended-filesystem": self._extended_filesystem,
+            "extended-sandbox": self._extended_sandbox,
+            "extended-network": self._extended_network,
+            "extended-snapshot": self._extended_snapshot,
+            "extended-checkpoint": self._extended_checkpoint,
+            "extended-pause-resume": self._extended_pause_resume,
+            "extended-pty": self._extended_pty,
+            "extended-template": self._extended_template,
         }
 
     def run(self) -> RunSummary:
@@ -328,18 +354,47 @@ class E2ERunner:
                         outcome = self.handlers[case.scenario](case, self.context)
                         error_type = None
                     except Exception as exc:
-                        outcome = (CaseStatus.FAIL, f"{type(exc).__name__}: {exc}", [])
+                        if capability_blocked(exc):
+                            outcome = (
+                                CaseStatus.BLOCKED,
+                                f"SDK capability unavailable: {exc}",
+                                [str(exc)[-3000:]],
+                            )
+                        else:
+                            outcome = (CaseStatus.FAIL, f"{type(exc).__name__}: {exc}", [])
                         error_type = type(exc).__name__
                 status, actual, evidence = outcome
-                result = CaseResult(case, status, time.monotonic() - started, actual, evidence, started_at, error_type)
+                diagnostics = build_diagnostics(
+                    case,
+                    status,
+                    actual,
+                    evidence,
+                    error_type=error_type,
+                    result_dir=self.result_dir,
+                )
+                result = CaseResult(
+                    case=case,
+                    status=status,
+                    duration_seconds=time.monotonic() - started,
+                    actual=actual,
+                    evidence=evidence,
+                    started_at=started_at,
+                    error_type=error_type,
+                    diagnostics=diagnostics,
+                )
                 summary.results.append(result)
                 statuses[case.case_id] = status
                 self.reporter.save(summary)
-                print(f"[{len(summary.results):02d}/{len(self.cases):02d}] {case.case_id} {status.value} - {actual}", flush=True)
+                print_case_result(result, len(summary.results), len(self.cases))
         finally:
-            cleanup = self._cleanup() if self.cleanup_enabled else []
+            self.cleanup_results = self._cleanup() if self.cleanup_enabled else []
             summary.finished_at = datetime.now(timezone.utc).isoformat()
-            self.reporter.save(summary, cleanup)
+            self.reporter.save(
+                summary,
+                self.cleanup_results,
+                resources=self.ledger.resources,
+                cleanup_enabled=self.cleanup_enabled,
+            )
         return summary
 
     def _prepare_fixtures(self) -> dict[str, CaseStatus]:
@@ -369,7 +424,8 @@ class E2ERunner:
 
         def cleaner(sandbox_id: str) -> bool | tuple[str, str]:
             try:
-                killed = kill_sandbox(sandbox_id)
+                with suppress_expected_sdk_status(404):
+                    killed = kill_sandbox(sandbox_id)
             except Exception as exc:
                 if any(marker in str(exc).lower() for marker in ("404", "not found", "does not exist", "expired")):
                     return "expired", "sandbox already expired before cleanup"
@@ -379,7 +435,137 @@ class E2ERunner:
             if not sandbox_is_visible(sandbox_id):
                 return "expired", "sandbox expired before cleanup"
             return False
-        return self.ledger.cleanup_sandboxes(cleaner)
+        # Release process handles before removing their owning Sandbox.
+        cleanup = self._cleanup_sdk_resources()
+        before = len(self.ledger.cleanup)
+        self.ledger.cleanup_sandboxes(cleaner)
+        cleanup.extend(self.ledger.cleanup[before:])
+        # Snapshot and Template deletion require every run-owned Sandbox to be gone.
+        cleanup.extend(self._cleanup_snapshots())
+        cleanup.extend(self._cleanup_templates())
+        return cleanup
+
+    def _cleanup_sdk_resources(self) -> list[dict]:
+        """Release only background resources registered by this run."""
+        from .e2e_sdk_common import sdk_sandbox
+
+        results: list[dict] = []
+        watchers = self.context.get("watchers", {})
+        for resource in self.ledger.resources:
+            if resource["run_id"] != self.run_id or resource["kind"] not in {
+                "background-process", "pty", "watcher", "template-tag",
+            }:
+                continue
+            kind = resource["kind"]
+            resource_id = resource["id"]
+            status = "cleaned"
+            detail = "cleanup call completed"
+            try:
+                if kind in {"background-process", "pty"}:
+                    sandbox_id, raw_pid = resource_id.rsplit(":", 1)
+                    pid = int(raw_pid)
+                    with suppress_expected_sdk_status(404):
+                        sandbox = sdk_sandbox(self, sandbox_id)
+                        result = (
+                            sandbox.commands.kill(pid)
+                            if kind == "background-process"
+                            else sandbox.pty.kill(pid)
+                        )
+                    if result is False:
+                        status, detail = "already-stopped", "process was already stopped"
+                elif kind == "watcher":
+                    label = resource_id.split(":", 1)[1]
+                    watcher = watchers.get(label) if isinstance(watchers, dict) else None
+                    if watcher is not None:
+                        watcher.stop()
+                    else:
+                        status, detail = "already-stopped", "watcher handle was no longer present"
+                elif kind == "template-tag":
+                    from e2b import Template
+
+                    template_name, tag = resource_id.rsplit(":", 1)
+                    Template.remove_tags(template_name, tag, **sdk_options())
+            except Exception as exc:
+                text = str(exc).lower()
+                if any(marker in text for marker in ("404", "not found", "does not exist", "expired")):
+                    status, detail = "already-absent", "resource was absent during cleanup"
+                else:
+                    status, detail = "cleanup-failed", f"{type(exc).__name__}: {exc}"
+            self.ledger.record_cleanup(kind, resource_id, status, detail)
+            results.append({"kind": kind, "id": resource_id, "status": status, "detail": detail})
+        return results
+
+    def _cleanup_snapshots(self) -> list[dict]:
+        """Delete only Snapshot IDs recorded by this run, after Sandbox cleanup."""
+        results: list[dict] = []
+        cleaned_ids: set[str] = set()
+        for resource in self.ledger.resources:
+            if resource["kind"] != "snapshot" or resource["run_id"] != self.run_id:
+                continue
+            resource_id = resource["id"]
+            if resource_id in cleaned_ids:
+                continue
+            cleaned_ids.add(resource_id)
+            try:
+                with suppress_expected_sdk_status(404):
+                    deleted = delete_snapshot(resource_id, **sdk_options())
+                status = "cleaned" if deleted else "already-deleted"
+                detail = "Snapshot deleted after run-owned Sandboxes" if deleted else "Snapshot was already absent"
+            except Exception as exc:
+                text = str(exc).lower()
+                if any(marker in text for marker in ("404", "not found", "does not exist")):
+                    status, detail = "already-absent", "Snapshot was already absent during cleanup"
+                else:
+                    status, detail = "cleanup-failed", f"{type(exc).__name__}: {exc}"
+            self.ledger.record_cleanup("snapshot", resource_id, status, detail)
+            results.append({"kind": "snapshot", "id": resource_id, "status": status, "detail": detail})
+        return results
+
+    def _cleanup_templates(self) -> list[dict]:
+        """Delete only Template IDs recorded under the current E2E run."""
+        from e2b.api.client.api.templates import delete_templates_template_id
+        from e2b.api.client_sync import get_api_client
+        from e2b.connection_config import ConnectionConfig
+
+        results: list[dict] = []
+        cleaned_ids: set[str] = set()
+        for resource in self.ledger.resources:
+            if resource["kind"] != "template" or resource["run_id"] != self.run_id:
+                continue
+
+            template_id = resource["id"]
+            template_name = resource.get("name")
+            if template_id in cleaned_ids:
+                continue
+            cleaned_ids.add(template_id)
+
+            if not isinstance(template_name, str) or self.run_id not in template_name:
+                status, detail = "cleanup-skipped", "Template name did not pass run-scoped safety validation"
+            elif template_id == template_name:
+                status, detail = "cleanup-skipped", "Template ID was not returned; refusing name-based deletion"
+            else:
+                try:
+                    client = get_api_client(ConnectionConfig(**sdk_options()))
+                    response = delete_templates_template_id.sync_detailed(
+                        template_id,
+                        client=client,
+                    )
+                    if response.status_code == 404:
+                        status, detail = "already-absent", "Template was already absent during cleanup"
+                    elif response.status_code >= 300:
+                        status, detail = "cleanup-failed", f"HTTP {response.status_code} while deleting Template"
+                    else:
+                        status, detail = "cleaned", "Template deleted by its run-scoped ID"
+                except Exception as exc:
+                    text = str(exc).lower()
+                    if any(marker in text for marker in ("404", "not found", "does not exist")):
+                        status, detail = "already-absent", "Template was already absent during cleanup"
+                    else:
+                        status, detail = "cleanup-failed", f"{type(exc).__name__}: {exc}"
+
+            self.ledger.record_cleanup("template", template_id, status, detail)
+            results.append({"kind": "template", "id": template_id, "status": status, "detail": detail})
+        return results
 
     def _main_sandbox(self) -> str:
         value = self.context.get("main_sandbox")
@@ -555,7 +741,33 @@ class E2ERunner:
         expected_error = bool(p.get("expect_error"))
         if result.returncode != 0:
             if expected_error:
-                return CaseStatus.PASS, "无效模板构建被拒绝", [result.combined[-2500:]]
+                name = str(p["name"])
+                matches = [
+                    template
+                    for template in _load_visible_templates()
+                    if name in template_names(template)
+                ]
+                if len(matches) > 1:
+                    return (
+                        CaseStatus.FAIL,
+                        "无效模板构建被拒绝，但服务端返回多个同名 Template，无法安全登记清理",
+                        [result.combined[-2000:], json.dumps(matches, ensure_ascii=False)[-2500:]],
+                    )
+                if matches:
+                    partial_id = listed_template_id(matches[0])
+                    if not partial_id:
+                        return (
+                            CaseStatus.FAIL,
+                            "无效模板构建被拒绝，但服务端残留 Template 未返回 ID",
+                            [result.combined[-2000:], json.dumps(matches[0], ensure_ascii=False)[-2000:]],
+                        )
+                    self.ledger.record_template(partial_id, name, case.case_id)
+                    return (
+                        CaseStatus.PASS,
+                        "无效模板构建被拒绝；服务端 error Template 已登记清理",
+                        [result.combined[-2000:], json.dumps(matches[0], ensure_ascii=False)[-2000:]],
+                    )
+                return CaseStatus.PASS, "无效模板构建被拒绝，服务端未产生 Template", [result.combined[-2500:]]
             if _template_build_blocked(result.combined):
                 return (
                     CaseStatus.BLOCKED,
@@ -793,11 +1005,43 @@ class E2ERunner:
             actual += f", fixture_template={case.parameters.get('fixture_template', '')}"
         return (CaseStatus.PASS if passed else CaseStatus.FAIL, actual, [serialized[-2500:]])
 
+    def _run_extended(self, module_name: str, function_name: str, case: TestCase):
+        module = __import__(f"e2b_validator.{module_name}", fromlist=[function_name])
+        handler = getattr(module, function_name)
+        return handler(case, self.context, self)
+
+    def _extended_command(self, case, _context):
+        return self._run_extended("e2e_command_handlers", "handle", case)
+
+    def _extended_filesystem(self, case, _context):
+        return self._run_extended("e2e_filesystem_handlers", "handle", case)
+
+    def _extended_sandbox(self, case, _context):
+        return self._run_extended("e2e_sandbox_handlers", "handle_sandbox", case)
+
+    def _extended_network(self, case, _context):
+        return self._run_extended("e2e_sandbox_handlers", "handle_network", case)
+
+    def _extended_snapshot(self, case, _context):
+        return self._run_extended("e2e_snapshot_handlers", "handle", case)
+
+    def _extended_checkpoint(self, case, _context):
+        return self._run_extended("e2e_checkpoint_handlers", "handle", case)
+
+    def _extended_pause_resume(self, case, _context):
+        return self._run_extended("e2e_pause_resume_handlers", "handle", case)
+
+    def _extended_pty(self, case, _context):
+        return self._run_extended("e2e_pty_handlers", "handle", case)
+
+    def _extended_template(self, case, _context):
+        return self._run_extended("e2e_template_handlers", "handle", case)
+
 
 def register_subcommand(subparsers) -> None:
     parser = subparsers.add_parser("test-e2e", help="Run real E2B end-to-end business cases")
     add_config_arguments(parser)
-    parser.add_argument("--all", action="store_true", help="Run the complete seven-business catalog")
+    parser.add_argument("--all", action="store_true", help="Run the complete E2B SDK and API validation catalog")
     parser.add_argument("--case", action="append", dest="case_ids", help="Run one case ID; repeat to select more")
     parser.add_argument(
         "--template",
@@ -813,6 +1057,35 @@ def register_subcommand(subparsers) -> None:
     parser.set_defaults(handler=execute)
 
 
+def select_cases_with_dependencies(cases: list[TestCase], requested_ids: set[str]) -> list[TestCase]:
+    """Return requested cases plus their transitive dependencies in catalog order."""
+    by_id = {case.case_id: case for case in cases}
+    unknown = requested_ids - set(by_id)
+    if unknown:
+        raise ValueError(f"Unknown E2E case IDs: {', '.join(sorted(unknown))}")
+
+    selected: set[str] = set()
+    visiting: set[str] = set()
+
+    def include(case_id: str) -> None:
+        if case_id in selected:
+            return
+        if case_id in visiting:
+            raise ValueError(f"Cyclic E2E dependency detected at {case_id}")
+        visiting.add(case_id)
+        case = by_id[case_id]
+        for dependency in case.depends_on:
+            if dependency not in by_id:
+                raise ValueError(f"E2E case {case_id} depends on unknown case {dependency}")
+            include(dependency)
+        visiting.remove(case_id)
+        selected.add(case_id)
+
+    for case_id in requested_ids:
+        include(case_id)
+    return [case for case in cases if case.case_id in selected]
+
+
 def execute(args: argparse.Namespace) -> int:
     if not args.all and not args.case_ids:
         raise ValueError("test-e2e requires --all or at least one --case")
@@ -820,6 +1093,14 @@ def execute(args: argparse.Namespace) -> int:
         base_image = discover_base_image(args.base_image, _load_visible_templates())
     except BaseImageDiscoveryError as exc:
         raise ValueError(str(exc)) from exc
+    requested_case_ids = set(args.case_ids or [])
+    if requested_case_ids:
+        validation_cases = build_cases(
+            "case-validation",
+            template=args.template or "case-validation-template",
+            base_image=base_image.image,
+        )
+        select_cases_with_dependencies(validation_cases, requested_case_ids)
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
     result_dir = args.result_root.expanduser().resolve() / run_id
     report_path = result_dir / "report.md"
@@ -836,27 +1117,9 @@ def execute(args: argparse.Namespace) -> int:
         fixture_template,
         requested_template=args.template,
     )
-    if selected_fixture.name != fixture_template.name:
-        print(
-            f"E2E placement fallback: {fixture_template.name} -> {selected_fixture.name}",
-            flush=True,
-        )
-    for detail in placement_evidence:
-        print(f"E2E placement probe: {detail}", flush=True)
-    print(
-        f"E2E fixture template: {selected_fixture.name} "
-        f"(mode={'baseline-isolated' if fixture_created else 'template-health-check'}, "
-        f"base-image-source={base_image.source})",
-        flush=True,
-    )
     cases = build_cases(run_id, template=selected_fixture.name, base_image=base_image.image)
-    if args.case_ids:
-        requested = set(args.case_ids)
-        known = {case.case_id for case in cases}
-        unknown = requested - known
-        if unknown:
-            raise ValueError(f"Unknown E2E case IDs: {', '.join(sorted(unknown))}")
-        cases = [case for case in cases if case.case_id in requested]
+    if requested_case_ids:
+        cases = select_cases_with_dependencies(cases, requested_case_ids)
     runner = E2ERunner(
         cases,
         result_dir,
@@ -868,7 +1131,13 @@ def execute(args: argparse.Namespace) -> int:
         placement_probe_evidence=placement_evidence,
     )
     summary = runner.run()
-    print(json.dumps({"run_id": run_id, "result_dir": str(result_dir), "counts": summary.counts}, ensure_ascii=False, indent=2))
+    print_run_summary(
+        summary,
+        runner.cleanup_results,
+        runner.ledger.resources,
+        result_dir,
+        cleanup_enabled=runner.cleanup_enabled,
+    )
     return 1 if (
         summary.counts.get(CaseStatus.FAIL.value, 0)
         or summary.counts.get(CaseStatus.BLOCKED.value, 0)
