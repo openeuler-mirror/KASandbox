@@ -6,13 +6,17 @@ Go 1.23+ module (`github.com/cri-multiplex`). CRI gRPC multiplexer that routes p
 
 ## Commands
 
+This module is not part of the parent repo's `go.work`; run Go commands with `GOWORK=off`
+(or from outside the workspace).
+
 ```
-go build ./cmd/cri-multiplex     # build binary
-go run ./cmd/cri-multiplex       # run directly
-go vet ./...                     # static check
+GOWORK=off go build ./...              # build all packages
+GOWORK=off go build ./cmd/cri-multiplex # build binary
+GOWORK=off go vet ./...                 # static check
+GOWORK=off go test ./...                # unit tests (fake orchestrator / mock envd; no root needed)
 ```
 
-No Makefile, no CI, no tests exist yet.
+No Makefile, no CI.
 
 ## CLI
 
@@ -26,7 +30,7 @@ cri-multiplex \
 - `-socket` — Unix socket this server listens on (default `/run/cri-multiplex.sock`)
 - `-containerd-socket` — upstream containerd socket (default `/run/containerd/containerd.sock`)
 - `-orchestrator-address` — E2B orchestrator gRPC target (default `localhost:5008`)
-- `-admin-socket` — node-local admin gRPC socket for Pause/Checkpoint/GetSandboxRuntime (default `/run/cri-multiplex/admin.sock`)
+- `-admin-socket` — node-local admin gRPC socket for Pause/Checkpoint/GetSandboxRuntime and the E2BSandboxService lifecycle API (default `/run/cri-multiplex/admin.sock`)
 - `-node-name` — Kubernetes node name recorded in runtime facts (defaults to `NODE_NAME` env)
 - `-hide-sandbox-label` — hide E2B sandboxes carrying this label (`key=value`, e.g. `flux-sandbox.io/direct=true`) from `ListPodSandbox`/`ListContainers`, so kubelet's orphan-sandbox GC never sees them (agent-direct `RunPodSandbox` without a K8s Pod object). Empty = visible (default, legacy behavior)
 - `-cni-pool-enabled` — E2B CNI netns/veth 预热池总开关（默认 false = 关闭）。需与 `-cni-pool-size > 0` 同时设置才生效。开启后后台协程提前执行完整 CNI ADD（netns 创建 + veth 配对 + host-local IPAM 分配），`RunPodSandbox` 直接从池中取用，规避并发创建时 CNI 插件链的串行瓶颈；有 RunPodSandbox 在途时预热自动暂停，创建优先；池空时回退为实时 CNI ADD。进程启动时自动清理上一轮遗留的预热池 entry（新命名可完整 CNI DEL 释放 IPAM，旧命名仅删 netns）。详见《CNI 并发创建优化与池化改造.md》
@@ -42,11 +46,13 @@ pkg/engine/engine.go        — RuntimeEngine interface (all CRI methods)
 pkg/engine/container.go     — ContainerEngine: real gRPC client to containerd
 pkg/engine/e2b.go           — E2BEngine interface + factory
 pkg/engine/grpc_e2b.go      — gRPC backend: orchestrator SandboxService client
-pkg/engine/admin_ops.go     — AdminPause/AdminCheckpoint/AdminGetRuntime + sandbox operation lock
+pkg/engine/sandbox_create.go — createE2BSandbox: shared sandbox-create lifecycle (CNI/HostPort/tracker/stateStore) used by RunPodSandbox and AdminCreate
+pkg/engine/admin_ops.go     — AdminPause/AdminCheckpoint/AdminGetRuntime + sandbox operation lock (tryLockSandbox / blocking lockSandbox)
+pkg/engine/admin_sandbox.go — AdminCreate/AdminUpdate/AdminList/AdminDelete/AdminListCachedBuilds (E2BSandboxService engine impl)
 pkg/orchestrator/           — generated proto types + gRPC client for SandboxService
 proto/orchestrator.proto    — proto source copied from infra/packages/orchestrator/
 pkg/admin/                  — generated admin proto types + node-local admin gRPC server
-proto/admin.proto           — E2BSandboxAdminService proto source (Pause/Checkpoint/GetSandboxRuntime)
+proto/admin.proto           — admin proto source: E2BSandboxAdminService (Pause/Checkpoint/GetSandboxRuntime) + E2BSandboxService (orchestrator-shaped lifecycle API)
 pkg/server/mux.go           — MuxServer: gRPC server, routes by RuntimeHandler
 test/test_pod_default.json  — sample pod sandbox config for manual testing
 ```
@@ -106,7 +112,9 @@ protoc \
 
 Keep the proto in sync when the upstream orchestrator proto changes.
 
-`proto/admin.proto` is cri-multiplex's own node-local admin API (E2BSandboxAdminService). Regenerate with the same command, replacing the file name:
+`proto/admin.proto` is cri-multiplex's own node-local admin API. It imports `orchestrator.proto`
+（E2BSandboxService 直接复用 orchestrator SandboxService 的消息类型），so both files must be
+compiled together:
 
 ```bash
 protoc \
@@ -114,8 +122,22 @@ protoc \
   --go-grpc_out=. --go-grpc_opt=module=github.com/cri-multiplex \
   --experimental_allow_proto3_optional \
   -I proto -I /usr/include \
-  proto/admin.proto
+  proto/orchestrator.proto proto/admin.proto
 ```
+
+### Admin socket services
+
+Two services share the admin unix socket:
+
+- **E2BSandboxAdminService** — Pause/Checkpoint with operation-id idempotency, plus GetSandboxRuntime.
+- **E2BSandboxService** — orchestrator-shaped lifecycle API (message types reused from
+  `orchestrator.proto`), **not a pass-through**: `Create` runs the full cri-multiplex lifecycle via
+  `createE2BSandbox` (CNI incl. prewarm pool, HostPort, tracker, stateStore; `config.sandbox_id`
+  required, used as both cri id and e2b id; expose-ports taken from `config.metadata` under the
+  same `e2b.dev/expose-ports` key; envd token taken from `config.envd_access_token`); `Delete` is
+  Stop+Remove in one call
+  (blocking sandbox operation lock + `cleanupSandboxResources`, idempotent OK when missing);
+  `Update`/`List`/`ListCachedBuilds` are thin forwards. Always enabled.
 
 ## Key constraints
 

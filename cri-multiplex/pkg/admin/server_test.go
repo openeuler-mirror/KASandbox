@@ -7,8 +7,10 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/cri-multiplex/pkg/engine"
+	"github.com/cri-multiplex/pkg/orchestrator"
 )
 
 type fakeEngine struct {
@@ -24,6 +26,25 @@ type fakeEngine struct {
 	runtimeCalls     int
 	lastRuntimeCriID string
 	lastRuntimeE2BID string
+
+	createErr  error
+	createResp *orchestrator.SandboxCreateResponse
+	updateErr  error
+	listResp   *orchestrator.SandboxListResponse
+	listErr    error
+	deleteErr  error
+	buildsResp *orchestrator.SandboxListCachedBuildsResponse
+	buildsErr  error
+
+	createCalls int
+	updateCalls int
+	listCalls   int
+	deleteCalls int
+	buildsCalls int
+
+	lastCreateReq *orchestrator.SandboxCreateRequest
+	lastUpdateReq *orchestrator.SandboxUpdateRequest
+	lastDeleteReq *orchestrator.SandboxDeleteRequest
 }
 
 func (f *fakeEngine) AdminPause(ctx context.Context, op engine.E2BOperation, timeoutSeconds uint64) (time.Time, time.Time, error) {
@@ -64,6 +85,52 @@ func (f *fakeEngine) AdminGetRuntime(criID, e2bID string) (*engine.RuntimeInfo, 
 			TemplateID: "tmpl-snap", BuildID: "build-snap", State: engine.OperationStateRunning,
 			StartedAt: time.Unix(100, 0),
 		}}, nil
+}
+
+func (f *fakeEngine) AdminCreate(ctx context.Context, req *orchestrator.SandboxCreateRequest) (*orchestrator.SandboxCreateResponse, error) {
+	f.createCalls++
+	f.lastCreateReq = req
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	if f.createResp != nil {
+		return f.createResp, nil
+	}
+	return &orchestrator.SandboxCreateResponse{ClientId: "client-a", HostIp: "172.16.0.2"}, nil
+}
+
+func (f *fakeEngine) AdminUpdate(ctx context.Context, req *orchestrator.SandboxUpdateRequest) (*emptypb.Empty, error) {
+	f.updateCalls++
+	f.lastUpdateReq = req
+	return &emptypb.Empty{}, f.updateErr
+}
+
+func (f *fakeEngine) AdminList(ctx context.Context) (*orchestrator.SandboxListResponse, error) {
+	f.listCalls++
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	if f.listResp != nil {
+		return f.listResp, nil
+	}
+	return &orchestrator.SandboxListResponse{}, nil
+}
+
+func (f *fakeEngine) AdminDelete(ctx context.Context, req *orchestrator.SandboxDeleteRequest) (*emptypb.Empty, error) {
+	f.deleteCalls++
+	f.lastDeleteReq = req
+	return &emptypb.Empty{}, f.deleteErr
+}
+
+func (f *fakeEngine) AdminListCachedBuilds(ctx context.Context) (*orchestrator.SandboxListCachedBuildsResponse, error) {
+	f.buildsCalls++
+	if f.buildsErr != nil {
+		return nil, f.buildsErr
+	}
+	if f.buildsResp != nil {
+		return f.buildsResp, nil
+	}
+	return &orchestrator.SandboxListCachedBuildsResponse{}, nil
 }
 
 func TestPauseSandboxValidation(t *testing.T) {
@@ -169,5 +236,68 @@ func TestGetSandboxRuntimeMapping(t *testing.T) {
 	}
 	if eng.lastRuntimeCriID != "cri-a" || eng.lastRuntimeE2BID != "" {
 		t.Fatalf("engine target mismatch: cri=%q e2b=%q", eng.lastRuntimeCriID, eng.lastRuntimeE2BID)
+	}
+}
+
+func TestE2BSandboxServiceDelegatesToEngine(t *testing.T) {
+	eng := &fakeEngine{
+		listResp:   &orchestrator.SandboxListResponse{Sandboxes: []*orchestrator.RunningSandbox{{ClientId: "client-a"}}},
+		buildsResp: &orchestrator.SandboxListCachedBuildsResponse{Builds: []*orchestrator.CachedBuildInfo{{BuildId: "build-a"}}},
+	}
+	s := NewServer("/tmp/unused.sock", eng)
+	ctx := context.Background()
+
+	createReq := &orchestrator.SandboxCreateRequest{Sandbox: &orchestrator.SandboxConfig{
+		SandboxId: "sbx-a", TemplateId: "tmpl-a", BuildId: "build-a", TeamId: "team-a",
+	}}
+	createResp, err := s.Create(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if eng.createCalls != 1 || eng.lastCreateReq != createReq {
+		t.Fatalf("create delegation mismatch: calls=%d req=%+v", eng.createCalls, eng.lastCreateReq)
+	}
+	if createResp.ClientId != "client-a" || createResp.HostIp != "172.16.0.2" {
+		t.Fatalf("create response mismatch: %+v", createResp)
+	}
+
+	updateReq := &orchestrator.SandboxUpdateRequest{SandboxId: "sbx-a"}
+	if _, err := s.Update(ctx, updateReq); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if eng.updateCalls != 1 || eng.lastUpdateReq != updateReq {
+		t.Fatalf("update delegation mismatch: calls=%d req=%+v", eng.updateCalls, eng.lastUpdateReq)
+	}
+
+	listResp, err := s.List(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if eng.listCalls != 1 || len(listResp.Sandboxes) != 1 || listResp.Sandboxes[0].ClientId != "client-a" {
+		t.Fatalf("list delegation mismatch: calls=%d resp=%+v", eng.listCalls, listResp)
+	}
+
+	deleteReq := &orchestrator.SandboxDeleteRequest{SandboxId: "sbx-a"}
+	if _, err := s.Delete(ctx, deleteReq); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if eng.deleteCalls != 1 || eng.lastDeleteReq != deleteReq {
+		t.Fatalf("delete delegation mismatch: calls=%d req=%+v", eng.deleteCalls, eng.lastDeleteReq)
+	}
+
+	buildsResp, err := s.ListCachedBuilds(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("ListCachedBuilds: %v", err)
+	}
+	if eng.buildsCalls != 1 || len(buildsResp.Builds) != 1 || buildsResp.Builds[0].BuildId != "build-a" {
+		t.Fatalf("builds delegation mismatch: calls=%d resp=%+v", eng.buildsCalls, buildsResp)
+	}
+}
+
+func TestE2BSandboxServiceErrorPassthrough(t *testing.T) {
+	eng := &fakeEngine{createErr: status.Error(codes.InvalidArgument, "config.sandbox_id is required")}
+	s := NewServer("/tmp/unused.sock", eng)
+	if _, err := s.Create(context.Background(), &orchestrator.SandboxCreateRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("create error code = %v, want InvalidArgument", status.Code(err))
 	}
 }

@@ -10,8 +10,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/cri-multiplex/pkg/engine"
+	"github.com/cri-multiplex/pkg/orchestrator"
 )
 
 // Engine 是 admin server 依赖的 engine 管理操作小接口（由 grpcE2BEngine 实现），
@@ -20,10 +22,16 @@ type Engine interface {
 	AdminPause(ctx context.Context, op engine.E2BOperation, timeoutSeconds uint64) (startedAt, finishedAt time.Time, err error)
 	AdminCheckpoint(ctx context.Context, op engine.E2BOperation, timeoutSeconds uint64) (vmResumed bool, startedAt, finishedAt time.Time, err error)
 	AdminGetRuntime(criID, e2bID string) (*engine.RuntimeInfo, []engine.E2BOperation, error)
+	AdminCreate(ctx context.Context, req *orchestrator.SandboxCreateRequest) (*orchestrator.SandboxCreateResponse, error)
+	AdminUpdate(ctx context.Context, req *orchestrator.SandboxUpdateRequest) (*emptypb.Empty, error)
+	AdminList(ctx context.Context) (*orchestrator.SandboxListResponse, error)
+	AdminDelete(ctx context.Context, req *orchestrator.SandboxDeleteRequest) (*emptypb.Empty, error)
+	AdminListCachedBuilds(ctx context.Context) (*orchestrator.SandboxListCachedBuildsResponse, error)
 }
 
 type Server struct {
 	UnimplementedE2BSandboxAdminServiceServer
+	UnimplementedE2BSandboxServiceServer
 	sockPath string
 	eng      Engine
 	listener net.Listener
@@ -55,6 +63,7 @@ func (s *Server) Start() error {
 	s.listener = listener
 	s.grpcSrv = grpc.NewServer()
 	RegisterE2BSandboxAdminServiceServer(s.grpcSrv, s)
+	RegisterE2BSandboxServiceServer(s.grpcSrv, s)
 	go func() {
 		_ = s.grpcSrv.Serve(listener)
 	}()
@@ -121,6 +130,31 @@ func (s *Server) GetSandboxRuntime(ctx context.Context, req *GetSandboxRuntimeRe
 		return nil, err
 	}
 	return runtimeInfoToProto(info, activeOps), nil
+}
+
+// Create 走 cri-multiplex 完整沙箱生命周期（非透传），见 engine.AdminCreate。
+func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequest) (*orchestrator.SandboxCreateResponse, error) {
+	return s.eng.AdminCreate(ctx, req)
+}
+
+// Update 薄转发 orchestrator（改 TTL）。
+func (s *Server) Update(ctx context.Context, req *orchestrator.SandboxUpdateRequest) (*emptypb.Empty, error) {
+	return s.eng.AdminUpdate(ctx, req)
+}
+
+// List 薄转发 orchestrator 视图，不与本地 stateStore 合并。
+func (s *Server) List(ctx context.Context, _ *emptypb.Empty) (*orchestrator.SandboxListResponse, error) {
+	return s.eng.AdminList(ctx)
+}
+
+// Delete 是 Stop+Remove 合一的完整清理，见 engine.AdminDelete。
+func (s *Server) Delete(ctx context.Context, req *orchestrator.SandboxDeleteRequest) (*emptypb.Empty, error) {
+	return s.eng.AdminDelete(ctx, req)
+}
+
+// ListCachedBuilds 薄转发 orchestrator。
+func (s *Server) ListCachedBuilds(ctx context.Context, _ *emptypb.Empty) (*orchestrator.SandboxListCachedBuildsResponse, error) {
+	return s.eng.AdminListCachedBuilds(ctx)
 }
 
 func runtimeInfoToProto(info *engine.RuntimeInfo, activeOps []engine.E2BOperation) *GetSandboxRuntimeResponse {

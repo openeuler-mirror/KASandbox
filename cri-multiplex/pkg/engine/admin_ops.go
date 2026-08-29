@@ -55,6 +55,36 @@ func (e *grpcE2BEngine) tryLockSandbox(criSandboxID string) (*sync.Mutex, bool) 
 	return mu, mu.TryLock()
 }
 
+// lockSandbox 阻塞式获取 sandbox 级 operation lock：等待正在进行的
+// Pause/Checkpoint（或上一次 Delete）结束后拿锁，锁等待随 ctx 取消。
+// 与 tryLockSandbox 操作的是同一把锁，保证与 AdminPause/AdminCheckpoint 互斥。
+func (e *grpcE2BEngine) lockSandbox(ctx context.Context, criSandboxID string) (*sync.Mutex, error) {
+	m, _ := e.opLocks.LoadOrStore(criSandboxID, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	if mu.TryLock() {
+		return mu, nil
+	}
+	acquired := make(chan struct{})
+	go func() {
+		mu.Lock()
+		close(acquired)
+	}()
+	select {
+	case <-acquired:
+		return mu, nil
+	case <-ctx.Done():
+		// 等待 goroutine 最终仍会拿到锁，善后 goroutine 负责立即释放，避免锁泄漏。
+		go func() {
+			<-acquired
+			mu.Unlock()
+		}()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, status.Errorf(codes.DeadlineExceeded, "timed out waiting for sandbox %s operation lock", criSandboxID)
+		}
+		return nil, status.Errorf(codes.Canceled, "canceled while waiting for sandbox %s operation lock", criSandboxID)
+	}
+}
+
 func (e *grpcE2BEngine) lookupOperation(operationID string) (E2BOperation, bool) {
 	if e.stateStore == nil || operationID == "" {
 		return E2BOperation{}, false
