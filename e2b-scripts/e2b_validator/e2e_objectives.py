@@ -43,7 +43,6 @@ BUSINESS_RISKS = {
     Business.SIGNED_FILE_URL: "签名 URL 路径、身份或时效异常",
     Business.SANDBOX_INSPECTION: "Sandbox 状态读取或连接信息偏差",
     Business.SANDBOX_LIFECYCLE: "暂停、恢复或连接状态迁移异常",
-    Business.METRICS: "指标采集缺失、延迟或字段异常",
     Business.NETWORK: "端口映射或 Sandbox 路由异常",
     Business.SNAPSHOT: "快照创建、恢复或删除状态异常",
     Business.CHECKPOINT_RESTORE: "恢复状态失真或实例间数据污染",

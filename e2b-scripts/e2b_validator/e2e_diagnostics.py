@@ -72,7 +72,6 @@ BUSINESS_PHASES = (
             "list-sandboxes",
             "list-templates",
             "sandbox-inspection",
-            "metrics",
         },
     ),
     (
@@ -339,11 +338,6 @@ def _possible_causes(case: TestCase, actual: str, evidence: list[str]) -> list[s
             "template-manager/build client 不可用，或镜像仓库认证、架构、tag 不匹配",
             "基础镜像可见但构建节点无法拉取，或构建资源不足",
         ])
-    if case.business.value == "metrics" or "clickhouse" in text or "metric" in text:
-        causes.extend([
-            "API 的 CLICKHOUSE_CONNECTION_STRING 不可用，或 ClickHouse 未完成指标写入",
-            "当前部署版本的 Metrics API 与 SDK 字段不一致",
-        ])
     if case.scenario == "extended-checkpoint":
         causes.extend([
             "Snapshot 持久化链路、对象存储或恢复调度未就绪",
@@ -387,10 +381,6 @@ def _next_commands(case: TestCase, result_dir: Path) -> list[str]:
             "kubectl -n e2b logs deployment/edge --since=15m | grep -Ei 'error|fail|timeout|route|proxy' | tail -n 100",
             "ss -tlnp",
         ])
-    if case.business.value == "metrics":
-        commands.append(
-            "kubectl -n e2b logs deployment/api --since=15m | grep -Ei 'error|clickhouse|metric' | tail -n 100"
-        )
     return list(dict.fromkeys(commands))
 
 

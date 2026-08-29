@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from .e2b_sdk_compat import create_snapshot, delete_snapshot
 from .e2e_api_client import E2BApiClient, snapshot_ids_from
 from .e2e_models import CaseStatus
 from .e2e_sdk_common import (
@@ -32,7 +33,10 @@ def _restore(owner, snapshot_id: str, case_id: str):
 
 
 def _checkpoint(owner, sandbox, case_id: str):
-    snapshot = sandbox.create_snapshot()
+    snapshot = create_snapshot(
+        sandbox,
+        **sdk_options(sandbox_id=sandbox.sandbox_id),
+    )
     owner.ledger.record_snapshot(snapshot.snapshot_id, case_id)
     return snapshot.snapshot_id
 
@@ -194,7 +198,7 @@ def handle(case, context: dict[str, object], owner):
         source = _create_source(owner, case.case_id)
         snapshot_id = _checkpoint(owner, source, case.case_id)
         source = sdk_sandbox(owner, source.sandbox_id, refresh=True)
-        deleted = Sandbox.delete_snapshot(snapshot_id, **sdk_options())
+        deleted = delete_snapshot(snapshot_id, **sdk_options())
         missing_id = f"missing-checkpoint-{context['run_id']}"
         rejected: dict[str, str] = {}
         unexpected: dict[str, str] = {}

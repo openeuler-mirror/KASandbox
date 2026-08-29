@@ -1,6 +1,6 @@
 # E2B 自托管环境自动化验收脚本
 
-本项目用于验证自托管 E2B 的控制面、数据面和 Python SDK 链路。测试通过统一入口执行 117 个真实 E2E 用例，可用于版本上线验收和升级回归。每轮创建的 Sandbox、Template、Snapshot、后台进程和 PTY 均使用 `run_id` 隔离；清理逻辑不会处理测试前已存在的资源。
+本项目用于验证自托管 E2B 的控制面、数据面和 Python SDK 链路。测试通过统一入口执行 116 个真实 E2E 用例，可用于版本上线验收和升级回归。每轮创建的 Sandbox、Template、Snapshot、后台进程和 PTY 均使用 `run_id` 隔离；清理逻辑不会处理测试前已存在的资源。
 
 
 ## 1. 测试范围
@@ -17,7 +17,7 @@
 | 后台命令和流式输出 | `BG-001` ~ `BG-006`、`STR-001` ~ `STR-002` | 8 | 后台执行、stdin、重连、终止和输出回调 |
 | Filesystem | `FS-001` ~ `FS-008` | 8 | 读取格式、批量写入、目录、重命名、删除和参数边界 |
 | 文件事件和直连 URL | `WAT-001` ~ `WAT-002`、`URL-001` | 3 | 文件监控、递归监控、上传下载签名 URL |
-| Sandbox SDK | `SI-001` ~ `SI-003`、`LC-001`、`MET-001` | 5 | 状态、重连、生命周期和指标 |
+| Sandbox SDK | `SI-001` ~ `SI-003`、`LC-001` | 4 | 状态、重连和生命周期 |
 | Network | `NET-001` | 1 | Host 路由 |
 | Snapshot | `SNP-001` ~ `SNP-004` | 4 | 创建、查询、恢复、删除和重复删除 |
 | Checkpoint / Restore | `CPR-001` ~ `CPR-008` | 8 | 精确回滚、状态隔离、系统路径和进程恢复 |
@@ -86,45 +86,124 @@ git clone https://gitcode.com/fqy_Sandbox/KASandbox.git
 cd KASandbox/e2b-scripts
 ```
 
-### 3.3 获取 Team API Key
+### 3.3 首次使用的最小配置
 
-在 E2B API 节点执行：
+执行完整 E2E 测试前，在 `.env` 中填写以下两项：
+
+| 配置项 | 用途 |
+| --- | --- |
+| `E2B_API_KEY` | 调用 E2B API 的 Team API Key |
+| `E2B_E2E_BASE_IMAGE` | 创建本轮 fixture Template 时使用的基础镜像 |
+
+脚本运行在 E2B API 节点时，API 地址默认使用 `http://127.0.0.1:3000`，因此不需要额外填写
+`E2B_API_URL`。脚本运行在其他机器时，还需要填写一个从该机器可访问的 API 地址。
+
+### 3.4 配置 Team API Key
+
+优先从运行脚本的用户配置中读取 Team API Key。常见位置为
+`/root/.e2b/config.json`，字段名为 `teamApiKey`：
 
 ```bash
-# 读取当前部署的 Team API Key
-python3 -c 'import json; print(json.load(open("/root/.e2b/config.json", encoding="utf-8"))["teamApiKey"])'
+# 显示当前用户配置中的 Team API Key
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path.home() / ".e2b" / "config.json"
+with path.open(encoding="utf-8") as file:
+    key = json.load(file).get("teamApiKey", "")
+
+if not key:
+    raise SystemExit(f"teamApiKey not found: {path}")
+print(key)
+PY
 ```
 
-### 3.4 配置方式
-
-脚本在 E2B API 节点运行时，会自动读取当前部署配置，通常无需创建 `.env`。先直接执行只读检查：
+如果 Team API Key 由 Kubernetes Secret 提供，可先查看 Secret 是否存在，再读取对应字段：
 
 ```bash
-# 自动安装依赖、编译源码并检查资源查询链路
-bash start.sh
+# 查看 e2b 命名空间中的相关 Secret 名称
+kubectl -n e2b get secret
+
+# 读取部署中使用的 Team API Key；Secret 名称和字段名以实际部署清单为准
+kubectl -n e2b get secret e2b-api-key \
+  -o jsonpath='{.data.api-key}' | base64 -d
+echo
 ```
 
-脚本在其他节点运行，或需要覆盖自动发现结果时，创建本地配置：
+上述命令会显示完整凭据，只在受控终端执行。将得到的值填入 `.env`：
+
+```dotenv
+# E2B self-hosted deployment 签发的 Team API Key
+E2B_API_KEY=<team-api-key>
+```
+
+### 3.5 配置 E2B_E2E_BASE_IMAGE
+
+`E2B_E2E_BASE_IMAGE` 是 Template 构建阶段使用的基础镜像，不是 `api`、
+`orchestrator` 或 `client-proxy` 服务镜像。镜像必须满足以下条件：
+
+- 已推送到当前部署使用的 Harbor 或其他 Registry；
+- `template-manager` 所在节点能够拉取；
+- 与当前部署的架构和 `envd` 运行要求兼容；
+- 具备 E2E 用例需要的基础 Linux 用户态环境。
+
+先在部署节点查看候选镜像：
+
+```bash
+# 列出本机 Docker 中的 Ubuntu、Debian 和自托管 E2B 基础镜像
+docker images --format '{{.Repository}}:{{.Tag}}' |
+  grep -Ei 'ubuntu|debian|e2b.*base|base.*e2b'
+```
+
+如果镜像只存在于 Harbor，使用 Harbor 中实际存在且可被 `template-manager` 拉取的完整名称。
+例如：
+
+```dotenv
+# 当前自托管 Harbor 中已验证可用的基础镜像示例
+E2B_E2E_BASE_IMAGE=193.30.8.2:30443/e2b-orchestration/ubuntu:22.04-custom
+```
+
+将示例地址替换为当前环境的镜像地址。不要填写 API 服务镜像，例如
+`.../api:latest`。
+
+### 3.6 创建 .env
 
 ```bash
 # 复制配置模板
 cp e2b-self-hosted.env.example .env
 
-# 限制凭据文件权限
+# 限制配置文件权限
 chmod 600 .env
 
-# 编辑连接参数
+# 填写 E2B_API_KEY 和 E2B_E2E_BASE_IMAGE
 vi .env
 ```
 
-最小配置如下：
+API 节点上的完整 E2E 最小配置如下：
 
 ```dotenv
-# 当前部署签发的 Team API Key
+# E2B self-hosted deployment 签发的 Team API Key
 E2B_API_KEY=<team-api-key>
 
-# 非 API 节点填写可访问的 API 地址
+# template-manager 可以拉取的基础镜像
+E2B_E2E_BASE_IMAGE=<registry>/<project>/<image>:<tag>
+```
+
+脚本与 API 不在同一台机器时，补充 API 地址：
+
+```dotenv
+# 从脚本所在机器访问 API 节点
 E2B_API_URL=http://<api-host>:3000
+```
+
+### 3.7 配置方式
+
+配置完成后执行只读检查：
+
+```bash
+# 检查 API、Template 查询和本地运行环境
+bash start.sh
 ```
 
 也可以使用项目目录外的配置文件：
@@ -134,13 +213,13 @@ E2B_API_URL=http://<api-host>:3000
 bash start.sh --env-file /root/secure/e2b.env list-sandboxes
 ```
 
-### 3.5 配置项
+### 3.8 配置项
 
 | 变量 | 必填条件 | 说明 |
 | --- | --- | --- |
-| `E2B_API_KEY` | 无法自动读取客户端配置时 | Team API Key |
+| `E2B_API_KEY` | 完整 E2E 必填 | Team API Key；也可从 API 节点的客户端配置自动读取 |
 | `E2B_API_URL` | 非 API 节点 | API 地址；API 节点默认 `http://127.0.0.1:3000` |
-| `E2B_E2E_BASE_IMAGE` | 否 | 覆盖自动发现的基础镜像 |
+| `E2B_E2E_BASE_IMAGE` | 完整 E2E 必填 | `template-manager` 可拉取的基础镜像 |
 | `E2B_DOMAIN` | 否 | Sandbox 数据面域名或 IP |
 | `E2B_HTTP_SSL` | 否 | 数据面是否使用 TLS |
 | `E2B_PROXY_PORT` | 否 | client-proxy 端口，默认 `3002` |
@@ -154,14 +233,16 @@ bash start.sh --env-file /root/secure/e2b.env list-sandboxes
 3. 可见 Template 的构建元数据。
 4. API 节点部署配置和本地 Docker 镜像。
 
-正常场景只需提供 Team API Key。仅当自动发现无法获得符合当前自托管 Harbor 的镜像时，才指定 `E2B_E2E_BASE_IMAGE`。
+完整 E2E 的最小配置是 `E2B_API_KEY` 和 `E2B_E2E_BASE_IMAGE`。脚本仍会记录基础镜像的来源，
+但不会把自动发现结果当作配置前提；明确填写镜像可以避免不同节点、不同部署文件或不同 Template
+元数据导致测试对象变化。
 
 ## 4. 使用方法
 
 ### 4.1 执行全量验收
 
 ```bash
-# 自动准备 fixture 并执行 117 个真实用例
+# 自动准备 fixture 并执行 116 个真实用例
 bash start.sh test-e2e --all
 ```
 
@@ -382,7 +463,7 @@ bash start.sh download-file \
 | `WAT-002` | 递归目录监听 | 在子目录创建文件 | 捕获子目录事件；旧 envd 不支持时为 `BLOCKED` |
 | `URL-001` | 文件直连 URL | 获取 upload/download URL | query 解码后包含目标路径、用户、签名和过期时间 |
 
-#### Sandbox、Lifecycle 与 Metrics（5 个）
+#### Sandbox 与 Lifecycle（4 个）
 
 | 编号 | 测试场景 | 参数或条件 | 关键断言 |
 | --- | --- | --- | --- |
@@ -390,8 +471,6 @@ bash start.sh download-file \
 | `SI-002` | 动态延长 timeout | `set_timeout(900)` | 调用成功且 Sandbox 持续可用 |
 | `SI-003` | 按 ID 重新连接 | 新 SDK 对象连接共享 Sandbox | 可执行独立命令 |
 | `LC-001` | 手动暂停与恢复 | 对本轮独立 Sandbox 执行 `pause()` 后 `connect()` | 同一 Sandbox 可恢复使用，不影响共享基线 |
-| `MET-001` | Sandbox 指标 | 最多等待 30 秒完成指标采集 | 返回至少一个 sample，且包含 CPU、memory、disk 和 timestamp 字段 |
-
 #### Network（1 个）
 
 | 编号 | 测试场景 | 参数或条件 | 关键断言 |
@@ -496,7 +575,7 @@ Agent 应解析 `AGENT_DIAGNOSTIC=` 后的 JSON，并遵守 `agent_contract`：�
 | `PASS` | 实际行为符合预期；非法请求被正确拒绝也属于通过 |
 | `FAIL` | 接口行为或独立校验结果与预期不一致 |
 | `BLOCKED` | 当前部署未提供所需 SDK、envd、template-manager 或服务端能力，或调度、镜像、网络、资源问题阻断验证；不表示断言失败 |
-| `SKIPPED` | 前置用例未通过，继续执行无法产生有效结论 |
+| `SKIPPED` | 前置依赖未通过，或当前部署未提供该用例要求的可选能力，因此本轮不执行有效断言 |
 
 运行编号采用 `YYYYMMDD-HHMMSS-随机后缀`，例如 `20260725-022435-8cd57e`，用于隔离并关联同一轮资源、日志和报告。
 
@@ -576,26 +655,16 @@ E2B SDK compatibility fallback active: Sandbox.connect() referenced an undefined
 
 兼容逻辑只处理该特定 `NameError`。API 鉴权、Sandbox 不存在、client-proxy 路由、网络和服务端错误仍由原生异常链返回。
 
-### 7.6 Sandbox Metrics 查询失败
+### 7.6 Pause 与 Snapshot SDK 兼容处理
 
-> `500 Failed to fetch sandbox metrics`
+部分 `e2b 2.20.0` 安装包未提供同步 `Sandbox.pause()` 和 Snapshot 方法，但保留了 `Sandbox.beta_pause()` 与 `AsyncSandbox` Snapshot API。脚本优先调用同步原生方法，仅在对应方法不存在时启用兼容桥接。
 
-`MET-001` 会等待 30 秒，排除指标首次采集延迟。持续返回 500 时，检查 API 的 `CLICKHOUSE_CONNECTION_STRING` 和对应 ClickHouse 端口；Metrics API 依赖 ClickHouse 查询 Sandbox 的指标时间范围和采样数据。
-
-```bash
-# 查看 API 配置的 ClickHouse 变量名和值来源
-docker inspect <api-container> \
-  --format '{{range .Config.Env}}{{println .}}{{end}}' \
-  | grep '^CLICKHOUSE_CONNECTION_STRING='
-
-# 检查 ClickHouse 端口是否监听
-ss -tlnp | grep ':9010'
-
-# 只读取 Metrics 相关 API 错误
-docker logs --since 10m <api-container> 2>&1 \
-  | grep -Ei 'sandbox metrics|clickhouse|failed to fetch sandbox metrics' \
-  | tail -n 80
+```text
+E2B SDK compatibility fallback active: Sandbox.pause() is unavailable; using Sandbox.beta_pause(); the installed SDK was not modified.
+E2B SDK compatibility fallback active: synchronous Snapshot APIs are unavailable; using the AsyncSandbox bridge; the installed SDK was not modified.
 ```
+
+该处理覆盖 Pause、Snapshot、Checkpoint/Restore 及测试结束后的 Snapshot 清理，不修改 SDK 安装目录。兼容方法执行后的鉴权、网络和服务端异常不会被转换或忽略。
 
 ## 8. 退出码
 

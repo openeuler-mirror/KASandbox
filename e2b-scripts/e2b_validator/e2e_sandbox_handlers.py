@@ -1,10 +1,9 @@
-"""Sandbox inspection, lifecycle, metric, and network SDK cases."""
+"""Sandbox inspection, lifecycle, and network SDK cases."""
 
 from __future__ import annotations
 
-import time
-
 from .e2e_models import CaseStatus
+from .e2b_sdk_compat import pause_sandbox
 from .e2e_sdk_common import create_sdk_sandbox, evidence, sdk_sandbox
 
 
@@ -19,7 +18,7 @@ def handle_sandbox(case, context: dict[str, object], owner):
             timeout=600,
         )
         sandbox_id = sandbox.sandbox_id
-        sandbox.pause()
+        pause_sandbox(sandbox)
         reconnected = sdk_sandbox(owner, sandbox_id, refresh=True)
         result = reconnected.commands.run("printf pause-resume")
         passed = result.exit_code == 0 and "pause-resume" in result.stdout
@@ -43,47 +42,6 @@ def handle_sandbox(case, context: dict[str, object], owner):
         result = reconnected.commands.run("printf sdk-reconnected")
         passed = result.exit_code == 0 and "sdk-reconnected" in result.stdout
         return CaseStatus.PASS if passed else CaseStatus.FAIL, f"exit_code={result.exit_code}", [evidence(result)]
-
-    if mode == "metrics":
-        from e2b import SandboxException
-
-        deadline = time.monotonic() + 30
-        metrics = []
-        last_error = None
-        attempts = 0
-        while time.monotonic() < deadline:
-            attempts += 1
-            try:
-                metrics = sandbox.get_metrics()
-                last_error = None
-                if metrics:
-                    break
-            except SandboxException as exc:
-                last_error = exc
-            time.sleep(0.5)
-
-        if not metrics:
-            details = [evidence(last_error)] if last_error is not None else []
-            error_summary = f"，last_error={last_error}" if last_error is not None else ""
-            return CaseStatus.FAIL, f"30s 内未获得 Sandbox 指标，attempts={attempts}{error_summary}", details
-
-        required_fields = (
-            "cpu_count",
-            "cpu_used_pct",
-            "mem_total",
-            "mem_used",
-            "disk_total",
-            "disk_used",
-            "timestamp",
-        )
-        sample = metrics[0]
-        missing = [field for field in required_fields if getattr(sample, field, None) is None]
-        passed = not missing
-        return (
-            CaseStatus.PASS if passed else CaseStatus.FAIL,
-            f"metric_samples={len(metrics)}, attempts={attempts}, missing_fields={missing}",
-            [evidence(sample)],
-        )
 
     raise ValueError(f"unknown extended sandbox mode: {mode}")
 

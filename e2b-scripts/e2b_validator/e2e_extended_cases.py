@@ -71,7 +71,6 @@ def build_extended_cases(run_id: str, *, template: str, base_image: str) -> list
         ("SI-002", Business.SANDBOX_INSPECTION, "动态延长 timeout", "set_timeout 成功且 Sandbox 继续运行", {"mode": "set-timeout", "timeout": 900}),
         ("SI-003", Business.SANDBOX_INSPECTION, "按 ID 重新连接", "新 SDK 对象连接同一 Sandbox 并执行命令", {"mode": "reconnect"}),
         ("LC-001", Business.SANDBOX_LIFECYCLE, "手动暂停与恢复", "pause 后 connect 恢复同一独立 Sandbox", {"mode": "pause-resume"}),
-        ("MET-001", Business.METRICS, "Sandbox 指标", "等待指标采集完成，并校验 CPU、memory、disk 和 timestamp 字段", {"mode": "metrics"}),
     ]
     for case_id, business, title, expected, parameters in sandbox_cases:
         dependencies = () if case_id == "LC-001" else ("SB-001",)

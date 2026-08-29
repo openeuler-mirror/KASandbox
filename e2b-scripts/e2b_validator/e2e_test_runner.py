@@ -33,6 +33,7 @@ from .e2e_template_fixture import (
     templates_from_payload,
 )
 from .e2e_verifiers import extract_last_json, extract_resource_id, item_has_id, kill_sandbox, sha256_file
+from .e2b_sdk_compat import delete_snapshot
 from .e2e_sdk_common import (
     capability_blocked,
     sdk_options,
@@ -496,8 +497,6 @@ class E2ERunner:
 
     def _cleanup_snapshots(self) -> list[dict]:
         """Delete only Snapshot IDs recorded by this run, after Sandbox cleanup."""
-        from e2b import Sandbox
-
         results: list[dict] = []
         cleaned_ids: set[str] = set()
         for resource in self.ledger.resources:
@@ -509,7 +508,7 @@ class E2ERunner:
             cleaned_ids.add(resource_id)
             try:
                 with suppress_expected_sdk_status(404):
-                    deleted = Sandbox.delete_snapshot(resource_id, **sdk_options())
+                    deleted = delete_snapshot(resource_id, **sdk_options())
                 status = "cleaned" if deleted else "already-deleted"
                 detail = "Snapshot deleted after run-owned Sandboxes" if deleted else "Snapshot was already absent"
             except Exception as exc:

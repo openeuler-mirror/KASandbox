@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .e2b_sdk_compat import create_snapshot, delete_snapshot, list_snapshot_items
 from .e2e_models import CaseStatus
 from .e2e_sdk_common import (
     create_sdk_sandbox,
@@ -30,14 +31,20 @@ def handle(case, context: dict[str, object], owner):
         source_id = sandbox.sandbox_id
         marker = run_path(context, "snapshot", "marker.txt")
         sandbox.files.write(marker, "snapshot-content")
-        snapshot = sandbox.create_snapshot()
+        snapshot = create_snapshot(
+            sandbox,
+            **sdk_options(sandbox_id=source_id),
+        )
         owner.ledger.record_snapshot(snapshot.snapshot_id, case.case_id)
         context["snapshot_id"] = snapshot.snapshot_id
         context["snapshot_marker"] = marker
         context["snapshot_source_sandbox_id"] = source_id
         # Snapshot creation pauses the source Sandbox; reconnect resumes it.
         sandbox = sdk_sandbox(owner, source_id, refresh=True)
-        items = sandbox.list_snapshots().next_items()
+        items = list_snapshot_items(
+            sandbox,
+            **sdk_options(sandbox_id=source_id),
+        )
         passed = any(item.snapshot_id == snapshot.snapshot_id for item in items)
         return CaseStatus.PASS if passed else CaseStatus.FAIL, f"snapshot_id={snapshot.snapshot_id}", [evidence(items)]
 
@@ -65,13 +72,13 @@ def handle(case, context: dict[str, object], owner):
             cache = context.get("sdk_sandboxes")
             if isinstance(cache, dict):
                 cache.pop(restored_id, None)
-        deleted = Sandbox.delete_snapshot(snapshot_id, **sdk_options())
+        deleted = delete_snapshot(snapshot_id, **sdk_options())
         context["snapshot_deleted"] = deleted
         return CaseStatus.PASS if deleted else CaseStatus.FAIL, f"deleted={deleted}", []
 
     if mode == "delete-missing":
         with suppress_expected_sdk_status(404):
-            deleted = Sandbox.delete_snapshot(snapshot_id, **sdk_options())
+            deleted = delete_snapshot(snapshot_id, **sdk_options())
         return CaseStatus.PASS if not deleted else CaseStatus.FAIL, f"second_delete={deleted}", []
 
     raise ValueError(f"unknown extended snapshot mode: {mode}")

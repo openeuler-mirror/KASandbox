@@ -23,7 +23,6 @@ class Business(str, Enum):
     SIGNED_FILE_URL = "signed-file-url"
     SANDBOX_INSPECTION = "sandbox-inspection"
     SANDBOX_LIFECYCLE = "sandbox-lifecycle"
-    METRICS = "metrics"
     NETWORK = "network"
     SNAPSHOT = "snapshot"
     CHECKPOINT_RESTORE = "checkpoint-restore"
