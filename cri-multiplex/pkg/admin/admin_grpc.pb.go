@@ -8,15 +8,295 @@ package admin
 
 import (
 	context "context"
+	orchestrator "github.com/cri-multiplex/pkg/orchestrator"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
 // is compatible with the grpc package it is being compiled against.
 // Requires gRPC-Go v1.64.0 or later.
 const _ = grpc.SupportPackageIsVersion9
+
+const (
+	E2BSandboxService_Create_FullMethodName           = "/crimultiplex.admin.v1.E2BSandboxService/Create"
+	E2BSandboxService_Update_FullMethodName           = "/crimultiplex.admin.v1.E2BSandboxService/Update"
+	E2BSandboxService_List_FullMethodName             = "/crimultiplex.admin.v1.E2BSandboxService/List"
+	E2BSandboxService_Delete_FullMethodName           = "/crimultiplex.admin.v1.E2BSandboxService/Delete"
+	E2BSandboxService_ListCachedBuilds_FullMethodName = "/crimultiplex.admin.v1.E2BSandboxService/ListCachedBuilds"
+)
+
+// E2BSandboxServiceClient is the client API for E2BSandboxService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// E2BSandboxService 是节点本地的 E2B 沙箱生命周期管理面。
+// IDL 与 orchestrator SandboxService 同形，但语义是"走 cri-multiplex
+// 完整生命周期"——CNI/HostPort/stateStore/podRoutes 全部继承，不是透传。
+// Pause/Checkpoint 不在此 service：用 E2BSandboxAdminService 的
+// PauseSandbox/CheckpointSandbox（带 operation 幂等）。
+type E2BSandboxServiceClient interface {
+	// 走完整沙箱创建生命周期（CNI 含预热池、HostPort、tracker、stateStore），
+	// config.sandbox_id 必填且同时作为 cri id 与 e2b id
+	Create(ctx context.Context, in *orchestrator.SandboxCreateRequest, opts ...grpc.CallOption) (*orchestrator.SandboxCreateResponse, error)
+	// 薄转发 orchestrator Update（改 TTL）
+	Update(ctx context.Context, in *orchestrator.SandboxUpdateRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// 薄转发 orchestrator List（不与本地 stateStore 合并）
+	List(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*orchestrator.SandboxListResponse, error)
+	// Stop+Remove 合一的完整清理（幂等，sandbox 不存在返回 OK）
+	Delete(ctx context.Context, in *orchestrator.SandboxDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// 薄转发 orchestrator ListCachedBuilds
+	ListCachedBuilds(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*orchestrator.SandboxListCachedBuildsResponse, error)
+}
+
+type e2BSandboxServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewE2BSandboxServiceClient(cc grpc.ClientConnInterface) E2BSandboxServiceClient {
+	return &e2BSandboxServiceClient{cc}
+}
+
+func (c *e2BSandboxServiceClient) Create(ctx context.Context, in *orchestrator.SandboxCreateRequest, opts ...grpc.CallOption) (*orchestrator.SandboxCreateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(orchestrator.SandboxCreateResponse)
+	err := c.cc.Invoke(ctx, E2BSandboxService_Create_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *e2BSandboxServiceClient) Update(ctx context.Context, in *orchestrator.SandboxUpdateRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, E2BSandboxService_Update_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *e2BSandboxServiceClient) List(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*orchestrator.SandboxListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(orchestrator.SandboxListResponse)
+	err := c.cc.Invoke(ctx, E2BSandboxService_List_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *e2BSandboxServiceClient) Delete(ctx context.Context, in *orchestrator.SandboxDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, E2BSandboxService_Delete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *e2BSandboxServiceClient) ListCachedBuilds(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*orchestrator.SandboxListCachedBuildsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(orchestrator.SandboxListCachedBuildsResponse)
+	err := c.cc.Invoke(ctx, E2BSandboxService_ListCachedBuilds_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// E2BSandboxServiceServer is the server API for E2BSandboxService service.
+// All implementations must embed UnimplementedE2BSandboxServiceServer
+// for forward compatibility.
+//
+// E2BSandboxService 是节点本地的 E2B 沙箱生命周期管理面。
+// IDL 与 orchestrator SandboxService 同形，但语义是"走 cri-multiplex
+// 完整生命周期"——CNI/HostPort/stateStore/podRoutes 全部继承，不是透传。
+// Pause/Checkpoint 不在此 service：用 E2BSandboxAdminService 的
+// PauseSandbox/CheckpointSandbox（带 operation 幂等）。
+type E2BSandboxServiceServer interface {
+	// 走完整沙箱创建生命周期（CNI 含预热池、HostPort、tracker、stateStore），
+	// config.sandbox_id 必填且同时作为 cri id 与 e2b id
+	Create(context.Context, *orchestrator.SandboxCreateRequest) (*orchestrator.SandboxCreateResponse, error)
+	// 薄转发 orchestrator Update（改 TTL）
+	Update(context.Context, *orchestrator.SandboxUpdateRequest) (*emptypb.Empty, error)
+	// 薄转发 orchestrator List（不与本地 stateStore 合并）
+	List(context.Context, *emptypb.Empty) (*orchestrator.SandboxListResponse, error)
+	// Stop+Remove 合一的完整清理（幂等，sandbox 不存在返回 OK）
+	Delete(context.Context, *orchestrator.SandboxDeleteRequest) (*emptypb.Empty, error)
+	// 薄转发 orchestrator ListCachedBuilds
+	ListCachedBuilds(context.Context, *emptypb.Empty) (*orchestrator.SandboxListCachedBuildsResponse, error)
+	mustEmbedUnimplementedE2BSandboxServiceServer()
+}
+
+// UnimplementedE2BSandboxServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedE2BSandboxServiceServer struct{}
+
+func (UnimplementedE2BSandboxServiceServer) Create(context.Context, *orchestrator.SandboxCreateRequest) (*orchestrator.SandboxCreateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Create not implemented")
+}
+func (UnimplementedE2BSandboxServiceServer) Update(context.Context, *orchestrator.SandboxUpdateRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method Update not implemented")
+}
+func (UnimplementedE2BSandboxServiceServer) List(context.Context, *emptypb.Empty) (*orchestrator.SandboxListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method List not implemented")
+}
+func (UnimplementedE2BSandboxServiceServer) Delete(context.Context, *orchestrator.SandboxDeleteRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method Delete not implemented")
+}
+func (UnimplementedE2BSandboxServiceServer) ListCachedBuilds(context.Context, *emptypb.Empty) (*orchestrator.SandboxListCachedBuildsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListCachedBuilds not implemented")
+}
+func (UnimplementedE2BSandboxServiceServer) mustEmbedUnimplementedE2BSandboxServiceServer() {}
+func (UnimplementedE2BSandboxServiceServer) testEmbeddedByValue()                           {}
+
+// UnsafeE2BSandboxServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to E2BSandboxServiceServer will
+// result in compilation errors.
+type UnsafeE2BSandboxServiceServer interface {
+	mustEmbedUnimplementedE2BSandboxServiceServer()
+}
+
+func RegisterE2BSandboxServiceServer(s grpc.ServiceRegistrar, srv E2BSandboxServiceServer) {
+	// If the following call panics, it indicates UnimplementedE2BSandboxServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&E2BSandboxService_ServiceDesc, srv)
+}
+
+func _E2BSandboxService_Create_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(orchestrator.SandboxCreateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(E2BSandboxServiceServer).Create(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: E2BSandboxService_Create_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(E2BSandboxServiceServer).Create(ctx, req.(*orchestrator.SandboxCreateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _E2BSandboxService_Update_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(orchestrator.SandboxUpdateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(E2BSandboxServiceServer).Update(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: E2BSandboxService_Update_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(E2BSandboxServiceServer).Update(ctx, req.(*orchestrator.SandboxUpdateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _E2BSandboxService_List_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(E2BSandboxServiceServer).List(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: E2BSandboxService_List_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(E2BSandboxServiceServer).List(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _E2BSandboxService_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(orchestrator.SandboxDeleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(E2BSandboxServiceServer).Delete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: E2BSandboxService_Delete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(E2BSandboxServiceServer).Delete(ctx, req.(*orchestrator.SandboxDeleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _E2BSandboxService_ListCachedBuilds_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(E2BSandboxServiceServer).ListCachedBuilds(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: E2BSandboxService_ListCachedBuilds_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(E2BSandboxServiceServer).ListCachedBuilds(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// E2BSandboxService_ServiceDesc is the grpc.ServiceDesc for E2BSandboxService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var E2BSandboxService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "crimultiplex.admin.v1.E2BSandboxService",
+	HandlerType: (*E2BSandboxServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Create",
+			Handler:    _E2BSandboxService_Create_Handler,
+		},
+		{
+			MethodName: "Update",
+			Handler:    _E2BSandboxService_Update_Handler,
+		},
+		{
+			MethodName: "List",
+			Handler:    _E2BSandboxService_List_Handler,
+		},
+		{
+			MethodName: "Delete",
+			Handler:    _E2BSandboxService_Delete_Handler,
+		},
+		{
+			MethodName: "ListCachedBuilds",
+			Handler:    _E2BSandboxService_ListCachedBuilds_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "admin.proto",
+}
 
 const (
 	E2BSandboxAdminService_PauseSandbox_FullMethodName      = "/crimultiplex.admin.v1.E2BSandboxAdminService/PauseSandbox"
