@@ -107,7 +107,7 @@ func probeADBPath(ctx context.Context, proxyAddr string) error {
 	}
 	defer conn.Close()
 
-	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return fmt.Errorf("set ADB handshake deadline: %w", err)
 	}
 	if _, err := conn.Write(adbClientCNXN()); err != nil {
