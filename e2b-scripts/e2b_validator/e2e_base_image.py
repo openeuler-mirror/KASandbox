@@ -13,6 +13,11 @@ from .e2b_config import parse_env_file
 
 
 DEFAULT_DEPLOYMENT_FILES = (
+    Path("/opt/e2b-infra/standard/.env"),
+    Path("/opt/e2b-infra/standard/dep/.env"),
+    Path("/opt/e2b-infra/standard/dep/nomad/template-manager.hcl"),
+    Path("/opt/e2b-infra/standard/dep/rendered/template-manager.hcl"),
+    Path("/opt/e2b-infra/standard/nomad/template-manager.hcl"),
     Path("/opt/e2b-infra/dep/.env"),
     Path("/opt/e2b-infra/dep/template-manager.hcl"),
     Path("/opt/e2b-infra/dep/template-manager.yaml"),

@@ -1,10 +1,11 @@
-"""Detailed data-driven catalog for the seven real E2B business operations."""
+"""Detailed data-driven catalog for real E2B operations and SDK capabilities."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from .e2e_models import Business, TestCase
+from .e2e_extended_cases import build_extended_cases
 
 
 def build_cases(
@@ -52,7 +53,7 @@ def build_cases(
     # Template creation. One real build plus source and resource boundaries.
     template_name = f"e2e-{run_id}-base"
     add("TP-001", Business.CREATE_TEMPLATE, "真实 base image 模板构建", "验证 template-manager 接收、调度并返回 Harbor Ubuntu 构建结果", {"name": template_name, "base_image": base_image, "cpu_count": 1, "memory_mb": 1024, "timeout": 600}, "构建成功，或明确记录镜像/基础设施阻塞", "create_template", tags=("smoke", "infrastructure"))
-    add("TP-002", Business.CREATE_TEMPLATE, "inline Dockerfile 构建", "验证 Dockerfile content 请求路径和唯一名称", {"name": f"e2e-{run_id}-inline", "dockerfile_content": f"FROM {base_image}\nRUN printf e2e >/e2e-marker\n", "cpu_count": 1, "memory_mb": 512, "timeout": 600}, "构建成功，或明确记录基础设施阻塞", "create_template", tags=("pairwise", "infrastructure"))
+    add("TP-002", Business.CREATE_TEMPLATE, "inline Dockerfile 构建", "验证 Dockerfile content 请求路径和唯一名称", {"name": f"e2e-{run_id}-inline", "dockerfile_content": f"FROM {base_image}\nRUN printf e2e >/tmp/e2e-marker\n", "cpu_count": 1, "memory_mb": 512, "timeout": 600}, "构建成功，或明确记录基础设施阻塞", "create_template", tags=("pairwise", "infrastructure"))
     add("TP-003", Business.CREATE_TEMPLATE, "skip-cache 参数", "验证 skip-cache、CPU 和内存组合", {"name": f"e2e-{run_id}-nocache", "base_image": base_image, "cpu_count": 2, "memory_mb": 1024, "skip_cache": True, "timeout": 600}, "参数被接收并形成可追踪构建结果", "create_template", tags=("pairwise", "infrastructure"))
     add("TP-004", Business.CREATE_TEMPLATE, "不存在的 Dockerfile", "验证本地源文件边界", {"argv": ["create-template", "--name", f"e2e-{run_id}-missing-file", "--dockerfile", f"/tmp/e2e-{run_id}-missing-Dockerfile"]}, "构建请求发出前返回文件不存在", "expect_cli_error", tags=("expected-error",))
     add("TP-005", Business.CREATE_TEMPLATE, "CPU 为 0", "验证 CPU 正数边界", {"argv": ["create-template", "--name", f"e2e-{run_id}-cpu0", "--base-image", "alpine", "--cpu-count", "0"]}, "客户端拒绝 CPU=0", "expect_cli_error", tags=("boundary", "expected-error"))
@@ -138,4 +139,9 @@ def build_cases(
         add(case_id, Business.LIST_TEMPLATES, title, f"验证 list-templates {title}", parameters, "返回合法 JSON 且模板状态可解释", "list_templates", tags=("read-only",))
     add("LTP-006", Business.LIST_TEMPLATES, "max-pages=-1", "验证模板分页下界", {"argv": ["list-templates", "--max-pages", "-1"]}, "客户端拒绝负分页值", "expect_cli_error", tags=("boundary", "expected-error"))
 
+    cases.extend(build_extended_cases(run_id, template=template, base_image=base_image))
+    case_ids = [case.case_id for case in cases]
+    duplicates = sorted({case_id for case_id in case_ids if case_ids.count(case_id) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate E2E case IDs: {', '.join(duplicates)}")
     return cases
