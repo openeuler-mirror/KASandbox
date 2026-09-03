@@ -82,6 +82,9 @@
 ### 1.2 Nomad 模式快速上手
 
 ```bash
+# 0. 部署路径：通过 RPM 包部署，组件落地 /opt/e2b-infra/（下述命令均在该目录执行）
+cd /opt/e2b-infra
+
 # 1. 修改 .env 中的 SERVER_IP 为本机 IP
 vi .env
 
@@ -102,6 +105,9 @@ python3 create_sandbox.py --server-ip <SERVER_IP>
 ### 1.3 K8S 模式快速上手
 
 ```bash
+# 0. 部署路径：通过 RPM 包部署，组件落地 /opt/e2b-infra/（下述命令均在该目录执行）
+cd /opt/e2b-infra
+
 # 1. 修改 .env：SERVER_IP 为本机 IP，DEPLOY_MODE=k8s
 vi .env
 
