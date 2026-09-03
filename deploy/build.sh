@@ -115,6 +115,20 @@ install_base_packages() {
 
 # --- 函数：拉取并重命名 Docker 镜像 (带存在性检查) ---
 pull_docker_images() {
+
+    local base_image_tar="$DEP_DIR/openEuler-docker.aarch64.tar.xz"
+    if [ ! -s "$base_image_tar" ]; then
+        wget https://repo.openeuler.org/openEuler-24.03-LTS-SP3/docker_img/aarch64/openEuler-docker.aarch64.tar.xz -O "$base_image_tar" \
+            || error "openEuler 基础镜像下载失败"
+    fi
+
+    # 解压 tar.xz 得到 docker load 可识别的 tar 镜像并加载（-k 保留源文件）
+    local base_image_inner_tar="$DEP_DIR/openEuler-docker.aarch64.tar"
+    if [ -s "$base_image_tar" ] && [ ! -f "$base_image_inner_tar" ]; then
+        echo "正在解压: $base_image_tar"
+        xz -dk "$base_image_tar" || error "openEuler 基础镜像解压失败"
+    fi
+
     # 加载本地镜像包（.tar / .tar.gz）
     local file
     for file in "$DEP_DIR"/*.tar "$DEP_DIR"/*.tar.gz; do
@@ -133,7 +147,6 @@ pull_docker_images() {
         "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/debian:bookworm-slim${arch_suffix}|debian:bookworm-slim"
         "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:latest${arch_suffix}|postgres:latest"
     )
-
     # K8S 模式额外拉取 busybox 和 ubuntu（两种架构均需要）
     if [ "$DEPLOY_MODE" = "k8s" ]; then
         images+=(
@@ -605,7 +618,6 @@ download_packages() {
             fc_arch="x86_64"
             oe_arch="x86_64"
             harbor_pkg="harbor-offline-installer-v2.13.0.tgz"
-            harbor_url="https://github.com/goharbor/harbor/releases/download/v2.13.0"
             ;;
         arm64)
             docker_arch="aarch64"
@@ -614,7 +626,6 @@ download_packages() {
             fc_arch="aarch64"
             oe_arch="aarch64"
             harbor_pkg="harbor-offline-installer-aarch64-v2.13.0.tgz"
-            harbor_url="https://github.com/wise2c-devops/build-harbor-aarch64/releases/download/v2.13.0"
             ;;
         *)
             error "不支持的架构 $ARCH，仅支持 x86_64/arm64"
@@ -623,13 +634,26 @@ download_packages() {
 
     echo "开始下载 $ARCH 架构软件包..."
 
+    # 国内网络不可达源使用镜像: docker 用华为云镜像, github 用 ghfast.top 代理（同 L1503 websocat 的做法）
+    local gh_proxy="https://ghfast.top"
+    case "$ARCH" in
+        x86_64)
+            docker_mirror="https://mirrors.huaweicloud.com/docker-ce/linux/static/stable/x86_64"
+            harbor_url="${gh_proxy}/https://github.com/goharbor/harbor/releases/download/v2.13.0"
+            ;;
+        arm64)
+            docker_mirror="https://mirrors.huaweicloud.com/docker-ce/linux/static/stable/aarch64"
+            harbor_url="${gh_proxy}/https://github.com/wise2c-devops/build-harbor-aarch64/releases/download/v2.13.0"
+            ;;
+    esac
+
     # 定义下载列表: URL|目标文件名|描述
     local downloads=(
-        "https://download.docker.com/linux/static/stable/${docker_arch}/docker-25.0.5.tgz|docker-25.0.5.tgz|docker"
-        "https://github.com/docker/compose/releases/download/v2.40.2/docker-compose-linux-${docker_arch}|docker-compose-linux-${docker_arch}|docker-compose"
+        "${docker_mirror}/docker-25.0.5.tgz|docker-25.0.5.tgz|docker"
+        "${gh_proxy}/https://github.com/docker/compose/releases/download/v2.40.2/docker-compose-linux-${docker_arch}|docker-compose-linux-${docker_arch}|docker-compose"
         "https://releases.hashicorp.com/nomad/1.10.4/nomad_1.10.4_linux_${nomad_arch}.zip|nomad_1.10.4_linux_${nomad_arch}.zip|nomad"
         "https://releases.hashicorp.com/consul/1.21.4/consul_1.21.4_linux_${consul_arch}.zip|consul_1.21.4_linux_${consul_arch}.zip|consul"
-        "https://github.com/firecracker-microvm/firecracker/releases/download/v1.13.1/firecracker-v1.13.1-${fc_arch}.tgz|firecracker-v1.13.1-${fc_arch}.tgz|firecracker"
+        "${gh_proxy}/https://github.com/firecracker-microvm/firecracker/releases/download/v1.13.1/firecracker-v1.13.1-${fc_arch}.tgz|firecracker-v1.13.1-${fc_arch}.tgz|firecracker"
         "https://dl-cdn.openeuler.openatom.cn/openEuler-24.03-LTS-SP3/docker_img/${oe_arch}/openEuler-docker.${oe_arch}.tar.xz|openEuler-docker.${oe_arch}.tar.xz|docker"
         "${harbor_url}/${harbor_pkg}|${harbor_pkg}|harbor"
     )
@@ -640,8 +664,15 @@ download_packages() {
         local rest="${entry#*|}"
         filename="${rest%%|*}"
         desc="${rest##*|}"
+        # 幂等：已存在且非空则跳过
+        if [ -s "$pkg_dir/$filename" ]; then
+            echo "已存在，跳过 $desc: $pkg_dir/$filename"
+            continue
+        fi
         echo "正在下载 $desc: $url"
-        wget -q --show-progress --no-check-certificate "$url" -O "$pkg_dir/$filename" || error "$desc 下载失败"
+        # --timeout/--tries 防止不可达源无限挂起; 失败时删除残缺文件，避免下次误判为完整
+        wget -q --show-progress --no-check-certificate --timeout=60 --tries=3 "$url" -O "$pkg_dir/$filename" \
+            || { rm -f "$pkg_dir/$filename"; error "$desc 下载失败"; }
     done
 
     # e2b-webhook 镜像 tar 包（K8S 模式下启用 webhook 时需要）
@@ -716,6 +747,29 @@ uninstall_docker_resources() {
     else
         info "未找到 Harbor 镜像，跳过"
     fi
+    # 清理 crictl/containerd(k8s.io ns) 缓存的 Harbor 镜像（K8S 模式）
+    if [ "$DEPLOY_MODE" = "k8s" ] && command -v ctr >/dev/null 2>&1; then
+        info "清理 containerd (k8s.io) 中的 Harbor 镜像: ${registry_prefix}/..."
+        local ctr_harbor_images ctr_harbor_count=0
+        ctr_harbor_images=$(ctr -n k8s.io images ls -q | grep "^${registry_prefix}/" || true)
+        if [ -n "$ctr_harbor_images" ]; then
+            while IFS= read -r image; do
+                [ -n "$image" ] || continue
+                info "删除 containerd 镜像: $image"
+                ctr -n k8s.io images rm "$image" >/dev/null 2>&1 || true
+                ctr_harbor_count=$((ctr_harbor_count + 1))
+            done <<< "$ctr_harbor_images"
+            success "containerd Harbor 镜像已清理 (${ctr_harbor_count} 个)"
+        else
+            info "containerd 中未找到 Harbor 镜像，跳过"
+        fi
+        # 清理 K8S 导入的 busybox（容器运行时缓存）
+        if ctr -n k8s.io images ls -q | grep -q "^docker.io/library/busybox:latest$"; then
+            info "删除 containerd 镜像: docker.io/library/busybox:latest"
+            ctr -n k8s.io images rm docker.io/library/busybox:latest >/dev/null 2>&1 || true
+        fi
+    fi
+
 
     # 清理悬空镜像
     info "清理悬空镜像..."
