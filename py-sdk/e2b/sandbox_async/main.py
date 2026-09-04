@@ -32,6 +32,7 @@ from e2b.sandbox_async.filesystem.filesystem import Filesystem
 from e2b.sandbox_async.git import Git
 from e2b.sandbox_async.sandbox_api import SandboxApi, SandboxInfo
 from e2b.sandbox_async.paginator import AsyncSnapshotPaginator
+from e2b.sandbox_async.checkpoint import AsyncCheckpoint
 from e2b.volume.volume_async import AsyncVolume
 from e2b.api.client.models import SandboxVolumeMount as SandboxVolumeMountAPI
 
@@ -91,6 +92,13 @@ class AsyncSandbox(SandboxApi):
         """
         return self._git
 
+    @property
+    def checkpoint(self) -> AsyncCheckpoint:
+        """
+        Module for checkpointing and restoring sandbox state.
+        """
+        return self._checkpoint
+
     def __init__(
         self,
         **opts: Unpack[SandboxOpts],
@@ -107,6 +115,7 @@ class AsyncSandbox(SandboxApi):
             ),
             transport=self._transport,
             headers=self.connection_config.sandbox_headers,
+            verify=self.connection_config.verify_ssl,
         )
         self._filesystem = Filesystem(
             self.envd_api_url,
@@ -128,6 +137,12 @@ class AsyncSandbox(SandboxApi):
             self._envd_version,
         )
         self._git = Git(self._commands)
+        self._checkpoint = AsyncCheckpoint(
+            self.checkpointd_api_url,
+            self.connection_config,
+            self._transport.pool,
+            self._transport,
+        )
 
     async def is_running(self, request_timeout: Optional[float] = None) -> bool:
         """

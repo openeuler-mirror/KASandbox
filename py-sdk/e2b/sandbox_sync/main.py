@@ -32,6 +32,7 @@ from e2b.sandbox_sync.filesystem.filesystem import Filesystem
 from e2b.sandbox_sync.git import Git
 from e2b.sandbox_sync.sandbox_api import SandboxApi, SandboxInfo
 from e2b.sandbox_sync.paginator import SnapshotPaginator
+from e2b.sandbox_sync.checkpoint import Checkpoint
 from e2b.api.client.models import SandboxVolumeMount as SandboxVolumeMountAPI
 from e2b.volume.volume_sync import Volume
 
@@ -91,6 +92,13 @@ class Sandbox(SandboxApi):
         """
         return self._git
 
+    @property
+    def checkpoint(self) -> Checkpoint:
+        """
+        Module for checkpointing and restoring sandbox state.
+        """
+        return self._checkpoint
+
     def __init__(self, **opts: Unpack[SandboxOpts]):
         """
         :deprecated: This constructor is deprecated
@@ -105,6 +113,7 @@ class Sandbox(SandboxApi):
             base_url=self.envd_api_url,
             transport=self._transport,
             headers=self.connection_config.sandbox_headers,
+            verify=self.connection_config.verify_ssl,
         )
         self._filesystem = Filesystem(
             self.envd_api_url,
@@ -126,6 +135,12 @@ class Sandbox(SandboxApi):
             self._envd_version,
         )
         self._git = Git(self._commands)
+        self._checkpoint = Checkpoint(
+            self.checkpointd_api_url,
+            self.connection_config,
+            self._transport.pool,
+            self._transport,
+        )
 
     def is_running(self, request_timeout: Optional[float] = None) -> bool:
         """

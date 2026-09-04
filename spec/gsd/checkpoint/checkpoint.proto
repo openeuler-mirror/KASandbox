@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package checkpoint;
+
+option go_package = "github.com/e2b-dev/infra/packages/gsd/internal/services/spec/checkpoint";
+
+message CreateCheckpointRequest {
+  optional string name = 1;
+}
+
+message CreateCheckpointResponse {
+  string checkpoint_id = 1;
+}
+
+message RestoreCheckpointRequest {
+  string checkpoint_id = 1;
+}
+
+message RestoreCheckpointResponse {
+  bool success = 1;
+}
+
+message ListCheckpointsRequest {}
+
+message ListCheckpointsResponse {
+  repeated CheckpointInfo checkpoints = 1;
+}
+
+message DeleteCheckpointRequest {
+  string checkpoint_id = 1;
+}
+
+message DeleteCheckpointResponse {
+  bool success = 1;
+}
+
+message CheckpointInfo {
+  string checkpoint_id = 1;
+  optional string name = 2;
+  int64 created_at = 3;
+}
+
+service Checkpoint {
+  rpc CreateCheckpoint(CreateCheckpointRequest) returns (CreateCheckpointResponse);
+  rpc RestoreCheckpoint(RestoreCheckpointRequest) returns (RestoreCheckpointResponse);
+  rpc ListCheckpoints(ListCheckpointsRequest) returns (ListCheckpointsResponse);
+  rpc DeleteCheckpoint(DeleteCheckpointRequest) returns (DeleteCheckpointResponse);
+}

@@ -1,0 +1,15 @@
+# buf.gen.yaml defines a local generation template.
+# For details, see https://buf.build/docs/configuration/v1/buf-gen-yaml
+version: v1
+plugins:
+  - plugin: python
+    out: ../../py-sdk/e2b/gsd
+    opt:
+      - pyi_out=../../py-sdk/e2b/gsd
+  - name: connect-python
+    out: ../../py-sdk/e2b/gsd
+    path: protoc-gen-connect-python
+
+managed:
+  enabled: true
+  optimize_for: SPEED
