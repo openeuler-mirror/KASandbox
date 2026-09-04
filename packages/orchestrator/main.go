@@ -38,8 +38,10 @@ import (
 	blockmetrics "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block/metrics"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/cgroup"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/hostservice"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/stratovirt"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/server"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/service"
@@ -421,6 +423,8 @@ func run(config cfg.Config) (success bool) {
 		logger.L().Fatal(ctx, "failed to create device pool", zap.Error(err))
 	}
 	fc.KillOrphanedProcesses(ctx, config.FirecrackerVersionsDir)
+	stratovirt.KillOrphanedProcesses(ctx, config.StratoVirtVersionsDir)
+	hostservice.KillOrphanedProcesses(ctx, config.CvdHostPackagesRoot)
 	devicePool.ReclaimOrphanedDevices(ctx)
 	startService("nbd device pool", func() error {
 		devicePool.Populate(ctx)

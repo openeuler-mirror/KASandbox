@@ -56,6 +56,6 @@ func BuildModemSimulatorService(
 		Env:           env,
 		ExtraFiles:    []*os.File{listener.File},
 		RestartPolicy: RestartOnCrash,
-		ReadyCheck:    &ModemSimulatorReady{Path: listener.Path},
+		ReadyCheck:    &ProcessAlive{},
 	}, nil
 }

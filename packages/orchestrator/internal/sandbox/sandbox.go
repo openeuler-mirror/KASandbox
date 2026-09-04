@@ -388,7 +388,7 @@ func (f *Factory) CreateSandbox(
 		}
 	}
 
-	err = vmmHandle.Create(
+	vmmStartErr := vmmHandle.Create(
 		ctx,
 		sbxlogger.SandboxMetadata{
 			SandboxID:  runtime.SandboxID,
@@ -400,22 +400,15 @@ func (f *Factory) CreateSandbox(
 		config.HugePages,
 		processOptions,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create VMM: %w", err)
+	if vmmStartErr != nil {
+		var vmmExitErr error
+		if _, pidErr := vmmHandle.Pid(); pidErr == nil {
+			<-vmmHandle.Exit().Done()
+			vmmExitErr = vmmHandle.Exit().Wait()
+		}
+		return nil, errors.Join(fmt.Errorf("failed to create VMM: %w", vmmStartErr), vmmExitErr)
 	}
 	telemetry.ReportEvent(ctx, "created vmm process")
-
-	if androidServices != nil {
-		proxyAddr := androidServices.ADBAddress
-		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, f.config.ReadyCheckTimeout); err != nil {
-			return nil, fmt.Errorf("vsock proxy not ready: %w", err)
-		}
-		rilCtx, cancelRIL := context.WithTimeout(ctx, f.config.ReadyCheckTimeout)
-		defer cancelRIL()
-		if err := androidServices.WaitForModemConnection(rilCtx); err != nil {
-			return nil, fmt.Errorf("guest RIL did not reconnect to modem simulator: %w", err)
-		}
-	}
 
 	resources := &Resources{
 		Slot:   ips,
@@ -459,6 +452,21 @@ func (f *Factory) CreateSandbox(
 
 	// Stop the sandbox first if it is still running, otherwise do nothing
 	cleanup.AddPriority(ctx, sbx.Stop)
+
+	// Register Sandbox cleanup before Android-only readiness checks. If ADB or
+	// modem readiness fails, the normal stop path waits for the VMM to exit
+	// before the disk providers are released.
+	if androidServices != nil {
+		proxyAddr := androidServices.ADBAddress
+		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, f.config.ReadyCheckTimeout); err != nil {
+			return nil, fmt.Errorf("vsock proxy not ready: %w", err)
+		}
+		rilCtx, cancelRIL := context.WithTimeout(ctx, f.config.ReadyCheckTimeout)
+		defer cancelRIL()
+		if err := androidServices.WaitForModemConnection(rilCtx); err != nil {
+			return nil, fmt.Errorf("guest RIL did not reconnect to modem simulator: %w", err)
+		}
+	}
 
 	go func() {
 		defer execSpan.End()
@@ -788,6 +796,7 @@ func (f *Factory) ResumeSandbox(
 
 		cancelUffdStartCtx(fmt.Errorf("uffd process exited: %w", errors.Join(uffdWaitErr, context.Cause(uffdStartCtx))))
 	}()
+
 	vmmStartErr := vmmHandle.Resume(
 		uffdStartCtx,
 		sbxlogger.SandboxMetadata{
@@ -816,8 +825,14 @@ func (f *Factory) ResumeSandbox(
 	}
 
 	if vmmStartErr != nil {
-		return nil, fmt.Errorf("failed to start VMM: %w", vmmStartErr)
+		var vmmExitErr error
+		if _, pidErr := vmmHandle.Pid(); pidErr == nil {
+			<-vmmHandle.Exit().Done()
+			vmmExitErr = vmmHandle.Exit().Wait()
+		}
+		return nil, errors.Join(fmt.Errorf("failed to start VMM: %w", vmmStartErr), vmmExitErr)
 	}
+	
 	zap.L().Sugar().Infof("[ResumeSandbox] resume VM cost: %d ms, traceID=%s", time.Since(phaseStart).Milliseconds(), traceID)
 	telemetry.ReportEvent(ctx, "initialized VMM")
 
