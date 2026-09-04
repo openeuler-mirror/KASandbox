@@ -23,7 +23,7 @@ var (
 
 	newSlotsAvailableCounter = utils.Must(meter.Int64UpDownCounter("orchestrator.network.slots_pool.new",
 		metric.WithDescription("Number of new network slots ready to be used."),
-		metric.WithUnit("{slot"),
+		metric.WithUnit("{slot}"),
 	))
 	reusableSlotsAvailableCounter = utils.Must(meter.Int64UpDownCounter("orchestrator.network.slots_pool.reused",
 		metric.WithDescription("Number of reused network slots ready to be used."),
