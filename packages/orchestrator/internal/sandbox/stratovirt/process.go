@@ -281,6 +281,7 @@ func (p *Process) Resume(
 	telemetry.ReportEvent(ctx, "configured stratovirt")
 	zap.L().Sugar().Infof("[ResumeSandbox] start sv cost: %.3f ms, traceID=%s", time.Since(phaseStart).Seconds()*1000, traceID)
 
+	phaseStart = time.Now()
 	select {
 	case <-ctx.Done():
 		_ = p.Stop(ctx)
@@ -288,16 +289,21 @@ func (p *Process) Resume(
 	case <-uffdReady:
 	}
 	telemetry.ReportEvent(ctx, "uffd ready")
+	zap.L().Sugar().Infof("[ResumeSandbox] sv wait uffd-ready cost: %.3f ms, traceID=%s", time.Since(phaseStart).Seconds()*1000, traceID)
 
+	phaseStart = time.Now()
 	if err := p.setMmdsConfig(ctx); err != nil {
 		_ = p.Stop(ctx)
 		return fmt.Errorf("set mmds config: %w", err)
 	}
+	zap.L().Sugar().Infof("[ResumeSandbox] sv set mmds-config cost: %.3f ms, traceID=%s", time.Since(phaseStart).Seconds()*1000, traceID)
 
+	phaseStart = time.Now()
 	if err := p.setMmds(ctx, metadata.LoggerMetadata(), accessToken); err != nil {
 		_ = p.Stop(ctx)
 		return fmt.Errorf("set mmds: %w", err)
 	}
+	zap.L().Sugar().Infof("[ResumeSandbox] sv set mmds-data cost: %.3f ms, traceID=%s", time.Since(phaseStart).Seconds()*1000, traceID)
 
 	telemetry.ReportEvent(ctx, "resumed stratovirt")
 	return nil
