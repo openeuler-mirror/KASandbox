@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -141,6 +140,10 @@ type grpcE2BEngine struct {
 	// 在途 RunPodSandbox 计数：>0 时 CNI 预热暂停，
 	// 避免与创建请求争抢 CNI 插件链的串行资源（IPAM 锁/netlink/udev）
 	inflightRunPod int64
+	// 最近一次创建请求结束的时间（UnixNano）：结束后 cniPoolWarmCooldown
+	// 内仍不预热，防止高并发下失败 handler 集体返回、inflight 瞬态归零，
+	// 预热在重试波次的间隙恢复，与紧随其后的创建争抢插件链形成振荡
+	lastRunPodActivity int64
 
 	// 非空时，labels 匹配 hideLabelKey=hideLabelValue 的 sandbox 对 CRI List 接口隐藏
 	hideLabelKey   string
@@ -454,8 +457,8 @@ func (e *grpcE2BEngine) validateAnnotations(anns map[string]string) (templateID,
 
 func (e *grpcE2BEngine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRequest) (*runtime.RunPodSandboxResponse, error) {
 	log.Printf("[GrpcE2BEngine] RunPodSandbox: name=%s, handler=%s", req.Config.Metadata.Name, req.RuntimeHandler)
-	atomic.AddInt64(&e.inflightRunPod, 1)
-	defer atomic.AddInt64(&e.inflightRunPod, -1)
+	e.trackRunPodStart()
+	defer e.trackRunPodEnd()
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
