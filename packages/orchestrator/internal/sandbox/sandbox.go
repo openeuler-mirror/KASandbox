@@ -898,12 +898,6 @@ func (f *Factory) ResumeSandbox(
 
 	telemetry.ReportEvent(execCtx, "envd initialized")
 
-	if androidServices != nil {
-		// Avoid ADB traffic during early lazy restore.
-		if err := androidServices.WaitForADBReady(ctx, f.config.ReadyCheckTimeout); err != nil {
-			return nil, fmt.Errorf("Android ADB not ready: %w", err)
-		}
-	}
 
 	if f.featureFlags.BoolFlag(execCtx, featureflags.HostStatsEnabled) {
 		samplingInterval := time.Duration(f.featureFlags.IntFlag(execCtx, featureflags.HostStatsSamplingInterval)) * time.Millisecond
