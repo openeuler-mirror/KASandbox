@@ -1,10 +1,13 @@
 // Copyright 2025 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::os::unix::io::AsRawFd;
+
 use serde::{Deserialize, Serialize};
 
 use crate::Kvm;
 use crate::arch::aarch64::gic::GicState;
+use crate::logger::info;
 use crate::vstate::memory::{GuestMemoryExtension, GuestMemoryState};
 use crate::vstate::vm::{VmCommon, VmError};
 
@@ -49,7 +52,46 @@ impl ArchVm {
         // IRQ chip because the `KVM_CREATE_VCPU` ioctl will return error if the IRQCHIP
         // was already initialized.
         // Search for `kvm_arch_vcpu_create` in arch/arm/kvm/arm.c.
-        self.setup_irqchip(nr_vcpus)
+        self.setup_irqchip(nr_vcpus)?;
+        self.enable_hdbss();
+        Ok(())
+    }
+
+    /// Enable ARM HDBSS (Hardware Dirty Bit State Structure) for hardware-assisted
+    /// dirty page tracking. This is best-effort: if the host kernel does not support
+    /// the capability, the error is logged and the VM continues to run.
+    fn enable_hdbss(&self) {
+        // KVM_CAP_ARM_HW_DIRTY_STATE_TRACK is not yet present in the kvm-bindings
+        // version used by Firecracker, so define it locally.
+        const KVM_CAP_ARM_HW_DIRTY_STATE_TRACK: u32 = 502;
+        // openEuler defines KVM_ENABLE_CAP as _IOW(KVMIO, 0xa3, struct kvm_enable_cap)
+        const KVM_ENABLE_CAP: u64 = 0x4068_AEA3;
+
+        let mut cap = kvm_bindings::kvm_enable_cap::default();
+        cap.cap = KVM_CAP_ARM_HW_DIRTY_STATE_TRACK;
+        // args[0]: allocation order for the HDBSS buffer (1 => two pages / 8 KiB).
+        cap.args[0] = 1;
+
+        // SAFETY: the VM fd is valid and `cap` is a properly initialized
+        // `kvm_enable_cap` struct matching the kernel ABI.
+        let ret = unsafe {
+            libc::ioctl(
+                self.common.fd.as_raw_fd(),
+                KVM_ENABLE_CAP as libc::Ioctl,
+                &cap as *const kvm_bindings::kvm_enable_cap,
+            )
+        };
+
+        if ret < 0 {
+            let err = vmm_sys_util::errno::Error::last();
+            info!(
+                "HDBSS enable failed (cap may be unsupported): {} (errno {})",
+                err,
+                err.errno()
+            );
+        } else {
+            info!("HDBSS enabled successfully");
+        }
     }
 
     /// Creates the GIC (Global Interrupt Controller).

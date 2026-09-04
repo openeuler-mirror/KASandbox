@@ -10,6 +10,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use kvm_bindings::{KVM_MEM_LOG_DIRTY_PAGES, kvm_userspace_memory_region};
 use kvm_ioctls::VmFd;
@@ -339,6 +340,7 @@ impl Vm {
 
     /// Retrieves the KVM dirty bitmap for each of the guest's memory regions.
     pub fn get_dirty_bitmap(&self) -> Result<DirtyBitmap, vmm_sys_util::errno::Error> {
+        let start = Instant::now();
         let mut bitmap: DirtyBitmap = HashMap::new();
         self.guest_memory()
             .iter()
@@ -348,6 +350,7 @@ impl Vm {
                     .get_dirty_log(slot, u64_to_usize(region.len()))
                     .map(|bitmap_region| _ = bitmap.insert(slot, bitmap_region))
             })?;
+        info!("get_dirty_bitmap took {:?}", start.elapsed());
         Ok(bitmap)
     }
 
