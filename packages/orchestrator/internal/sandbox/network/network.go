@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/vishvananda/netlink"
@@ -481,30 +483,76 @@ func (s *Slot) CreateExternalNetNSNetwork(ctx context.Context) error {
 		return fmt.Errorf("error initializing iptables in external netns: %w", err)
 	}
 
-	if err = tables.Append("nat", "PREROUTING", "-d", s.HostIPString(), "-j", "DNAT", "--to-destination", s.NamespaceIP()); err != nil {
-		return fmt.Errorf("error creating external netns dnat rule: %w", err)
-	}
-	if err = tables.Append("nat", "POSTROUTING", "-s", s.NamespaceIP(), "-j", "SNAT", "--to-source", s.HostIPString()); err != nil {
-		return fmt.Errorf("error creating external netns snat rule: %w", err)
-	}
-	if err = tables.Append("nat", "POSTROUTING", "-o", s.VpeerName(), "-s", cvdTapNetwork, "-j", "SNAT", "--to-source", s.HostIPString()); err != nil {
-		return fmt.Errorf("error creating external netns cvd-mtap snat rule: %w", err)
-	}
-	if err = tables.Append("filter", "FORWARD", "-i", s.VpeerName(), "-o", s.TapName(), "-j", "ACCEPT"); err != nil {
-		return fmt.Errorf("error creating external netns forward rule to tap: %w", err)
-	}
-	if err = tables.Append("filter", "FORWARD", "-i", s.TapName(), "-o", s.VpeerName(), "-j", "ACCEPT"); err != nil {
-		return fmt.Errorf("error creating external netns forward rule from tap: %w", err)
-	}
-	if err = tables.Append("filter", "FORWARD", "-i", s.VpeerName(), "-o", s.ExtraTapName(), "-j", "ACCEPT"); err != nil {
-		return fmt.Errorf("error creating external netns forward rule to cvd-mtap: %w", err)
-	}
-	if err = tables.Append("filter", "FORWARD", "-i", s.ExtraTapName(), "-o", s.VpeerName(), "-j", "ACCEPT"); err != nil {
-		return fmt.Errorf("error creating external netns forward rule from cvd-mtap: %w", err)
+	// Install all per-slot iptables rules in a single iptables-restore
+	// transaction. Sequential `iptables` execs serialize on the global
+	// xtables.lock across all concurrent sandbox creations on the host,
+	// which dominates slot setup time under bulk load.
+	if err = s.applyExternalNetNSRules(tables); err != nil {
+		return err
 	}
 
 	if err = s.InitializeFirewall(); err != nil {
 		return fmt.Errorf("error initializing external netns slot firewall: %w", err)
+	}
+
+	return nil
+}
+
+// applyExternalNetNSRules installs the 7 per-slot iptables rules of the
+// external netns mode with one `iptables-restore --noflush` call instead of 7
+// separate `iptables` execs. The rules are private to the sandbox netns, so
+// skipping the xtables.lock serialization is safe. Falls back to sequential
+// appends when iptables-restore is not available.
+func (s *Slot) applyExternalNetNSRules(tables *iptables.IPTables) error {
+	var b strings.Builder
+	b.WriteString("*nat\n")
+	fmt.Fprintf(&b, "-A PREROUTING -d %s -j DNAT --to-destination %s\n", s.HostIPString(), s.NamespaceIP())
+	fmt.Fprintf(&b, "-A POSTROUTING -s %s -j SNAT --to-source %s\n", s.NamespaceIP(), s.HostIPString())
+	fmt.Fprintf(&b, "-A POSTROUTING -o %s -s %s -j SNAT --to-source %s\n", s.VpeerName(), cvdTapNetwork, s.HostIPString())
+	b.WriteString("COMMIT\n*filter\n")
+	fmt.Fprintf(&b, "-A FORWARD -i %s -o %s -j ACCEPT\n", s.VpeerName(), s.TapName())
+	fmt.Fprintf(&b, "-A FORWARD -i %s -o %s -j ACCEPT\n", s.TapName(), s.VpeerName())
+	fmt.Fprintf(&b, "-A FORWARD -i %s -o %s -j ACCEPT\n", s.VpeerName(), s.ExtraTapName())
+	fmt.Fprintf(&b, "-A FORWARD -i %s -o %s -j ACCEPT\n", s.ExtraTapName(), s.VpeerName())
+	b.WriteString("COMMIT\n")
+
+	cmd := exec.Command("iptables-restore", "--noflush")
+	cmd.Stdin = strings.NewReader(b.String())
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, exec.ErrNotFound) {
+		return s.appendExternalNetNSRules(tables)
+	}
+
+	return fmt.Errorf("error applying external netns rules via iptables-restore: %w (output: %s)", err, strings.TrimSpace(string(out)))
+}
+
+// appendExternalNetNSRules is the sequential fallback for
+// applyExternalNetNSRules when iptables-restore is missing.
+func (s *Slot) appendExternalNetNSRules(tables *iptables.IPTables) error {
+	if err := tables.Append("nat", "PREROUTING", "-d", s.HostIPString(), "-j", "DNAT", "--to-destination", s.NamespaceIP()); err != nil {
+		return fmt.Errorf("error creating external netns dnat rule: %w", err)
+	}
+	if err := tables.Append("nat", "POSTROUTING", "-s", s.NamespaceIP(), "-j", "SNAT", "--to-source", s.HostIPString()); err != nil {
+		return fmt.Errorf("error creating external netns snat rule: %w", err)
+	}
+	if err := tables.Append("nat", "POSTROUTING", "-o", s.VpeerName(), "-s", cvdTapNetwork, "-j", "SNAT", "--to-source", s.HostIPString()); err != nil {
+		return fmt.Errorf("error creating external netns cvd-mtap snat rule: %w", err)
+	}
+	if err := tables.Append("filter", "FORWARD", "-i", s.VpeerName(), "-o", s.TapName(), "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("error creating external netns forward rule to tap: %w", err)
+	}
+	if err := tables.Append("filter", "FORWARD", "-i", s.TapName(), "-o", s.VpeerName(), "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("error creating external netns forward rule from tap: %w", err)
+	}
+	if err := tables.Append("filter", "FORWARD", "-i", s.VpeerName(), "-o", s.ExtraTapName(), "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("error creating external netns forward rule to cvd-mtap: %w", err)
+	}
+	if err := tables.Append("filter", "FORWARD", "-i", s.ExtraTapName(), "-o", s.VpeerName(), "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("error creating external netns forward rule from cvd-mtap: %w", err)
 	}
 
 	return nil

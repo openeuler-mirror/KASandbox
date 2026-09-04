@@ -63,6 +63,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		attribute.String("client.id", s.info.ClientId),
 		attribute.String("envd.version", req.GetSandbox().GetEnvdVersion()),
 	)
+	traceID := childSpan.SpanContext().TraceID().String()
 
 	// setup launch darkly
 	ctx = featureflags.AddToContext(
@@ -88,6 +89,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	}
 
 	// Check if we've reached the max number of starting instances on this node
+	tAcquire := time.Now()
 	if req.GetSandbox().GetSnapshot() {
 		err := s.waitForAcquire(ctx)
 		if err != nil {
@@ -103,8 +105,10 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 			return nil, status.Errorf(codes.ResourceExhausted, "too many sandboxes starting on this node, please retry")
 		}
 	}
+	zap.L().Sugar().Infof("[ResumeSandbox] acquire starting slot cost: %.3f ms, traceID=%s", time.Since(tAcquire).Seconds()*1000, traceID)
 	defer s.startingSandboxes.Release(1)
 
+	tGetTemplate := time.Now()
 	template, err := s.templateCache.GetTemplate(
 		ctx,
 		req.GetSandbox().GetBuildId(),
@@ -114,7 +118,9 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	if err != nil {
 		return nil, fmt.Errorf("failed to get template snapshot data: %w", err)
 	}
+	zap.L().Sugar().Infof("[ResumeSandbox] templateCache.GetTemplate cost: %.3f ms, traceID=%s", time.Since(tGetTemplate).Seconds()*1000, traceID)
 
+	tMeta := time.Now()
 	sandboxConfig := proto.CloneOf(req.GetSandbox())
 	templateMetadata, err := template.Metadata()
 	if err != nil {
@@ -137,6 +143,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		sandboxConfig.HugePages = false
 	}
 	req.Sandbox = sandboxConfig
+	zap.L().Sugar().Infof("[ResumeSandbox] server parse template metadata cost: %.3f ms, traceID=%s", time.Since(tMeta).Seconds()*1000, traceID)
 
 	if len(req.GetSandbox().GetVolumeMounts()) > 0 && templateOS != vmm.OsLinux {
 		return nil, status.Errorf(codes.FailedPrecondition, "volume mounts are not supported on %s sandboxes", templateOS)
@@ -215,6 +222,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		return nil, status.Errorf(codes.Internal, "failed to create sandbox: %s", err)
 	}
 
+	tPost := time.Now()
 	s.setupSandboxLifecycle(ctx, sbx)
 
 	eventType := events.SandboxCreatedEventPair
@@ -240,6 +248,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 			SandboxTeamID:      teamID,
 		},
 	)
+	zap.L().Sugar().Infof("[ResumeSandbox] post-resume lifecycle setup cost: %.3f ms, traceID=%s", time.Since(tPost).Seconds()*1000, traceID)
 
 	return &orchestrator.SandboxCreateResponse{
 		ClientId: s.info.ClientId,

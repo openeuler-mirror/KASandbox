@@ -126,11 +126,6 @@ func (c *cachedSeekable) ReadAt(ctx context.Context, buff []byte, offset int64) 
 		recordCacheReadError(ctx, cacheTypeSeekable, cacheOpReadAt, err)
 	}
 
-	logger.L().Debug(ctx, "failed to read cached chunk, falling back to remote read",
-		zap.String("chunk_path", chunkPath),
-		zap.Int64("offset", offset),
-		zap.Error(err))
-
 	// read remote file
 	readCount, err := c.inner.ReadAt(ctx, buff, offset)
 	if ignoreEOF(err) != nil {

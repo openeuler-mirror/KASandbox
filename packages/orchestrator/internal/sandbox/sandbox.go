@@ -521,18 +521,22 @@ func (f *Factory) ResumeSandbox(
 		}
 	}()
 
+	tFiles := time.Now()
 	sandboxFiles := t.Files().NewSandboxFiles(runtime.SandboxID)
 	cleanup.Add(ctx, cleanupFiles(f.config, sandboxFiles))
+	zap.L().Sugar().Infof("[ResumeSandbox] new sandbox files cost: %.3f ms, traceID=%s", time.Since(tFiles).Seconds()*1000, traceID)
 
 	telemetry.ReportEvent(ctx, "created sandbox files")
 
 	// Uffd initialization
 	fcUffdPath := sandboxFiles.SandboxUffdSocketPath()
 	uffdPromise := utils.NewPromise(func() (*uffd.Uffd, error) {
+		tMemfile := time.Now()
 		memfile, err := t.Memfile(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get memfile: %w", err)
 		}
+		zap.L().Sugar().Infof("[ResumeSandbox] t.Memfile cost: %.3f ms, traceID=%s", time.Since(tMemfile).Seconds()*1000, traceID)
 
 		telemetry.ReportEvent(ctx, "got template memfile")
 
@@ -585,10 +589,14 @@ func (f *Factory) ResumeSandbox(
 
 	// Rootfs initialization
 	overlayPromise := utils.NewPromise(func() ([]rootfs.Provider, error) {
+		tDisks := time.Now()
 		disks, err := t.Disks(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get template disks: %w", err)
 		}
+		zap.L().Sugar().Infof("[ResumeSandbox] t.Disks cost: %.3f ms, traceID=%s", time.Since(tDisks).Seconds()*1000, traceID)
+
+		tNBD := time.Now()
 		rootfsProviders := make([]rootfs.Provider, 0, len(disks))
 		for _, disk := range disks {
 			provider, providerErr := rootfs.NewNBDProvider(
@@ -609,6 +617,7 @@ func (f *Factory) ResumeSandbox(
 				}
 			}(disk.Name, provider)
 		}
+		zap.L().Sugar().Infof("[ResumeSandbox] create NBD providers cost: %.3f ms, traceID=%s", time.Since(tNBD).Seconds()*1000, traceID)
 
 		telemetry.ReportEvent(ctx, "created disk overlays")
 
@@ -622,6 +631,7 @@ func (f *Factory) ResumeSandbox(
 			return struct{}{}, err
 		}
 
+		tServe := time.Now()
 		err = serveMemory(
 			execCtx,
 			cleanup,
@@ -631,6 +641,7 @@ func (f *Factory) ResumeSandbox(
 		if err != nil {
 			return struct{}{}, fmt.Errorf("failed to serve memory: %w", err)
 		}
+		zap.L().Sugar().Infof("[ResumeSandbox] serveMemory (uffd start) cost: %.3f ms, traceID=%s", time.Since(tServe).Seconds()*1000, traceID)
 
 		telemetry.ReportEvent(ctx, "started serving memory")
 
@@ -681,7 +692,7 @@ func (f *Factory) ResumeSandbox(
 	cgroupHandle, cgroupFD := createCgroup(ctx, f.cgroupManager, runtime.SandboxID, cleanup)
 	zap.L().Sugar().Infof("[ResumeSandbox] create cgroup cost: %.3f ms, traceID=%s", time.Since(tCgroup).Seconds()*1000, traceID)
 
-	t4 := time.Now()
+	tParse := time.Now()
 	metadataVMM := vmm.BackendType(meta.Template.VMMType).OrDefault()
 	metadataOS, err := vmm.ParseOsType(meta.Template.OsType)
 	if err != nil {
@@ -716,6 +727,9 @@ func (f *Factory) ResumeSandbox(
 		}
 	}
 
+	zap.L().Sugar().Infof("[ResumeSandbox] parse vmm metadata cost: %.3f ms, traceID=%s", time.Since(tParse).Seconds()*1000, traceID)
+
+	t4 := time.Now()
 	vmmHandle, vmmErr := vmmFactory.NewProcess(
 		ctx,
 		execCtx,
@@ -873,6 +887,7 @@ func (f *Factory) ResumeSandbox(
 
 	telemetry.ReportEvent(execCtx, "waiting for envd")
 
+	tEnvd := time.Now()
 	err = sbx.WaitForEnvd(
 		ctx,
 		f.config.EnvdTimeout,
@@ -880,6 +895,7 @@ func (f *Factory) ResumeSandbox(
 	if err != nil {
 		return nil, fmt.Errorf("failed to wait for sandbox start: %w", err)
 	}
+	zap.L().Sugar().Infof("[ResumeSandbox] wait envd ready cost: %.3f ms, traceID=%s", time.Since(tEnvd).Seconds()*1000, traceID)
 
 	telemetry.ReportEvent(execCtx, "envd initialized")
 

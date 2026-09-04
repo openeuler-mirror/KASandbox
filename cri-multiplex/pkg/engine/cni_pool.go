@@ -44,6 +44,33 @@ func (e *grpcE2BEngine) startCNIPool(size int) {
 	log.Printf("[GrpcE2BEngine] CNI pool started: target size=%d", size)
 }
 
+// cniPoolWarmCooldown 是最后一次创建请求结束后仍暂停预热的滞后窗口。
+// 高并发批次中若出现成片失败，handler 会集体返回使 inflight 瞬态归零，
+// 而客户端还在重试间隙（sleep）里；没有这个窗口，预热会在两波创建之间
+// 恢复并与紧随其后的重试争抢 CNI 插件链，造成更多失败、形成振荡。
+const cniPoolWarmCooldown = 10 * time.Second
+
+// trackRunPodStart/trackRunPodEnd 记录一次创建请求（RunPodSandbox /
+// AdminCreate）的在途区间，供 CNI 预热抑制判定使用。
+func (e *grpcE2BEngine) trackRunPodStart() {
+	atomic.AddInt64(&e.inflightRunPod, 1)
+}
+
+func (e *grpcE2BEngine) trackRunPodEnd() {
+	atomic.StoreInt64(&e.lastRunPodActivity, time.Now().UnixNano())
+	atomic.AddInt64(&e.inflightRunPod, -1)
+}
+
+// cniPoolWarmSuppressed 判定当前是否应暂停预热：有创建在途，或最后一次
+// 创建结束还未超过滞后窗口。
+func (e *grpcE2BEngine) cniPoolWarmSuppressed() bool {
+	if atomic.LoadInt64(&e.inflightRunPod) > 0 {
+		return true
+	}
+	last := atomic.LoadInt64(&e.lastRunPodActivity)
+	return last != 0 && time.Since(time.Unix(0, last)) < cniPoolWarmCooldown
+}
+
 func (e *grpcE2BEngine) cniPoolWarmLoop(size int) {
 	defer e.cniPoolWG.Done()
 	paused := false
@@ -53,11 +80,12 @@ func (e *grpcE2BEngine) cniPoolWarmLoop(size int) {
 			return
 		default:
 		}
-		// 有创建请求在途时暂停预热：warm 与 direct CNI ADD 共享 CNI 插件链的
-		// 串行资源，预热会拖慢真正在创建的沙箱。轮询等待在途请求清零。
-		if atomic.LoadInt64(&e.inflightRunPod) > 0 {
+		// 有创建请求在途、或最后一次创建结束还在滞后窗口内时暂停预热：
+		// warm 与 direct CNI ADD 共享 CNI 插件链的串行资源，预热会拖慢
+		// 真正在创建的沙箱。轮询等待抑制条件解除。
+		if e.cniPoolWarmSuppressed() {
 			if !paused {
-				log.Printf("[GrpcE2BEngine] CNI pool warm paused: RunPodSandbox in flight")
+				log.Printf("[GrpcE2BEngine] CNI pool warm paused: RunPodSandbox in flight or within cooldown")
 				paused = true
 			}
 			select {
