@@ -12,6 +12,7 @@ import (
 	goruntime "runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/containernetworking/cni/libcni"
 	current "github.com/containernetworking/cni/pkg/types/100"
@@ -48,6 +49,12 @@ type CNIRecord struct {
 	Gateway    string
 	DNS        []string
 	ResultJSON []byte
+
+	// 子阶段耗时（毫秒），仅 direct ADD 路径填写，池化命中时全 0。
+	NetnsMs  int64 // netns 创建（NewNamed + 切回宿主 ns）
+	LoUpMs   int64 // netns 内 lo up（fork ip 命令）
+	PluginMs int64 // CNI 插件执行（bridge + host-local）
+	ParseMs  int64 // 结果解析
 }
 
 func NewCNIManager(cfg CNIConfig) (*CNIManager, error) {
@@ -122,6 +129,7 @@ func (m *CNIManager) Add(ctx context.Context, sandboxID string, podCfg *runtime.
 	netnsName := m.NetNSName(sandboxID)
 	netnsPath := filepath.Join(m.netNSDir, netnsName)
 
+	netnsStart := time.Now()
 	goruntime.LockOSThread()
 	hostNS, err := netns.Get()
 	if err != nil {
@@ -144,20 +152,26 @@ func (m *CNIManager) Add(ctx context.Context, sandboxID string, podCfg *runtime.
 	_ = hostNS.Close()
 	goruntime.UnlockOSThread()
 	defer netNS.Close()
+	netnsMs := time.Since(netnsStart).Milliseconds()
 
+	loUpStart := time.Now()
 	if err := ensureNetNSLoopbackUp(netnsName); err != nil {
 		_ = netns.DeleteNamed(netnsName)
 		return nil, fmt.Errorf("enable loopback for %s: %w", netnsPath, err)
 	}
+	loUpMs := time.Since(loUpStart).Milliseconds()
 
 	rt := m.runtimeConf(sandboxID, netnsPath, podCfg)
+	pluginStart := time.Now()
 	res, err := m.cniConfig.AddNetworkList(ctx, m.netConfig, rt)
+	pluginMs := time.Since(pluginStart).Milliseconds()
 	if err != nil {
 		_ = netNS.Close()
 		_ = netns.DeleteNamed(netnsName)
 		return nil, fmt.Errorf("cni add %s: %w", sandboxID, err)
 	}
 
+	parseStart := time.Now()
 	result, err := current.GetResult(res)
 	if err != nil {
 		_ = m.cniConfig.DelNetworkList(ctx, m.netConfig, rt)
@@ -173,6 +187,7 @@ func (m *CNIManager) Add(ctx context.Context, sandboxID string, podCfg *runtime.
 	}
 
 	resultJSON, _ := json.Marshal(result)
+	parseMs := time.Since(parseStart).Milliseconds()
 	return &CNIRecord{
 		SandboxID:  sandboxID,
 		Network:    m.netConfig.Name,
@@ -183,6 +198,10 @@ func (m *CNIManager) Add(ctx context.Context, sandboxID string, podCfg *runtime.
 		Gateway:    gateway,
 		DNS:        append([]string(nil), result.DNS.Nameservers...),
 		ResultJSON: resultJSON,
+		NetnsMs:    netnsMs,
+		LoUpMs:     loUpMs,
+		PluginMs:   pluginMs,
+		ParseMs:    parseMs,
 	}, nil
 }
 

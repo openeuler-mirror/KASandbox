@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -232,7 +233,9 @@ func (s *MuxServer) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandbo
 	}
 
 	s.podRoutes.Store(resp.PodSandboxId, eng.Type())
+	routePersistStart := time.Now()
 	s.saveRoute("pod", resp.PodSandboxId, eng.Type())
+	log.Printf("[PerfTrace] sandbox=%s route_persist_ms=%d", resp.PodSandboxId, time.Since(routePersistStart).Milliseconds())
 	log.Printf("[MuxServer] registered pod %s -> %s", resp.PodSandboxId, eng.Type())
 	return resp, nil
 }

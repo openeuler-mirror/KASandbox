@@ -37,12 +37,19 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 	sandboxID := p.sandboxID
 	cfg := p.cfg
 
+	// 阶段耗时打点：CNI（池化/直连）→ orchestrator Create → HostPort，结束时输出
+	// 单行 [PerfTrace] 日志，供并发压测脚本（28/29 号用例）采集统计。
+	perfStart := time.Now()
+	var cniStageMs, orchCreateMs, hostPortMs int64
+	cniSource := "disabled"
+
 	var cniRecord *CNIRecord
 	if e.cniConfig.Enabled {
 		if e.cniManager == nil {
 			return nil, status.Errorf(codes.Unavailable, "e2b cni is enabled but cni manager is not initialized")
 		}
-		cniSource := "pool"
+		cniStageStart := time.Now()
+		cniSource = "pool"
 		var cniAddMs int64
 		cniRecord = e.acquireCNIFromPool()
 		if cniRecord != nil {
@@ -76,6 +83,7 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 		}
 		log.Printf("[GrpcE2BEngine] CNI ADD: sandbox=%s source=%s network=%s netns=%s podIP=%s cni_add_ms=%d",
 			sandboxID, cniSource, cniRecord.Network, cniRecord.NetNSPath, cniRecord.PodIP, cniAddMs)
+		cniStageMs = time.Since(cniStageStart).Milliseconds()
 	}
 
 	endTime := p.endTime
@@ -91,7 +99,9 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 		StartTime: timestamppb.New(p.startTime),
 		EndTime:   timestamppb.New(endTime),
 	}
+	orchCreateStart := time.Now()
 	resp, err := e.client.Create(ctx, e2bReq)
+	orchCreateMs = time.Since(orchCreateStart).Milliseconds()
 	if err != nil {
 		log.Printf("[GrpcE2BEngine] createE2BSandbox: orchestrator.Create FAILED: %v", err)
 		if cniRecord != nil {
@@ -108,6 +118,7 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 	}
 
 	// ===== 多端口分配 =====
+	hostPortStart := time.Now()
 	var allMappings []PortMapping
 	if hostIP != "" && e.hostPortManager != nil {
 		// 1. 收集需要暴露的端口（仅来自 metadata）
@@ -139,6 +150,7 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 		}
 	}
 	// ===== 多端口分配结束 =====
+	hostPortMs = time.Since(hostPortStart).Milliseconds()
 
 	// 提取默认端口映射（如果 49983 在声明中，会自然包含在 allMappings 里）
 	defaultHostPort := 0
@@ -176,10 +188,23 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 		portMappings: allMappings,
 	}
 	e.tracker.Add(sandboxID, pod)
+	persistStart := time.Now()
 	e.persistPodState(pod)
+	persistMs := time.Since(persistStart).Milliseconds()
 
 	log.Printf("[GrpcE2BEngine] sandbox created: cri_id=%s, e2b_id=%s (client_id=%s, host_ip=%s, default_port=%d, mappings=%v, envd_token_set=%v)",
 		sandboxID, cfg.SandboxId, resp.ClientId, hostIP, defaultHostPort, allMappings, envdToken != "")
+
+	var cniNetnsMs, cniLoUpMs, cniPluginMs, cniParseMs int64
+	if cniRecord != nil && cniSource == "direct" {
+		cniNetnsMs = cniRecord.NetnsMs
+		cniLoUpMs = cniRecord.LoUpMs
+		cniPluginMs = cniRecord.PluginMs
+		cniParseMs = cniRecord.ParseMs
+	}
+	log.Printf("[PerfTrace] sandbox=%s cni_ms=%d cni_source=%s cni_netns_ms=%d cni_loup_ms=%d cni_plugin_ms=%d cni_parse_ms=%d orch_create_ms=%d hostport_ms=%d persist_ms=%d total_ms=%d",
+		sandboxID, cniStageMs, cniSource, cniNetnsMs, cniLoUpMs, cniPluginMs, cniParseMs,
+		orchCreateMs, hostPortMs, persistMs, time.Since(perfStart).Milliseconds())
 
 	return resp, nil
 }

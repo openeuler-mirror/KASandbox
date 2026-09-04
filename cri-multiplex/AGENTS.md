@@ -146,3 +146,18 @@ Two services share the admin unix socket:
 - Both `RuntimeService` and `ImageService` are registered on the same gRPC server.
 - Embeds `UnimplementedRuntimeServiceServer` and `UnimplementedImageServiceServer` — adding new CRI methods requires implementing them or they will panic.
 - `annTemplateID` (`e2b.dev/template-id`) is defined in `e2b.go`.
+
+## PerfTrace 打点（性能采集）
+
+`createE2BSandbox` 成功路径输出单行 `[PerfTrace]` 日志（通用 `k=v`，新增字段直接追加）：
+
+```
+[PerfTrace] sandbox=<uid> cni_ms=<n> cni_source=<pool|direct|disabled> cni_netns_ms=<n> cni_loup_ms=<n> \
+  cni_plugin_ms=<n> cni_parse_ms=<n> orch_create_ms=<n> hostport_ms=<n> persist_ms=<n> total_ms=<n>
+[PerfTrace] sandbox=<uid> route_persist_ms=<n>   # mux.go saveRoute（SaveRoute 全量刷盘），单独一行
+```
+
+- `cni_*` 子字段仅 direct ADD 路径填写，池化命中为 0；`persist_ms` 是 `SaveE2BPod`（全量 MarshalIndent + fsync + rename，全局互斥锁）的墙钟耗时（含锁排队）。
+- 采集脚本：`e2b-verify/28_bulk_concurrency_standalone.sh`（单机）、`29_bulk_concurrency_multinode.sh`（多节点），按 `[PerfTrace]` 解析统计 avg/p50/p90/p99。
+- 端到端基准：`e2b-verify/32_bulk_runp_concurrent.py`（并发栅栏同时发起 N 个 RunPodSandbox，输出分位数与 `[BulkResult]` 机读行，可选 `--cleanup`）；`e2b-verify/33_multi_round_benchmark.sh`（连续多轮跑 32 号脚本并附带环境指纹：负载/内存/大页/netns 泄漏数等，用于跨轮对比稳定性）。
+
