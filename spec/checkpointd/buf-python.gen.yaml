@@ -3,11 +3,11 @@
 version: v1
 plugins:
   - plugin: python
-    out: ../../py-sdk/e2b/gsd
+    out: ../../py-sdk/e2b/checkpointd
     opt:
-      - pyi_out=../../py-sdk/e2b/gsd
+      - pyi_out=../../py-sdk/e2b/checkpointd
   - name: connect-python
-    out: ../../py-sdk/e2b/gsd
+    out: ../../py-sdk/e2b/checkpointd
     path: protoc-gen-connect-python
 
 managed:

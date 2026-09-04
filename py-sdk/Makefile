@@ -25,17 +25,17 @@ generate-envd:
 
 	ruff format .
 
-generate-gsd:
+generate-checkpointd:
 	if [ ! -f "/go/bin/protoc-gen-connect-python" ]; then \
 		$(MAKE) -C $(ROOT_DIR)/packages/connect-python build; \
 	fi
 
-	cd $(ROOT_DIR)/spec/gsd && pwd && buf generate --template buf-python.gen.yaml
-	./scripts/fix-python-pb-gsd.sh
+	cd $(ROOT_DIR)/spec/checkpointd && pwd && buf generate --template buf-python.gen.yaml
+	./scripts/fix-python-pb-checkpointd.sh
 
 	ruff format .
 
-generate: generate-api generate-envd generate-gsd generate-mcp generate-volume-api
+generate: generate-api generate-envd generate-checkpointd generate-mcp generate-volume-api
 
 init:
 	pip install openapi-python-client datamodel-code-generator

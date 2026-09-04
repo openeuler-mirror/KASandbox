@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package checkpoint;
 
-option go_package = "github.com/e2b-dev/infra/packages/gsd/internal/services/spec/checkpoint";
+option go_package = "github.com/e2b-dev/infra/packages/orchestrator/internal/checkpoint/spec";
 
 message CreateCheckpointRequest {
   optional string name = 1;
@@ -10,6 +10,14 @@ message CreateCheckpointRequest {
 
 message CreateCheckpointResponse {
   string checkpoint_id = 1;
+  // How the memory image was produced: "incremental" when only the pages
+  // dirtied since the previous checkpoint were written, "full" when all of
+  // guest memory was copied. Empty when the server does not report it.
+  //
+  // A "full" on anything but a sandbox's first checkpoint means the host is
+  // not tracking dirty pages -- which costs time and space and is otherwise
+  // completely silent. This field is how a caller can tell.
+  string mem_mode = 2;
 }
 
 message RestoreCheckpointRequest {
@@ -38,6 +46,8 @@ message CheckpointInfo {
   string checkpoint_id = 1;
   optional string name = 2;
   int64 created_at = 3;
+  // See CreateCheckpointResponse.mem_mode.
+  string mem_mode = 4;
 }
 
 service Checkpoint {

@@ -4,14 +4,20 @@ import httpcore
 import httpx
 from e2b.connection_config import ConnectionConfig
 from e2b.envd.rpc import handle_rpc_exception
-from e2b.gsd.api import GSD_API_HEALTH_ROUTE, ahandle_gsd_api_exception
-from e2b.gsd.checkpoint import checkpoint_connect, checkpoint_pb2
+from e2b.checkpointd.api import CHECKPOINTD_HEALTH_ROUTE, ahandle_checkpointd_exception
+from e2b.checkpointd.checkpoint import checkpoint_connect, checkpoint_pb2
 from e2b.sandbox.checkpoint.types import CheckpointInfo
 
 
 class AsyncCheckpoint:
     """
-    Module for checkpointing and restoring sandbox state via GSD (async).
+    Module for checkpointing and restoring sandbox state (async).
+
+    The checkpoint endpoints live on their own port on the sandbox address, but
+    nothing inside the sandbox answers them: a checkpoint pauses the VM and
+    drives the hypervisor's snapshot API, neither of which anything running in
+    the guest can do. The orchestrator on the host intercepts this port and
+    answers it directly. Sandbox-local state, removed with the sandbox.
     """
 
     def __init__(
@@ -28,7 +34,7 @@ class AsyncCheckpoint:
             json=True,
             headers=connection_config.checkpointd_headers,
         )
-        self._gsd_api = httpx.AsyncClient(
+        self._health_api = httpx.AsyncClient(
             base_url=checkpointd_api_url,
             transport=transport,
             headers=connection_config.checkpointd_headers,
@@ -37,22 +43,27 @@ class AsyncCheckpoint:
 
     async def is_running(self, request_timeout: Optional[float] = None) -> bool:
         """
-        Check if GSD (checkpointd) is running in the sandbox.
+        Check whether the checkpoint API answers for this sandbox.
+
+        Kept under this name for backwards compatibility; :meth:`is_available`
+        is the same call under a name that matches what it does. It is a
+        liveness probe on the host-side service, not on anything in the guest,
+        so a live sandbox answers it whether or not any daemon runs inside.
 
         :param request_timeout: Timeout for the request in **seconds**
 
-        :return: ``True`` if GSD is running, ``False`` otherwise
+        :return: ``True`` if the checkpoint API answers, ``False`` otherwise
         """
         try:
-            r = await self._gsd_api.get(
-                GSD_API_HEALTH_ROUTE,
+            r = await self._health_api.get(
+                CHECKPOINTD_HEALTH_ROUTE,
                 timeout=self._connection_config.get_request_timeout(request_timeout),
             )
 
             if r.status_code == 502:
                 return False
 
-            err = await ahandle_gsd_api_exception(r)
+            err = await ahandle_checkpointd_exception(r)
 
             if err:
                 raise err
@@ -61,6 +72,13 @@ class AsyncCheckpoint:
             raise
 
         return True
+
+    async def is_available(self, request_timeout: Optional[float] = None) -> bool:
+        """
+        Whether the checkpoint API answers for this sandbox. Same call as
+        :meth:`is_running`, under a name that says what it checks.
+        """
+        return await self.is_running(request_timeout)
 
     async def create(
         self,
@@ -90,6 +108,11 @@ class AsyncCheckpoint:
             return CheckpointInfo(
                 checkpoint_id=res.checkpoint_id,
                 name=name,
+                # Empty when the server predates the field. "full" here means
+                # the checkpoint copied all of guest memory instead of only the
+                # pages dirtied since the last one — which is what silently
+                # happens when dirty page tracking is off on the host.
+                mem_mode=res.mem_mode or None,
             )
         except Exception as e:
             raise handle_rpc_exception(e)
@@ -146,6 +169,7 @@ class AsyncCheckpoint:
                         checkpoint_id=cp.checkpoint_id,
                         name=cp.name if cp.HasField("name") else None,
                         created_at=cp.created_at,
+                        mem_mode=cp.mem_mode or None,
                     )
                 )
             return result

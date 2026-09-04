@@ -4,7 +4,7 @@ from httpcore import ConnectionPool, AsyncConnectionPool
 
 import e2b_connect as connect
 
-from e2b.gsd.checkpoint import checkpoint_pb2 as checkpoint_dot_checkpoint__pb2
+from e2b.checkpointd.checkpoint import checkpoint_pb2 as checkpoint_dot_checkpoint__pb2
 
 CheckpointName = "checkpoint.Checkpoint"
 

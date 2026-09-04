@@ -12,10 +12,12 @@ class CreateCheckpointRequest(_message.Message):
     def __init__(self, name: _Optional[str] = ...) -> None: ...
 
 class CreateCheckpointResponse(_message.Message):
-    __slots__ = ("checkpoint_id",)
+    __slots__ = ("checkpoint_id", "mem_mode")
     CHECKPOINT_ID_FIELD_NUMBER: _ClassVar[int]
+    MEM_MODE_FIELD_NUMBER: _ClassVar[int]
     checkpoint_id: str
-    def __init__(self, checkpoint_id: _Optional[str] = ...) -> None: ...
+    mem_mode: str
+    def __init__(self, checkpoint_id: _Optional[str] = ..., mem_mode: _Optional[str] = ...) -> None: ...
 
 class RestoreCheckpointRequest(_message.Message):
     __slots__ = ("checkpoint_id",)
@@ -52,11 +54,13 @@ class DeleteCheckpointResponse(_message.Message):
     def __init__(self, success: bool = ...) -> None: ...
 
 class CheckpointInfo(_message.Message):
-    __slots__ = ("checkpoint_id", "name", "created_at")
+    __slots__ = ("checkpoint_id", "name", "created_at", "mem_mode")
     CHECKPOINT_ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    MEM_MODE_FIELD_NUMBER: _ClassVar[int]
     checkpoint_id: str
     name: str
     created_at: int
-    def __init__(self, checkpoint_id: _Optional[str] = ..., name: _Optional[str] = ..., created_at: _Optional[int] = ...) -> None: ...
+    mem_mode: str
+    def __init__(self, checkpoint_id: _Optional[str] = ..., name: _Optional[str] = ..., created_at: _Optional[int] = ..., mem_mode: _Optional[str] = ...) -> None: ...

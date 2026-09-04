@@ -227,11 +227,13 @@ class ConnectionConfig:
 
     @property
     def checkpointd_headers(self):
+        # No Authorization header: the checkpoint API is served on the host and
+        # authenticates with the sandbox's traffic access token, which the
+        # shared headers already carry.
         return {
             **self.headers,
             **self.__extra_sandbox_headers,
             "E2b-Sandbox-Port": str(self.checkpointd_port),
-            "Authorization": "Basic cm9vdDo=",
         }
 
 
