@@ -53,14 +53,15 @@ impl ArchVm {
         // was already initialized.
         // Search for `kvm_arch_vcpu_create` in arch/arm/kvm/arm.c.
         self.setup_irqchip(nr_vcpus)?;
-        self.enable_hdbss();
         Ok(())
     }
 
-    /// Enable ARM HDBSS (Hardware Dirty Bit State Structure) for hardware-assisted
-    /// dirty page tracking. This is best-effort: if the host kernel does not support
-    /// the capability, the error is logged and the VM continues to run.
-    fn enable_hdbss(&self) {
+    /// Enables ARM HDBSS (Hardware Dirty state tracking Structure) so the CPU
+    /// records dirty pages itself instead of KVM write-protecting every clean
+    /// page. Whether to treat failure as fatal is the caller's decision
+    /// ([`Vm::setup_dirty_tracking`]) — it depends on deployment policy, not
+    /// on anything this function can see.
+    pub(crate) fn enable_hdbss(&self, order: u64) -> Result<(), vmm_sys_util::errno::Error> {
         // KVM_CAP_ARM_HW_DIRTY_STATE_TRACK is not yet present in the kvm-bindings
         // version used by Firecracker, so define it locally.
         const KVM_CAP_ARM_HW_DIRTY_STATE_TRACK: u32 = 502;
@@ -69,8 +70,9 @@ impl ArchVm {
 
         let mut cap = kvm_bindings::kvm_enable_cap::default();
         cap.cap = KVM_CAP_ARM_HW_DIRTY_STATE_TRACK;
-        // args[0]: allocation order for the HDBSS buffer (1 => two pages / 8 KiB).
-        cap.args[0] = 1;
+        // args[0]: allocation order for the per-vCPU HDBSS buffer
+        // (1 => two pages / 8 KiB).
+        cap.args[0] = order;
 
         // SAFETY: the VM fd is valid and `cap` is a properly initialized
         // `kvm_enable_cap` struct matching the kernel ABI.
@@ -83,14 +85,9 @@ impl ArchVm {
         };
 
         if ret < 0 {
-            let err = vmm_sys_util::errno::Error::last();
-            info!(
-                "HDBSS enable failed (cap may be unsupported): {} (errno {})",
-                err,
-                err.errno()
-            );
+            Err(vmm_sys_util::errno::Error::last())
         } else {
-            info!("HDBSS enabled successfully");
+            Ok(())
         }
     }
 

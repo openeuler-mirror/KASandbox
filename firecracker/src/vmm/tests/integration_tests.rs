@@ -216,6 +216,7 @@ fn verify_create_snapshot(is_diff: bool) -> (TempFile, TempFile) {
         snapshot_type,
         snapshot_path: snapshot_file.as_path().to_path_buf(),
         mem_file_path: Some(memory_file.as_path().to_path_buf()),
+        dirty_bitmap_path: None,
     };
 
     controller

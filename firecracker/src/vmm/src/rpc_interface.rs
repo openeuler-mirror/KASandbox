@@ -35,7 +35,12 @@ use crate::vmm_config::mmds::{MmdsConfig, MmdsConfigError};
 use crate::vmm_config::net::{
     NetworkInterfaceConfig, NetworkInterfaceError, NetworkInterfaceUpdateConfig,
 };
-use crate::vmm_config::snapshot::{CreateSnapshotParams, LoadSnapshotParams, SnapshotType};
+use crate::rollback::RollbackError;
+use crate::vmm_config::instance_info::VmState as InstanceState;
+use crate::vmm_config::snapshot::{
+    CreateSnapshotParams, LoadSnapshotParams, RollbackSnapshotParams, SaveDirtyBitmapParams,
+    SnapshotType,
+};
 use crate::vmm_config::vsock::{VsockConfigError, VsockDeviceConfig};
 use crate::vmm_config::{self, RateLimiterUpdate};
 
@@ -55,6 +60,12 @@ pub enum VmmAction {
     /// Create a snapshot using as input the `CreateSnapshotParams`. This action can only be called
     /// after the microVM has booted and only when the microVM is in `Paused` state.
     CreateSnapshot(CreateSnapshotParams),
+    /// Roll the running microVM back to a snapshot in place, using as input
+    /// the `RollbackSnapshotParams`. Runtime only, requires `Paused`.
+    RollbackSnapshot(RollbackSnapshotParams),
+    /// Write the live dirty bitmap to a file in the FCDB sidecar format.
+    /// Runtime only, requires `Paused`.
+    SaveDirtyBitmap(SaveDirtyBitmapParams),
     /// Get the balloon device configuration.
     GetBalloonConfig,
     /// Get the ballon device latest statistics.
@@ -140,6 +151,8 @@ pub enum VmmActionError {
     BootSource(#[from] BootSourceConfigError),
     /// Create snapshot error: {0}
     CreateSnapshot(#[from] CreateSnapshotError),
+    /// Rollback snapshot error: {0}
+    RollbackSnapshot(#[from] RollbackError),
     /// Configure CPU error: {0}
     ConfigureCpu(#[from] GuestConfigError),
     /// Drive config error: {0}
@@ -185,6 +198,8 @@ pub enum VmmActionError {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq, Eq)]
 pub enum VmmData {
+    /// The result of an in-place snapshot rollback.
+    Rollback(crate::vmm_config::snapshot::RollbackResponse),
     /// The balloon device configuration.
     BalloonConfig(BalloonDeviceConfig),
     /// The latest balloon device statistics.
@@ -457,6 +472,8 @@ impl<'a> PrebootApiController<'a> {
             SetEntropyDevice(config) => self.set_entropy_device(config),
             // Operations not allowed pre-boot.
             CreateSnapshot(_)
+            | RollbackSnapshot(_)
+            | SaveDirtyBitmap(_)
             | FlushMetrics
             | Pause
             | Resume
@@ -646,6 +663,8 @@ impl RuntimeApiController {
         match request {
             // Supported operations allowed post-boot.
             CreateSnapshot(snapshot_create_cfg) => self.create_snapshot(&snapshot_create_cfg),
+            RollbackSnapshot(rollback_cfg) => self.rollback_snapshot(&rollback_cfg),
+            SaveDirtyBitmap(cfg) => self.save_dirty_bitmap(&cfg),
             FlushMetrics => self.flush_metrics(),
             GetBalloonConfig => self
                 .vmm
@@ -739,6 +758,52 @@ impl RuntimeApiController {
         Self { vmm, vm_resources }
     }
 
+    /// Rolls the paused microVM back to a snapshot in place.
+    fn save_dirty_bitmap(
+        &mut self,
+        params: &SaveDirtyBitmapParams,
+    ) -> Result<VmmData, VmmActionError> {
+        let mut locked_vmm = self.vmm.lock().unwrap();
+
+        crate::rollback::save_dirty_bitmap(&mut locked_vmm, &params.path)
+            .map(|()| VmmData::Empty)
+            .map_err(VmmActionError::RollbackSnapshot)
+    }
+
+    fn rollback_snapshot(
+        &mut self,
+        params: &RollbackSnapshotParams,
+    ) -> Result<VmmData, VmmActionError> {
+        let rollback_start_us = get_time_us(ClockType::Monotonic);
+        let mut locked_vmm = self.vmm.lock().unwrap();
+
+        match crate::rollback::rollback_snapshot(&mut locked_vmm, params) {
+            Ok(response) => {
+                if params.resume_vm {
+                    locked_vmm.resume_vm().map_err(VmmActionError::InternalVmm)?;
+                }
+
+                let elapsed_time_us = update_metric_with_elapsed_time(
+                    &METRICS.latencies_us.vmm_pause_vm,
+                    rollback_start_us,
+                );
+                info!("'rollback snapshot' VMM action took {} us.", elapsed_time_us);
+
+                Ok(VmmData::Rollback(response))
+            }
+            Err(err) => {
+                if err.faults_vm() {
+                    // Guest state is torn between two moments in time. Brand
+                    // the VM so resume/pause/snapshot are refused; the
+                    // orchestrator's fallback replaces the process.
+                    locked_vmm.instance_info.state = InstanceState::Faulted;
+                }
+
+                Err(VmmActionError::RollbackSnapshot(err))
+            }
+        }
+    }
+
     /// Pauses the microVM by pausing the vCPUs.
     pub fn pause(&mut self) -> Result<VmmData, VmmActionError> {
         let pause_start_us = get_time_us(ClockType::Monotonic);
@@ -806,6 +871,15 @@ impl RuntimeApiController {
         }
 
         let mut locked_vmm = self.vmm.lock().unwrap();
+
+        // A faulted VM's memory is torn between two moments in time; a
+        // snapshot of it would immortalize the corruption.
+        if locked_vmm.instance_info.state == InstanceState::Faulted {
+            return Err(VmmActionError::NotSupported(
+                "the microVM is faulted".to_string(),
+            ));
+        }
+
         let vm_info = VmInfo::from(&self.vm_resources);
         let create_start_us = get_time_us(ClockType::Monotonic);
 
@@ -1210,6 +1284,7 @@ mod tests {
                 snapshot_type: SnapshotType::Full,
                 snapshot_path: PathBuf::new(),
                 mem_file_path: Some(PathBuf::new()),
+                dirty_bitmap_path: None,
             },
         )));
         #[cfg(target_arch = "x86_64")]

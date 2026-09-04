@@ -37,6 +37,35 @@ pub struct VmCommon {
     max_memslots: usize,
     /// The guest memory of this Vm.
     pub guest_memory: GuestMemoryMmap,
+    /// How dirty pages are being tracked for this Vm.
+    pub dirty_tracking: DirtyTrackingBackend,
+}
+
+/// How dirty pages are being tracked for a Vm. Reported through the instance
+/// info so the orchestrator can gate rollback-capable sandboxes on hardware
+/// tracking instead of discovering a silent downgrade in a latency graph.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum DirtyTrackingBackend {
+    /// Dirty page tracking is not armed.
+    #[default]
+    Off,
+    /// KVM write-protection tracking: every clean page's first write takes a
+    /// VM exit.
+    KvmWriteProtect,
+    /// ARM HDBSS hardware dirty state tracking: the CPU records dirty pages
+    /// on its own, no write-protection exits.
+    Hdbss,
+}
+
+impl DirtyTrackingBackend {
+    /// Stable string form, used in the instance info response.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DirtyTrackingBackend::Off => "off",
+            DirtyTrackingBackend::KvmWriteProtect => "kvm-wp",
+            DirtyTrackingBackend::Hdbss => "hdbss",
+        }
+    }
 }
 
 /// Describes the region of guest memory that can be used for creating the memfile.
@@ -74,6 +103,8 @@ pub enum VmError {
     VmMemory(#[from] vm_memory::Error),
     /// Invalid memory configuration: {0}
     InvalidMemoryConfiguration(String),
+    /// HDBSS hardware dirty tracking is required but could not be enabled: {0}
+    HdbssRequired(vmm_sys_util::errno::Error),
 }
 
 /// Contains Vm functions that are usable across CPU architectures
@@ -117,6 +148,7 @@ impl Vm {
         };
 
         Ok(VmCommon {
+            dirty_tracking: DirtyTrackingBackend::default(),
             fd,
             max_memslots: kvm.max_nr_memslots(),
             guest_memory: GuestMemoryMmap::default(),
@@ -150,6 +182,74 @@ impl Vm {
     ) -> Result<(), VmError> {
         for region in regions {
             self.register_memory_region(region)?
+        }
+
+        Ok(())
+    }
+
+    /// Returns how dirty pages are being tracked for this Vm.
+    pub fn dirty_tracking(&self) -> DirtyTrackingBackend {
+        self.common.dirty_tracking
+    }
+
+    /// Decides and arms the dirty-tracking backend, after guest memory has
+    /// been registered. Must be called on every path that brings a Vm up —
+    /// boot and snapshot load alike, since e2b sandboxes only ever come up
+    /// through the latter.
+    ///
+    /// On aarch64 hosts with HDBSS support the hardware does the tracking;
+    /// where it cannot be enabled the Vm silently falls back to KVM's
+    /// write-protection tracking unless `FC_HDBSS_REQUIRED` demands otherwise.
+    /// The distinction is invisible in results — both feed the same
+    /// `KVM_GET_DIRTY_LOG` bitmap — and only shows as per-page write exits,
+    /// which is exactly why a rollback deployment wants to fail fast instead.
+    pub fn setup_dirty_tracking(&mut self) -> Result<(), VmError> {
+        let armed = self
+            .guest_memory()
+            .iter()
+            .any(|region| region.bitmap().is_some());
+
+        if !armed {
+            self.common.dirty_tracking = DirtyTrackingBackend::Off;
+
+            return Ok(());
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            // Buffer order: 1 => two pages (8 KiB) per vCPU, the kernel
+            // default. Sized up via env for write-heavy workloads where the
+            // buffer overflow path would eat the gain.
+            let order = std::env::var("FC_HDBSS_ORDER")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(1);
+            let required = std::env::var("FC_HDBSS_REQUIRED")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false);
+
+            match self.enable_hdbss(order) {
+                Ok(()) => {
+                    info!("HDBSS enabled (buffer order {order})");
+                    self.common.dirty_tracking = DirtyTrackingBackend::Hdbss;
+                }
+                Err(err) if required => {
+                    return Err(VmError::HdbssRequired(err));
+                }
+                Err(err) => {
+                    info!(
+                        "HDBSS unavailable, falling back to KVM write-protect dirty tracking: \
+                         {err} (errno {})",
+                        err.errno()
+                    );
+                    self.common.dirty_tracking = DirtyTrackingBackend::KvmWriteProtect;
+                }
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.common.dirty_tracking = DirtyTrackingBackend::KvmWriteProtect;
         }
 
         Ok(())
@@ -364,6 +464,7 @@ impl Vm {
         &self,
         mem_file_path: &Path,
         snapshot_type: SnapshotType,
+        dirty_bitmap_path: Option<&Path>,
     ) -> Result<(), CreateSnapshotError> {
         use self::CreateSnapshotError::*;
 
@@ -404,17 +505,50 @@ impl Vm {
         file.set_len(expected_size)
             .map_err(|e| MemoryBackingFile("set_length", e))?;
 
-        match snapshot_type {
+        let page_size =
+            crate::utils::get_page_size().map_err(crate::vstate::memory::MemoryError::PageSize)?;
+        let total_pages = u64_to_usize(expected_size) / page_size;
+
+        // The effective set of pages this snapshot wrote, in file-offset page
+        // index space. For a Full snapshot that is every page.
+        let written_bitmap = match snapshot_type {
             SnapshotType::Diff => {
                 let dirty_bitmap = self.get_dirty_bitmap()?;
-                self.guest_memory().dump_dirty(&mut file, &dirty_bitmap)?;
+                self.guest_memory().dump_dirty(&mut file, &dirty_bitmap)?
             }
             SnapshotType::Full => {
                 self.guest_memory().dump(&mut file)?;
                 self.reset_dirty_bitmap();
                 self.guest_memory().reset_dirty();
+
+                let mut all = vec![u64::MAX; total_pages.div_ceil(64)];
+                if total_pages % 64 != 0 {
+                    if let Some(last) = all.last_mut() {
+                        *last = (1u64 << (total_pages % 64)) - 1;
+                    }
+                }
+                all
             }
         };
+
+        // The sidecar is bookkeeping for the orchestrator's cumulative dirty
+        // set; it must land durably before the snapshot is declared done, for
+        // the same reason the memory file itself is synced below.
+        if let Some(path) = dirty_bitmap_path {
+            let data = crate::vstate::memory::serialize_dirty_bitmap(&written_bitmap, page_size, total_pages);
+            let mut bitmap_file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path)
+                .map_err(|err| MemoryBackingFile("open_bitmap", err))?;
+            bitmap_file
+                .write_all(&data)
+                .map_err(|err| MemoryBackingFile("write_bitmap", err))?;
+            bitmap_file
+                .sync_all()
+                .map_err(|err| MemoryBackingFile("sync_bitmap", err))?;
+        }
 
         file.flush()
             .map_err(|err| MemoryBackingFile("flush", err))?;
