@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sync"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"go.opentelemetry.io/otel"
@@ -317,27 +316,14 @@ func (u *Userfaultfd) faultPage(
 	onFailure func() error,
 	accessType block.AccessType,
 ) error {
-	// Only instrument read/write faults; skip prefetch to avoid log noise.
-	isFault := accessType == block.Read || accessType == block.Write
-
 	span := trace.SpanFromContext(ctx)
-
-	var tTotal time.Time
-	if isFault {
-		tTotal = time.Now()
-	}
 
 	// The RLock must be called inside the goroutine to ensure RUnlock runs via defer,
 	// even if the errgroup is cancelled or the goroutine returns early.
 	// This check protects us against race condition between marking the request as missing and accessing the missingRequests tracker.
 	// The Firecracker pause should return only after the requested memory is faulted in, so we don't need to guard the pagefault from the moment it is created.
-	tLock := time.Now()
 	u.settleRequests.RLock()
 	defer u.settleRequests.RUnlock()
-	if isFault {
-		zap.L().Sugar().Infof("[UFFD] faultPage rlock accessType=%s, offset=%d, pagesize=%d, cost=%.3f ms",
-			accessType, offset, pagesize, time.Since(tLock).Seconds()*1000)
-	}
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -345,12 +331,7 @@ func (u *Userfaultfd) faultPage(
 		}
 	}()
 
-	tSlice := time.Now()
 	b, dataErr := source.Slice(ctx, offset, int64(pagesize))
-	if isFault {
-		zap.L().Sugar().Infof("[UFFD] faultPage source.Slice accessType=%s, offset=%d, pagesize=%d, cost=%.3f ms",
-			accessType, offset, pagesize, time.Since(tSlice).Seconds()*1000)
-	}
 	if dataErr != nil {
 		var signalErr error
 		if onFailure != nil {
@@ -374,19 +355,10 @@ func (u *Userfaultfd) faultPage(
 	//	copyMode |= UFFDIO_COPY_MODE_WP
 	//}
 	
-	tCopy := time.Now()
 	copyErr := u.fd.copy(addr, pagesize, b, copyMode)
-	if isFault {
-		zap.L().Sugar().Infof("[UFFD] faultPage uffdio.copy accessType=%s, offset=%d, pagesize=%d, cost=%.3f ms",
-			accessType, offset, pagesize, time.Since(tCopy).Seconds()*1000)
-	}
 	if errors.Is(copyErr, unix.EEXIST) {
 		// Page is already mapped
 		span.SetAttributes(attribute.Bool("uffd.already_mapped", true))
-		if isFault {
-			zap.L().Sugar().Infof("[UFFD] faultPage already_mapped accessType=%s, offset=%d, total-cost=%.3f ms",
-				accessType, offset, time.Since(tTotal).Seconds()*1000)
-		}
 
 		return nil
 	}
@@ -406,18 +378,8 @@ func (u *Userfaultfd) faultPage(
 	}
 
 	// Add the offset to the missing requests tracker with metadata.
-	tTrack := time.Now()
 	u.missingRequests.Add(offset)
 	u.prefetchTracker.Add(offset, accessType)
-	if isFault {
-		zap.L().Sugar().Infof("[UFFD] faultPage trackers.Add accessType=%s, offset=%d, cost=%.3f ms",
-			accessType, offset, time.Since(tTrack).Seconds()*1000)
-	}
-
-	if isFault {
-		zap.L().Sugar().Infof("[UFFD] faultPage total accessType=%s, offset=%d, pagesize=%d, total-cost=%.3f ms",
-			accessType, offset, pagesize, time.Since(tTotal).Seconds()*1000)
-	}
 
 	return nil
 }

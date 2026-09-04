@@ -81,6 +81,7 @@ type fakeSandboxServiceClient struct {
 	buildsCalls     int
 
 	lastCreate     *orchestrator.SandboxCreateRequest
+	lastUpdate     *orchestrator.SandboxUpdateRequest
 	lastDelete     *orchestrator.SandboxDeleteRequest
 	lastPause      *orchestrator.SandboxPauseRequest
 	lastCheckpoint *orchestrator.SandboxCheckpointRequest
@@ -100,6 +101,7 @@ func (f *fakeSandboxServiceClient) Create(ctx context.Context, in *orchestrator.
 
 func (f *fakeSandboxServiceClient) Update(ctx context.Context, in *orchestrator.SandboxUpdateRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	f.updateCalls++
+	f.lastUpdate = in
 	return &emptypb.Empty{}, f.updateErr
 }
 

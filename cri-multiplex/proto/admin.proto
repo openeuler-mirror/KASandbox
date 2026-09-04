@@ -4,6 +4,28 @@ package crimultiplex.admin.v1;
 
 option go_package = "github.com/cri-multiplex/pkg/admin;admin";
 
+import "orchestrator.proto";  // 复用 orchestrator SandboxService 的消息类型
+import "google/protobuf/empty.proto";
+
+// E2BSandboxService 是节点本地的 E2B 沙箱生命周期管理面。
+// IDL 与 orchestrator SandboxService 同形，但语义是"走 cri-multiplex
+// 完整生命周期"——CNI/HostPort/stateStore/podRoutes 全部继承，不是透传。
+// Pause/Checkpoint 不在此 service：用 E2BSandboxAdminService 的
+// PauseSandbox/CheckpointSandbox（带 operation 幂等）。
+service E2BSandboxService {
+  // 走完整沙箱创建生命周期（CNI 含预热池、HostPort、tracker、stateStore），
+  // config.sandbox_id 必填且同时作为 cri id 与 e2b id
+  rpc Create(SandboxCreateRequest) returns (SandboxCreateResponse);
+  // 薄转发 orchestrator Update（改 TTL）
+  rpc Update(SandboxUpdateRequest) returns (google.protobuf.Empty);
+  // 薄转发 orchestrator List（不与本地 stateStore 合并）
+  rpc List(google.protobuf.Empty) returns (SandboxListResponse);
+  // Stop+Remove 合一的完整清理（幂等，sandbox 不存在返回 OK）
+  rpc Delete(SandboxDeleteRequest) returns (google.protobuf.Empty);
+  // 薄转发 orchestrator ListCachedBuilds
+  rpc ListCachedBuilds(google.protobuf.Empty) returns (SandboxListCachedBuildsResponse);
+}
+
 // E2BSandboxAdminService 是节点本地管理面，仅供 Node Agent 通过 unix socket 调用。
 service E2BSandboxAdminService {
   // 为指定 E2B sandbox 执行 Pause：拍快照并等待持久化，随后 VM 由 Orchestrator 停止
