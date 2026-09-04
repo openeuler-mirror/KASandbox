@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"log"
-	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -34,8 +33,8 @@ func (e *grpcE2BEngine) AdminCreate(ctx context.Context, req *orchestrator.Sandb
 		return nil, status.Error(codes.InvalidArgument, "config.template_id, config.build_id and config.team_id are required")
 	}
 	log.Printf("[GrpcE2BEngine] AdminCreate: sandbox=%s alias=%s", sandboxID, strDeref(cfg.Alias))
-	atomic.AddInt64(&e.inflightRunPod, 1)
-	defer atomic.AddInt64(&e.inflightRunPod, -1)
+	e.trackRunPodStart()
+	defer e.trackRunPodEnd()
 	if err := e.ensureConn(); err != nil {
 		return nil, mapE2BError(err)
 	}
