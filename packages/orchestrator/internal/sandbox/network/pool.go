@@ -18,11 +18,6 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
 
-const (
-	NewSlotsPoolSize    = 300
-	ReusedSlotsPoolSize = 1000
-)
-
 var (
 	meter = otel.Meter("github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network")
 
@@ -49,6 +44,14 @@ var (
 )
 
 type Config struct {
+	// Pool sizes for pre-warmed network slots.
+	// Set NETWORK_POOL_NEW_SLOTS_SIZE=0 to disable pre-warming entirely — this is
+	// recommended for CNI-only deployments where sandboxes bring their own
+	// external netns and never acquire a slot from this pool; otherwise startup
+	// eagerly creates `size` netns/veth/iptables rule sets that nothing uses.
+	NewSlotsPoolSize    int `env:"NETWORK_POOL_NEW_SLOTS_SIZE"    envDefault:"300"`
+	ReusedSlotsPoolSize int `env:"NETWORK_POOL_REUSED_SLOTS_SIZE" envDefault:"1000"`
+
 	// Using reserver IPv4 in range that is used for experiments and documentation
 	// https://en.wikipedia.org/wiki/Reserved_IP_addresses
 	OrchestratorInSandboxIPAddress string `env:"SANDBOX_ORCHESTRATOR_IP" envDefault:"192.0.2.1"`
@@ -79,8 +82,9 @@ type Pool struct {
 	done     chan struct{}
 	doneOnce sync.Once
 
-	newSlots    chan *Slot
-	reusedSlots chan *Slot
+	newSlots     chan *Slot
+	newSlotsSize int
+	reusedSlots  chan *Slot
 
 	slotStorage Storage
 }
@@ -88,15 +92,18 @@ type Pool struct {
 var ErrClosed = errors.New("cannot read from a closed pool")
 
 func NewPool(newSlotsPoolSize, reusedSlotsPoolSize int, slotStorage Storage, config Config) *Pool {
-	newSlots := make(chan *Slot, newSlotsPoolSize-1)
-	reusedSlots := make(chan *Slot, reusedSlotsPoolSize)
+	// One slot is always in flight being created, so the buffer holds size-1.
+	// Clamp at 0 so a non-positive size disables pre-warming instead of panicking.
+	newSlots := make(chan *Slot, max(newSlotsPoolSize-1, 0))
+	reusedSlots := make(chan *Slot, max(reusedSlotsPoolSize, 0))
 
 	pool := &Pool{
-		config:      config,
-		done:        make(chan struct{}),
-		newSlots:    newSlots,
-		reusedSlots: reusedSlots,
-		slotStorage: slotStorage,
+		config:       config,
+		done:         make(chan struct{}),
+		newSlots:     newSlots,
+		newSlotsSize: max(newSlotsPoolSize, 0),
+		reusedSlots:  reusedSlots,
+		slotStorage:  slotStorage,
 	}
 
 	return pool
@@ -125,6 +132,12 @@ func (p *Pool) createNetworkSlot(ctx context.Context) (*Slot, error) {
 
 func (p *Pool) Populate(ctx context.Context) {
 	defer close(p.newSlots)
+
+	if p.newSlotsSize == 0 {
+		logger.L().Info(ctx, "[network slot pool]: pre-warming disabled (NETWORK_POOL_NEW_SLOTS_SIZE=0)")
+
+		return
+	}
 
 	for {
 		select {
