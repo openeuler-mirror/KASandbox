@@ -8,10 +8,16 @@ ARG umdk_version=25.12.0-B106.oe2403sp3
 RUN echo "sslverify=false" >> /etc/yum.conf
 
 RUN yum update -y
-RUN yum install -y iptables iproute iptables-nft rsync numactl-libs liburing glog jsoncpp libibverbs yaml-cpp xxhash-libs util-linux
+RUN yum install -y iptables iproute iptables-nft rsync numactl-libs liburing glog jsoncpp libibverbs yaml-cpp xxhash-libs util-linux wget
 
 RUN yum install -y umdk-urma-lib-${umdk_version}.${oe_arch} umdk-urma-bin-${umdk_version}.${oe_arch} umdk-urma-devel-${umdk_version}.${oe_arch} \
 umdk-urma-tools-${umdk_version}.${oe_arch} umdk-urma-example-${umdk_version}.${oe_arch}
+
+# 下载 grpc_health_probe（helm 模板 livenessProbe 依赖 /bin/grpc_health_probe，GitHub 直连不可达走 ghfast.top 代理）
+ARG probe_arch=arm64
+ARG grpc_health_probe_version=v0.4.36
+RUN wget -qO /bin/grpc_health_probe "https://ghfast.top/https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${grpc_health_probe_version}/grpc_health_probe-linux-${probe_arch}" \
+    && chmod +x /bin/grpc_health_probe
 
 RUN update-alternatives --set iptables /usr/sbin/iptables-nft || true
 COPY orchestrator /usr/bin/orchestrator

@@ -115,6 +115,20 @@ install_base_packages() {
 
 # --- 函数：拉取并重命名 Docker 镜像 (带存在性检查) ---
 pull_docker_images() {
+
+    local base_image_tar="$DEP_DIR/openEuler-docker.aarch64.tar.xz"
+    if [ ! -s "$base_image_tar" ]; then
+        wget https://repo.openeuler.org/openEuler-24.03-LTS-SP3/docker_img/aarch64/openEuler-docker.aarch64.tar.xz -O "$base_image_tar" \
+            || error "openEuler 基础镜像下载失败"
+    fi
+
+    # 解压 tar.xz 得到 docker load 可识别的 tar 镜像并加载（-k 保留源文件）
+    local base_image_inner_tar="$DEP_DIR/openEuler-docker.aarch64.tar"
+    if [ -s "$base_image_tar" ] && [ ! -f "$base_image_inner_tar" ]; then
+        echo "正在解压: $base_image_tar"
+        xz -dk "$base_image_tar" || error "openEuler 基础镜像解压失败"
+    fi
+
     # 加载本地镜像包（.tar / .tar.gz）
     local file
     for file in "$DEP_DIR"/*.tar "$DEP_DIR"/*.tar.gz; do
@@ -133,7 +147,6 @@ pull_docker_images() {
         "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/debian:bookworm-slim${arch_suffix}|debian:bookworm-slim"
         "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:latest${arch_suffix}|postgres:latest"
     )
-
     # K8S 模式额外拉取 busybox 和 ubuntu（两种架构均需要）
     if [ "$DEPLOY_MODE" = "k8s" ]; then
         images+=(
@@ -520,7 +533,6 @@ uninstall_nomad() {
 }
 
 uninstall_e2b() {
-    uninstall_nomad
     pip uninstall e2b==2.15.3 -y
     pip uninstall e2b_code_interpreter==2.4.1 -y
     info "remove nbd"
@@ -579,8 +591,10 @@ install_client() {
     pip install e2b==2.20.0
     pip install e2b_code_interpreter==2.4.1
     python3 $E2B_DIR/patch_e2b.py
-    
+    # 配置harbor证书
+    configure_harbor_cert_trust
     cp -fv "$DEP_DIR/init-client.sh" "$E2B_DIR/init-client.sh"
+    bash $E2B_DIR/init-client.sh || error "初始化客户端组件失败"
     success "===== 所有客户端组件安装完成 ====="
 }
 
@@ -604,7 +618,6 @@ download_packages() {
             fc_arch="x86_64"
             oe_arch="x86_64"
             harbor_pkg="harbor-offline-installer-v2.13.0.tgz"
-            harbor_url="https://github.com/goharbor/harbor/releases/download/v2.13.0"
             ;;
         arm64)
             docker_arch="aarch64"
@@ -613,7 +626,6 @@ download_packages() {
             fc_arch="aarch64"
             oe_arch="aarch64"
             harbor_pkg="harbor-offline-installer-aarch64-v2.13.0.tgz"
-            harbor_url="https://github.com/wise2c-devops/build-harbor-aarch64/releases/download/v2.13.0"
             ;;
         *)
             error "不支持的架构 $ARCH，仅支持 x86_64/arm64"
@@ -622,13 +634,26 @@ download_packages() {
 
     echo "开始下载 $ARCH 架构软件包..."
 
+    # 国内网络不可达源使用镜像: docker 用华为云镜像, github 用 ghfast.top 代理（同 L1503 websocat 的做法）
+    local gh_proxy="https://ghfast.top"
+    case "$ARCH" in
+        x86_64)
+            docker_mirror="https://mirrors.huaweicloud.com/docker-ce/linux/static/stable/x86_64"
+            harbor_url="${gh_proxy}/https://github.com/goharbor/harbor/releases/download/v2.13.0"
+            ;;
+        arm64)
+            docker_mirror="https://mirrors.huaweicloud.com/docker-ce/linux/static/stable/aarch64"
+            harbor_url="${gh_proxy}/https://github.com/wise2c-devops/build-harbor-aarch64/releases/download/v2.13.0"
+            ;;
+    esac
+
     # 定义下载列表: URL|目标文件名|描述
     local downloads=(
-        "https://download.docker.com/linux/static/stable/${docker_arch}/docker-25.0.5.tgz|docker-25.0.5.tgz|docker"
-        "https://github.com/docker/compose/releases/download/v2.40.2/docker-compose-linux-${docker_arch}|docker-compose-linux-${docker_arch}|docker-compose"
+        "${docker_mirror}/docker-25.0.5.tgz|docker-25.0.5.tgz|docker"
+        "${gh_proxy}/https://github.com/docker/compose/releases/download/v2.40.2/docker-compose-linux-${docker_arch}|docker-compose-linux-${docker_arch}|docker-compose"
         "https://releases.hashicorp.com/nomad/1.10.4/nomad_1.10.4_linux_${nomad_arch}.zip|nomad_1.10.4_linux_${nomad_arch}.zip|nomad"
         "https://releases.hashicorp.com/consul/1.21.4/consul_1.21.4_linux_${consul_arch}.zip|consul_1.21.4_linux_${consul_arch}.zip|consul"
-        "https://github.com/firecracker-microvm/firecracker/releases/download/v1.13.1/firecracker-v1.13.1-${fc_arch}.tgz|firecracker-v1.13.1-${fc_arch}.tgz|firecracker"
+        "${gh_proxy}/https://github.com/firecracker-microvm/firecracker/releases/download/v1.13.1/firecracker-v1.13.1-${fc_arch}.tgz|firecracker-v1.13.1-${fc_arch}.tgz|firecracker"
         "https://dl-cdn.openeuler.openatom.cn/openEuler-24.03-LTS-SP3/docker_img/${oe_arch}/openEuler-docker.${oe_arch}.tar.xz|openEuler-docker.${oe_arch}.tar.xz|docker"
         "${harbor_url}/${harbor_pkg}|${harbor_pkg}|harbor"
     )
@@ -639,8 +664,15 @@ download_packages() {
         local rest="${entry#*|}"
         filename="${rest%%|*}"
         desc="${rest##*|}"
+        # 幂等：已存在且非空则跳过
+        if [ -s "$pkg_dir/$filename" ]; then
+            echo "已存在，跳过 $desc: $pkg_dir/$filename"
+            continue
+        fi
         echo "正在下载 $desc: $url"
-        wget -q --show-progress --no-check-certificate "$url" -O "$pkg_dir/$filename" || error "$desc 下载失败"
+        # --timeout/--tries 防止不可达源无限挂起; 失败时删除残缺文件，避免下次误判为完整
+        wget -q --show-progress --no-check-certificate --timeout=60 --tries=3 "$url" -O "$pkg_dir/$filename" \
+            || { rm -f "$pkg_dir/$filename"; error "$desc 下载失败"; }
     done
 
     # e2b-webhook 镜像 tar 包（K8S 模式下启用 webhook 时需要）
@@ -686,6 +718,7 @@ uninstall_docker_resources() {
     # K8S 模式额外清理
     if [ "$DEPLOY_MODE" = "k8s" ]; then
         script_images+=("busybox:latest" "ubuntu:24.04")
+        script_images+=("e2b-webhook:latest")
     fi
     
     # 删除脚本拉取的镜像
@@ -714,15 +747,60 @@ uninstall_docker_resources() {
     else
         info "未找到 Harbor 镜像，跳过"
     fi
+    # 清理 crictl/containerd(k8s.io ns) 缓存的 Harbor 镜像（K8S 模式）
+    if [ "$DEPLOY_MODE" = "k8s" ] && command -v ctr >/dev/null 2>&1; then
+        info "清理 containerd (k8s.io) 中的 Harbor 镜像: ${registry_prefix}/..."
+        local ctr_harbor_images ctr_harbor_count=0
+        ctr_harbor_images=$(ctr -n k8s.io images ls -q | grep "^${registry_prefix}/" || true)
+        if [ -n "$ctr_harbor_images" ]; then
+            while IFS= read -r image; do
+                [ -n "$image" ] || continue
+                info "删除 containerd 镜像: $image"
+                ctr -n k8s.io images rm "$image" >/dev/null 2>&1 || true
+                ctr_harbor_count=$((ctr_harbor_count + 1))
+            done <<< "$ctr_harbor_images"
+            success "containerd Harbor 镜像已清理 (${ctr_harbor_count} 个)"
+        else
+            info "containerd 中未找到 Harbor 镜像，跳过"
+        fi
+        # 清理 K8S 导入的 busybox（容器运行时缓存）
+        if ctr -n k8s.io images ls -q | grep -q "^docker.io/library/busybox:latest$"; then
+            info "删除 containerd 镜像: docker.io/library/busybox:latest"
+            ctr -n k8s.io images rm docker.io/library/busybox:latest >/dev/null 2>&1 || true
+        fi
+    fi
+
 
     # 清理悬空镜像
     info "清理悬空镜像..."
     $DOCKER_CMD image prune -f 2>/dev/null || true
+    # 打印当前镜像列表
+    info "当前镜像列表:"
+    $DOCKER_CMD images
+}
+
+# 卸载 cri-multiplex（K8S 专属组件），调用 k8s-deploy.sh 完成
+uninstall_cri_multiplex() {
+    if [ ! -f "$WORK_DIR/k8s-deploy.sh" ]; then
+        warn "未找到 k8s-deploy.sh，跳过 cri-multiplex 卸载"
+        return
+    fi
+    info "卸载 cri-multiplex ..."
+    bash "$WORK_DIR/k8s-deploy.sh" cri-multiplex-uninstall || error "cri-multiplex 卸载失败"
+    success "cri-multiplex 已卸载"
 }
 
 uninstall() {
     info "===== 开始批量卸载组件 ====="
     stop
+    # Nomad 仅在 nomad 模式下部署，K8S 模式跳过
+    if [ "$DEPLOY_MODE" = "nomad" ]; then
+        uninstall_nomad
+    fi
+    # cri-multiplex 仅在 K8S 模式下部署，nomad 模式跳过
+    if [ "$DEPLOY_MODE" = "k8s" ]; then
+        uninstall_cri_multiplex
+    fi
     uninstall_e2b
     uninstall_fc_directories
     uninstall_harbor
@@ -946,75 +1024,7 @@ start_harbor() {
         sed -i "s|^  #*private_key: .*|  private_key: /etc/harbor/certs/harbor.key|" "$harbor_config"
 
         # 根据容器运行时配置 HTTPS 证书信任
-        # nerdctl（通常为 k8s 节点）直接配置 containerd；docker 则配置 Docker daemon
-        if [ "$DEPLOY_MODE" = "k8s" ]; then
-            # 1. 准备 certs.d 目录与 hosts.toml（containerd 现代配置方式）
-            mkdir -p "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT"
-            cp -f "$HARBOR_CERTS_DIR/harbor.crt" "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.crt" || error "复制 harbor.crt 失败"
-            cp -f "$HARBOR_CERTS_DIR/harbor.key" "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.key" || error "复制 harbor.key 失败"
-            cat > "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/hosts.toml" << EOF
-server = "https://$HOST_IP:$HARBOR_HTTPS_PORT"
-[host."https://$HOST_IP:$HARBOR_HTTPS_PORT"]
-  capabilities = ["pull", "resolve", "push"]
-  ca = "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.crt"
-  skip_verify = false
-EOF
-
-            # 2. 检查 containerd config.toml 是否已配置 config_path 指向 certs.d 目录
-            #    只有配置了 config_path，上面的 hosts.toml 才会生效
-            info "检查 containerd config_path 配置..."
-            local containerd_config="/etc/containerd/config.toml"
-            [ ! -f "$containerd_config" ] && containerd config default > "$containerd_config"
-            cp "$containerd_config" "$containerd_config.bak"
-            local need_restart=false
-            if grep -q 'config_path = "/etc/containerd/certs.d"' "$containerd_config"; then
-                info "containerd config_path 已指向 certs.d，跳过"
-            elif grep -q 'config_path =' "$containerd_config"; then
-                # config_path 已存在但指向其它目录，替换其值为 certs.d
-                info "containerd config_path 指向其它目录，替换为 certs.d ..."
-                sed -i 's#config_path = .*#config_path = "/etc/containerd/certs.d"#' "$containerd_config"
-                need_restart=true
-            else
-                # 没有 config_path，确保存在 [plugins."io.containerd.grpc.v1.cri".registry] 段后添加
-                info "containerd 未配置 config_path，正在添加..."
-                if ! grep -q '\[plugins."io.containerd.grpc.v1.cri".registry\]' "$containerd_config"; then
-                    cat >> "$containerd_config" << EOF
-
-[plugins."io.containerd.grpc.v1.cri".registry]
-  config_path = "/etc/containerd/certs.d"
-EOF
-                else
-                    # 段已存在但缺少 config_path，在段内追加
-                    sed -i '/\[plugins."io.containerd.grpc.v1.cri".registry\]/a\  config_path = "/etc/containerd/certs.d"' "$containerd_config"
-                fi
-                need_restart=true
-            fi
-
-            if [ "$need_restart" = true ]; then
-                systemctl daemon-reload
-                systemctl restart containerd
-                # 等待 containerd 启动成功（socket 就绪），带超时
-                info "等待 containerd 启动 ..."
-                local _wait=0
-                while [ ! -S /run/containerd/containerd.sock ] && [ "$_wait" -lt 30 ]; do
-                    sleep 1
-                    _wait=$((_wait+1))
-                done
-                if systemctl is-active --quiet containerd && [ -S /run/containerd/containerd.sock ]; then
-                    success "containerd 已启动"
-                else
-                    error "containerd 未启动成功，请检查: journalctl -u containerd -n 50"
-                fi
-            fi
-        fi
-        if [ "$DOCKER_CMD" = "docker" ]; then
-            # Docker 模式：配置 Docker 信任 Harbor HTTPS 证书
-            info "配置 Docker 信任 Harbor HTTPS 证书..."
-            mkdir -p "/etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT"
-            cp -f "$HARBOR_CERTS_DIR/harbor.crt" "/etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/ca.crt" || error "复制 ca.crt 失败"
-            systemctl restart "$CONTAINERD_SERVICE"
-            info "Docker Harbor HTTPS 证书已配置: /etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/ca.crt"
-        fi
+        configure_harbor_cert_trust
     else
         sed -i '/^https:/,/^$/ s/^/#/' "$harbor_config"
     fi
@@ -1029,6 +1039,78 @@ EOF
     fi
 
     bash install.sh || error "Harbor 安装脚本执行失败"
+}
+
+# 根据容器运行时配置 Harbor HTTPS 证书信任
+# nerdctl（通常为 k8s 节点）直接配置 containerd；docker 则配置 Docker daemon
+configure_harbor_cert_trust() {
+    if [ "$DEPLOY_MODE" = "k8s" ]; then
+        # 1. 准备 certs.d 目录与 hosts.toml（containerd 现代配置方式）
+        mkdir -p "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT"
+        cp -f "$HARBOR_CERTS_DIR/harbor.crt" "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.crt" || error "复制 harbor.crt 失败"
+        cat > "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/hosts.toml" << EOF
+server = "https://$HOST_IP:$HARBOR_HTTPS_PORT"
+[host."https://$HOST_IP:$HARBOR_HTTPS_PORT"]
+  capabilities = ["pull", "resolve", "push"]
+  ca = "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.crt"
+  skip_verify = false
+EOF
+
+        # 2. 检查 containerd config.toml 是否已配置 config_path 指向 certs.d 目录
+        #    只有配置了 config_path，上面的 hosts.toml 才会生效
+        info "检查 containerd config_path 配置..."
+        local containerd_config="/etc/containerd/config.toml"
+        [ ! -f "$containerd_config" ] && containerd config default > "$containerd_config"
+        cp "$containerd_config" "$containerd_config.bak"
+        local need_restart=false
+        if grep -q 'config_path = "/etc/containerd/certs.d"' "$containerd_config"; then
+            info "containerd config_path 已指向 certs.d，跳过"
+        elif grep -q 'config_path =' "$containerd_config"; then
+            # config_path 已存在但指向其它目录，替换其值为 certs.d
+            info "containerd config_path 指向其它目录，替换为 certs.d ..."
+            sed -i 's#config_path = .*#config_path = "/etc/containerd/certs.d"#' "$containerd_config"
+            need_restart=true
+        else
+            # 没有 config_path，确保存在 [plugins."io.containerd.grpc.v1.cri".registry] 段后添加
+            info "containerd 未配置 config_path，正在添加..."
+            if ! grep -q '\[plugins."io.containerd.grpc.v1.cri".registry\]' "$containerd_config"; then
+                cat >> "$containerd_config" << EOF
+
+[plugins."io.containerd.grpc.v1.cri".registry]
+  config_path = "/etc/containerd/certs.d"
+EOF
+            else
+                # 段已存在但缺少 config_path，在段内追加
+                sed -i '/\[plugins."io.containerd.grpc.v1.cri".registry\]/a\  config_path = "/etc/containerd/certs.d"' "$containerd_config"
+            fi
+            need_restart=true
+        fi
+
+        if [ "$need_restart" = true ]; then
+            systemctl daemon-reload
+            systemctl restart containerd
+            # 等待 containerd 启动成功（socket 就绪），带超时
+            info "等待 containerd 启动 ..."
+            local _wait=0
+            while [ ! -S /run/containerd/containerd.sock ] && [ "$_wait" -lt 30 ]; do
+                sleep 1
+                _wait=$((_wait+1))
+            done
+            if systemctl is-active --quiet containerd && [ -S /run/containerd/containerd.sock ]; then
+                success "containerd 已启动"
+            else
+                error "containerd 未启动成功，请检查: journalctl -u containerd -n 50"
+            fi
+        fi
+    fi
+    if [ "$DOCKER_CMD" = "docker" ]; then
+        # Docker 模式：配置 Docker 信任 Harbor HTTPS 证书
+        info "配置 Docker 信任 Harbor HTTPS 证书..."
+        mkdir -p "/etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT"
+        cp -f "$HARBOR_CERTS_DIR/harbor.crt" "/etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/ca.crt" || error "复制 ca.crt 失败"
+        systemctl restart "$CONTAINERD_SERVICE"
+        info "Docker Harbor HTTPS 证书已配置: /etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/ca.crt"
+    fi
 }
 
 harbor_get_url() {
@@ -1190,27 +1272,10 @@ start() {
         rm -fv "$E2B_DIR/bin/orchestrator.Dockerfile"
         info "执行部署脚本..."
         bash "$E2B_DIR/deploy.sh" || error "执行部署脚本失败"
-        iptable_clean
+        iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 3002
+        iptables -t nat -A OUTPUT -p tcp -d 127.0.0.1 --dport 80 -j REDIRECT --to-port 3002
         success "e2b-infra 服务启动完成！所有组件健康检查通过"
     fi
-    # iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 3002
-    iptables -t nat -A OUTPUT -p tcp -d 127.0.0.1 --dport 80 -j REDIRECT --to-port 3002
-}
-
-iptable_clean() {
-    source /opt/e2b-infra/.env
-    local nomad_token="$NOMAD_ACL_TOKEN"
-
-    local jobs
-    jobs=$(nomad job status -token "$nomad_token" -json | jq -r '.[].Allocations[].JobID')
-    local job
-    for job in $jobs; do
-        nomad job stop -token "$nomad_token" "$job"
-    done
-    iptables -F
-    systemctl restart "$CONTAINERD_SERVICE"
-    bash "$WORK_DIR/harbor/install.sh" || error "Harbor 安装脚本执行失败"
-    bash "$E2B_DIR/deploy.sh" || error "执行部署脚本失败"
 }
 
 deploy() {

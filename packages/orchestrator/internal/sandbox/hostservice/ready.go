@@ -9,23 +9,12 @@ import (
 	"time"
 )
 
-type ADBProxyReady struct {
-	Delay time.Duration
-}
+// ProcessAlive checks initial process liveness when no readiness protocol exists.
+type ProcessAlive struct{}
 
-func (r *ADBProxyReady) Check(ctx context.Context) error {
-	timer := time.NewTimer(r.Delay)
-	defer timer.Stop()
+func (r *ProcessAlive) Check(context.Context) error { return nil }
 
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-func (r *ADBProxyReady) String() string { return "adb-vsock-proxy" }
+func (r *ProcessAlive) String() string { return "process-alive" }
 
 type ConfigServerReady struct {
 	Path string

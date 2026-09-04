@@ -59,7 +59,7 @@ var SandboxHttpTransport = otelhttp.NewTransport(
 
 // Http client that should be used for requests to sandboxes.
 var sandboxHttpClient = http.Client{
-	Timeout:   10 * time.Second,
+	Timeout:   20 * time.Second,
 	Transport: SandboxHttpTransport,
 }
 
@@ -752,7 +752,6 @@ func (f *Factory) ResumeSandbox(
 	zap.L().Sugar().Infof("[ResumeSandbox] vmmFactory.NewProcess cost: %.3f ms, traceID=%s", time.Since(t4).Seconds()*1000, traceID)
 	var androidServices *hostservice.AndroidServices
 	if metadata.OSType(meta.Template.OsType) == metadata.OSTypeAndroid {
-		tAndroidSvc := time.Now()
 		androidServices, err = hostservice.StartAndroidServices(ctx, hostservice.AndroidServicesParams{
 			Config:         f.config,
 			CIDPool:        f.cidPool,
@@ -768,7 +767,10 @@ func (f *Factory) ResumeSandbox(
 		if err != nil {
 			return nil, err
 		}
-		zap.L().Sugar().Infof("[ResumeSandbox] start android services cost: %.3f ms, traceID=%s", time.Since(tAndroidSvc).Seconds()*1000, traceID)
+		logger.L().Info(ctx, "android host services started",
+			zap.String("sandbox_id", runtime.SandboxID),
+			zap.String("proxy_addr", androidServices.ADBAddress),
+		)
 	}
 
 	// ==================== 6. 恢复 VM ====================
@@ -830,26 +832,6 @@ func (f *Factory) ResumeSandbox(
 	if vmmStartErr != nil {
 		return nil, fmt.Errorf("failed to start VMM: %w", vmmStartErr)
 	}
-	if androidServices != nil {
-		proxyAddr := androidServices.ADBAddress
-		tVsock := time.Now()
-		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, f.config.ReadyCheckTimeout); err != nil {
-			return nil, fmt.Errorf("vsock proxy not ready (guest adbd unreachable): %w", err)
-		}
-		zap.L().Sugar().Infof("[ResumeSandbox] wait vsock proxy ready cost: %.3f ms, traceID=%s", time.Since(tVsock).Seconds()*1000, traceID)
-		logger.L().Info(ctx, "android host services ready",
-			zap.String("sandbox_id", runtime.SandboxID),
-			zap.String("proxy_addr", proxyAddr),
-		)
-		rilCtx, cancelRIL := context.WithTimeout(ctx, f.config.ReadyCheckTimeout)
-		defer cancelRIL()
-		tModem := time.Now()
-		if err := androidServices.WaitForModemConnection(rilCtx); err != nil {
-			return nil, fmt.Errorf("guest RIL did not reconnect to modem simulator: %w", err)
-		}
-		zap.L().Sugar().Infof("[ResumeSandbox] wait modem connection cost: %.3f ms, traceID=%s", time.Since(tModem).Seconds()*1000, traceID)
-	}
-
 	zap.L().Sugar().Infof("[ResumeSandbox] resume VM cost: %d ms, traceID=%s", time.Since(phaseStart).Milliseconds(), traceID)
 	telemetry.ReportEvent(ctx, "initialized VMM")
 
@@ -916,6 +898,13 @@ func (f *Factory) ResumeSandbox(
 	zap.L().Sugar().Infof("[ResumeSandbox] wait envd ready cost: %.3f ms, traceID=%s", time.Since(tEnvd).Seconds()*1000, traceID)
 
 	telemetry.ReportEvent(execCtx, "envd initialized")
+
+	if androidServices != nil {
+		// Avoid ADB traffic during early lazy restore.
+		if err := androidServices.WaitForADBReady(ctx, f.config.ReadyCheckTimeout); err != nil {
+			return nil, fmt.Errorf("Android ADB not ready: %w", err)
+		}
+	}
 
 	if f.featureFlags.BoolFlag(execCtx, featureflags.HostStatsEnabled) {
 		samplingInterval := time.Duration(f.featureFlags.IntFlag(execCtx, featureflags.HostStatsSamplingInterval)) * time.Millisecond

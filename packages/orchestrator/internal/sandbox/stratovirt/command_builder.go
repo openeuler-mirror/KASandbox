@@ -12,6 +12,8 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 )
 
+const androidMobileNetdevID = "eth1"
+
 type CommandBuilder struct {
 	config cfg.BuilderConfig
 }
@@ -149,8 +151,9 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 	// Create all FIFOs referenced by pipeByPort: stratovirt's -chardev pipe
 	// opens <name>.in/.out at startup and aborts if they're missing. Port<->FIFO
 	// assignment is e2b-defined (matches upstream cuttlefish only for the stable
-	// ports 3/4/9/10/11); see buildAndroidVirtconsoleArgs.
-	pipeNames := []string{"keymaster_fifo_vm", "gatekeeper_fifo_vm", "oemlock_fifo_vm", "keymint_fifo_vm", "bt_fifo_vm", "gnsshvc_fifo_vm", "locationhvc_fifo_vm", "uwb_fifo_vm", "nfc_fifo_vm", "sensors_control_fifo_vm", "sensors_data_fifo_vm"}
+	// ports 3/4/10/11); the remaining HAL ports (bt/gnsshvc/locationhvc/uwb/
+	// nfc/sensors) are unused by E2B and rendered as -chardev null below.
+	pipeNames := []string{"keymaster_fifo_vm", "gatekeeper_fifo_vm", "oemlock_fifo_vm", "keymint_fifo_vm"}
 	for _, name := range pipeNames {
 		path := filepath.Join(pipeDir, name)
 		fmt.Fprintf(&preamble, "mkfifo -m 600 %s.in %s.out 2>/dev/null || true; ", path, path)
@@ -185,7 +188,7 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 			"-device virtio-serial-pci,id=virtio-serial0,bus=pcie.0,addr=0x11,max-ports=31 "+
 			"%s"+
 			"%s"+
-			"-netdev tap,id=netdev0,ifname=%s -device virtio-net-pci,netdev=netdev0,id=eth1,bus=pcie.0,addr=0x8,mac=00:1a:11:e0:cf:00 "+
+			"-netdev tap,id=netdev0,ifname=%s -device virtio-net-pci,netdev=netdev0,id=%s,bus=pcie.0,addr=0x8,mac=00:1a:11:e0:cf:00 "+
 			"-netdev tap,id=netdev1,ifname=%s -device virtio-net-pci,netdev=netdev1,id=%s,bus=pcie.0,addr=0x9,mac=00:1a:11:e1:cf:00 "+
 			"-device virtio-gpu-pci,id=gpu0,bus=pcie.0,addr=0x10,xres=720,yres=1280 "+
 			"-object rng-random,id=objrng0,filename=/dev/urandom -device virtio-rng-pci,id=rng0,rng=objrng0,bus=pcie.0,addr=0x5,max-bytes=1024,period=2000 "+
@@ -206,8 +209,9 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 		virtconsoleArgs,
 		vsockArg,
 		slot.ExtraTapName(), // netdev0 ifname = cvd-mtap
-		slot.TapName(),      // netdev1 ifname = tap0
-		slot.VpeerName(),    // netdev1 id = eth0 (MMDS)
+		androidMobileNetdevID,
+		slot.TapName(),   // netdev1 ifname = tap0
+		slot.VpeerName(), // netdev1 id = eth0 (MMDS)
 		qmpSocket,
 		serialLogPath,
 		incomingArg,
@@ -241,15 +245,8 @@ func buildAndroidVirtconsoleArgs(pipeDir string, logcatPath string) string {
 	pipeByPort := map[int]string{
 		3:  "keymaster_fifo_vm",
 		4:  "gatekeeper_fifo_vm",
-		5:  "bt_fifo_vm",
-		6:  "gnsshvc_fifo_vm",
-		7:  "locationhvc_fifo_vm",
-		9:  "uwb_fifo_vm",
 		10: "oemlock_fifo_vm",
 		11: "keymint_fifo_vm",
-		12: "nfc_fifo_vm",
-		18: "sensors_control_fifo_vm",
-		19: "sensors_data_fifo_vm",
 	}
 	for port := 0; port < 31; port++ {
 		switch port {

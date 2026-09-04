@@ -37,6 +37,7 @@ Usage: ./deploy.sh [OPTIONS]
 Options:
   --type <k8s|nomad>          Deployment type (default: nomad)
   --db-mode <container|k8s>   Database initialization mode
+  --runtime <docker|nerdctl>  Container runtime (default: auto-detect docker/nerdctl)
   createapikey                Only initialize database (skip build/push/deploy)
   deploy-webhook              Deploy only e2b-webhook (build image + render template + kubectl apply)
   --build-image <images>      Only build specified images, comma separated;
@@ -47,6 +48,7 @@ Examples:
   ./deploy.sh --type k8s
   ./deploy.sh --type nomad
   ./deploy.sh --type k8s --db-mode container
+  ./deploy.sh --type nomad --runtime nerdctl
   ./deploy.sh createapikey --type k8s
   ./deploy.sh deploy-webhook
   ./deploy.sh --build-image api,orchestrator
@@ -186,19 +188,22 @@ build_and_push_dockerfiles() {
     done
 }
 
-# 推送预构建镜像（redis/postgres/busybox）到 Harbor
+# 推送预构建镜像（redis/postgres；busybox 仅 K8S 模式推送）到 Harbor
 push_prebuilt_images() {
     local push_images="${1:-true}"
     local filter="${2:-}"
     declare -A imgs=(
         [redis]="redis:${REDIS_VERSION}"
         [postgres]="postgres:latest"
-        [busybox]="busybox:latest"
         # [vector]="timberio/vector:${LOGS_COLLECTOR_VERSION}"
         # [loki]="grafana/loki:${LOKI_VERSION}"
         # [otel]="otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}"
         # [clickhouse]="clickhouse/clickhouse-server:${CLICKHOUSE_VERSION}"
     )
+    # busybox 为 K8S 专属镜像（helm api init 容器使用），仅 K8S 模式推送
+    if [ "$DEPLOY_TYPE" = "k8s" ]; then
+        imgs[busybox]="busybox:latest"
+    fi
     local name src tag
     for name in "${!imgs[@]}"; do
         # 如果指定了镜像过滤，只处理匹配的预构建镜像
@@ -406,7 +411,7 @@ $LOKI_BUCKET_NAME $LOGS_COLLECTOR_PUBLIC_IP $TEMPLATE_MANAGER_HOST $CLICKHOUSE_P
 $API_PORT $EDGE_API_PORT $EDGE_PROXY_PORT $ORCHESTRATOR_PORT $ORCHESTRATOR_PROXY_PORT $ENVD_TIMEOUT $TEMPLATE_BUCKET_NAME $ALLOW_SANDBOX_INTERNET $SHARED_CHUNK_CACHE_PATH $GRAFANA_OTLP_URL $CLICKHOUSE_HOST $REGISTRY_URL
 $TEMPLATE_MANAGER_PORT $DOCKER_REVERSE_PROXY_PORT $LOKI_SERVICE_PORT $OTEL_COLLECTOR_PROXY_MAX_RESOURCES_MEMORY_MB $OTEL_COLLECTOR_PROXY_RESOURCES_MEMORY_MB $OTEL_COLLECTOR_RESOURCES_CPU_COUNT $GRAFANA_USERNAME $GRAFANA_OTEL_COLLECTOR_TOKEN
 $LOGS_PROXY_PORT $LOGS_HEALTH_PROXY_PORT $STORAGE_PROVIDER $ARTIFACTS_REGISTRY_PROVIDER $API_NODE_POOL $BUILD_NODE_POOL $LOGS_COLLECTOR_VERSION $LOKI_VERSION $OTEL_COLLECTOR_VERSION $CLICKHOUSE_SERVER_PORT $CLICKHOUSE_METRICS_PORT $API_GRPC_PORT $EDGE_HEALTH_PORT $API_GRPC_ADDRESS $DOMAIN_NAME $SANDBOX_STORAGE_BACKEND
-$HARBOR_CERTS_DIR $NODE_ID $GLOG_logtostderr $MOONCAKE_MASTER_ADDR $MOONCAKE_METADATA_SERVER $MOONCAKE_LOCAL_BUFFER_SIZE $MOONCAKE_GLOBAL_SEGMENT_SIZE $MOONCAKE_PROTOCOL $MC_URMA_TRANS_MODE $MOONCAKE_DEVICE_NAME $MC_LOG_ENABLE $MC_LOG_DIR $MC_LOG_LEVEL $MC_STORE_LOCAL_HOT_CACHE_USE_SHM $MC_STORE_LOCAL_HOT_BLOCK_SIZE $MC_STORE_LOCAL_HOT_ADMISSION_THRESHOLD $MC_SLICE_SIZE $MC_WORKERS_PER_CTX $MC_MAX_WR
+$HARBOR_CERTS_DIR $NODE_ID $GLOG_logtostderr $MOONCAKE_MASTER_ADDR $MOONCAKE_METADATA_SERVER $MOONCAKE_LOCAL_BUFFER_SIZE $MOONCAKE_GLOBAL_SEGMENT_SIZE $MOONCAKE_PROTOCOL $MC_URMA_TRANS_MODE $MOONCAKE_DEVICE_NAME $MC_LOG_ENABLE $MC_LOG_DIR $MC_LOG_LEVEL $MC_STORE_LOCAL_HOT_CACHE_USE_SHM $MC_STORE_LOCAL_HOT_BLOCK_SIZE $MC_STORE_LOCAL_HOT_ADMISSION_THRESHOLD $MC_SLICE_SIZE $MC_WORKERS_PER_CTX $MC_MAX_WR $MC_URMA_BONDING_MULTIPATH_ENABLE $MC_UB_NUMA_AFFINITY_ENABLE
 $E2B_FC_NETNS_EXEC_HELPER $E2B_USE_FC_NETNS_EXEC_HELPER
 $API_RESOURCES_CPU_COUNT $API_RESOURCES_MEMORY_MB $API_LIMITS_CPU_COUNT $API_LIMITS_MEMORY_MB
 $TEMPLATE_MANAGER_RESOURCES_CPU_COUNT $TEMPLATE_MANAGER_RESOURCES_MEMORY_MB $TEMPLATE_MANAGER_LIMITS_CPU_COUNT $TEMPLATE_MANAGER_LIMITS_MEMORY_MB'

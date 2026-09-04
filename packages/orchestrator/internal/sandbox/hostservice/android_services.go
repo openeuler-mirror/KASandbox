@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -222,6 +223,21 @@ func (s *AndroidServices) WaitForModemConnection(ctx context.Context) error {
 		return nil
 	}
 	return s.mux.WaitForConnection(ctx, s.cid, ModemSimulatorVsockPort)
+}
+
+// WaitForADBReady verifies the proxy-to-adbd path after envd initialization.
+func (s *AndroidServices) WaitForADBReady(ctx context.Context, timeout time.Duration) error {
+	if s == nil {
+		return nil
+	}
+
+	readyCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	if err := PollVsockProxyReady(readyCtx, s.ADBAddress, timeout); err != nil {
+		return fmt.Errorf("ADB path through socket_vsock_proxy is not ready: %w", err)
+	}
+	return nil
 }
 
 func (s *AndroidServices) Stop(ctx context.Context) error {

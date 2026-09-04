@@ -8,6 +8,8 @@ else
     echo "[deploy-worker] 警告: 未找到 env 文件: $ENV_FILE，部分配置将使用默认值" >&2
 fi
 # ========== 全局配置 ==========
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REMOTE_SETUP_SCRIPT="${SCRIPT_DIR}/remote-worker-setup.sh"
 SSH_KEY="${HOME}/.ssh/id_rsa"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes"
 SSH_CONTROL_PATH="${HOME}/.ssh/ctrl-%h-%p-%r"
@@ -180,91 +182,8 @@ deploy_node() {
 
     # ---------- 步骤 5：远程执行构建、重启服务 ----------
     log_step "5/${step_total}" "远程执行部署命令..."
-    if ssh_run "${node_ip}" bash -s <<REMOTE_EOF; then
-set -euo pipefail
-echo "[\$(date '+%H:%M:%S')] 开始远程配置"
-export http_proxy="${HTTP_PROXY}"
-export https_proxy="${HTTP_PROXY}"
-mkdir -p ${DEPLOY_DIR}
-
-if [ "${REMOTE_INFRA_DIR}" != "${DEPLOY_DIR}" ]; then
-    cp -r ${REMOTE_INFRA_DIR}/* ${DEPLOY_DIR}/ 2>/dev/null || true
-fi
-
-if ls /home/e2b/*.rpm >/dev/null 2>&1; then
-    rpm -ivh /home/e2b/*.rpm --force
-else
-    echo "  无 rpm 包需要安装"
-fi
-
-cd ${DEPLOY_DIR}
-cp .env ".env.bak.\$(date +%Y%m%d%H%M%S)"
-sed -i "s/^export SERVER_IP=.*/export SERVER_IP=${node_ip}/" .env
-sed -i 's/^export DEPLOY_MODE=.*/export DEPLOY_MODE=k8s/' .env
-echo "  .env 已更新:"
-grep -E "^export SERVER_IP|^export DEPLOY_MODE" .env
-
-echo "  执行 build.sh --install-client ..."
-bash build.sh --install-client
-
-echo "  执行 init-client.sh ..."
-bash init-client.sh || echo "  init-client.sh 执行失败（可能已初始化）"
-unset http_proxy
-unset https_proxy
-mkdir -p /fc-versions/v1.13.1/
-cp /home/e2b/firecracker /fc-versions/v1.13.1/ 2>/dev/null || echo "  firecracker 复制失败或不存在"
-
-#  检查 containerd config.toml 是否已配置 config_path 指向 certs.d 目录
-#   只有配置了 config_path，上面的 hosts.toml 才会生效
-info "检查 containerd config_path 配置..."
-# 注意：该 heredoc 以 `bash -s` 在远端作为脚本执行，不能用 local 声明变量；
-#       且远程内部变量（containerd_config / need_restart）必须用 \$ 转义，
-#       否则会被客户端 set -u 展开并报"未绑定变量"而中止。
-containerd_config="/etc/containerd/config.toml"
-[ ! -f "\$containerd_config" ] && containerd config default > "\$containerd_config"
-cp "\$containerd_config" "\$containerd_config.bak"
-need_restart=false
-if ! grep -q 'config_path = "/etc/containerd/certs.d"' "\$containerd_config"; then
-    info "containerd 未配置 config_path，正在添加..."
-    # 确保存在 [plugins."io.containerd.grpc.v1.cri".registry] 段
-    if ! grep -q '\[plugins."io.containerd.grpc.v1.cri".registry\]' "\$containerd_config"; then
-        cat >> "\$containerd_config" << EOF
-
-[plugins."io.containerd.grpc.v1.cri".registry]
-  config_path = "/etc/containerd/certs.d"
-EOF
-    else
-        # 段已存在但缺少 config_path，在段内追加
-        sed -i '/\[plugins."io.containerd.grpc.v1.cri".registry\]/a\  config_path = "/etc/containerd/certs.d"' "\$containerd_config"
-    fi
-else
-    info "containerd config_path 已配置，跳过"
-fi
-
-
-echo "  重启 containerd ..."
-systemctl restart containerd
-
-echo "  重启 kubelet ..."
-systemctl restart kubelet
-
-
-
-# 部署 cri-multiplex（多 runtime 复用器）
-echo "  部署 cri-multiplex ..."
-if [ -x "${CRI_MULTIPLEX_BIN}" ]; then
-    export CRI_MULTIPLEX_BIN CRI_MULTIPLEX_ORCHESTRATOR KUBELET_FLAGS_FILE
-    bash "${DEPLOY_DIR}/k8s-deploy.sh" cri-multiplex
-else
-    echo "  WARN: 未找到 cri-multiplex 可执行文件: ${CRI_MULTIPLEX_BIN}，跳过部署"
-fi
-
-echo "  测试镜像拉取 ${REGISTRY}/${IMAGE} ..."
-crictl pull ${REGISTRY}/${IMAGE}
-echo "  镜像拉取成功"
-
-exit 0
-REMOTE_EOF
+    # 通过远程脚本 remote-worker-setup.sh 执行，本机配置以环境变量注入
+    if ssh_run "${node_ip}" "HTTP_PROXY='${HTTP_PROXY}' SERVER_IP='${node_ip}' DEPLOY_DIR='${DEPLOY_DIR}' REMOTE_INFRA_DIR='${REMOTE_INFRA_DIR}' CRI_MULTIPLEX_BIN='${CRI_MULTIPLEX_BIN}' CRI_MULTIPLEX_ORCHESTRATOR='${CRI_MULTIPLEX_ORCHESTRATOR}' KUBELET_FLAGS_FILE='${KUBELET_FLAGS_FILE}' REGISTRY='${REGISTRY}' IMAGE='${IMAGE}' bash -s" < "${REMOTE_SETUP_SCRIPT}"; then
         log_info "远程命令执行成功"
     else
         log_error "远程命令执行失败"
