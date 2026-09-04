@@ -44,6 +44,7 @@ var (
 	meter                        = otel.GetMeterProvider().Meter("orchestrator.internal.sandbox")
 	envdInitCalls                = utils.Must(telemetry.GetCounter(meter, telemetry.EnvdInitCalls))
 	waitForEnvdDurationHistogram = utils.Must(telemetry.GetHistogram(meter, telemetry.WaitForEnvdDurationHistogramName))
+	checkpointPausedHistogram    = utils.Must(telemetry.GetHistogram(meter, telemetry.SandboxCheckpointPausedHistogramName))
 )
 
 var SandboxHttpTransport = otelhttp.NewTransport(
@@ -109,6 +110,13 @@ type Resources struct {
 	Slot   *network.Slot
 	rootfs rootfs.Provider
 	memory uffd.MemoryBackend
+}
+
+// Rootfs returns the block device backing the sandbox's disk. A checkpoint
+// restore resets the view this provider serves; the provider itself never
+// changes.
+func (r *Resources) Rootfs() rootfs.Provider {
+	return r.rootfs
 }
 
 type internalConfig struct {
@@ -392,7 +400,7 @@ func (f *Factory) CreateSandbox(
 		ctx, span := tracer.Start(execCtx, "sandbox-exit-wait")
 		defer span.End()
 
-		// If the process exists, stop the sandbox properly
+		// If the process exits, stop the sandbox properly
 		fcErr := fcHandle.Exit.Wait()
 		err := sbx.Stop(ctx)
 
@@ -979,7 +987,7 @@ func (s *Sandbox) Pause(
 		buildID,
 		originalRootfs.Header(),
 		&RootfsDiffCreator{
-			rootfs:    s.rootfs,
+			rootfs:    s.Rootfs(),
 			closeHook: s.Close,
 		},
 		s.config.DefaultCacheDir,

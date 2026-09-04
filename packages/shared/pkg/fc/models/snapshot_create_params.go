@@ -17,6 +17,11 @@ import (
 // swagger:model SnapshotCreateParams
 type SnapshotCreateParams struct {
 
+	// Path to a sidecar file receiving the bitmap of pages this snapshot
+	// wrote to the memory file. Requires mem_file_path. Hand-added to the
+	// generated model, matching the forked Firecracker's API.
+	DirtyBitmapPath string `json:"dirty_bitmap_path,omitempty"`
+
 	// Path to the file that will contain the guest memory.
 	MemFilePath string `json:"mem_file_path,omitempty"`
 

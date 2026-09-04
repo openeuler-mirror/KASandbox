@@ -55,20 +55,10 @@ func (c *apiClient) loadSnapshot(
 	zap.L().Sugar().Infof("[ResumeSandbox] fc.loadSnapshot get snapfile-path cost: %.3f ms, snapfile=%s",
 		time.Since(tSnap).Seconds()*1000, snapfilePath)
 
-	snapshotConfig := operations.LoadSnapshotParams{
-		Context: ctx,
-		Body: &models.SnapshotLoadParams{
-			ResumeVM:            false,
-			EnableDiffSnapshots: false,
-			MemBackend:          backend,
-			SnapshotPath:        &snapfilePath,
-		},
-	}
-
 	tFcApi := time.Now()
-	_, err := c.client.Operations.LoadSnapshot(&snapshotConfig)
+	err := c.loadSnapshotWithBackend(ctx, snapfilePath, backend)
 	if err != nil {
-		return fmt.Errorf("error loading snapshot: %w", err)
+		return err
 	}
 	zap.L().Sugar().Infof("[ResumeSandbox] fc.loadSnapshot FC API LoadSnapshot cost: %.3f ms",
 		time.Since(tFcApi).Seconds()*1000)
@@ -86,6 +76,33 @@ func (c *apiClient) loadSnapshot(
 		time.Since(tUffd).Seconds()*1000)
 
 	telemetry.ReportEvent(ctx, "uffd ready")
+
+	return nil
+}
+
+// loadSnapshotWithBackend loads a snapshot into a Firecracker process that has
+// not booted yet, leaving the VM paused. Dirty page tracking is armed here for
+// the same reason it is armed in the machine config: a VM that comes up from a
+// snapshot never goes through the boot path.
+func (c *apiClient) loadSnapshotWithBackend(
+	ctx context.Context,
+	snapfilePath string,
+	backend *models.MemoryBackend,
+) error {
+	snapshotConfig := operations.LoadSnapshotParams{
+		Context: ctx,
+		Body: &models.SnapshotLoadParams{
+			ResumeVM:            false,
+			EnableDiffSnapshots: trackDirtyPagesEnabled,
+			MemBackend:          backend,
+			SnapshotPath:        &snapfilePath,
+		},
+	}
+
+	_, err := c.client.Operations.LoadSnapshot(&snapshotConfig)
+	if err != nil {
+		return fmt.Errorf("error loading snapshot: %w", err)
+	}
 
 	return nil
 }
@@ -127,15 +144,35 @@ func (c *apiClient) pauseVM(ctx context.Context) error {
 	return nil
 }
 
+// createSnapshot creates a Firecracker snapshot. The VM must be paused first.
+//
+// memFilePath empty means mem_file_path is left out of the request — the e2b
+// direct-mem behaviour, where guest memory is read straight out of the process
+// (see ExportMemory) instead of being written to a file by Firecracker.
+// Passing a path switches to Firecracker's own memory file output.
+//
+// diff requests an incremental snapshot, which only holds pages dirtied since
+// the last snapshot. It requires dirty page tracking to have been armed when
+// the VM was started or loaded, otherwise Firecracker rejects the request.
 func (c *apiClient) createSnapshot(
 	ctx context.Context,
 	snapfilePath string,
+	memFilePath string,
+	dirtyBitmapPath string,
+	diff bool,
 ) error {
+	snapshotType := models.SnapshotCreateParamsSnapshotTypeFull
+	if diff {
+		snapshotType = models.SnapshotCreateParamsSnapshotTypeDiff
+	}
+
 	snapshotConfig := operations.CreateSnapshotParams{
 		Context: ctx,
 		Body: &models.SnapshotCreateParams{
-			SnapshotType: models.SnapshotCreateParamsSnapshotTypeFull,
-			SnapshotPath: &snapfilePath,
+			SnapshotType:    snapshotType,
+			SnapshotPath:    &snapfilePath,
+			MemFilePath:     memFilePath,
+			DirtyBitmapPath: dirtyBitmapPath,
 		},
 	}
 
@@ -242,10 +279,12 @@ func (c *apiClient) setMachineConfig(
 	hugePages bool,
 ) error {
 	smt := false
+	trackDirtyPages := trackDirtyPagesEnabled
 	machineConfig := &models.MachineConfiguration{
-		VcpuCount:  &vCPUCount,
-		MemSizeMib: &memoryMB,
-		Smt:        &smt,
+		VcpuCount:       &vCPUCount,
+		MemSizeMib:      &memoryMB,
+		Smt:             &smt,
+		TrackDirtyPages: &trackDirtyPages,
 	}
 	if hugePages {
 		machineConfig.HugePages = models.MachineConfigurationHugePagesNr2M
