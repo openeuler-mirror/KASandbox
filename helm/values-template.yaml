@@ -83,6 +83,8 @@ otelTracingPrint: ${OTEL_TRACING_PRINT}
 envdTimeout: ${ENVD_TIMEOUT}
 templateBucketName: ${TEMPLATE_BUCKET_NAME}
 allowSandboxInternet: ${ALLOW_SANDBOX_INTERNET}
+sandboxDeniedPodCIDR: ${SANDBOX_DENIED_POD_CIDR}
+sandboxFirewallAllowedCIDRs: ${SANDBOX_FIREWALL_ALLOWED_CIDRS}
 sharedChunkCachePath: ${SHARED_CHUNK_CACHE_PATH}
 storageProvider: ${STORAGE_PROVIDER}
 artifactsRegistryProvider: ${ARTIFACTS_REGISTRY_PROVIDER}

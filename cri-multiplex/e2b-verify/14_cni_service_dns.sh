@@ -8,6 +8,7 @@
 #   3. 普通 client Pod 可以直接访问 E2B PodIP:49983/health
 #   4. 普通 client Pod 可以通过 Service DNS 访问 E2B envd health
 #   5. E2B VM 内 Kubernetes DNS 行为做 best-effort 验证
+#   6. E2B VM -> 宿主机（节点 IP）连通性保留（出向隔离不应误伤）
 ###############################################################################
 set -euo pipefail
 
@@ -84,6 +85,22 @@ if grep -q "kubernetes.default" <<< "${E2B_DNS_OUTPUT}" || grep -Eq '([0-9]{1,3}
 else
     log_skip "E2B VM 内 Kubernetes DNS 未确认，当前 CNI POC 不强制承诺 guest DNS"
     echo "${E2B_DNS_OUTPUT}" >&2 || true
+fi
+
+log_step "3.6 E2B VM -> 宿主机连通性保留验证（隔离不应误伤节点 IP）"
+NODE_IP=$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)
+if [ -z "${NODE_IP}" ]; then
+    log_skip "无法读取节点 InternalIP，跳过宿主机连通性验证"
+else
+    GUEST_HOST_CODE=$(kubectl exec "${POD_NAME}" -- sh -c "if command -v curl >/dev/null 2>&1; then curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 'http://${NODE_IP}:80/'; elif command -v wget >/dev/null 2>&1; then wget -q -T 5 -O /dev/null 'http://${NODE_IP}:80/' && echo 200 || echo 000; else echo NO_HTTP_CLIENT; fi" 2>/dev/null || true)
+    if [ "${GUEST_HOST_CODE}" = "NO_HTTP_CLIENT" ]; then
+        log_skip "E2B VM 内无 curl/wget，跳过宿主机连通性验证"
+    elif [ "${GUEST_HOST_CODE}" != "000" ] && [ -n "${GUEST_HOST_CODE}" ]; then
+        log_pass "E2B VM -> 宿主机 ${NODE_IP}:80 可达（HTTP ${GUEST_HOST_CODE}），出向隔离未误伤宿主机"
+    else
+        log_fail "E2B VM -> 宿主机 ${NODE_IP}:80 不可达（HTTP ${GUEST_HOST_CODE}）"
+        exit 1
+    fi
 fi
 
 log_step "4.1 删除资源"
