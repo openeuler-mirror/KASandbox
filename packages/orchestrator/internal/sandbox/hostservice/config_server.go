@@ -42,6 +42,6 @@ func BuildConfigServerService(
 		NetNSName:     netNSName,
 		ExtraFiles:    []*os.File{listener.File},
 		RestartPolicy: RestartOnCrash,
-		ReadyCheck:    &ConfigServerReady{Path: listener.Path},
+		ReadyCheck:    &ProcessAlive{},
 	}, nil
 }

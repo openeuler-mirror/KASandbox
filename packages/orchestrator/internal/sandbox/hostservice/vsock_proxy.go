@@ -118,9 +118,14 @@ func probeADBPath(ctx context.Context, proxyAddr string) error {
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return fmt.Errorf("read ADB reply: %w", err)
 	}
-	command, err := adbReplyCommand(header)
+	command, payloadLength, err := parseADBReplyHeader(header)
 	if err != nil {
 		return err
+	}
+	if payloadLength > 0 {
+		if _, err := io.CopyN(io.Discard, conn, int64(payloadLength)); err != nil {
+			return fmt.Errorf("read ADB reply payload: %w", err)
+		}
 	}
 	if !adbReplyProvesPath(command) {
 		return fmt.Errorf("unexpected ADB reply command %#x", command)

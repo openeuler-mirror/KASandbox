@@ -48,7 +48,7 @@ func startService(ctx context.Context, svc Service) (*procEntry, error) {
 
 	svcLogger := logger.L().Detach(ctx).With(zap.String("service", svc.Name))
 	stdoutW := &zapio.Writer{Log: svcLogger, Level: zap.InfoLevel}
-	stderrW := &zapio.Writer{Log: svcLogger, Level: zap.ErrorLevel}
+	stderrW := &zapio.Writer{Log: svcLogger, Level: zap.InfoLevel}
 	closeWriters := true
 	defer func() {
 		if closeWriters {
