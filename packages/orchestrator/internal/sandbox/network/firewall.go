@@ -3,6 +3,8 @@ package network
 import (
 	"fmt"
 	"net/netip"
+	"slices"
+	"strings"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
@@ -32,9 +34,29 @@ type Firewall struct {
 	tapInterfaces []string
 
 	allowedRanges []string
+
+	// deniedRanges are extra predefined deny CIDRs (e.g. the cluster Pod
+	// CIDR in CNI deployments), merged with sandbox_network.DeniedSandboxCIDRs.
+	deniedRanges []string
+
+	// userRulesAllProtocols makes the user allow/deny rules (chain rules 4/5)
+	// match all protocols instead of only non-TCP. Used in external-netns
+	// (CNI) mode, where no TCP egress proxy is installed and the nftables
+	// rules are the only enforcement point for user egress policies.
+	userRulesAllProtocols bool
 }
 
-func NewFirewall(tapIf string, orchestratorInternalIP string, extraTapIfs ...string) (*Firewall, error) {
+func NewFirewall(tapIf string, orchestratorInternalIP string, extraAllowedCIDRs, extraDeniedCIDRs []string, userRulesAllProtocols bool, extraTapIfs ...string) (*Firewall, error) {
+	allowedRanges, err := buildAllowedRanges(orchestratorInternalIP, extraAllowedCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("build allowed ranges: %w", err)
+	}
+
+	deniedRanges, err := normalizeCIDRs(extraDeniedCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("build denied ranges: %w", err)
+	}
+
 	conn, err := nftables.New(nftables.AsLasting())
 	if err != nil {
 		return nil, fmt.Errorf("new nftables conn: %w", err)
@@ -78,15 +100,17 @@ func NewFirewall(tapIf string, orchestratorInternalIP string, extraTapIfs ...str
 
 	tapInterfaces := append([]string{tapIf}, extraTapIfs...)
 	fw := &Firewall{
-		conn:               conn,
-		table:              table,
-		predefinedDenySet:  alwaysDenySet,
-		predefinedAllowSet: alwaysAllowSet,
-		userDenySet:        denySet,
-		userAllowSet:       allowSet,
-		tapInterfaces:      tapInterfaces,
-		allowedRanges:      []string{fmt.Sprintf("%s/32", orchestratorInternalIP), fmt.Sprintf("%s/32", tapIp), fmt.Sprintf("%s/32", extraTapIp)},
-		filterChain:        filterChain,
+		conn:                  conn,
+		table:                 table,
+		predefinedDenySet:     alwaysDenySet,
+		predefinedAllowSet:    alwaysAllowSet,
+		userDenySet:           denySet,
+		userAllowSet:          allowSet,
+		tapInterfaces:         tapInterfaces,
+		allowedRanges:         allowedRanges,
+		deniedRanges:          deniedRanges,
+		userRulesAllProtocols: userRulesAllProtocols,
+		filterChain:           filterChain,
 	}
 
 	// Add firewall rules to the chain
@@ -189,9 +213,9 @@ func (fw *Firewall) installRules() error {
 	//   1. ESTABLISHED/RELATED → accept (allow responses even from denied ranges)
 	//   2. predefinedAllowSet → accept (all protocols)
 	//   3. predefinedDenySet → DROP (all protocols, hard block)
-	//   4. Non-TCP: userAllowSet → accept
-	//   5. Non-TCP: userDenySet → DROP
-	//   6. Default: ACCEPT (TCP handled by iptables REDIRECT)
+	//   4. userAllowSet → accept (non-TCP only, or all protocols in external netns mode)
+	//   5. userDenySet → DROP (non-TCP only, or all protocols in external netns mode)
+	//   6. Default: ACCEPT (native mode: TCP handled by iptables REDIRECT)
 	//
 	// ============================================================
 
@@ -228,13 +252,18 @@ func (fw *Firewall) installRules() error {
 	// Rule 3: predefinedDenySet → DROP (all protocols, hard block)
 	fw.addSetFilterRule(fw.predefinedDenySet.Set(), true)
 
-	// Rule 4: Non-TCP + userAllowSet → accept
-	// Only non-TCP traffic is affected; TCP goes to proxy
-	fw.addNonTCPSetFilterRule(fw.userAllowSet.Set(), false)
-
-	// Rule 5: Non-TCP + userDenySet → DROP
-	// Only non-TCP traffic is affected; TCP goes to proxy
-	fw.addNonTCPSetFilterRule(fw.userDenySet.Set(), true)
+	// Rule 4: userAllowSet → accept
+	// Rule 5: userDenySet → DROP
+	// In the default (native) mode these rules only match non-TCP traffic and
+	// TCP is handled by the egress proxy (iptables REDIRECT). In external
+	// netns (CNI) mode no TCP proxy exists, so the rules match all protocols.
+	if fw.userRulesAllProtocols {
+		fw.addSetFilterRule(fw.userAllowSet.Set(), false)
+		fw.addSetFilterRule(fw.userDenySet.Set(), true)
+	} else {
+		fw.addNonTCPSetFilterRule(fw.userAllowSet.Set(), false)
+		fw.addNonTCPSetFilterRule(fw.userDenySet.Set(), true)
+	}
 
 	// Default policy: ACCEPT
 	// - Non-TCP not in user sets: allowed (default policy)
@@ -290,8 +319,14 @@ func (fw *Firewall) Reset() error {
 
 // ResetDeniedSets resets the deny set back to original ranges.
 func (fw *Firewall) ResetDeniedSets() error {
-	// Always deny the default ranges
-	if err := fw.predefinedDenySet.ClearAndAddElements(fw.conn, sandbox_network.DeniedSandboxSetData); err != nil {
+	// Always deny the default ranges plus any deployment-defined ranges
+	// (e.g. the cluster Pod CIDR for sandbox-to-sandbox isolation).
+	deniedCIDRs := append(slices.Clone(sandbox_network.DeniedSandboxCIDRs), fw.deniedRanges...)
+	denyData, err := set.AddressStringsToSetData(deniedCIDRs)
+	if err != nil {
+		return fmt.Errorf("parse denied CIDRs: %w", err)
+	}
+	if err := fw.predefinedDenySet.ClearAndAddElements(fw.conn, denyData); err != nil {
 		return err
 	}
 
@@ -320,6 +355,45 @@ func (fw *Firewall) ResetAllowedSets() error {
 	}
 
 	return fw.conn.Flush()
+}
+
+// buildAllowedRanges returns the predefined allow ranges: the orchestrator
+// in-sandbox IP, the slot tap host IPs, plus any deployment-defined extra
+// CIDRs (or bare IPs).
+func buildAllowedRanges(orchestratorInternalIP string, extraCIDRs []string) ([]string, error) {
+	extra, err := normalizeCIDRs(extraCIDRs)
+	if err != nil {
+		return nil, err
+	}
+
+	base := []string{
+		fmt.Sprintf("%s/32", orchestratorInternalIP),
+		fmt.Sprintf("%s/32", tapIp),
+		fmt.Sprintf("%s/32", extraTapIp),
+	}
+
+	return append(base, extra...), nil
+}
+
+// normalizeCIDRs validates entries and converts bare IPs to /32 CIDRs.
+// Empty entries are skipped.
+func normalizeCIDRs(cidrs []string) ([]string, error) {
+	out := make([]string, 0, len(cidrs))
+
+	for _, cidr := range cidrs {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+
+		if !sandbox_network.IsIPOrCIDR(cidr) {
+			return nil, fmt.Errorf("invalid IP or CIDR %q", cidr)
+		}
+
+		out = append(out, sandbox_network.AddressStringToCIDR(cidr))
+	}
+
+	return out, nil
 }
 
 func addCIDRToSet(conn *nftables.Conn, ipset set.Set, cidr string) error {

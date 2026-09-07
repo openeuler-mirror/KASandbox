@@ -6,6 +6,7 @@
 #   1. baseline: allowed/denied client 均可访问 E2B PodIP
 #   2. deny-all ingress policy 应阻断 client -> E2B PodIP
 #   3. allow selected client policy 应只允许 role=allowed-client
+#   4. 入向连通保留：沙箱出向隔离（SANDBOX_DENIED_POD_CIDR）不影响普通 Pod 入向访问
 #
 # 当前 E2B CNI 仍是 POC。如果 policy 未阻断流量，本用例记录 SKIP
 # 表示 UNSUPPORTED，而不是把当前 POC 判为功能失败。
@@ -80,6 +81,10 @@ fi
 
 if [ "${DENY_BLOCKED}" = "0" ]; then
     log_skip "NetworkPolicy ingress 未生效或 E2B VM 流量未经过 Calico policy datapath，后续 allow 测试仅记录边界"
+
+    log_step "4.3 入向连通保留回归：沙箱出向隔离不影响普通 Pod 入向访问"
+    expect_http_204_from_client "${ALLOWED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "allowed client 入向保留" || exit 1
+    expect_http_204_from_client "${DENIED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "denied client 入向保留" || exit 1
 else
     log_step "4.2 应用 allow selected client NetworkPolicy"
     cat > "/tmp/${ALLOW_POLICY}.yaml" <<EOF

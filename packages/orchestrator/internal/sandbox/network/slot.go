@@ -337,7 +337,16 @@ func (s *Slot) InitializeFirewall() error {
 		return fmt.Errorf("firewall is already initialized for slot %s", s.Key)
 	}
 
-	fw, err := NewFirewall(s.TapName(), s.config.OrchestratorInSandboxIPAddress, s.ExtraTapName())
+	fw, err := NewFirewall(
+		s.TapName(),
+		s.config.OrchestratorInSandboxIPAddress,
+		s.config.FirewallAllowedCIDRs,
+		s.config.DeniedPodCIDRs,
+		// In external netns (CNI) mode no TCP egress proxy is installed,
+		// so the user allow/deny rules must cover TCP as well.
+		s.ExternalNetNS,
+		s.ExtraTapName(),
+	)
 	if err != nil {
 		return fmt.Errorf("error initializing firewall: %w", err)
 	}
