@@ -32,18 +32,23 @@ func adbClientCNXN() []byte {
 	return adbMessage(adbCNXN, adbVersion, adbMaxData, []byte(adbHostBanner))
 }
 
-func adbReplyCommand(header []byte) (uint32, error) {
+func parseADBReplyHeader(header []byte) (command, payloadLength uint32, err error) {
 	if len(header) < adbHeaderSize {
-		return 0, fmt.Errorf("short ADB reply header: got %d bytes, want %d", len(header), adbHeaderSize)
+		return 0, 0, fmt.Errorf("short ADB reply header: got %d bytes, want %d", len(header), adbHeaderSize)
 	}
 
-	command := binary.LittleEndian.Uint32(header[0:])
+	command = binary.LittleEndian.Uint32(header[0:])
 	magic := binary.LittleEndian.Uint32(header[20:])
 	if magic != command^uint32(0xffffffff) {
-		return 0, fmt.Errorf("malformed ADB reply: magic %#x does not match command %#x", magic, command)
+		return 0, 0, fmt.Errorf("malformed ADB reply: magic %#x does not match command %#x", magic, command)
 	}
 
-	return command, nil
+	payloadLength = binary.LittleEndian.Uint32(header[12:16])
+	if payloadLength > adbMaxData {
+		return 0, 0, fmt.Errorf("ADB reply payload too large: got %d bytes, maximum %d", payloadLength, adbMaxData)
+	}
+
+	return command, payloadLength, nil
 }
 
 func adbReplyProvesPath(command uint32) bool {

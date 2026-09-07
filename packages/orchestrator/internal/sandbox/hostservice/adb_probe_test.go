@@ -3,25 +3,30 @@ package hostservice
 import (
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"testing"
 	"time"
 )
 
-func TestADBReplyCommand(t *testing.T) {
+func TestParseADBReplyHeader(t *testing.T) {
 	header := adbMessage(adbCNXN, adbVersion, adbMaxData, nil)[:adbHeaderSize]
-	command, err := adbReplyCommand(header)
+	command, payloadLength, err := parseADBReplyHeader(header)
 	if err != nil {
-		t.Fatalf("adbReplyCommand() error = %v", err)
+		t.Fatalf("parseADBReplyHeader() error = %v", err)
 	}
 	if command != adbCNXN {
-		t.Fatalf("adbReplyCommand() = %#x, want %#x", command, adbCNXN)
+		t.Fatalf("parseADBReplyHeader() command = %#x, want %#x", command, adbCNXN)
+	}
+	if payloadLength != 0 {
+		t.Fatalf("parseADBReplyHeader() payload length = %d, want 0", payloadLength)
 	}
 
 	header[20] ^= 1
-	if _, err := adbReplyCommand(header); err == nil {
-		t.Fatal("adbReplyCommand() accepted malformed magic")
+	if _, _, err := parseADBReplyHeader(header); err == nil {
+		t.Fatal("parseADBReplyHeader() accepted malformed magic")
 	}
 }
 
@@ -61,8 +66,22 @@ func TestProbeADBPath(t *testing.T) {
 			serverErr <- &unexpectedADBCommandError{got: command, want: adbCNXN}
 			return
 		}
-		_, err = conn.Write(adbMessage(adbCNXN, adbVersion, adbMaxData, []byte("device::\x00")))
-		serverErr <- err
+		if _, err := conn.Write(adbMessage(adbCNXN, adbVersion, adbMaxData, []byte("device::\x00"))); err != nil {
+			serverErr <- err
+			return
+		}
+
+		if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			serverErr <- err
+			return
+		}
+		var trailing [1]byte
+		n, err := conn.Read(trailing[:])
+		if n != 0 || !errors.Is(err, io.EOF) {
+			serverErr <- fmt.Errorf("client did not close cleanly: bytes=%d err=%w", n, err)
+			return
+		}
+		serverErr <- nil
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -72,6 +91,15 @@ func TestProbeADBPath(t *testing.T) {
 	}
 	if err := <-serverErr; err != nil {
 		t.Fatalf("mock adbd error = %v", err)
+	}
+}
+
+func TestParseADBReplyHeaderRejectsOversizedPayload(t *testing.T) {
+	header := adbMessage(adbCNXN, adbVersion, adbMaxData, nil)[:adbHeaderSize]
+	binary.LittleEndian.PutUint32(header[12:16], adbMaxData+1)
+
+	if _, _, err := parseADBReplyHeader(header); err == nil {
+		t.Fatal("parseADBReplyHeader() accepted oversized payload")
 	}
 }
 
