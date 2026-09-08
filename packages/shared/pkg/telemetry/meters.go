@@ -26,6 +26,8 @@ const (
 	TeamSandboxCreated CounterType = "e2b.team.sandbox.created"
 
 	EnvdInitCalls CounterType = "orchestrator.sandbox.envd.init.calls"
+
+	SandboxCheckpointCalls CounterType = "orchestrator.sandbox.checkpoint.calls"
 )
 
 const (
@@ -65,6 +67,12 @@ const (
 
 	// Sandbox timing histograms
 	WaitForEnvdDurationHistogramName HistogramType = "orchestrator.sandbox.envd.init.duration"
+
+	// Checkpoint timing histograms. The paused one is the cost that matters:
+	// it is how long the sandbox is frozen, as opposed to how long the whole
+	// operation takes.
+	SandboxCheckpointDurationHistogramName HistogramType = "orchestrator.sandbox.checkpoint.duration"
+	SandboxCheckpointPausedHistogramName   HistogramType = "orchestrator.sandbox.checkpoint.paused.duration"
 
 	// TCP Firewall histograms
 	TCPFirewallConnectionDurationHistogramName    HistogramType = "orchestrator.tcpfirewall.connection.duration"
@@ -113,6 +121,7 @@ var counterDesc = map[CounterType]string{
 	BuildCacheResultCounterName:     "Number of build cache results",
 	TeamSandboxCreated:              "Counter of started sandboxes for the team in the interval",
 	EnvdInitCalls:                   "Number of envd initialization calls",
+	SandboxCheckpointCalls:          "Number of sandbox checkpoint operations, by operation and outcome",
 
 	TCPFirewallConnectionsTotal: "Total number of TCP firewall connections processed",
 	TCPFirewallErrorsTotal:      "Total number of TCP firewall errors",
@@ -128,6 +137,7 @@ var counterUnits = map[CounterType]string{
 	BuildCacheResultCounterName:     "{layer}",
 	TeamSandboxCreated:              "{sandbox}",
 	EnvdInitCalls:                   "1",
+	SandboxCheckpointCalls:          "1",
 
 	TCPFirewallConnectionsTotal: "{connection}",
 	TCPFirewallErrorsTotal:      "{error}",
@@ -277,6 +287,9 @@ var histogramDesc = map[HistogramType]string{
 	BuildRootfsSizeHistogramName:     "Size of the built template rootfs in bytes",
 	WaitForEnvdDurationHistogramName: "Time taken for Envd to initialize successfully",
 
+	SandboxCheckpointDurationHistogramName: "Time taken by a sandbox checkpoint operation, by operation",
+	SandboxCheckpointPausedHistogramName:   "Time a sandbox VM spends paused while a checkpoint is taken",
+
 	TCPFirewallConnectionDurationHistogramName:    "Duration of TCP firewall proxied connections",
 	TCPFirewallConnectionsPerSandboxHistogramName: "Number of active TCP firewall connections per sandbox",
 
@@ -290,6 +303,8 @@ var histogramUnits = map[HistogramType]string{
 	BuildStepDurationHistogramName:                "ms",
 	BuildRootfsSizeHistogramName:                  "{By}",
 	WaitForEnvdDurationHistogramName:              "ms",
+	SandboxCheckpointDurationHistogramName:        "ms",
+	SandboxCheckpointPausedHistogramName:          "ms",
 	TCPFirewallConnectionDurationHistogramName:    "ms",
 	TCPFirewallConnectionsPerSandboxHistogramName: "{connection}",
 

@@ -47,6 +47,71 @@ pub struct CreateSnapshotParams {
     /// If not specified, the memory is not dumped to a file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mem_file_path: Option<PathBuf>,
+    /// Path to a sidecar file receiving the bitmap of pages this snapshot
+    /// wrote to the memory file (requires `mem_file_path`). The orchestrator
+    /// unions these per-epoch bitmaps into the revert set an in-place
+    /// rollback needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dirty_bitmap_path: Option<PathBuf>,
+}
+
+/// Stores the configuration for rolling the running microVM back to a
+/// snapshot in place.
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RollbackSnapshotParams {
+    /// Path to the file that contains the microVM state to roll back to.
+    pub snapshot_path: PathBuf,
+    /// Path to the full memory view of that snapshot.
+    pub mem_file_path: PathBuf,
+    /// Optional bitmap of pages to revert, in the sidecar format produced by
+    /// `dirty_bitmap_path`. The live dirty bitmap is always unioned in; this
+    /// carries the pages dirtied in *earlier* epochs since the target
+    /// snapshot (the orchestrator's cumulative set). Without it only a
+    /// rollback to the current epoch's base is correct.
+    #[serde(default)]
+    pub revert_bitmap_path: Option<PathBuf>,
+    /// When true the vm resumes after a successful rollback.
+    #[serde(default)]
+    pub resume_vm: bool,
+}
+
+/// Parameters for writing the live dirty bitmap to a file.
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SaveDirtyBitmapParams {
+    /// Path the FCDB-format bitmap file is written to.
+    pub path: PathBuf,
+}
+
+/// Timings of the rollback phases, microseconds.
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub struct RollbackTimings {
+    /// Validation of the snapshot against the running VM.
+    pub validate: u64,
+    /// Quiescing in-flight device I/O.
+    pub quiesce: u64,
+    /// Reverting guest memory pages.
+    pub memory: u64,
+    /// Restoring vCPU state.
+    pub vcpus: u64,
+    /// Restoring interrupt controller state.
+    pub gic: u64,
+    /// Restoring device state in place.
+    pub devices: u64,
+    /// End to end.
+    pub total: u64,
+}
+
+/// Result of a successful in-place rollback.
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub struct RollbackResponse {
+    /// Number of pages written back from the memory file.
+    pub restored_pages: u64,
+    /// Number of bytes written back from the memory file.
+    pub restored_bytes: u64,
+    /// Phase timings in microseconds.
+    pub timings_us: RollbackTimings,
 }
 
 /// Allows for changing the mapping between tap devices and host devices

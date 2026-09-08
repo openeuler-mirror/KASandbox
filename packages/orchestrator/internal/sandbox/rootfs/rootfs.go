@@ -7,6 +7,8 @@ import (
 	"os"
 	"syscall"
 
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -23,6 +25,32 @@ type Provider interface {
 	Close(ctx context.Context) error
 	Path() (string, error)
 	ExportDiff(ctx context.Context, out io.Writer, closeSandbox func(context.Context) error) (*header.DiffMetadata, error)
+}
+
+// SealedLayer describes a write layer frozen by SealLayer: a sparse file
+// holding the blocks written during its epoch at their raw device offsets,
+// plus the sorted list of those offsets. Storage offset equals device offset,
+// so a header mapping into the layer is the identity.
+type SealedLayer struct {
+	Path         string
+	DirtyOffsets []int64
+	Size         int64
+	BlockSize    int64
+}
+
+// ViewResetter is implemented by providers that can swap their entire served
+// view — read path and write layer — under a live NBD mount, for in-place
+// rollback. The caller must hold the VM paused across the call.
+type ViewResetter interface {
+	ResetView(ctx context.Context, device block.ReadonlyDevice, newCachePath string) error
+}
+
+// LayerSealer is implemented by providers that can freeze their write layer
+// into a read-only layer file while the VM stays up, installing a fresh
+// empty write layer in its place. The caller must hold the VM paused across
+// the call so the layer is an image of the disk at one instant.
+type LayerSealer interface {
+	SealLayer(ctx context.Context, newCachePath string, sealedLayerPath string) (*SealedLayer, error)
 }
 
 // flush flushes the data to the operating system's buffer.

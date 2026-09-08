@@ -249,7 +249,7 @@ func BenchmarkBaseImageLaunch(b *testing.B) {
 		assert.NoError(b, err)
 	})
 
-	sandboxProxy, err := proxy.NewSandboxProxy(noop.MeterProvider{}, proxyPort, sandboxes, featureFlags)
+	sandboxProxy, err := proxy.NewSandboxProxy(noop.MeterProvider{}, proxyPort, sandboxes, featureFlags, nil)
 	require.NoError(b, err)
 	go func() {
 		err := sandboxProxy.Start(b.Context())

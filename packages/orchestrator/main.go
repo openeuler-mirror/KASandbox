@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -26,6 +27,7 @@ import (
 	clickhouseevents "github.com/e2b-dev/infra/packages/clickhouse/pkg/events"
 	clickhousehoststats "github.com/e2b-dev/infra/packages/clickhouse/pkg/hoststats"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/checkpoint"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/events"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/factories"
 	e2bhealthcheck "github.com/e2b-dev/infra/packages/orchestrator/internal/healthcheck"
@@ -387,11 +389,26 @@ func run(config cfg.Config) (success bool) {
 	}
 	closers = append(closers, closer{"sandbox observer", sandboxObserver.Close})
 
+	// checkpoint store and service, which answer the in-sandbox checkpoint
+	// port from out here so Firecracker can take the memory snapshot
+	checkpointStore, err := checkpoint.NewStore(filepath.Join(config.DefaultCacheDir, "checkpoints"))
+	if err != nil {
+		logger.L().Fatal(ctx, "failed to create checkpoint store", zap.Error(err))
+	}
+	checkpointService := checkpoint.NewService(checkpointStore, sandboxes)
+	sandboxes.Subscribe(checkpointService)
+
+	// Say up front what this node is actually able to do. Losing dirty page
+	// tracking is silent: every checkpoint goes on working, it just copies all
+	// of guest memory each time instead of the pages that changed.
+	reportCheckpointCapabilities(ctx, filepath.Join(config.DefaultCacheDir, "checkpoints"))
+
 	// sandbox proxy
-	sandboxProxy, err := proxy.NewSandboxProxy(tel.MeterProvider, config.ProxyPort, sandboxes, featureFlags)
+	sandboxProxy, err := proxy.NewSandboxProxy(tel.MeterProvider, config.ProxyPort, sandboxes, featureFlags, checkpointService)
 	if err != nil {
 		logger.L().Fatal(ctx, "failed to create sandbox proxy", zap.Error(err))
 	}
+	checkpointService.SetConnectionDropper(sandboxProxy.RemoveFromPool)
 	startService("sandbox proxy", func() error {
 		err := sandboxProxy.Start(ctx)
 		if errors.Is(err, http.ErrServerClosed) {
@@ -723,4 +740,21 @@ func newStorage(ctx context.Context, nodeID string, config network.Config) (netw
 	}
 
 	return network.NewStorageKV(nodeID, config)
+}
+
+// reportCheckpointCapabilities logs, once at startup, whether this host can
+// take incremental checkpoints at all.
+func reportCheckpointCapabilities(ctx context.Context, storeDir string) {
+	fields := []zap.Field{
+		zap.String("store", storeDir),
+		zap.Bool("track_dirty_pages", fc.TrackDirtyPagesEnabled()),
+		zap.String("track_dirty_pages_reason", fc.TrackDirtyPagesReason()),
+	}
+
+	logger.L().Info(ctx, "checkpoint capabilities", fields...)
+
+	if !fc.TrackDirtyPagesEnabled() {
+		logger.L().Warn(ctx, "dirty page tracking is off: every checkpoint will copy all of guest memory. "+
+			"Set FC_TRACK_DIRTY_PAGES=true to force it on.", fields...)
+	}
 }

@@ -223,7 +223,7 @@ func doBuild(
 
 	sandboxes := sandbox.NewSandboxesMap()
 
-	sandboxProxy, err := proxy.NewSandboxProxy(noop.MeterProvider{}, proxyPort, sandboxes, featureFlags)
+	sandboxProxy, err := proxy.NewSandboxProxy(noop.MeterProvider{}, proxyPort, sandboxes, featureFlags, nil)
 	if err != nil {
 		return fmt.Errorf("proxy: %w", err)
 	}

@@ -169,6 +169,74 @@ func (c *Cache) ExportToDiff(ctx context.Context, out io.Writer) (*header.DiffMe
 	return builder.Build(), nil
 }
 
+// ExportLayersToDiff is ExportToDiff for a stack of write layers, given
+// bottom-most first. It writes one diff holding every block any layer has,
+// each taken from the top-most layer that has it — the stack flattened, the
+// way the sandbox itself read it. A stack of one layer yields exactly what
+// that layer's own ExportToDiff would.
+func ExportLayersToDiff(ctx context.Context, layers []*Cache, out io.Writer) (*header.DiffMetadata, error) {
+	ctx, childSpan := tracer.Start(ctx, "export-layers-to-diff")
+	defer childSpan.End()
+
+	if len(layers) == 0 {
+		return nil, fmt.Errorf("no layers to export")
+	}
+
+	for _, c := range layers {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		if c.isClosed() {
+			return nil, NewErrCacheClosed(c.filePath)
+		}
+
+		if c.mmap == nil {
+			continue
+		}
+
+		if err := c.mmap.Flush(); err != nil {
+			return nil, fmt.Errorf("error flushing mmap of %s: %w", c.filePath, err)
+		}
+	}
+
+	top := layers[len(layers)-1]
+
+	// The union of every layer's blocks, in device order.
+	var offsets []int64
+	seen := make(map[int64]struct{})
+	for _, c := range layers {
+		for _, off := range c.dirtySortedKeys() {
+			if _, dup := seen[off]; dup {
+				continue
+			}
+			seen[off] = struct{}{}
+			offsets = append(offsets, off)
+		}
+	}
+	slices.Sort(offsets)
+
+	builder := header.NewDiffMetadataBuilder(top.size, top.blockSize)
+
+	for _, offset := range offsets {
+		// Newest layer wins, same as a read through the overlay.
+		for i := len(layers) - 1; i >= 0; i-- {
+			c := layers[i]
+			if _, has := c.dirty.Load(offset); !has || c.mmap == nil {
+				continue
+			}
+
+			block := (*c.mmap)[offset : offset+c.blockSize]
+			if err := builder.Process(ctx, block, out, offset); err != nil {
+				return nil, fmt.Errorf("error processing block %d from %s: %w", offset, c.filePath, err)
+			}
+
+			break
+		}
+	}
+
+	return builder.Build(), nil
+}
+
 func (c *Cache) ReadAt(b []byte, off int64) (int, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -312,6 +380,156 @@ func (c *Cache) WriteAtWithoutLock(b []byte, off int64) (n int, err error) {
 	c.setIsCached(off, end-off)
 
 	return n, nil
+}
+
+// MarkCached records blocks as present without writing them, for reopening a
+// sealed layer file whose contents are already on disk: the file supplies the
+// data, this supplies the knowledge of which blocks it holds.
+func (c *Cache) MarkCached(offsets []int64) {
+	for _, off := range offsets {
+		c.dirty.Store(off, struct{}{})
+	}
+}
+
+// DirtyOffsets returns the sorted block offsets that have been written to
+// this cache. For a sealed write layer this is exactly the set of blocks the
+// layer contributes to the view on top of what is below it.
+func (c *Cache) DirtyOffsets() []int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.dirtySortedKeys()
+}
+
+// CloseKeepFile unmaps the cache but leaves its backing file in place, unlike
+// Close. It is for caches whose file has become a sealed layer: the file now
+// belongs to the checkpoint store and outlives the mapping.
+func (c *Cache) CloseKeepFile() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.mmap == nil {
+		return nil
+	}
+
+	if !c.closed.CompareAndSwap(false, true) {
+		return NewErrCacheClosed(c.filePath)
+	}
+
+	return c.mmap.Unmap()
+}
+
+// MoveFile moves the cache's backing file to newPath. Within one filesystem
+// this is a rename: the inode does not change, so a live mapping stays valid
+// and this is safe on a live cache. The store's per-sandbox serialization
+// keeps it from racing other file operations.
+//
+// Across filesystems rename cannot move an inode, so the contents are copied
+// and the original unlinked. The live mapping keeps serving reads from the
+// now-unlinked inode, which is correct precisely because this is only called
+// on a sealed layer: sealed contents never change again, so the mapping and
+// the store's copy can never disagree. The unlinked inode's blocks are
+// released when the mapping goes away.
+func (c *Cache) MoveFile(newPath string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	err := os.Rename(c.filePath, newPath)
+	if err == nil {
+		c.filePath = newPath
+
+		return nil
+	}
+	if !errors.Is(err, unix.EXDEV) {
+		return fmt.Errorf("error moving cache file: %w", err)
+	}
+
+	if err := copyFileSparse(c.filePath, newPath); err != nil {
+		return fmt.Errorf("error copying cache file across filesystems: %w", err)
+	}
+
+	if err := os.Remove(c.filePath); err != nil {
+		return fmt.Errorf("error removing cache file after cross-filesystem copy: %w", err)
+	}
+
+	c.filePath = newPath
+
+	return nil
+}
+
+// copyFileSparse copies src to dst preserving holes, so a layer file that is
+// mostly untouched blocks does not materialize at its logical size on the
+// destination.
+func copyFileSparse(src string, dst string) (e error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open copy source: %w", err)
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("failed to create copy target: %w", err)
+	}
+	defer func() {
+		if closeErr := out.Close(); e == nil && closeErr != nil {
+			e = fmt.Errorf("failed to close copy target: %w", closeErr)
+		}
+	}()
+
+	info, err := in.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat copy source: %w", err)
+	}
+	size := info.Size()
+
+	if err := out.Truncate(size); err != nil {
+		return fmt.Errorf("failed to size copy target: %w", err)
+	}
+
+	var off int64
+	for off < size {
+		dataStart, err := in.Seek(off, unix.SEEK_DATA)
+		if err != nil {
+			// ENXIO means no data remains before EOF; anything else from a
+			// filesystem that cannot enumerate holes falls back to a dense
+			// copy of the remainder.
+			var pathErr *os.PathError
+			if errors.As(err, &pathErr) && errors.Is(pathErr.Err, unix.ENXIO) {
+				break
+			}
+
+			return copyDenseFrom(in, out, off, size)
+		}
+
+		holeStart, err := in.Seek(dataStart, unix.SEEK_HOLE)
+		if err != nil {
+			return fmt.Errorf("failed to find hole in copy source: %w", err)
+		}
+
+		if _, err := io.Copy(
+			io.NewOffsetWriter(out, dataStart),
+			io.NewSectionReader(in, dataStart, holeStart-dataStart),
+		); err != nil {
+			return fmt.Errorf("failed to copy data extent: %w", err)
+		}
+
+		off = holeStart
+	}
+
+	return nil
+}
+
+// copyDenseFrom copies [off, size) without consulting hole information.
+func copyDenseFrom(in *os.File, out *os.File, off int64, size int64) error {
+	if _, err := io.Copy(
+		io.NewOffsetWriter(out, off),
+		io.NewSectionReader(in, off, size-off),
+	); err != nil {
+		return fmt.Errorf("failed to copy file contents: %w", err)
+	}
+
+	return nil
 }
 
 // dirtySortedKeys returns a sorted list of dirty keys.

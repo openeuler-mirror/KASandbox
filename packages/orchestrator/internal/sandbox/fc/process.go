@@ -293,8 +293,8 @@ func (p *Process) Create(
 		"ipv6.autoconf": "1",
 
 		// Wait 1 second before exiting FC after panic or reboot
-		"panic":                               "1",
-		"reboot":                              "k",
+		"panic":  "1",
+		"reboot": "k",
 	}
 
 	if runtime.GOARCH == "amd64" || runtime.GOARCH == "386" {
@@ -626,10 +626,57 @@ func (p *Process) Pause(ctx context.Context) error {
 	return p.client.pauseVM(ctx)
 }
 
+// ResumeVM lets a paused VM run again. Resume covers this as part of bringing a
+// snapshot up; this is for a VM that was paused while already running, such as
+// one paused only long enough to snapshot it.
+func (p *Process) ResumeVM(ctx context.Context) error {
+	ctx, childSpan := tracer.Start(ctx, "resume-vm-fc")
+	defer childSpan.End()
+
+	return p.client.resumeVM(ctx)
+}
+
 // CreateSnapshot VM needs to be paused before creating a snapshot.
+// Memory is not written by Firecracker here — it is read out of the process
+// separately (see ExportMemory), which is the e2b direct-mem behaviour.
 func (p *Process) CreateSnapshot(ctx context.Context, snapfilePath string) error {
 	ctx, childSpan := tracer.Start(ctx, "create-snapshot-fc")
 	defer childSpan.End()
 
-	return p.client.createSnapshot(ctx, snapfilePath)
+	return p.client.createSnapshot(ctx, snapfilePath, "", "", false)
+}
+
+// CreateSnapshotWithMemFile VM needs to be paused before creating a snapshot.
+//
+// Unlike CreateSnapshot, this lets Firecracker write the guest memory itself
+// into memFilePath. With diff set, only pages dirtied since the previous
+// snapshot are written, at their original offsets, leaving the rest of the
+// file as holes — dirty page tracking must have been armed at boot/load time.
+func (p *Process) CreateSnapshotWithMemFile(ctx context.Context, snapfilePath string, memFilePath string, dirtyBitmapPath string, diff bool) error {
+	ctx, childSpan := tracer.Start(ctx, "create-snapshot-with-mem-file-fc")
+	defer childSpan.End()
+
+	return p.client.createSnapshot(ctx, snapfilePath, memFilePath, dirtyBitmapPath, diff)
+}
+
+// RollbackSnapshot rewinds the paused VM to a snapshot in place, keeping this
+// process. Only the forked Firecracker knows the endpoint; an unmodified one
+// yields RollbackUnsupportedError and the restore fails — there is no
+// rebuild route.
+func (p *Process) RollbackSnapshot(ctx context.Context, snapfilePath string, memFilePath string, revertBitmapPath string) (*RollbackResult, error) {
+	ctx, childSpan := tracer.Start(ctx, "rollback-snapshot-fc")
+	defer childSpan.End()
+
+	return p.client.rollbackSnapshot(ctx, p.firecrackerSocketPath, snapfilePath, memFilePath, revertBitmapPath)
+}
+
+// SaveDirtyBitmap has the forked Firecracker write the live dirty bitmap —
+// the pages dirtied since the last snapshot or rollback — to path in the
+// FCDB sidecar format. The VM must be paused. The export does not disturb
+// dirty tracking: the set stays visible to the next snapshot or rollback.
+func (p *Process) SaveDirtyBitmap(ctx context.Context, path string) error {
+	ctx, childSpan := tracer.Start(ctx, "save-dirty-bitmap-fc")
+	defer childSpan.End()
+
+	return p.client.saveDirtyBitmap(ctx, p.firecrackerSocketPath, path)
 }

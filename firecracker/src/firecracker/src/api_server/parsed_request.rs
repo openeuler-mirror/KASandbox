@@ -185,6 +185,7 @@ impl ParsedRequest {
                 VmmData::MemoryMappings(mappings) => Self::success_response_with_data(mappings),
                 VmmData::Memory(memory) => Self::success_response_with_data(memory),
                 VmmData::MemoryDirty(dirty) => Self::success_response_with_data(dirty),
+                VmmData::Rollback(response) => Self::success_response_with_data(response),
                 VmmData::VmmVersion(version) => Self::success_response_with_data(
                     &serde_json::json!({ "firecracker_version": version.as_str() }),
                 ),

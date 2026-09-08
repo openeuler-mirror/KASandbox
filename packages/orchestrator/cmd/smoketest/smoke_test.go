@@ -217,7 +217,7 @@ func newTestInfra(t *testing.T, ctx context.Context) *testInfra {
 	// Sandbox proxy + TCP firewall
 	sandboxes := sandbox.NewSandboxesMap()
 
-	sandboxProxy, err := proxy.NewSandboxProxy(noop.MeterProvider{}, proxyPort, sandboxes, flags)
+	sandboxProxy, err := proxy.NewSandboxProxy(noop.MeterProvider{}, proxyPort, sandboxes, flags, nil)
 	require.NoError(t, err)
 	go sandboxProxy.Start(ctx)
 	ti.closers = append(ti.closers, func(ctx context.Context) { sandboxProxy.Close(ctx) })
