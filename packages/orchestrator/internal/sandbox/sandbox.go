@@ -1420,6 +1420,11 @@ func getNetworkSlot(
 			if err = slot.CreateNetwork(ctx); err != nil {
 				return nil, fmt.Errorf("failed to create external netns network: %w", err)
 			}
+			// External netns slots don't go through networkPool.Get, so apply
+			// the user egress config (allow-internet, allow/deny CIDRs) here.
+			if err = slot.ConfigureInternet(ctx, networkConfig); err != nil {
+				return nil, fmt.Errorf("failed to configure external netns internet access: %w", err)
+			}
 			cleanup.Add(ctx, func(ctx context.Context) error {
 				return slot.RemoveNetwork()
 			})

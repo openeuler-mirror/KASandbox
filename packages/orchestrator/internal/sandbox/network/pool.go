@@ -56,6 +56,19 @@ type Config struct {
 	// https://en.wikipedia.org/wiki/Reserved_IP_addresses
 	OrchestratorInSandboxIPAddress string `env:"SANDBOX_ORCHESTRATOR_IP" envDefault:"192.0.2.1"`
 
+	// DeniedPodCIDRs are extra CIDRs added to every sandbox firewall's
+	// predefinedDenySet (all protocols, hard block). In CNI/external-netns
+	// deployments this should be set to the cluster Pod CIDR (e.g. from
+	// kubePodsCIDR) so sandboxes cannot reach each other's PodIPs while
+	// keeping host/internet access. Comma-separated, empty = disabled.
+	DeniedPodCIDRs []string `env:"SANDBOX_DENIED_POD_CIDR"`
+
+	// FirewallAllowedCIDRs are extra CIDRs added to every sandbox firewall's
+	// predefinedAllowSet, which is evaluated before the deny sets. Use it to
+	// exempt addresses inside DeniedPodCIDRs (e.g. the bridge gateway or
+	// shared in-cluster services). Comma-separated, empty = none.
+	FirewallAllowedCIDRs []string `env:"SANDBOX_FIREWALL_ALLOWED_CIDRS"`
+
 	HyperloopProxyPort uint16 `env:"SANDBOX_HYPERLOOP_PROXY_PORT" envDefault:"5010"`
 	NFSProxyPort       uint16 `env:"SANDBOX_NFS_PROXY_PORT"       envDefault:"5011"`
 	PortmapperPort     uint16 `env:"SANDBOX_PORTMAPPER_PORT"      envDefault:"5012"`
