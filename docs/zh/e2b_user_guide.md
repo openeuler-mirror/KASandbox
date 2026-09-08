@@ -1813,7 +1813,7 @@ deploy/
 ├── openclaw.yaml             # OpenClaw 配置（dep/ 副本）
 ├── ingress-nginx.yaml        # Ingress Controller 清单（dep/ 副本）
 ├── wildcard-ingress.yaml     # Ingress 规则（dep/ 副本）
-├── README.md / USAGE.md / DEPLOY_DESIGN.md
+├── README.md / DEPLOY_DESIGN.md
 ├── bin/                      # 二进制与 Dockerfile（根 build.sh 打包）
 │   ├── api.Dockerfile        # API 服务镜像构建文件
 │   ├── client-proxy.Dockerfile
