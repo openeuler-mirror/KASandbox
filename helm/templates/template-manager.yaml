@@ -84,6 +84,10 @@ spec:
           value: "{{ .Values.logsCollectorPublicIp }}"
         - name: ALLOW_SANDBOX_INTERNET
           value: "{{ .Values.allowSandboxInternet }}"
+        - name: SANDBOX_DENIED_POD_CIDR
+          value: "{{ .Values.sandboxDeniedPodCIDR }}"
+        - name: SANDBOX_FIREWALL_ALLOWED_CIDRS
+          value: "{{ .Values.sandboxFirewallAllowedCIDRs }}"
         - name: SHARED_CHUNK_CACHE_PATH
           value: "{{ .Values.sharedChunkCachePath }}"
         - name: CLICKHOUSE_CONNECTION_STRING
