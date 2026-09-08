@@ -17,7 +17,6 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/oci/auth"
 	templatemetadata "github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
 	templatemanager "github.com/e2b-dev/infra/packages/shared/pkg/grpc/template-manager"
-	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 	"github.com/e2b-dev/infra/packages/shared/pkg/templates"
@@ -42,13 +41,6 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 	}
 
 	hugePages := cfg.GetHugePages()
-	if vmmType == vmm.BackendStratoVirt && hugePages {
-		s.buildLogger.Warn(ctx, "HugePages are not supported by StratoVirt; disabling HugePages",
-			logger.WithTemplateID(cfg.GetTemplateID()),
-			logger.WithBuildID(cfg.GetBuildID()),
-		)
-		hugePages = false
-	}
 
 	childSpan.SetAttributes(
 		telemetry.WithTemplateID(cfg.GetTemplateID()),

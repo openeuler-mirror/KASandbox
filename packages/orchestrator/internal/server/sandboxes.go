@@ -136,13 +136,6 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		return nil, status.Errorf(codes.FailedPrecondition, "invalid template OS/VMM metadata: %s", err)
 	}
 
-	if templateVMM == vmm.BackendStratoVirt && sandboxConfig.GetHugePages() {
-		logger.L().Warn(ctx, "HugePages are not supported by StratoVirt; disabling HugePages",
-			logger.WithSandboxID(sandboxConfig.GetSandboxId()),
-			logger.WithTemplateID(sandboxConfig.GetTemplateId()),
-		)
-		sandboxConfig.HugePages = false
-	}
 	req.Sandbox = sandboxConfig
 	zap.L().Sugar().Infof("[ResumeSandbox] server parse template metadata cost: %.3f ms, traceID=%s", time.Since(tMeta).Seconds()*1000, traceID)
 
