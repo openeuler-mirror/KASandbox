@@ -493,6 +493,11 @@ EOF
         info "Setting sandbox concurrent instances to 10000"
         $DOCKER_CMD exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -c "UPDATE tiers SET concurrent_instances = 10000 WHERE id = 'base_v1';"
         info "Setting sandbox concurrent instances to 10000 done!"
+
+        info "Setting sandbox max vcpu to 32, max ram to 32G"
+        $DOCKER_CMD exec "$pg_container" psql -U "$pg_user" -d "$pg_db" -c "UPDATE tiers SET max_vcpu = 32, max_ram_mb = 32768 WHERE id = 'base_v1';"
+        info "Setting sandbox max vcpu to 32, max ram to 32G done!"
+
     fi
 }
 
@@ -580,6 +585,8 @@ EOF
         psql -U "$PG_USER" -d "$PG_DB" -c "UPDATE tiers SET max_length_hours = 10000 WHERE id = 'base_v1';"
     kubectl exec -n "$NAMESPACE" "$PG_POD" -- \
         psql -U "$PG_USER" -d "$PG_DB" -c "UPDATE tiers SET concurrent_instances = 10000 WHERE id = 'base_v1';"
+    kubectl exec -n "$NAMESPACE" "$PG_POD" -- \
+        psql -U "$PG_USER" -d "$PG_DB" -c "UPDATE tiers SET max_vcpu = 32, max_ram_mb = 32768 WHERE id = 'base_v1';"
 
     info "Initialization complete!"
 }
