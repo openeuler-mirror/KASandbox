@@ -1482,10 +1482,11 @@ stop() {
 
 make_images() {
     # 1. 保存原镜像的 Entrypoint 和 Cmd 配置
+    # 注意: join 输出的是空格分隔的参数串，可直接用于 --change "ENTRYPOINT ..."
     local image_name="$1"
     local orig_entry orig_cmd
-    orig_entry=$($DOCKER_CMD inspect "$image_name" --format='{{json .Config.Entrypoint}}')
-    orig_cmd=$($DOCKER_CMD inspect "$image_name" --format='{{json .Config.Cmd}}')
+    orig_entry=$($DOCKER_CMD inspect "$image_name" --format='{{join .Config.Entrypoint " "}}')
+    orig_cmd=$($DOCKER_CMD inspect "$image_name" --format='{{join .Config.Cmd " "}}')
 
     echo "原 ENTRYPOINT: $orig_entry"
     echo "原 CMD: $orig_cmd"
@@ -1528,13 +1529,21 @@ make_images() {
         websocat --version'
 
     # 4. 停止容器并导出导入（关键：恢复原来的 Entrypoint 和 Cmd）
+    # 原镜像无 ENTRYPOINT/CMD 时（join 输出为空或 <no value>）跳过对应 --change，
+    # 避免 docker import 把 "null"/"<no value>" 写成字面量入口
     local harbor_url
     harbor_url=$(harbor_get_url)
     local registry_addr="${harbor_url#*://}"
+    local change_args=()
+    if [ -n "$orig_entry" ] && [ "$orig_entry" != "<no value>" ]; then
+        change_args+=(--change "ENTRYPOINT $orig_entry")
+    fi
+    if [ -n "$orig_cmd" ] && [ "$orig_cmd" != "<no value>" ]; then
+        change_args+=(--change "CMD $orig_cmd")
+    fi
     $DOCKER_CMD stop "$temp_image"
     $DOCKER_CMD export "$temp_image" | $DOCKER_CMD import \
-        --change "ENTRYPOINT $orig_entry" \
-        --change "CMD $orig_cmd" \
+        "${change_args[@]}" \
         - "${registry_addr}/e2b-orchestration/${image_name}"
 
     # 5. 推送新镜像
