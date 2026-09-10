@@ -4,3 +4,5 @@ description: 基于Firecracker微虚拟机的沙箱执行平台，在隔离环�
 sections:
   - label: E2B用户指南
     href: ./e2b_user_guide.md
+  - label: E2B对接StratoVirt支持Android沙箱用户指南
+    href: ./e2b_android_user_guide.md
