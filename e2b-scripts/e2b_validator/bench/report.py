@@ -79,13 +79,27 @@ def _render_scale(result: dict[str, Any]) -> list[str]:
 
 def _render_density(result: dict[str, Any]) -> list[str]:
     lines = [
-        "| 存活沙箱数 | 系统可用内存（free available） | 单沙箱均摊开销 |",
-        "|---:|---:|---:|",
+        "| 存活沙箱数 | 系统可用内存（free，参考） | Σ cgroup usage | PSS 均摊 | "
+        "私有脏页均摊 | 共享页均摊 | 共享比例 | 单沙箱开销（free 口径，参考） |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for tier in result.get("tiers", []):
+        memory = tier.get("memory") or {}
         overhead = tier.get("overhead_mb_per_sandbox")
+        share_ratio = memory.get("share_ratio")
+
+        def _mb(key: str) -> str:
+            value = memory.get(key)
+            return f"{value:.1f} MB" if isinstance(value, (int, float)) else "—"
+
         lines.append(
             f"| {tier['alive']} | {tier['available_mb']:,} MiB | "
+            f"{_mb('cgroup_usage_total_mb')} | "
+            f"{_mb('pss_avg_mb')} | "
+            f"{_mb('private_dirty_avg_mb')} | "
+            f"{_mb('shared_avg_mb')} | "
+            + (f"{share_ratio * 100:.1f}%" if isinstance(share_ratio, (int, float)) else "—")
+            + " | "
             + (f"~{overhead:.1f} MB" if isinstance(overhead, (int, float)) else "—")
             + " |"
         )

@@ -386,7 +386,7 @@ bash bench.sh kill-all
 # 每档执行前检查内存安全闸，低于阈值即中止该档并记录
 bash bench.sh scale --sizes 1,100,500 --rounds 3
 
-# 单机密度：分批累积存活 + /proc/meminfo 采样
+# 单机密度：分批累积存活 + 三层内存计量（见代码块下方说明）
 # 内存安全闸：每批前检查 MemAvailable 低于总内存 15%（--mem-threshold-pct 可调）立即中止
 bash bench.sh density -c 50 --batch-size 50 --max-sandboxes 500
 
@@ -406,6 +406,8 @@ bash bench.sh all --profile full    # 完整档位，对标文章
 ```
 
 输出写入 `test-results/<run_id>-bench/`：每个测试项一个 `bench_<名称>.json`，`bench all` 额外生成 `bench_all.json` 和中文汇总 `report.md`（含环境信息、各测试项数据表、结论）。每档/每项之间执行残留清理并等待运行时收敛（标记沙箱归零、firecracker/jailer/nbd 回基线、连续 3 个采样稳定），收敛过程记录在同目录 `cleanup.log`。除 `create -m create-only` 和 `density --keep-sandboxes` 外，所有测试项结束后自动清理创建的沙箱；`create-only` 保留的沙箱通过 `bench kill-all` 或下次 `bench all` 的 pre-flight 清理，且沙箱自身 `--sandbox-timeout`（默认 600 秒）到期后也会被服务端回收。
+
+density 内存计量口径（三层指标，采集器始终开启，无需配置）：每批沙箱创建后静置 2.5s（UFFD 懒加载落定）再采集——① 独立 cgroup v1（`/sys/fs/cgroup/e2b/sbx-<id>/`，兼容 memory 子树布局）usage/stat：Σ 总量准确，但共享页记在首个 touch 的 cgroup，单沙箱均摊有偏差；② 对应 firecracker 进程（`--api-sock /tmp/fc-<沙箱ID>-<buildID>.sock` 映射）的 `smaps_rollup`：PSS 均摊/min/p95/max、私有脏页（含 Private_Hugetlb——VM 内存大页是懒加载主体，本机大页池不占 MemAvailable，故 free 口径会低估真实占用）、共享页均摊与共享比例；③ 原 free available 差值保留为参考列。报告表格为「存活沙箱数 | free 可用（参考） | Σ cgroup usage | PSS 均摊 | 私有脏页均摊 | 共享页均摊 | 共享比例 | 单沙箱开销（free 口径，参考）」；JSON 含每沙箱明细数组（per_sandbox）便于后处理。
 
 **宿主网络残留观测与清理**：v35 架构的 orchestrator 为每个沙箱预建 netns（`ns-N`）+ veth（`veth-N`）+ iptables 规则，槽位 N 严格 1:1 对应；网络池槽位（new 池 640 + reused 池 1000）的双活对子是常驻设计。正常 kill 后槽位回复用池，但创建失败/超时回收的沙箱会留下「半对子」孤儿（有 veth-N 无 ns-N，或有 ns-N 无 veth-N）及悬空 iptables 规则，积累到一定程度会拖垮吞吐。`ensure_clean_slate` 的每次收敛采样会把 netns/veth/iptables 计数写入 `cleanup.log`；若某测试项结束时 netns 数相比该项开始增长超过阈值（`global.netns_growth_threshold`，默认 100），报告 notes 会告警。
 

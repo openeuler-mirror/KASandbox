@@ -21,6 +21,7 @@ from typing import Any, Callable
 from ..e2b_sdk_compat import connect_sandbox
 from ..e2e_sdk_common import sdk_options
 from .client import BenchClient, TimedResult
+from .stats import percentile
 
 TEST_RESULTS_ROOT = Path(__file__).resolve().parent.parent.parent / "test-results"
 BENCH_METADATA_KEY = "bench_run_id"
@@ -270,6 +271,145 @@ def _active_nbd_count() -> int:
         except OSError:
             continue
     return count
+
+
+FC_SOCKET_PATTERN = re.compile(r"/tmp/fc-([a-z0-9]+)-[a-z0-9]+\.sock")
+# 沙箱 memory cgroup 候选路径：memory 子树挂点（v1 分离层级）与合成根两种布局
+CGROUP_MEMORY_CANDIDATES = (
+    "/sys/fs/cgroup/memory/e2b/sbx-{sid}",
+    "/sys/fs/cgroup/e2b/sbx-{sid}",
+)
+
+
+def fc_pid_map() -> dict[str, int]:
+    """firecracker 进程的 --api-sock /tmp/fc-<sandboxID>-<buildID>.sock 含沙箱 ID。"""
+    mapping: dict[str, int] = {}
+    for cmdline_path in glob.glob("/proc/[0-9]*/cmdline"):
+        try:
+            with open(cmdline_path, "rb") as stream:
+                args = stream.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        if "firecracker" not in args or "--api-sock" not in args:
+            continue
+        match = FC_SOCKET_PATTERN.search(args)
+        if match:
+            mapping[match.group(1)] = int(cmdline_path.split("/")[2])
+    return mapping
+
+
+def _read_cgroup_memory(sandbox_id: str) -> dict[str, Any] | None:
+    for pattern in CGROUP_MEMORY_CANDIDATES:
+        directory = Path(pattern.format(sid=sandbox_id))
+        usage_file = directory / "memory.usage_in_bytes"
+        if not usage_file.is_file():
+            continue
+        try:
+            usage = int(usage_file.read_text(encoding="utf-8").strip())
+            stat: dict[str, int] = {}
+            stat_file = directory / "memory.stat"
+            if stat_file.is_file():
+                for line in stat_file.read_text(encoding="utf-8").splitlines():
+                    key, _, value = line.partition(" ")
+                    if value.strip().isdigit():
+                        stat[key] = int(value.strip())
+            return {"usage_bytes": usage, "stat": stat}
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+_SMAPS_KEYS = (
+    "Pss", "Pss_Anon", "Pss_File", "Pss_Shmem",
+    "Private_Clean", "Private_Dirty", "Shared_Clean", "Shared_Dirty",
+    "Private_Hugetlb", "Shared_Hugetlb",
+)
+
+
+def _read_smaps_rollup(pid: int) -> dict[str, int] | None:
+    try:
+        text = Path(f"/proc/{pid}/smaps_rollup").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        key, _, rest = line.partition(":")
+        key = key.strip()
+        if key in _SMAPS_KEYS:
+            amount = rest.strip().split()
+            if amount and amount[0].isdigit():
+                values[key] = int(amount[0]) * 1024
+    return values or None
+
+
+def collect_memory_metrics(sandbox_ids: list[str]) -> dict[str, Any]:
+    """对每个存活沙箱采集 cgroup v1 memory 用量 + FC 进程 smaps_rollup（PSS 等）。
+
+    单个沙箱采集失败（cgroup 不存在/进程已退出）容错跳过并计数。
+    注意：cgroup v1 共享页记在首个 touch 的 cgroup，Σ 总量准确但单沙箱均摊有偏差，
+    故用 PSS 补充均摊口径；UFFD 懒加载下模板页体现为 Shared/File 页。
+    """
+    pid_map = fc_pid_map()
+    details: list[dict[str, Any]] = []
+    cgroup_missing = 0
+    fc_missing = 0
+    for sandbox_id in dict.fromkeys(sandbox_ids):
+        entry: dict[str, Any] = {"sandbox_id": sandbox_id}
+        cgroup = _read_cgroup_memory(sandbox_id)
+        if cgroup is None:
+            cgroup_missing += 1
+        else:
+            entry["cgroup_usage_mb"] = round(cgroup["usage_bytes"] / 1024 / 1024, 1)
+            stat = cgroup["stat"]
+            for field in ("cache", "rss", "anon", "swap", "mapped_file"):
+                if field in stat:
+                    entry[f"cgroup_{field}_mb"] = round(stat[field] / 1024 / 1024, 1)
+        pid = pid_map.get(sandbox_id)
+        smaps = _read_smaps_rollup(pid) if pid is not None else None
+        if smaps is None:
+            fc_missing += 1
+        else:
+            entry["fc_pid"] = pid
+            entry["pss_mb"] = round(smaps.get("Pss", 0) / 1024 / 1024, 1)
+            entry["private_dirty_mb"] = round(
+                (smaps.get("Private_Dirty", 0) + smaps.get("Private_Hugetlb", 0)) / 1024 / 1024, 1
+            )
+            entry["shared_mb"] = round(
+                (smaps.get("Shared_Clean", 0) + smaps.get("Shared_Dirty", 0)
+                 + smaps.get("Shared_Hugetlb", 0)) / 1024 / 1024, 1
+            )
+            entry["pss_file_mb"] = round(smaps.get("Pss_File", 0) / 1024 / 1024, 1)
+        details.append(entry)
+
+    pss_values = sorted(item["pss_mb"] for item in details if "pss_mb" in item)
+    private_values = [item["private_dirty_mb"] for item in details if "private_dirty_mb" in item]
+    shared_values = [item["shared_mb"] for item in details if "shared_mb" in item]
+
+    def _avg(values: list[float]) -> float | None:
+        return round(sum(values) / len(values), 1) if values else None
+
+    shared_sum = sum(shared_values)
+    private_sum = sum(private_values)
+    return {
+        "requested": len(dict.fromkeys(sandbox_ids)),
+        "sampled": len(details),
+        "cgroup_missing": cgroup_missing,
+        "fc_missing": fc_missing,
+        "cgroup_usage_total_mb": round(
+            sum(item.get("cgroup_usage_mb", 0) for item in details), 1
+        ),
+        "pss_avg_mb": _avg(pss_values),
+        "pss_min_mb": pss_values[0] if pss_values else None,
+        "pss_p95_mb": percentile(pss_values, 95) if pss_values else None,
+        "pss_max_mb": pss_values[-1] if pss_values else None,
+        "private_dirty_avg_mb": _avg(private_values),
+        "shared_avg_mb": _avg(shared_values),
+        "share_ratio": (
+            round(shared_sum / (private_sum + shared_sum), 3)
+            if private_sum + shared_sum > 0 else None
+        ),
+        "per_sandbox": details,
+    }
 
 
 def _netns_count() -> int:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 
 from ..e2b_common import positive_int, print_json
 from . import config as bench_config
@@ -15,6 +16,7 @@ from .common import (
     build_context,
     cleanup_created,
     clean_host_orphans,
+    collect_memory_metrics,
     ensure_clean_slate,
     collect_environment,
     finish_result,
@@ -60,6 +62,12 @@ def run(
     }
     result = base_result("density", ctx, params)
     clean_host_orphans(ctx, "density-pre")
+    ctx.note(
+        "内存口径说明：Σ cgroup usage 为 v1 memory 控制器总量（共享页记首个 touch 者，"
+        "总量准、均摊偏）；PSS 均摊来自 FC 进程 smaps_rollup；私有脏页均摊含 "
+        "Private_Hugetlb（VM 内存大页、UFFD 懒加载主体，本机大页池不计入 MemAvailable，"
+        "故 free 口径会低估真实占用）；每批创建后静置 2.5s 再采集"
+    )
     baseline = read_meminfo()
     total_kb = baseline.get("MemTotal", 0)
     baseline_available_kb = baseline.get("MemAvailable", 0)
@@ -95,6 +103,11 @@ def run(
         failed = len(results) - len(succeeded)
         if failed:
             ctx.note(f"批次目标 {batch} 个，失败 {failed} 个")
+        # 静置让 UFFD 懒加载落定后再采集（cgroup v1 + smaps_rollup 双口径）
+        time.sleep(2.5)
+        with ctx._lock:
+            alive_ids = list(ctx.created_ids)
+        memory = collect_memory_metrics(alive_ids)
         meminfo = read_meminfo()
         available_mb = round(meminfo.get("MemAvailable", 0) / 1024)
         overhead = None
@@ -103,12 +116,18 @@ def run(
         if overhead is not None and overhead < 0:
             ctx.note(
                 "均摊开销为负值：主机其他活动释放的内存超过沙箱占用，"
-                "该数据点受主机噪声主导，建议增大 --max-sandboxes 后复测"
+                "该数据点受主机噪声主导，建议以 PSS 均摊为准"
+            )
+        if memory["cgroup_missing"] or memory["fc_missing"]:
+            ctx.note(
+                f"内存采集部分缺失：cgroup_missing={memory['cgroup_missing']} "
+                f"fc_missing={memory['fc_missing']}（本机无独立沙箱 memory cgroup 时属预期）"
             )
         tiers.append({
             "alive": alive,
             "available_mb": available_mb,
             "overhead_mb_per_sandbox": round(overhead, 1) if overhead is not None else None,
+            "memory": memory,
             "batch_failures": failed,
         })
         if failed == batch:
