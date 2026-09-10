@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -73,6 +75,37 @@ func autoNodeIP() string {
 	return ""
 }
 
+// resolveHostPortPoolEnv 解析 SANDBOX_HOSTPORT_POOL_START / SANDBOX_HOSTPORT_POOL_END
+// （expose-ports 写法①的宿主端口池，默认 20000/29999）。启动时校验：start>=1024、
+// start<end<=65535、不与 NodePort 段 30000-32767 重叠，非法直接启动失败（fail-fast）。
+func resolveHostPortPoolEnv() (int, int, error) {
+	start, end := 20000, 29999
+	if v := strings.TrimSpace(os.Getenv("SANDBOX_HOSTPORT_POOL_START")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, 0, fmt.Errorf("SANDBOX_HOSTPORT_POOL_START=%q is not a number: %v", v, err)
+		}
+		start = n
+	}
+	if v := strings.TrimSpace(os.Getenv("SANDBOX_HOSTPORT_POOL_END")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, 0, fmt.Errorf("SANDBOX_HOSTPORT_POOL_END=%q is not a number: %v", v, err)
+		}
+		end = n
+	}
+	if start < 1024 {
+		return 0, 0, fmt.Errorf("host port pool start %d must be >= 1024 (privileged ports)", start)
+	}
+	if start >= end || end > 65535 {
+		return 0, 0, fmt.Errorf("host port pool [%d, %d] is invalid: require start < end <= 65535", start, end)
+	}
+	if start <= 32767 && end >= 30000 {
+		return 0, 0, fmt.Errorf("host port pool [%d, %d] overlaps the NodePort range 30000-32767", start, end)
+	}
+	return start, end, nil
+}
+
 func main() {
 	socketPath := flag.String("socket", defaultSocketPath, "Unix socket path for cri-multiplex")
 	containerdSocket := flag.String("containerd-socket", defaultContainerdSocket, "Unix socket path for containerd")
@@ -106,6 +139,12 @@ func main() {
 	hideSandboxLabel := flag.String("hide-sandbox-label", "", "Hide E2B sandboxes carrying this label (key=value, e.g. flux-sandbox.io/direct=true) from ListPodSandbox/ListContainers, so kubelet does not garbage-collect them as orphans; empty keeps them visible")
 	flag.Parse()
 
+	hostPortPoolStart, hostPortPoolEnd, err := resolveHostPortPoolEnv()
+	if err != nil {
+		log.Fatalf("invalid host port pool config: %v", err)
+	}
+	log.Printf("host port pool: %d-%d", hostPortPoolStart, hostPortPoolEnd)
+
 	stateStore, err := engine.NewJSONStateStore(*stateDir)
 	if err != nil {
 		log.Fatalf("initialize state store: %v", err)
@@ -128,16 +167,18 @@ func main() {
 		NodeIP:                *nodeIP,
 		NodeName:              *nodeName,
 		CNI: engine.CNIConfig{
-			Enabled:  *cniEnabled,
-			ConfDir:  *cniConfDir,
-			BinDir:   *cniBinDir,
-			IfName:   *cniIfName,
+			Enabled:     *cniEnabled,
+			ConfDir:     *cniConfDir,
+			BinDir:      *cniBinDir,
+			IfName:      *cniIfName,
 			NetNSDir:    *cniNetNSDir,
 			PoolEnabled: *cniPoolEnabled,
 			PoolSize:    *cniPoolSize,
 		},
-		StateStore: stateStore,
-		HideLabel:  *hideSandboxLabel,
+		StateStore:        stateStore,
+		HideLabel:         *hideSandboxLabel,
+		HostPortPoolStart: hostPortPoolStart,
+		HostPortPoolEnd:   hostPortPoolEnd,
 	}
 	e2bEng := engine.NewE2BEngine(cfg)
 	defer e2bEng.Close()

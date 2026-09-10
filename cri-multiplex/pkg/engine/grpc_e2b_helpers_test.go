@@ -414,12 +414,12 @@ func TestRevealsHiddenFromCRIList(t *testing.T) {
 }
 
 func TestNewGRPCE2BEngineHideLabelParsing(t *testing.T) {
-	e := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "flux-sandbox.io/direct=true")
+	e := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "flux-sandbox.io/direct=true", 0, 0)
 	if e.hideLabelKey != "flux-sandbox.io/direct" || e.hideLabelValue != "true" {
 		t.Fatalf("hide label parsed wrong: %q=%q", e.hideLabelKey, e.hideLabelValue)
 	}
 	// 非法格式：告警并禁用
-	e2 := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "no-equals-sign")
+	e2 := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "no-equals-sign", 0, 0)
 	if e2.hideLabelKey != "" {
 		t.Fatalf("invalid hide label should be disabled, got key=%q", e2.hideLabelKey)
 	}

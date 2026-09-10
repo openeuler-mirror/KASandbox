@@ -150,8 +150,14 @@ type grpcE2BEngine struct {
 	hideLabelValue string
 }
 
-func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName string, cniConfig CNIConfig, store StateStore, hideLabel string) *grpcE2BEngine {
-	log.Printf("[GrpcE2BEngine] orchestrator address: %s, proxy: %s, nodeIP: %s, nodeName: %s, cni_enabled: %v", orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName, cniConfig.Enabled)
+func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName string, cniConfig CNIConfig, store StateStore, hideLabel string, hostPortPoolStart, hostPortPoolEnd int) *grpcE2BEngine {
+	if hostPortPoolStart <= 0 {
+		hostPortPoolStart = defaultHostPortPoolStart
+	}
+	if hostPortPoolEnd <= 0 {
+		hostPortPoolEnd = defaultHostPortPoolEnd
+	}
+	log.Printf("[GrpcE2BEngine] orchestrator address: %s, proxy: %s, nodeIP: %s, nodeName: %s, cni_enabled: %v, hostport_pool: %d-%d", orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName, cniConfig.Enabled, hostPortPoolStart, hostPortPoolEnd)
 	e := &grpcE2BEngine{
 		orchestratorAddr:      orchestratorAddr,
 		orchestratorProxyAddr: orchestratorProxyAddr,
@@ -165,7 +171,7 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName 
 		imageCache:            make(map[string]*e2bImageMeta),
 		streamingReqs:         make(map[string]*execStreamRequest),
 		attachReqs:            make(map[string]*attachStreamRequest),
-		hostPortManager:       NewHostPortManager(20000, 29999), // 避开 NodePort 范围
+		hostPortManager:       NewHostPortManager(hostPortPoolStart, hostPortPoolEnd), // 范围由 SANDBOX_HOSTPORT_POOL_START/END 注入
 	}
 	if hideLabel != "" {
 		key, value, found := strings.Cut(hideLabel, "=")

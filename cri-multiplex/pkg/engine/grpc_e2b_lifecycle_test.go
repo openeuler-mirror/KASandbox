@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -176,11 +178,11 @@ func TestGRPCE2BHostPortMappingSetupAndCleanup(t *testing.T) {
 	}}
 	e := newTestGRPCE2BEngine(client)
 	e.hostPortOps = hostPortMappingOps{
-		setup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
+		setupBatch: func(nodeIP string, mappings []PortMapping, sandboxIP string) error {
 			if nodeIP != "192.0.2.10" || sandboxIP != "172.16.0.2" {
 				t.Fatalf("unexpected setup endpoints nodeIP=%s sandboxIP=%s", nodeIP, sandboxIP)
 			}
-			setupCalls = append(setupCalls, PortMapping{HostPort: hostPort, SandboxPort: sandboxPort})
+			setupCalls = append(setupCalls, mappings...)
 			return nil
 		},
 		cleanup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
@@ -221,6 +223,145 @@ func TestGRPCE2BHostPortMappingSetupAndCleanup(t *testing.T) {
 	}
 	if pod.hostPort != 0 || len(pod.portMappings) != 0 {
 		t.Fatalf("hostport fields should be cleared after stop: hostPort=%d mappings=%+v", pod.hostPort, pod.portMappings)
+	}
+}
+
+func TestGRPCE2BRunPodSandboxMalformedExposePorts(t *testing.T) {
+	client := &fakeSandboxServiceClient{}
+	fakeCNI := &fakeCNIManager{}
+	e := newTestGRPCE2BEngine(client)
+	e.cniConfig.Enabled = true
+	e.cniManager = fakeCNI
+
+	req := e2bRunReq("uid-a")
+	req.Config.Annotations[annExposePorts] = "8080:80" // 写法②命中特权端口 → malformed
+
+	if _, err := e.RunPodSandbox(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("RunPodSandbox error code = %v, want InvalidArgument", status.Code(err))
+	}
+	// fail-fast：不应触达 CNI / orchestrator
+	if client.createCalls != 0 || fakeCNI.addCalls != 0 {
+		t.Fatalf("malformed expose-ports must fail before CNI/orchestrator: create=%d cniAdd=%d", client.createCalls, fakeCNI.addCalls)
+	}
+}
+
+func TestGRPCE2BRunPodSandboxHostPortAllocateFailureRollback(t *testing.T) {
+	// 宿主机上真实占用一个端口，模拟写法②指定端口被其他进程占用（bindProbe 判定）
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	occupied := ln.Addr().(*net.TCPAddr).Port
+
+	client := &fakeSandboxServiceClient{createResp: &orchestrator.SandboxCreateResponse{
+		ClientId: "client-a",
+		HostIp:   "172.16.0.2",
+	}}
+	fakeCNI := &fakeCNIManager{}
+	e := newTestGRPCE2BEngine(client)
+	e.cniConfig.Enabled = true
+	e.cniManager = fakeCNI
+	setupCalls := 0
+	e.hostPortOps.setupBatch = func(string, []PortMapping, string) error { setupCalls++; return nil }
+
+	req := e2bRunReq("uid-a")
+	req.Config.Annotations[annExposePorts] = fmt.Sprintf("49983,8080:%d", occupied)
+
+	if _, err := e.RunPodSandbox(context.Background(), req); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("RunPodSandbox error code = %v, want ResourceExhausted", status.Code(err))
+	}
+	// 回滚序列：销毁已建 VM（orchestrator Delete）+ CNI DEL；不安装任何 iptables 规则
+	if client.createCalls != 1 || client.deleteCalls != 1 {
+		t.Fatalf("orchestrator calls = create:%d delete:%d, want 1/1", client.createCalls, client.deleteCalls)
+	}
+	if client.lastDelete.SandboxId != client.lastCreate.Sandbox.SandboxId {
+		t.Fatalf("rollback delete id = %q, want %q", client.lastDelete.SandboxId, client.lastCreate.Sandbox.SandboxId)
+	}
+	if fakeCNI.addCalls != 1 || fakeCNI.delCalls != 1 {
+		t.Fatalf("CNI calls = add:%d del:%d, want 1/1", fakeCNI.addCalls, fakeCNI.delCalls)
+	}
+	if setupCalls != 0 {
+		t.Fatalf("no iptables rules should be installed on allocation failure, setup calls = %d", setupCalls)
+	}
+	if _, ok := e.tracker.Get("uid-a"); ok {
+		t.Fatal("tracker should not contain failed sandbox")
+	}
+	if len(e.hostPortManager.allocated) != 0 {
+		t.Fatalf("hostport allocations should be rolled back, got %v", e.hostPortManager.allocated)
+	}
+}
+
+func TestGRPCE2BRunPodSandboxExposePortsThreeForms(t *testing.T) {
+	client := &fakeSandboxServiceClient{createResp: &orchestrator.SandboxCreateResponse{
+		ClientId: "client-a",
+		HostIp:   "172.16.0.2",
+	}}
+	e := newTestGRPCE2BEngine(client)
+	e.hostPortManager.bindProbe = nil // 纯 map 判定，避免真实 bind 探测的环境依赖
+	var batchMappings []PortMapping
+	e.hostPortOps = hostPortMappingOps{
+		setupBatch: func(nodeIP string, mappings []PortMapping, sandboxIP string) error {
+			batchMappings = append(batchMappings, mappings...)
+			return nil
+		},
+		cleanup: func(string, int, string, int) error { return nil },
+	}
+
+	req := e2bRunReq("uid-a")
+	req.Config.Annotations[annExposePorts] = "8080,9090:45678,49983:38700-38702"
+
+	if _, err := e.RunPodSandbox(context.Background(), req); err != nil {
+		t.Fatalf("RunPodSandbox: %v", err)
+	}
+	want := []PortMapping{
+		{HostPort: 20000, SandboxPort: 8080},  // 写法①：池内首个空闲
+		{HostPort: 45678, SandboxPort: 9090},  // 写法②：指定宿主端口（不受池范围约束）
+		{HostPort: 38700, SandboxPort: 49983}, // 写法③：区间首个空闲
+	}
+	if len(batchMappings) != len(want) {
+		t.Fatalf("batch mappings = %+v, want %+v", batchMappings, want)
+	}
+	for i := range want {
+		if batchMappings[i] != want[i] {
+			t.Fatalf("batch mappings[%d] = %+v, want %+v", i, batchMappings[i], want[i])
+		}
+	}
+	pod, _ := e.tracker.Get("uid-a")
+	if pod.hostPort != 38700 || len(pod.portMappings) != 3 {
+		t.Fatalf("pod hostport fields mismatch: hostPort=%d mappings=%+v", pod.hostPort, pod.portMappings)
+	}
+	statusResp, err := e.PodSandboxStatus(context.Background(), &runtime.PodSandboxStatusRequest{PodSandboxId: "uid-a"})
+	if err != nil {
+		t.Fatalf("PodSandboxStatus: %v", err)
+	}
+	anns := statusResp.Status.Annotations
+	if anns["e2b.dev/host-port-9090"] != "45678" || anns["e2b.dev/access-url-49983"] != "http://192.0.2.10:38700" {
+		t.Fatalf("hostport annotations mismatch: %+v", anns)
+	}
+}
+
+func TestGRPCE2BRunPodSandboxSetupFailureStillSucceeds(t *testing.T) {
+	client := &fakeSandboxServiceClient{createResp: &orchestrator.SandboxCreateResponse{
+		ClientId: "client-a",
+		HostIp:   "172.16.0.2",
+	}}
+	e := newTestGRPCE2BEngine(client)
+	e.hostPortOps = hostPortMappingOps{
+		setupBatch: func(string, []PortMapping, string) error { return errors.New("iptables boom") },
+		cleanup:    func(string, int, string, int) error { return nil },
+	}
+
+	req := e2bRunReq("uid-a")
+	req.Config.Annotations[annExposePorts] = "8080"
+
+	// 规则安装失败仅 WARNING 不阻断创建，映射照常登记
+	if _, err := e.RunPodSandbox(context.Background(), req); err != nil {
+		t.Fatalf("RunPodSandbox should succeed despite setup failure: %v", err)
+	}
+	pod, _ := e.tracker.Get("uid-a")
+	if len(pod.portMappings) != 1 || pod.portMappings[0].SandboxPort != 8080 {
+		t.Fatalf("pod mappings mismatch: %+v", pod.portMappings)
 	}
 }
 
