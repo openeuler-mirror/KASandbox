@@ -23,6 +23,7 @@ from .e2e_models import CaseResult, CaseStatus, RunSummary, TestCase
 from .e2e_report import E2EReporter
 from .e2e_resources import ResourceLedger
 from .e2e_test_cases import build_cases
+from .run_lock import acquire_run_lock
 from .e2e_template_fixture import (
     TemplateFixture,
     TemplateFixtureError,
@@ -1054,6 +1055,7 @@ def register_subcommand(subparsers) -> None:
     )
     parser.add_argument("--result-root", type=Path, default=PROJECT_DIR / "test-results")
     parser.add_argument("--keep-sandboxes", action="store_true", help="Do not clean this run's sandbox resources")
+    parser.add_argument("--force", action="store_true", help="Bypass the test-e2e/bench mutual-exclusion lock")
     parser.set_defaults(handler=execute)
 
 
@@ -1102,6 +1104,7 @@ def execute(args: argparse.Namespace) -> int:
         )
         select_cases_with_dependencies(validation_cases, requested_case_ids)
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    acquire_run_lock("e2e", run_id=run_id, force=getattr(args, "force", False))
     result_dir = args.result_root.expanduser().resolve() / run_id
     report_path = result_dir / "report.md"
     fixture_reporter = E2EReporter(result_dir, report_path)

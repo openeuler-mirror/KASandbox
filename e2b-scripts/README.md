@@ -34,11 +34,19 @@
 ```text
 e2b-scripts/
 ├── start.sh                       # Linux 统一入口
+├── bench.sh                       # 性能基准入口（= start.py bench）
 ├── start.py                       # 环境初始化与命令转发
 ├── e2b_validator/                 # 验收实现
 │   ├── __init__.py                # Python 包入口
 │   ├── bootstrap.py               # 运行环境与 SDK 依赖初始化
 │   ├── build_prod.py              # 子命令注册
+│   ├── bench/                     # 性能基准测试包（对标 CubeSandbox 口径）
+│   │   ├── cli.py                 # bench 子命令路由
+│   │   ├── client.py              # 计时 REST 客户端
+│   │   ├── stats.py               # 百分位统计
+│   │   ├── report.py              # JSON 与中文 Markdown 报告
+│   │   ├── runner.py              # bench all --profile quick|full 编排
+│   │   └── create.py 等           # 各测试项实现
 │   ├── create_sandbox.py          # 创建 Sandbox
 │   ├── create_template.py         # 创建 Template
 │   ├── run_command.py             # 执行命令
@@ -330,6 +338,94 @@ bash start.sh download-file \
   --remote-path /tmp/demo.txt \
   --local-path ./downloads/demo.txt
 ```
+
+### 4.7 性能基准测试（bench）
+
+`bench` 子命令对标 CubeSandbox 性能基准文章（https://cubesandbox.com/zh/blog/posts/2026-06-01-cubesandbox-perf-benchmark.html）的口径：avg / min / p95 / max（毫秒）+ wall + per（wall ÷ 操作数）+ 吞吐 + 成功率，每轮前 Warm-up（首轮丢弃），各档位串行执行、档间清空沙箱。
+
+**配置文件 `bench.toml`**：所有 bench 参数的单一来源（TOML，stdlib `tomllib` 解析，无新增依赖）。优先级：命令行参数 > `--config` 指定文件 > 默认 `bench.toml` > 代码内置兜底。
+
+`[global]` 字段：
+
+| 字段 | 含义 | 默认值 |
+| --- | --- | --- |
+| `template` | 模板 ID；命令行 `-t/--template` 与环境变量 `BENCH_TEMPLATE_ID` 优先 | `""`（必须提供） |
+| `warmup` | 每轮正式测量前的热身轮数，结果丢弃 | `1` |
+| `sandbox_timeout` | 沙箱生命周期秒数，到期服务端自动回收防泄漏 | `600` |
+| `mem_threshold_pct` | 内存安全闸：MemAvailable 低于总内存该百分比即中止 density/scale | `15.0` |
+| `result_root` | 结果输出目录（相对路径基于 e2b-scripts/ 解析） | `test-results` |
+
+各测试项一节（`[create]` / `[scale]` / `[density]` / `[snapshot_concurrency]` / `[snapshot_dirty]` / `[create_from_snapshot]` / `[rollback]` / `[clone]` / `[pause_resume]`），档位用 `[[<节>.tiers]]` 数组表描述；`[profiles.quick]` / `[profiles.full]` 只覆盖各节档位规模，quick 为小规模自检，full 对标文章完整档。修改数字即可调整档位，无需改代码。
+
+```bash
+# 打印合并后的生效配置（TOML 回显）后退出，不执行测试
+bash start.sh bench all --print-config
+bash start.sh bench all --print-config --profile full
+bash start.sh bench all --print-config --config /path/to/bench-mini.toml
+
+# 模板解析优先级：-t/--template > bench.toml [global].template > 环境变量 BENCH_TEMPLATE_ID > 自动基准模板
+# 三者都未指定时自动使用 bench-standard-2c2g（2 vCPU / 2048 MiB，对标文章口径）：
+# 先按名称查找 ready 且本机 /tmp/templates 产物齐全的既有模板复用（日志打印"复用基准模板 <id>"），
+# 没有则自动构建一次（进度打印到 stderr），构建完成后长期复用
+# 因此完整基准测试只需：
+bash start.sh bench all --profile full   # 无需 -t
+
+# 显式指定模板：
+export BENCH_TEMPLATE_ID=<ready-template-id>
+
+# 冒烟：单并发创建 3 次（create-kill 模式测完即删）
+bash bench.sh create -c 1 -n 3 -w 1 -t <ready-template-id>
+
+# 并发创建（对齐 cube-bench 用法；create-only 保留存活）
+bash bench.sh create -c 50 -n 500 -w 3 -m create-only
+
+# 清理 bench 创建的沙箱（默认仅清理带 bench 标记的；--all 会删除全部沙箱）
+bash bench.sh kill-all
+
+# 规模测试：同一模板一次性并发拉起 N 个沙箱，测整批 wall（首个请求发出 → 全部 running）
+# 每档执行前检查内存安全闸，低于阈值即中止该档并记录
+bash bench.sh scale --sizes 1,100,500 --rounds 3
+
+# 单机密度：分批累积存活 + /proc/meminfo 采样
+# 内存安全闸：每批前检查 MemAvailable 低于总内存 15%（--mem-threshold-pct 可调）立即中止
+bash bench.sh density -c 50 --batch-size 50 --max-sandboxes 500
+
+# Snapshot 系列（逐档串行调用，对齐文章档位）
+bash bench.sh snapshot-concurrency -c 10 -n 5
+bash bench.sh snapshot-dirty -d 100 -n 3
+bash bench.sh create-from-snapshot -c 20 -n 3
+
+# Rollback / Clone / Pause-Resume
+bash bench.sh rollback -c 10 -n 5
+bash bench.sh clone -n 100 -c 20 --rounds 2
+bash bench.sh pause-resume -c 10 -n 5
+
+# 一键编排全部 8 个测试项并生成汇总报告
+bash bench.sh all --profile quick   # 小规模自检
+bash bench.sh all --profile full    # 完整档位，对标文章
+```
+
+输出写入 `test-results/<run_id>-bench/`：每个测试项一个 `bench_<名称>.json`，`bench all` 额外生成 `bench_all.json` 和中文汇总 `report.md`（含环境信息、各测试项数据表、结论）。每档/每项之间执行残留清理并等待运行时收敛（标记沙箱归零、firecracker/jailer/nbd 回基线、连续 3 个采样稳定），收敛过程记录在同目录 `cleanup.log`。除 `create -m create-only` 和 `density --keep-sandboxes` 外，所有测试项结束后自动清理创建的沙箱；`create-only` 保留的沙箱通过 `bench kill-all` 或下次 `bench all` 的 pre-flight 清理，且沙箱自身 `--sandbox-timeout`（默认 600 秒）到期后也会被服务端回收。
+
+**宿主网络残留观测与清理**：v35 架构的 orchestrator 为每个沙箱预建 netns（`ns-N`）+ veth（`veth-N`）+ iptables 规则，槽位 N 严格 1:1 对应；网络池槽位（new 池 640 + reused 池 1000）的双活对子是常驻设计。正常 kill 后槽位回复用池，但创建失败/超时回收的沙箱会留下「半对子」孤儿（有 veth-N 无 ns-N，或有 ns-N 无 veth-N）及悬空 iptables 规则，积累到一定程度会拖垮吞吐。`ensure_clean_slate` 的每次收敛采样会把 netns/veth/iptables 计数写入 `cleanup.log`；若某测试项结束时 netns 数相比该项开始增长超过阈值（`global.netns_growth_threshold`，默认 100），报告 notes 会告警。
+
+**每小轮前的孤儿清理（`clean_host_orphans`）**：每个档位第一轮 warmup 之前、density 开始前、`ensure_clean_slate` 收敛后、bench all pre-flight 都会执行一次。判定规则：**只有半对子才删**（`veth-N` 存在而 `ns-N` 不存在 → 删 veth；`ns-N` 存在而 `veth-N` 不存在 → 删 netns）；iptables 过滤两类：引用「当前不存在 veth」的规则，以及 `nat POSTROUTING -s 10.11.x.y/32 ... MASQUERADE` 中 HostIP 映射槽位（N=(b<<8)|c，基址 10.11.0.0/16）已不在存活集合的孤儿规则（docker 的 172.x 等其他 MASQUERADE 不动）；**双活（ns-N 与 veth-N 都在）一律不碰**——那是池槽位或活动沙箱。安全前置：仅当 firecracker=0 且 jailer=0 时执行；iptables-restore 失败会报错并把原规则留在 `/tmp/bench-iptables-orphans-*.rules` 供排查。统计（orphan_netns/orphan_veth/orphan_rules/orphan_masq_rules）写入 `cleanup.log`。
+
+```bash
+# 两次 full 之间做宿主级清理（会拒绝在有沙箱或 firecracker/jailer 进程时执行）
+# 注意：clean-host 会连同网络池预建槽位一并清空（比孤儿清理激进）；
+# 建议执行后重启 template-manager（本命令不做 nomad 操作）
+bash bench.sh clean-host --dry-run   # 先只看数量
+bash bench.sh clean-host             # 实际清理：删 ns-* netns、veth-* 接口、引用 veth- 的 iptables 规则
+```
+
+**scale 档位上限**：`[scale]` 基础节为 tiers 形式（size=1 / 100 / 200，从 500 降档——当前环境网络池容量与孤儿残留风险的实测平衡点）；旧的 `sizes = [...]` 写法仍然兼容；需要更大档位前先 `bench clean-host` 清理宿主。
+
+**档位前池恢复等待（pre_wait）**：所有 tiers 类型的档位支持可选字段 `pre_wait`（秒，默认 0）。高并发档（create c=20/c=50、scale 200）失败多与系统池子来不及恢复有关，bench.toml 已给这些档加 `pre_wait = 180`。档的 pre_wait > 0 时：先静置等待（每 30s 打印剩余时间到 stderr，期间不创建任何沙箱），随后执行一次 `clean_host_orphans` + `ensure_clean_slate` 快速确认，再开始 warmup/正式测量；等待时间不计入任何测量指标；pre_wait 值记录在每档 JSON 的 params 与 report.md 参数行中，保证数据可溯源。
+
+**并发计时口径（barrier 同步起跑）**：同一档位的并发请求用 `threading.Barrier` 同步起跑——burst 型（任务数 == 并发数，如 scale 每档 N 拉 N）全部请求同一瞬间发出；流水线型（总请求数 > 并发数，如 create -c 50 -n 500）只同步首波起跑、后续自然流动，不拆 lockstep 批次。wall 计时从 barrier 放行瞬间起算，消除线程池 ramp-up 抖动，使「1 个模板拉起 N 个沙箱」的整批 wall 是真并发口径。
+
+**与 test-e2e 互斥隔离**：test-e2e 是 116 个功能验收用例，bench 是性能压测，两者同时跑会互相污染。`test-e2e` 与所有 `bench` 子命令执行前都会原子抢锁 `test-results/.run.lock`（O_CREAT|O_EXCL，内容为 holder/run_id/started_at/pid 的 JSON）；抢不到即退出并提示持锁方与开始时间，确认对方结束后重试，或加 `--force` 删除旧锁强制继续。正常结束与异常退出（含 Ctrl+C）都会通过 finally/atexit 释放锁。
 
 ## 5. E2E 用例清单
 
