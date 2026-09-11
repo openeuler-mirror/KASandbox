@@ -30,6 +30,19 @@ func (p *Process) queryMemoryMappings(ctx context.Context) ([]memoryMapping, err
 	return mappings.Mappings, nil
 }
 
+type memDirtyBitmap struct {
+	Bitmap   []uint64 `json:"bitmap"`
+	PageSize uint64   `json:"page-size"`
+}
+
+func (p *Process) queryMemDirtyBitmap(ctx context.Context) (*memDirtyBitmap, error) {
+	var out memDirtyBitmap
+	if err := p.qmpClient.executeCommandWithReturn(ctx, "query-mem-dirty-bitmap", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func memorySize(mappings []memoryMapping) (int64, error) {
 	var totalSize uint64
 	for _, mapping := range mappings {
@@ -48,7 +61,8 @@ func memorySize(mappings []memoryMapping) (int64, error) {
 	return int64(totalSize), nil
 }
 
-func (p *Process) memoryDiffMetadata(ctx context.Context, blockSize int64) (*header.DiffMetadata, error) {
+// MemoryInfo returns all blocks dirty, for the fresh-start path (NoopMemory).
+func (p *Process) MemoryInfo(ctx context.Context, blockSize int64) (*header.DiffMetadata, error) {
 	mappings, err := p.queryMemoryMappings(ctx)
 	if err != nil {
 		return nil, err
@@ -70,12 +84,76 @@ func (p *Process) memoryDiffMetadata(ctx context.Context, blockSize int64) (*hea
 	}, nil
 }
 
-func (p *Process) MemoryInfo(ctx context.Context, blockSize int64) (*header.DiffMetadata, error) {
-	return p.memoryDiffMetadata(ctx, blockSize)
+// DirtyMemory returns pages dirtied since the last reset via QMP
+// query-mem-dirty-bitmap; the first call after UFFD restore returns all
+// resident pages and enables write-protect tracking.
+func (p *Process) DirtyMemory(ctx context.Context, blockSize int64) (*header.DiffMetadata, error) {
+	res, err := p.queryMemDirtyBitmap(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("query mem dirty bitmap: %w", err)
+	}
+
+	pageSize := int64(res.PageSize)
+	if pageSize == 0 {
+		pageSize = 4096
+	}
+
+	mappings, err := p.queryMemoryMappings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	size, err := memorySize(mappings)
+	if err != nil {
+		return nil, err
+	}
+	totalBlocks := uint(header.TotalBlocks(size, blockSize))
+
+	dirty := denseBitmapToBlockBitset(res.Bitmap, pageSize, blockSize, totalBlocks)
+
+	return &header.DiffMetadata{
+		Dirty:     dirty,
+		Empty:     bitset.New(totalBlocks),
+		BlockSize: blockSize,
+	}, nil
 }
 
-func (p *Process) DirtyMemory(ctx context.Context, blockSize int64) (*header.DiffMetadata, error) {
-	return p.memoryDiffMetadata(ctx, blockSize)
+// denseBitmapToBlockBitset converts a page-granularity bitmap (each bit = one
+// pageSize) to a block-granularity BitSet (each bit = one blockSize).
+//  - blockSize == pageSize: 1:1
+//  - blockSize >  pageSize: block dirty if any spanning page is dirty
+//  - blockSize <  pageSize: all blocks a dirty page spans are marked dirty
+func denseBitmapToBlockBitset(denseBitmap []uint64, pageSize, blockSize int64, totalBlocks uint) *bitset.BitSet {
+	dirty := bitset.New(totalBlocks)
+
+	for i, word := range denseBitmap {
+		for bitOff := uint(0); bitOff < 64; bitOff++ {
+			if word&(1<<bitOff) == 0 {
+				continue
+			}
+			pageIdx := uint(i)*64 + bitOff
+
+			if blockSize == pageSize {
+				if pageIdx < totalBlocks {
+					dirty.Set(pageIdx)
+				}
+			} else if blockSize > pageSize {
+				blockIdx := pageIdx / uint(blockSize/pageSize)
+				if blockIdx < totalBlocks {
+					dirty.Set(blockIdx)
+				}
+			} else {
+				blocksPerPage := uint(pageSize / blockSize)
+				startBlock := pageIdx * blocksPerPage
+				for j := uint(0); j < blocksPerPage; j++ {
+					if startBlock+j < totalBlocks {
+						dirty.Set(startBlock + j)
+					}
+				}
+			}
+		}
+	}
+
+	return dirty
 }
 
 func (p *Process) ExportMemory(

@@ -627,13 +627,13 @@ func (s *Server) snapshotAndCacheSandbox(
 		return metadata.Template{}, nil, fmt.Errorf("no metadata found in template: %w", err)
 	}
 
-	meta = meta.SameVersionTemplate(metadata.TemplateMetadata{
-		BuildID:            buildID,
-		KernelVersion:      sbx.Config.VMMConfig.KernelVersion,
-		FirecrackerVersion: sbx.Config.VMMConfig.VMMVersion,
-		VMMType:            string(sbx.Config.VMMConfig.Backend()),
-		OsType:             meta.Template.OsType,
-	})
+	// Copy the source metadata, overriding only snapshot-specific fields.
+	snapshotMeta := meta.Template
+	snapshotMeta.BuildID = buildID
+	snapshotMeta.KernelVersion = sbx.Config.VMMConfig.KernelVersion
+	snapshotMeta.FirecrackerVersion = sbx.Config.VMMConfig.VMMVersion
+	snapshotMeta.VMMType = string(sbx.Config.VMMConfig.Backend())
+	meta = meta.SameVersionTemplate(snapshotMeta)
 
 	snapshot, err := sbx.Pause(ctx, meta)
 	if err != nil {
