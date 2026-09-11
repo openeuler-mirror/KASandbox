@@ -16,7 +16,14 @@ type Observation struct {
 	Exists    bool
 	Identical bool
 	Digest    string
+	Problem   string
 	identity  objectstore.Info
+}
+
+// ClosedWriterVerifier closes the publishing client before verifying the
+// complete set through a new client. Catalog commit must wait for this check.
+type ClosedWriterVerifier interface {
+	VerifyAfterClose(context.Context, []bundle.ObjectRecord) error
 }
 
 // Store 由创建它的调用方持有；Close 在 dry-run、apply 和提前返回路径上都必须调用。

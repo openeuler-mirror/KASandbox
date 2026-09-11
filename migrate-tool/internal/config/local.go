@@ -19,6 +19,9 @@ func OpenCatalog(endpoint string) (catalog.Catalog, error) {
 	if strings.HasPrefix(endpoint, "postgres://") || strings.HasPrefix(endpoint, "postgresql://") {
 		return catalog.NewPostgres(endpoint)
 	}
+	if hasNonFileScheme(endpoint) {
+		return nil, fmt.Errorf("unsupported catalog endpoint %q: use postgresql://, a local path, or a file:// URI", endpoint)
+	}
 	path, err := localPath(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("catalog endpoint: %w", err)
@@ -26,6 +29,9 @@ func OpenCatalog(endpoint string) (catalog.Catalog, error) {
 	return catalog.NewFile(path)
 }
 
+// OpenStore 打开源端对象存储(export 读取端，list 不访问对象存储)。
+// mooncake:// 的读取能力仅用于导入校验,未实现源端导出适配器；这里单独报错,
+// 避免用户把导出与导入的 --store 混淆。
 func OpenStore(ctx context.Context, endpoint string) (objectstore.Store, error) {
 	if strings.HasPrefix(endpoint, "s3://") {
 		options, err := parseS3(endpoint)
@@ -34,11 +40,21 @@ func OpenStore(ctx context.Context, endpoint string) (objectstore.Store, error) 
 		}
 		return objectstore.NewS3Store(ctx, options)
 	}
+	if strings.HasPrefix(endpoint, "mooncake://") {
+		return nil, fmt.Errorf("mooncake:// is only supported as the import target (import --store); export reads the source object store: use s3://, a local path, or a file:// URI")
+	}
+	if hasNonFileScheme(endpoint) {
+		return nil, fmt.Errorf("unsupported object store endpoint %q: use s3://, a local path, or a file:// URI", endpoint)
+	}
 	path, err := localPath(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("object store endpoint: %w", err)
 	}
 	return objectstore.NewFileStore(path)
+}
+
+func hasNonFileScheme(endpoint string) bool {
+	return strings.Contains(endpoint, "://") && !strings.HasPrefix(endpoint, "file://")
 }
 
 // OpenTargetStore 只用于 import。File/S3 继续复用成熟的 objectstore 实现；
@@ -184,7 +200,7 @@ func localPath(endpoint string) (string, error) {
 		return "", fmt.Errorf("parse %q: %w", endpoint, err)
 	}
 	if parsed.Scheme != "file" || (parsed.Host != "" && parsed.Host != "localhost") {
-		return "", fmt.Errorf("Demo supports only local paths and file:// endpoints, got %q", endpoint)
+		return "", fmt.Errorf("unsupported endpoint %q: expected a local path or a file:// URI", endpoint)
 	}
 	// url.Parse 已经对 Path 做过一次转义解码；再次 PathUnescape 会把文件名中
 	// 字面的 "%2F" 错误地变成目录分隔符。

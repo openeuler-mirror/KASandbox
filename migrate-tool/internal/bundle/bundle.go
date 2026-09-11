@@ -23,6 +23,7 @@ type Inspected struct {
 	Root     string
 	Manifest Manifest
 	Records  Records
+	layouts  map[string]string
 }
 
 // Verified 只由 Verify 返回。嵌入 Inspected 后，导入流程仍可直接访问 Root、
@@ -75,7 +76,7 @@ func Inspect(root string) (*Inspected, error) {
 		}
 		return nil, fmt.Errorf("decode manifest trailing data: %w", err)
 	}
-	if manifest.Format != Format || manifest.FormatVersion != FormatVersion {
+	if manifest.Format != Format || (manifest.FormatVersion != FormatVersion && manifest.FormatVersion != MultiDiskFormatVersion) {
 		return nil, fmt.Errorf("unsupported bundle format %q version %d", manifest.Format, manifest.FormatVersion)
 	}
 	expectedDigest := manifest.BundleDigest
@@ -100,11 +101,15 @@ func Inspect(root string) (*Inspected, error) {
 	if err := verifyCounts(manifest.Counts, records, manifest.Objects); err != nil {
 		return nil, err
 	}
-	if err := validateObjects(manifest.Objects, records); err != nil {
+	layouts, err := validateLayouts(manifest, records)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateObjects(manifest.Objects, records, layouts); err != nil {
 		return nil, err
 	}
 
-	return &Inspected{Root: abs, Manifest: manifest, Records: records}, nil
+	return &Inspected{Root: abs, Manifest: manifest, Records: records, layouts: layouts}, nil
 }
 
 func Verify(root string) (*Verified, error) {
@@ -115,7 +120,7 @@ func Verify(root string) (*Verified, error) {
 	if err := verifyObjectContents(inspected.Root, inspected.Manifest.Objects); err != nil {
 		return nil, err
 	}
-	if err := verifyObjectClosure(inspected.Root, inspected.Records, inspected.Manifest.Objects); err != nil {
+	if err := verifyObjectClosure(inspected.Root, inspected.Records, inspected.Manifest.Objects, inspected.layouts); err != nil {
 		return nil, err
 	}
 	return &Verified{Inspected: inspected}, nil
@@ -183,14 +188,15 @@ func manifestDigest(manifest Manifest) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func validateObjects(objects []ObjectRecord, records Records) error {
+func validateObjects(objects []ObjectRecord, records Records, layouts map[string]string) error {
 	seen := make(map[string]struct{}, len(objects))
 	builds := make(map[string]struct{}, len(records.Builds))
 	requiredControls := make(map[string]controlRequirement, len(records.Builds)*4)
 	for _, build := range records.Builds {
 		builds[build.ID] = struct{}{}
-		requiredControls[artifact.MemfileHeader(build.ID)] = controlRequirement{objectType: artifact.TypeMemfileHeader, buildID: build.ID}
-		requiredControls[artifact.RootfsHeader(build.ID)] = controlRequirement{objectType: artifact.TypeRootfsHeader, buildID: build.ID}
+		for _, layer := range artifact.Layers(layouts[build.ID]) {
+			requiredControls[layer.HeaderKey(build.ID)] = controlRequirement{objectType: layer.HeaderType, buildID: build.ID}
+		}
 		requiredControls[artifact.Snapfile(build.ID)] = controlRequirement{objectType: artifact.TypeSnapfile, buildID: build.ID}
 		requiredControls[artifact.Metadata(build.ID)] = controlRequirement{objectType: artifact.TypeMetadata, buildID: build.ID}
 	}
@@ -206,7 +212,7 @@ func validateObjects(objects []ObjectRecord, records Records) error {
 			return fmt.Errorf("object %q has negative size %d", object.LogicalKey, object.Size)
 		}
 		if !object.Required {
-			return fmt.Errorf("bundle v1 object %q must be required", object.LogicalKey)
+			return fmt.Errorf("bundle object %q must be required", object.LogicalKey)
 		}
 		if !objectKeyMatchesType(object.LogicalKey, object.Type) {
 			return fmt.Errorf("object %q does not match type %q", object.LogicalKey, object.Type)
@@ -217,6 +223,16 @@ func validateObjects(objects []ObjectRecord, records Records) error {
 		}
 		if object.BundlePath != expectedPath {
 			return fmt.Errorf("object %q has unexpected bundle path %q", object.LogicalKey, object.BundlePath)
+		}
+		if object.Type == artifact.TypePersistent || object.Type == artifact.TypeSDCard {
+			if len(object.ReferencingBuildIDs) == 0 {
+				return fmt.Errorf("disk object %q has no referencing builds", object.LogicalKey)
+			}
+			for _, id := range object.ReferencingBuildIDs {
+				if layouts[id] != artifact.OSAndroid {
+					return fmt.Errorf("Android disk object %q references non-Android build %q", object.LogicalKey, id)
+				}
+			}
 		}
 		refs := make(map[string]struct{}, len(object.ReferencingBuildIDs))
 		for _, buildID := range object.ReferencingBuildIDs {
@@ -239,7 +255,7 @@ func validateObjects(objects []ObjectRecord, records Records) error {
 				return fmt.Errorf("control object %q must reference build %q", object.LogicalKey, control.buildID)
 			}
 			delete(requiredControls, object.LogicalKey)
-		} else if object.Type != artifact.TypeMemfile && object.Type != artifact.TypeRootfs {
+		} else if !artifact.IsDataType(object.Type) {
 			return fmt.Errorf("unexpected control object %q", object.LogicalKey)
 		}
 	}
@@ -260,22 +276,7 @@ func objectKeyMatchesType(key, objectType string) bool {
 	if parent == "." || parent == ".." || strings.ContainsRune(parent, '/') {
 		return false
 	}
-	switch objectType {
-	case artifact.TypeMemfileHeader:
-		return filename == "memfile.header"
-	case artifact.TypeRootfsHeader:
-		return filename == "rootfs.ext4.header"
-	case artifact.TypeMemfile:
-		return filename == "memfile"
-	case artifact.TypeRootfs:
-		return filename == "rootfs.ext4"
-	case artifact.TypeSnapfile:
-		return filename == "snapfile"
-	case artifact.TypeMetadata:
-		return filename == "metadata.json"
-	default:
-		return false
-	}
+	return artifact.MatchesFilename(filename, objectType)
 }
 
 func validateLogicalKey(key string) error {
@@ -328,7 +329,7 @@ func verifyObjectContents(root string, objects []ObjectRecord) error {
 	return nil
 }
 
-func verifyObjectClosure(root string, records Records, objects []ObjectRecord) error {
+func verifyObjectClosure(root string, records Records, objects []ObjectRecord, layouts map[string]string) error {
 	byKey := make(map[string]ObjectRecord, len(objects))
 	for _, object := range objects {
 		byKey[object.LogicalKey] = object
@@ -342,57 +343,46 @@ func verifyObjectClosure(root string, records Records, objects []ObjectRecord) e
 	}
 
 	for _, build := range records.Builds {
-		controls := []struct {
-			key        string
-			objectType string
-		}{
-			{artifact.MemfileHeader(build.ID), artifact.TypeMemfileHeader},
-			{artifact.RootfsHeader(build.ID), artifact.TypeRootfsHeader},
-			{artifact.Snapfile(build.ID), artifact.TypeSnapfile},
-			{artifact.Metadata(build.ID), artifact.TypeMetadata},
+		for _, key := range []string{artifact.Snapfile(build.ID), artifact.Metadata(build.ID)} {
+			addReference(key, build.ID)
 		}
-		for _, control := range controls {
-			addReference(control.key, build.ID)
-		}
-
-		if err := verifyMetadataBuildID(root, byKey[artifact.Metadata(build.ID)], build.ID); err != nil {
+		if err := verifyMetadataLayout(root, byKey[artifact.Metadata(build.ID)], build.ID, layouts[build.ID]); err != nil {
 			return err
 		}
-		for _, control := range controls[:2] {
-			object := byKey[control.key]
+		for _, layer := range artifact.Layers(layouts[build.ID]) {
+			key := layer.HeaderKey(build.ID)
+			addReference(key, build.ID)
+			object := byKey[key]
 			filename, err := safeBundlePath(root, object.BundlePath)
 			if err != nil {
 				return err
 			}
 			raw, err := os.ReadFile(filename)
 			if err != nil {
-				return fmt.Errorf("read header %q: %w", control.key, err)
+				return fmt.Errorf("read header %q: %w", key, err)
 			}
 			header, err := artifactheader.Parse(raw)
 			if err != nil {
-				return fmt.Errorf("parse header %q: %w", control.key, err)
+				return fmt.Errorf("parse header %q: %w", key, err)
 			}
 			if err := artifactheader.Validate(header); err != nil {
-				return fmt.Errorf("validate header %q: %w", control.key, err)
+				return fmt.Errorf("validate header %q: %w", key, err)
 			}
 			if header.Metadata.BuildID != build.ID {
-				return fmt.Errorf("header %q belongs to build %q, want %q", control.key, header.Metadata.BuildID, build.ID)
+				return fmt.Errorf("header %q belongs to build %q, want %q", key, header.Metadata.BuildID, build.ID)
 			}
 			for _, mapping := range header.Mappings {
 				if mapping.BuildID == artifactheader.NilUUID {
 					continue
 				}
-				dataKey := artifact.Rootfs(mapping.BuildID)
-				if control.objectType == artifact.TypeMemfileHeader {
-					dataKey = artifact.Memfile(mapping.BuildID)
-				}
+				dataKey := layer.DataKey(mapping.BuildID)
 				data, ok := byKey[dataKey]
 				if !ok {
-					return fmt.Errorf("header %q references missing object %q", control.key, dataKey)
+					return fmt.Errorf("header %q references missing object %q", key, dataKey)
 				}
 				end := mapping.BuildStorageOffset + mapping.Length
 				if uint64(data.Size) < end {
-					return fmt.Errorf("object %q is %d bytes, header %q requires at least %d", dataKey, data.Size, control.key, end)
+					return fmt.Errorf("object %q is %d bytes, header %q requires at least %d", dataKey, data.Size, key, end)
 				}
 				addReference(dataKey, build.ID)
 			}
@@ -416,7 +406,7 @@ func verifyObjectClosure(root string, records Records, objects []ObjectRecord) e
 	return nil
 }
 
-func verifyMetadataBuildID(root string, object ObjectRecord, buildID string) error {
+func verifyMetadataLayout(root string, object ObjectRecord, buildID, expectedOS string) error {
 	filename, err := safeBundlePath(root, object.BundlePath)
 	if err != nil {
 		return err
@@ -425,16 +415,12 @@ func verifyMetadataBuildID(root string, object ObjectRecord, buildID string) err
 	if err != nil {
 		return fmt.Errorf("read metadata for build %q: %w", buildID, err)
 	}
-	var metadata struct {
-		Template struct {
-			BuildID string `json:"build_id"`
-		} `json:"template"`
+	actualOS, err := artifact.MetadataOS(raw, buildID)
+	if err != nil {
+		return err
 	}
-	if err := json.Unmarshal(raw, &metadata); err != nil {
-		return fmt.Errorf("decode metadata for build %q: %w", buildID, err)
-	}
-	if metadata.Template.BuildID != buildID {
-		return fmt.Errorf("metadata build id is %q, expected %q", metadata.Template.BuildID, buildID)
+	if actualOS != expectedOS {
+		return fmt.Errorf("metadata os_type %q disagrees with bundle layout %q for build %q; Android bundles exported by v0.1.x are incomplete: re-export with v0.2.0 or newer", actualOS, expectedOS, buildID)
 	}
 	return nil
 }

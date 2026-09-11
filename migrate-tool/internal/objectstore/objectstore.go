@@ -21,8 +21,8 @@ type Info struct {
 
 // SameObjectVersion 判断两次 Stat/Open 观察到的是否为对象存储里同一版本的
 // 同一对象——"版本"指 S3 对象版本控制意义上的存储版本,与工具或数据格式的
-// 跨版本兼容无关(格式层面由 Bundle manifest version、Header supportedVersion
-// 与 PostgreSQL schema preflight 分别把关,均只接受同版本)。
+// 跨版本兼容无关。Bundle v1/v2、Header v3 与 PostgreSQL schema preflight
+// 分别把关迁移格式及数据库能力,不负责转换模板运行时版本。
 //
 // 用途:导出复制一个大对象期间,源对象可能被并发覆盖。复制完成后再次
 // Stat,只有对象版本与开读时一致,这份字节才发布进 Bundle;否则整对象

@@ -93,7 +93,7 @@ func (e *Exporter) Export(ctx context.Context, options selection.Options, output
 		return nil, err
 	}
 
-	objects, retries, err := e.copyBuildObjects(ctx, stage, records.Builds)
+	objects, layouts, retries, err := e.copyBuildObjects(ctx, stage, records.Builds)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +125,13 @@ func (e *Exporter) Export(ctx context.Context, options selection.Options, output
 		},
 		Records: descriptors, Objects: objects,
 	}
+	for _, layout := range layouts {
+		if layout.OSType == artifact.OSAndroid {
+			manifest.FormatVersion = bundle.MultiDiskFormatVersion
+			manifest.BuildLayouts = layouts
+			break
+		}
+	}
 	if err := os.MkdirAll(filepath.Join(stage, "reports"), 0o755); err != nil {
 		return nil, fmt.Errorf("create reports directory: %w", err)
 	}
@@ -152,73 +159,81 @@ func (e *Exporter) Export(ctx context.Context, options selection.Options, output
 	return &Result{Path: output, Manifest: manifest}, nil
 }
 
-func (e *Exporter) copyBuildObjects(ctx context.Context, stage string, builds []bundle.BuildRecord) ([]bundle.ObjectRecord, int, error) {
+func (e *Exporter) copyBuildObjects(ctx context.Context, stage string, builds []bundle.BuildRecord) ([]bundle.ObjectRecord, []bundle.BuildLayout, int, error) {
 	copied := make(map[string]*copiedObject)
 	dataBounds := make(map[string]uint64)
 	dataRefs := make(map[string][]string)
+	dataTypes := make(map[string]string)
+	layouts := make([]bundle.BuildLayout, 0, len(builds))
 	retries := 0
 
 	for _, build := range builds {
-		// 这四个控制对象属于每个选中 Build 本身。两个 Header 再告诉我们
-		// 实际需要复制哪些历史 memfile/rootfs 数据层。
-		controls := []struct{ key, objectType string }{
-			{artifact.MemfileHeader(build.ID), artifact.TypeMemfileHeader},
-			{artifact.RootfsHeader(build.ID), artifact.TypeRootfsHeader},
-			{artifact.Snapfile(build.ID), artifact.TypeSnapfile},
-			{artifact.Metadata(build.ID), artifact.TypeMetadata},
+		meta, n, err := e.copyObject(ctx, stage, artifact.Metadata(build.ID), artifact.TypeMetadata, []string{build.ID})
+		retries += n
+		if err != nil {
+			return nil, nil, retries, err
 		}
-		for _, control := range controls {
-			object, objectRetries, err := e.copyObject(ctx, stage, control.key, control.objectType, []string{build.ID})
-			retries += objectRetries
-			if err != nil {
-				if errors.Is(err, objectstore.ErrNotFound) && (control.objectType == artifact.TypeMemfileHeader || control.objectType == artifact.TypeRootfsHeader) {
-					return nil, retries, fmt.Errorf("legacy_headerless_build %s: missing %s", build.ID, control.key)
-				}
-				return nil, retries, err
-			}
-			copied[control.key] = object
+		raw, err := os.ReadFile(meta.path)
+		if err != nil {
+			return nil, nil, retries, err
+		}
+		osType, err := artifact.MetadataOS(raw, build.ID)
+		if err != nil {
+			return nil, nil, retries, err
+		}
+		layouts = append(layouts, bundle.BuildLayout{BuildID: build.ID, OSType: osType, Disks: artifact.DiskNames(osType)})
+		copied[meta.record.LogicalKey] = meta
 
-			switch control.objectType {
-			case artifact.TypeMemfileHeader, artifact.TypeRootfsHeader:
-				raw, err := os.ReadFile(object.path)
-				if err != nil {
-					return nil, retries, fmt.Errorf("read copied header %q: %w", control.key, err)
-				}
-				h, err := artifactheader.Parse(raw)
-				if err != nil {
-					return nil, retries, fmt.Errorf("parse header %q: %w", control.key, err)
-				}
-				if err := artifactheader.Validate(h); err != nil {
-					return nil, retries, fmt.Errorf("validate header %q: %w", control.key, err)
-				}
-				if h.Metadata.BuildID != build.ID {
-					return nil, retries, fmt.Errorf("header %q build id is %q, expected %q", control.key, h.Metadata.BuildID, build.ID)
-				}
-				// Header 已在构建阶段扁平化。Mapping 直接引用最终数据对象，
-				// 所以闭包只展开一层，不需要递归追踪历史 Header。
-				for _, mapping := range h.Mappings {
-					if mapping.BuildID == artifactheader.NilUUID {
-						continue
+		snap, n, err := e.copyObject(ctx, stage, artifact.Snapfile(build.ID), artifact.TypeSnapfile, []string{build.ID})
+		retries += n
+		if err != nil {
+			return nil, nil, retries, err
+		}
+		copied[snap.record.LogicalKey] = snap
+
+		for _, layer := range artifact.Layers(osType) {
+			key := layer.HeaderKey(build.ID)
+			object, n, err := e.copyObject(ctx, stage, key, layer.HeaderType, []string{build.ID})
+			retries += n
+			if err != nil {
+				if errors.Is(err, objectstore.ErrNotFound) {
+					if osType == artifact.OSLinux {
+						return nil, nil, retries, fmt.Errorf("legacy_headerless_build %s: missing %s", build.ID, key)
 					}
-					if mapping.Length > math.MaxUint64-mapping.BuildStorageOffset {
-						return nil, retries, fmt.Errorf("header %q mapping source range overflows", control.key)
-					}
-					var dataKey string
-					if control.objectType == artifact.TypeMemfileHeader {
-						dataKey = artifact.Memfile(mapping.BuildID)
-					} else {
-						dataKey = artifact.Rootfs(mapping.BuildID)
-					}
-					end := mapping.BuildStorageOffset + mapping.Length
-					if end > dataBounds[dataKey] {
-						dataBounds[dataKey] = end
-					}
-					dataRefs[dataKey] = append(dataRefs[dataKey], build.ID)
+					return nil, nil, retries, fmt.Errorf("missing required header for %s build %s: %s (legacy_headerless_build or incomplete multi-disk build): %w", osType, build.ID, key, err)
 				}
-			case artifact.TypeMetadata:
-				if err := validateMetadata(object.path, build.ID); err != nil {
-					return nil, retries, err
+				return nil, nil, retries, err
+			}
+			copied[key] = object
+			raw, err := os.ReadFile(object.path)
+			if err != nil {
+				return nil, nil, retries, fmt.Errorf("read copied header %q: %w", key, err)
+			}
+			h, err := artifactheader.Parse(raw)
+			if err != nil {
+				return nil, nil, retries, fmt.Errorf("parse header %q: %w", key, err)
+			}
+			if err := artifactheader.Validate(h); err != nil {
+				return nil, nil, retries, fmt.Errorf("validate header %q: %w", key, err)
+			}
+			if h.Metadata.BuildID != build.ID {
+				return nil, nil, retries, fmt.Errorf("header %q build id is %q, expected %q", key, h.Metadata.BuildID, build.ID)
+			}
+			// Flattened mappings name final data Builds, always for this same layer.
+			for _, mapping := range h.Mappings {
+				if mapping.BuildID == artifactheader.NilUUID {
+					continue
 				}
+				if mapping.Length > math.MaxUint64-mapping.BuildStorageOffset {
+					return nil, nil, retries, fmt.Errorf("header %q mapping source range overflows", key)
+				}
+				dataKey := layer.DataKey(mapping.BuildID)
+				end := mapping.BuildStorageOffset + mapping.Length
+				if end > dataBounds[dataKey] {
+					dataBounds[dataKey] = end
+				}
+				dataRefs[dataKey] = append(dataRefs[dataKey], build.ID)
+				dataTypes[dataKey] = layer.DataType
 			}
 		}
 	}
@@ -229,27 +244,23 @@ func (e *Exporter) copyBuildObjects(ctx context.Context, stage string, builds []
 	}
 	slices.Sort(keys)
 	for _, key := range keys {
-		objectType := artifact.TypeRootfs
-		if strings.HasSuffix(key, "/memfile") {
-			objectType = artifact.TypeMemfile
-		}
-		object, objectRetries, err := e.copyObject(ctx, stage, key, objectType, uniqueSorted(dataRefs[key]))
-		retries += objectRetries
+		object, n, err := e.copyObject(ctx, stage, key, dataTypes[key], uniqueSorted(dataRefs[key]))
+		retries += n
 		if err != nil {
-			return nil, retries, err
+			return nil, nil, retries, err
 		}
 		if uint64(object.record.Size) < dataBounds[key] {
-			return nil, retries, fmt.Errorf("object %q is %d bytes, header mappings require at least %d", key, object.record.Size, dataBounds[key])
+			return nil, nil, retries, fmt.Errorf("object %q is %d bytes, header mappings require at least %d", key, object.record.Size, dataBounds[key])
 		}
 		copied[key] = object
 	}
-
 	result := make([]bundle.ObjectRecord, 0, len(copied))
 	for _, object := range copied {
 		result = append(result, object.record)
 	}
 	bundle.SortObjects(result)
-	return result, retries, nil
+	slices.SortFunc(layouts, func(a, b bundle.BuildLayout) int { return strings.Compare(a.BuildID, b.BuildID) })
+	return result, layouts, retries, nil
 }
 
 func (e *Exporter) copyObject(ctx context.Context, stage, key, objectType string, refs []string) (*copiedObject, int, error) {
@@ -350,25 +361,6 @@ func (e *Exporter) recheckSelection(ctx context.Context, selected *selection.Res
 		if status != model.StatusGroupReady {
 			return fmt.Errorf("selected build %q left ready status during export: %s", build.ID, status)
 		}
-	}
-	return nil
-}
-
-func validateMetadata(filename, buildID string) error {
-	raw, err := os.ReadFile(filename)
-	if err != nil {
-		return fmt.Errorf("read metadata for build %q: %w", buildID, err)
-	}
-	var metadata struct {
-		Template struct {
-			BuildID string `json:"build_id"`
-		} `json:"template"`
-	}
-	if err := json.Unmarshal(raw, &metadata); err != nil {
-		return fmt.Errorf("decode metadata for build %q: %w", buildID, err)
-	}
-	if metadata.Template.BuildID != buildID {
-		return fmt.Errorf("metadata build id is %q, expected %q", metadata.Template.BuildID, buildID)
 	}
 	return nil
 }

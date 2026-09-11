@@ -15,10 +15,10 @@ import (
 
 const MinimumPostgresSchema = int64(20260218120000)
 
-// 全部 SQL 语句以原样 .sql 文件维护在 internal/catalog/sql/ 下,Go 侧只做
-// 参数绑定与行扫描。列规格的唯一权威是 requiredPostgresColumns;
-// sql_spec_test.go 强制各 .sql 的列清单与规格表一致,schema 变更时同步修改
-// .sql 与规格表即可,任何漂移都会让单测显式失败。
+// SQL 语句集中维护在 internal/catalog/sql/ 下,通过 go:embed 引用。
+// requiredPostgresColumns 描述预检所需列,sql_spec_test.go 校验 SQL 列清单与
+// 规格表一致。schema 变更还可能需要同步实体、参数绑定、行扫描和迁移语义;
+// 列清单检查不能代替这些适配及集成测试。
 var (
 	//go:embed sql/preflight_server_version.sql
 	sqlPreflightServerVersion string
@@ -141,6 +141,10 @@ func NewPostgres(dsn string) (*Postgres, error) {
 func (p *Postgres) Kind() string { return "postgres" }
 
 func (p *Postgres) Snapshot(ctx context.Context) (*model.CatalogData, error) {
+	return p.SnapshotForImport(ctx, nil)
+}
+
+func (p *Postgres) SnapshotForImport(ctx context.Context, buildIDs []string) (*model.CatalogData, error) {
 	conn, err := pgx.Connect(ctx, p.dsn)
 	if err != nil {
 		return nil, fmt.Errorf("connect to PostgreSQL: %w", err)
@@ -157,7 +161,7 @@ func (p *Postgres) Snapshot(ctx context.Context) (*model.CatalogData, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := loadPostgres(ctx, tx, version)
+	data, err := loadPostgres(ctx, tx, version, buildIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +191,11 @@ func (p *Postgres) Commit(ctx context.Context, desired *model.CatalogData) error
 	if err != nil {
 		return err
 	}
-	current, err := loadPostgres(ctx, tx, version)
+	buildIDs := make([]string, 0, len(desired.Builds))
+	for _, build := range desired.Builds {
+		buildIDs = append(buildIDs, build.ID)
+	}
+	current, err := loadPostgres(ctx, tx, version, buildIDs...)
 	if err != nil {
 		return err
 	}
@@ -348,7 +356,7 @@ func validatePostgresCapabilities(capabilities postgresCapabilities) error {
 	return nil
 }
 
-func loadPostgres(ctx context.Context, query pgQuery, version string) (*model.CatalogData, error) {
+func loadPostgres(ctx context.Context, query pgQuery, version string, extraBuildIDs ...string) (*model.CatalogData, error) {
 	data := &model.CatalogData{SchemaVersion: version}
 
 	rows, err := query.Query(ctx, sqlSelectTeams)
@@ -414,7 +422,7 @@ func loadPostgres(ctx context.Context, query pgQuery, version string) (*model.Ca
 		return nil, fmt.Errorf("load aliases: %w", err)
 	}
 
-	rows, err = query.Query(ctx, sqlSelectBuilds)
+	rows, err = query.Query(ctx, sqlSelectBuilds, extraBuildIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load builds: %w", err)
 	}

@@ -36,6 +36,9 @@ func TestFixtureExportAndImport(t *testing.T) {
 	if result.Manifest.Counts.Builds != 2 || result.Manifest.Counts.Objects != 13 {
 		t.Fatalf("counts = %#v", result.Manifest.Counts)
 	}
+	if result.Manifest.FormatVersion != 1 || len(result.Manifest.BuildLayouts) != 0 {
+		t.Fatalf("Linux export changed legacy format: %#v", result.Manifest)
+	}
 	verified, err := bundle.Verify(bundlePath)
 	if err != nil {
 		t.Fatal(err)

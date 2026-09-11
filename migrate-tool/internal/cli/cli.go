@@ -19,7 +19,7 @@ import (
 	"gitcode.com/openeuler/KASandbox/migrate-tool/internal/selection"
 )
 
-const Version = "0.1.0-demo"
+const Version = "0.3.1"
 
 type CLI struct {
 	Stdout io.Writer
@@ -64,7 +64,7 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 func (c CLI) runList(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
-	catalogEndpoint := flags.String("catalog", os.Getenv("TM_SOURCE_CATALOG"), "source catalog path or file:// URI")
+	catalogEndpoint := flags.String("catalog", os.Getenv("TM_SOURCE_CATALOG"), "source catalog: postgresql:// URI, local JSON path, or file:// URI (list reads only the catalog)")
 	format := flags.String("format", "table", "table or json")
 	options := bindSelectionFlags(flags)
 	help, err := parseFlags(flags, args)
@@ -116,8 +116,8 @@ func (c CLI) runList(ctx context.Context, args []string) error {
 func (c CLI) runExport(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("export", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
-	catalogEndpoint := flags.String("catalog", os.Getenv("TM_SOURCE_CATALOG"), "source catalog path or file:// URI")
-	storeEndpoint := flags.String("store", os.Getenv("TM_SOURCE_STORE"), "source object store path or file:// URI")
+	catalogEndpoint := flags.String("catalog", os.Getenv("TM_SOURCE_CATALOG"), "source catalog: postgresql:// URI, local JSON path, or file:// URI")
+	storeEndpoint := flags.String("store", os.Getenv("TM_SOURCE_STORE"), "source object store: s3:// URI, local directory, or file:// URI")
 	output := flags.String("out", "", "output bundle directory")
 	options := bindSelectionFlags(flags)
 	help, err := parseFlags(flags, args)
@@ -201,8 +201,8 @@ func (c CLI) runVerify(args []string) error {
 func (c CLI) runImport(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("import", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
-	catalogEndpoint := flags.String("catalog", os.Getenv("TM_TARGET_CATALOG"), "target catalog path or file:// URI")
-	storeEndpoint := flags.String("store", os.Getenv("TM_TARGET_STORE"), "target object store path, S3 URI, or mooncake://NAMESPACE")
+	catalogEndpoint := flags.String("catalog", os.Getenv("TM_TARGET_CATALOG"), "target catalog: postgresql:// URI, local JSON path, or file:// URI")
+	storeEndpoint := flags.String("store", os.Getenv("TM_TARGET_STORE"), "target object store: mooncake://NAMESPACE, s3:// URI, local directory, or file:// URI")
 	targetTeam := flags.String("target-team", "", "target Team as id:<UUID> or slug:<SLUG>")
 	includeGlobal := flags.Bool("include-global-aliases", false, "publish global aliases")
 	policy := flags.String("conflict-policy", importer.ConflictFail, "fail or skip-identical")
@@ -221,6 +221,10 @@ func (c CLI) runImport(ctx context.Context, args []string) error {
 	if *targetTeam == "" {
 		return c.usageError("--target-team is required")
 	}
+	mappings, err := parseMappings(namespaceMappings)
+	if err != nil {
+		return err
+	}
 	verified, err := bundle.Verify(bundlePath)
 	if err != nil {
 		return err
@@ -234,12 +238,8 @@ func (c CLI) runImport(ctx context.Context, args []string) error {
 		return err
 	}
 	defer store.Close()
-	mappings, err := parseMappings(namespaceMappings)
-	if err != nil {
-		return err
-	}
-	result, err := (&importer.Importer{Catalog: target, Target: store}).Run(ctx, verified, importer.Options{TargetTeam: *targetTeam,
-		IncludeGlobalAliases: *includeGlobal, LiteralNamespaceMap: mappings, ConflictPolicy: *policy}, *apply)
+	options := importer.Options{TargetTeam: *targetTeam, IncludeGlobalAliases: *includeGlobal, LiteralNamespaceMap: mappings, ConflictPolicy: *policy}
+	result, err := (&importer.Importer{Catalog: target, Target: store}).Run(ctx, verified, options, *apply)
 	if err != nil {
 		return err
 	}

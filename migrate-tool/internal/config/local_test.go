@@ -1,8 +1,10 @@
 package config
 
 import (
+	"context"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gitcode.com/openeuler/KASandbox/migrate-tool/internal/objectstore"
@@ -164,5 +166,20 @@ func TestParseS3RejectsAmbiguousURI(t *testing.T) {
 		if _, err := parseS3(endpoint); err == nil {
 			t.Errorf("parseS3(%q) succeeded, want error", endpoint)
 		}
+	}
+}
+
+func TestOpenStoreRejectsMooncakeAsSource(t *testing.T) {
+	_, err := OpenStore(context.Background(), "mooncake://templates")
+	if err == nil || !strings.Contains(err.Error(), "only supported as the import target") {
+		t.Fatalf("OpenStore(mooncake://) error = %v, want import-target hint", err)
+	}
+	_, err = OpenStore(context.Background(), "gs://templates")
+	if err == nil || !strings.Contains(err.Error(), "unsupported object store endpoint") {
+		t.Fatalf("OpenStore(gs://) error = %v, want unsupported-endpoint error", err)
+	}
+	_, err = OpenCatalog("mooncake://templates")
+	if err == nil || !strings.Contains(err.Error(), "unsupported catalog endpoint") {
+		t.Fatalf("OpenCatalog(mooncake://) error = %v, want unsupported-endpoint error", err)
 	}
 }

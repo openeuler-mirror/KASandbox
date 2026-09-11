@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	Format        = "e2b-template-migration"
-	FormatVersion = 1
+	Format                 = "e2b-template-migration"
+	FormatVersion          = 1
+	MultiDiskFormatVersion = 2
 
 	NamespaceTeam    = "team-scoped"
 	NamespaceGlobal  = "global"
@@ -30,6 +31,14 @@ type Manifest struct {
 	// BundleDigest 覆盖 Manifest（本字段清空后）、全部 record 文件及对象清单，
 	// 使导入计划可以稳定绑定到一个 Bundle。
 	BundleDigest string `json:"bundle_digest"`
+	// Omitted for v1 to preserve the exact legacy manifest digest encoding.
+	BuildLayouts []BuildLayout `json:"build_layouts,omitempty"`
+}
+
+type BuildLayout struct {
+	BuildID string   `json:"build_id"`
+	OSType  string   `json:"os_type"`
+	Disks   []string `json:"disks"`
 }
 
 type Source struct {
@@ -69,7 +78,7 @@ type ObjectRecord struct {
 	Size                int64    `json:"size"`
 	SHA256              string   `json:"sha256"`
 	BundlePath          string   `json:"bundle_path"`
-	// v1 的对象全部必需；保留 Required 是现有 wire format 的兼容字段。
+	// v1/v2 的对象全部必需；保留 Required 是现有 wire format 的兼容字段。
 	Required       bool             `json:"required"`
 	SourceIdentity objectstore.Info `json:"source_identity"`
 }

@@ -26,6 +26,22 @@ func TestSubcommandHelpSucceedsWithoutRequiredArguments(t *testing.T) {
 	}
 }
 
+func TestRemovedRepairCommandIsRejectedBeforeIO(t *testing.T) {
+	for _, args := range [][]string{
+		{"repair", "--help"},
+		{"repair", "missing.bundle", "--target-team", "slug:runtime", "--apply"},
+	} {
+		var stdout, stderr bytes.Buffer
+		err := (CLI{Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), args)
+		if err == nil || err.Error() != `unknown command "repair"` {
+			t.Fatalf("Run(%v) error = %v", args, err)
+		}
+		if strings.Contains(stdout.String(), "repair") {
+			t.Fatalf("usage still advertises repair: %s", &stdout)
+		}
+	}
+}
+
 func TestInvalidFormatIsRejectedBeforeIO(t *testing.T) {
 	tests := [][]string{
 		{"list", "--format", "yaml"},

@@ -27,55 +27,145 @@ type mooncakeObjectMetadata struct {
 	ChunkSize int64 `json:"chunk_size"`
 }
 
-// mooncakeClient 只保留导入所需的 native API。Mooncake 的 Get、range reader、
-// NUMA buffer 等读取能力属于 E2B 运行时，不属于这个目标端迁移工具。
+// Get returns a view consumed before the next call; implementations must use
+// registered memory where the native transport requires it.
 type mooncakeClient interface {
 	Put(string, []byte) error
 	Exists(string) (bool, error)
+	Get(string, int64) ([]byte, error)
 	Close()
 }
 
 type mooncakeStore struct {
 	client    mooncakeClient
 	namespace string
+	reopen    func(context.Context) (mooncakeClient, error)
 }
 
-func newMooncakeStore(client mooncakeClient, namespace string) Store {
+func newMooncakeStore(client mooncakeClient, namespace string) *mooncakeStore {
 	return &mooncakeStore{client: client, namespace: namespace}
 }
 
 func (s *mooncakeStore) Close() {
-	s.client.Close()
+	if s.client != nil {
+		s.client.Close()
+		s.client = nil
+	}
 }
 
-func (s *mooncakeStore) Inspect(_ context.Context, object bundle.ObjectRecord) (Observation, error) {
+func (s *mooncakeStore) Inspect(ctx context.Context, object bundle.ObjectRecord) (Observation, error) {
+	if s.client == nil {
+		return Observation{}, fmt.Errorf("Mooncake client is closed")
+	}
 	exists, err := s.client.Exists(s.key(object.LogicalKey))
 	if err != nil {
 		return Observation{}, fmt.Errorf("inspect Mooncake object %q: %w", object.LogicalKey, err)
 	}
-	// 首版不读取 Mooncake 已有对象，也不伪造 VersionID。logical key 存在就由
-	// Importer 按冲突处理，因此 Identical 固定为 false。
-	return Observation{Exists: exists}, nil
+	if !exists {
+		return Observation{}, nil
+	}
+	digest, err := s.digest(ctx, object)
+	if err != nil {
+		return Observation{Exists: true, Problem: err.Error()}, nil
+	}
+	return Observation{Exists: true, Identical: digest == object.SHA256, Digest: digest}, nil
 }
 
 func (s *mooncakeStore) Publish(_ context.Context, object bundle.ObjectRecord, filename string) (Observation, error) {
-	// E2B 把 memfile/rootfs 当作可随机读取的大对象，其余 header、snapfile、metadata
+	// E2B 把内存及各块磁盘当作可随机读取的大对象，其余 header、snapfile、metadata
 	// 都是单 key Blob。Bundle.Verify 已校验 type 与 logical key，这里不再匹配文件名。
-	switch object.Type {
-	case artifact.TypeMemfile, artifact.TypeRootfs:
+	if artifact.IsDataType(object.Type) {
 		return s.publishSeekable(object, filename)
-	default:
-		return s.publishBlob(object, filename)
 	}
+	return s.publishBlob(object, filename)
 }
 
-func (s *mooncakeStore) Recheck(_ context.Context, object bundle.ObjectRecord, _ Observation) error {
-	exists, err := s.client.Exists(s.key(object.LogicalKey))
+func (s *mooncakeStore) Recheck(ctx context.Context, object bundle.ObjectRecord, _ Observation) error {
+	digest, err := s.digest(ctx, object)
 	if err != nil {
-		return fmt.Errorf("recheck Mooncake object %q before catalog commit: %w", object.LogicalKey, err)
+		return err
+	}
+	if digest != object.SHA256 {
+		return fmt.Errorf("Mooncake object %q SHA-256 mismatch: got %s, want %s", object.LogicalKey, digest, object.SHA256)
+	}
+	return nil
+}
+
+func (s *mooncakeStore) read(ctx context.Context, key string, limit int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.client == nil {
+		return nil, fmt.Errorf("Mooncake client is closed")
+	}
+	exists, err := s.client.Exists(s.key(key))
+	if err != nil {
+		return nil, fmt.Errorf("query Mooncake key %q: %w", key, err)
 	}
 	if !exists {
-		return fmt.Errorf("Mooncake object %q disappeared before catalog commit", object.LogicalKey)
+		return nil, fmt.Errorf("Mooncake key %q is missing: %w", key, os.ErrNotExist)
+	}
+	data, err := s.client.Get(s.key(key), limit)
+	if err != nil {
+		return nil, fmt.Errorf("read Mooncake key %q: %w", key, err)
+	}
+	return data, nil
+}
+
+func (s *mooncakeStore) digest(ctx context.Context, object bundle.ObjectRecord) (string, error) {
+	hash := sha256.New()
+	if artifact.IsDataType(object.Type) {
+		data, err := s.read(ctx, object.LogicalKey, 4096)
+		if err != nil {
+			return "", err
+		}
+		var metadata mooncakeObjectMetadata
+		if err := json.Unmarshal(data, &metadata); err != nil {
+			return "", fmt.Errorf("decode Mooncake metadata %q: %w", object.LogicalKey, err)
+		}
+		if metadata.Size != object.Size || metadata.ChunkSize != mooncakeChunkSize {
+			return "", fmt.Errorf("Mooncake metadata %q does not match Bundle size/chunk layout", object.LogicalKey)
+		}
+		for offset := int64(0); offset < object.Size; offset += mooncakeChunkSize {
+			want := min(mooncakeChunkSize, object.Size-offset)
+			key := fmt.Sprintf("%s#c#%d", object.LogicalKey, offset)
+			data, err := s.read(ctx, key, want)
+			if err != nil {
+				return "", err
+			}
+			if int64(len(data)) != want {
+				return "", fmt.Errorf("Mooncake chunk %q has %d bytes, want %d", key, len(data), want)
+			}
+			_, _ = hash.Write(data)
+		}
+	} else {
+		data, err := s.read(ctx, object.LogicalKey, object.Size)
+		if err != nil {
+			return "", err
+		}
+		if int64(len(data)) != object.Size {
+			return "", fmt.Errorf("Mooncake blob %q has %d bytes, want %d", object.LogicalKey, len(data), object.Size)
+		}
+		_, _ = hash.Write(data)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func (s *mooncakeStore) VerifyAfterClose(ctx context.Context, objects []bundle.ObjectRecord) error {
+	s.Close()
+	if s.reopen == nil {
+		return fmt.Errorf("Mooncake verification requires a fresh client factory")
+	}
+	client, err := s.reopen(ctx)
+	if err != nil {
+		return fmt.Errorf("open independent Mooncake reader: %w", err)
+	}
+	reader := newMooncakeStore(client, s.namespace)
+	defer reader.Close()
+	for _, object := range objects {
+		if err := reader.Recheck(ctx, object, Observation{}); err != nil {
+			return fmt.Errorf("verify after closing Mooncake writer: %w", err)
+		}
 	}
 	return nil
 }

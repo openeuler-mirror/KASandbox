@@ -1,6 +1,6 @@
-// Package header 只读解析 E2B/KASandbox 的 memfile/rootfs Header(v3)。
+// Package header 只读解析 E2B/KASandbox 的内存及各块磁盘 Header(v3)。
 //
-// 迁移工具必须解析 Header,不能把一个 Build 当作"5 个不透明文件"整体搬运:
+// 迁移工具必须解析内存与各磁盘 Header,不能只搬运当前 Build 目录:
 // KASandbox 的 Build 是差量存储,diff Build 的 Header 里,mapping 会把逻辑
 // 区间指向其他 Build(base 链)的数据对象——运行时构建 diff 时即如此写入
 // (packages/shared/pkg/storage/header/metadata.go 的 ToDiffHeader)。这条

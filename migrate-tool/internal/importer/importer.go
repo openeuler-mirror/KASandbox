@@ -92,7 +92,17 @@ func (i *Importer) Run(ctx context.Context, verified *bundle.Verified, options O
 	if options.ConflictPolicy != ConflictFail && options.ConflictPolicy != ConflictSkipIdentical {
 		return nil, fmt.Errorf("conflict policy must be fail or skip-identical")
 	}
-	current, err := i.Catalog.Snapshot(ctx)
+	var current *model.CatalogData
+	var err error
+	if source, ok := i.Catalog.(catalog.ImportSnapshot); ok {
+		ids := make([]string, 0, len(verified.Records.Builds))
+		for _, build := range verified.Records.Builds {
+			ids = append(ids, build.ID)
+		}
+		current, err = source.SnapshotForImport(ctx, ids)
+	} else {
+		current, err = i.Catalog.Snapshot(ctx)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read target catalog: %w", err)
 	}
@@ -119,9 +129,19 @@ func (i *Importer) Run(ctx context.Context, verified *bundle.Verified, options O
 	}
 	// 对象写入和数据库事务无法组成跨存储原子提交。至少在提交 Catalog 前
 	// 再确认本次新建和计划复用的对象仍是刚刚校验过的版本。
-	for _, object := range observed {
-		if err := i.Target.Recheck(ctx, object.record, object.observation); err != nil {
+	if verifier, ok := i.Target.(targetstore.ClosedWriterVerifier); ok {
+		objects := make([]bundle.ObjectRecord, 0, len(observed))
+		for _, object := range observed {
+			objects = append(objects, object.record)
+		}
+		if err := verifier.VerifyAfterClose(ctx, objects); err != nil {
 			return nil, err
+		}
+	} else {
+		for _, object := range observed {
+			if err := i.Target.Recheck(ctx, object.record, object.observation); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if err := i.Catalog.Commit(ctx, prepared.target); err != nil {
@@ -301,6 +321,9 @@ func (i *Importer) prepare(ctx context.Context, verified *bundle.Verified, targe
 				objectReuse = append(objectReuse, observedObject{record: object, observation: observed})
 			} else {
 				reason := "target object already exists"
+				if observed.Problem != "" {
+					reason += ": " + observed.Problem
+				}
 				if observed.Digest != "" {
 					reason += " with digest " + observed.Digest
 				}

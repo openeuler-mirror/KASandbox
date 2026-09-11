@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -223,4 +224,59 @@ func (c *fakeMooncakeClient) Exists(key string) (bool, error) {
 
 func (c *fakeMooncakeClient) Close() {
 	c.closed = true
+}
+
+func (c *fakeMooncakeClient) Get(key string, limit int64) ([]byte, error) {
+	data, ok := c.objects[key]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("read size limit")
+	}
+	return bytes.Clone(data), nil
+}
+func TestMooncakeRecheckRejectsMissingPhysicalChunk(t *testing.T) {
+	client := newFakeMooncakeClient()
+	target := newMooncakeStore(client, "templates-test")
+	content := []byte("memory contents")
+	record := bundle.ObjectRecord{LogicalKey: "build/memfile", Type: artifact.TypeMemfile, Size: int64(len(content)), SHA256: testDigest(content)}
+	client.objects["templates-test/build/memfile"] = []byte(fmt.Sprintf(`{"size":%d,"chunk_size":4194304}`, len(content)))
+	if err := target.Recheck(context.Background(), record, Observation{}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Recheck with metadata but missing chunk = %v", err)
+	}
+	client.objects["templates-test/build/memfile#c#0"] = content
+	if err := target.Recheck(context.Background(), record, Observation{}); err != nil {
+		t.Fatal(err)
+	}
+	client.objects["templates-test/build/memfile#c#0"][0] ^= 0xff
+	if err := target.Recheck(context.Background(), record, Observation{}); err == nil {
+		t.Fatal("corrupt chunk passed")
+	}
+}
+
+func TestMooncakeVerifyClosesWriterBeforeIndependentRead(t *testing.T) {
+	for _, lost := range []bool{false, true} {
+		t.Run(fmt.Sprint(lost), func(t *testing.T) {
+			client := newFakeMooncakeClient()
+			content := []byte("blob")
+			client.objects["ns/build/metadata.json"] = content
+			target := newMooncakeStore(client, "ns")
+			target.reopen = func(context.Context) (mooncakeClient, error) {
+				if !client.closed {
+					t.Fatal("reader opened before writer closed")
+				}
+				reader := newFakeMooncakeClient()
+				if !lost {
+					reader.objects["ns/build/metadata.json"] = content
+				}
+				return reader, nil
+			}
+			err := target.VerifyAfterClose(context.Background(), []bundle.ObjectRecord{{LogicalKey: "build/metadata.json", Type: artifact.TypeMetadata, Size: int64(len(content)), SHA256: testDigest(content)}})
+			if (err != nil) != lost {
+				t.Fatalf("lost=%t verification error=%v", lost, err)
+			}
+			target.Close()
+		})
+	}
 }

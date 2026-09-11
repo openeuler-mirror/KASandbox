@@ -178,7 +178,7 @@ func TestValidateObjectsRejectsInvalidV1Metadata(t *testing.T) {
 		{LogicalKey: "build/memfile", Type: artifact.TypeRootfs, Size: 1, SHA256: digest, BundlePath: path, Required: true},
 	}
 	for _, object := range tests {
-		if err := validateObjects([]ObjectRecord{object}, Records{}); err == nil {
+		if err := validateObjects([]ObjectRecord{object}, Records{}, nil); err == nil {
 			t.Fatalf("validateObjects(%+v) succeeded, want error", object)
 		}
 	}

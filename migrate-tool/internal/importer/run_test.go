@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,67 @@ func (f *fakeStore) Recheck(_ context.Context, object bundle.ObjectRecord, _ tar
 }
 
 func (f *fakeStore) Close() {}
+
+type closedWriterStore struct {
+	*fakeStore
+	verifyErr error
+	verified  []bundle.ObjectRecord
+}
+
+func (s *closedWriterStore) VerifyAfterClose(_ context.Context, objects []bundle.ObjectRecord) error {
+	s.log.add("verify-after-close")
+	s.verified = objects
+	return s.verifyErr
+}
+
+func TestRunIndependentVerificationGatesCatalogCommit(t *testing.T) {
+	readErr := errors.New("object missing after closing writer")
+	for _, tc := range []struct {
+		name      string
+		apply     bool
+		verifyErr error
+	}{
+		{name: "dry-run"},
+		{name: "verified", apply: true},
+		{name: "missing-after-close", apply: true, verifyErr: readErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			verified := testVerified(t)
+			reused := verified.Manifest.Objects[0]
+			importer, catalog, store, log := newImporter(testTargetCatalog(), map[string]targetstore.Observation{
+				reused.LogicalKey: {Exists: true, Identical: true, Digest: reused.SHA256},
+			})
+			reader := &closedWriterStore{fakeStore: store, verifyErr: tc.verifyErr}
+			importer.Target = reader
+			options := testOptions()
+			options.ConflictPolicy = ConflictSkipIdentical
+			result, err := importer.Run(context.Background(), verified, options, tc.apply)
+			if !errors.Is(err, tc.verifyErr) {
+				t.Fatalf("Run error = %v, want %v", err, tc.verifyErr)
+			}
+			shouldCommit := tc.apply && tc.verifyErr == nil
+			if (catalog.committed != nil) != shouldCommit || (result != nil && result.Applied) != shouldCommit {
+				t.Fatalf("commit/applied did not follow verification: result=%+v committed=%t", result, catalog.committed != nil)
+			}
+			if !tc.apply {
+				if len(log.entries) != 0 || len(reader.verified) != 0 {
+					t.Fatalf("dry-run published or verified: %v", log.entries)
+				}
+				return
+			}
+			if !reflect.DeepEqual(reader.verified, verified.Manifest.Objects) {
+				t.Fatalf("verification must include reused and new objects: %+v", reader.verified)
+			}
+			want := []string{"publish:build-1/rootfs.ext4", "verify-after-close"}
+			if shouldCommit {
+				want = append(want, "commit")
+			}
+			if !reflect.DeepEqual(log.entries, want) {
+				t.Fatalf("call order = %v, want %v", log.entries, want)
+			}
+		})
+	}
+}
 
 func testVerified(t *testing.T) *bundle.Verified {
 	t.Helper()

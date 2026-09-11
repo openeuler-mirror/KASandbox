@@ -1,27 +1,28 @@
 # template-migrate 使用手册
 
-工具版本: `0.1.0-demo`
+工具版本: `0.3.1`
 
 本手册讲解 `template-migrate` 的完整用法:构建、端点写法、命令参考、导入语义、
-Mooncake 配置与常见错误。项目简介与快速开始见 [README.md](README.md)。
-
----
+Mooncake 配置与常见错误。项目简介与快速开始见 [README.md](README.md)，
+机制与数据流见 [设计文档](design.md)，本地 JSON 字段见 [Catalog 格式](docs/catalog.md)。
 
 ## 一、工具简介
 
 `template-migrate` 把 E2B Template 的 ready Build 从一个环境迁移到另一个环境:
 Template ID 和 Build UUID 保持不变,Team/Cluster 所有权重新绑定到目标 Team,
-历史 Build Node 清空。工具**仅支持 Linux**(与运行时一致)。
+历史 Build Node 清空。工具**仅支持 Linux**；可迁移 Linux 和 Android 模板。
 
-生产迁移路径只有一条:
+支持的端点形态(写法见第三节,源端/目标端可任意组合):
 
-| | 源端 | 目标端 |
+| | Catalog | 对象存储 |
 | --- | --- | --- |
-| Catalog | PostgreSQL 15+ | PostgreSQL 15+ |
-| 对象存储 | S3/MinIO | **Mooncake** |
+| 源端 | PostgreSQL 15+ / 本地 JSON 文件 | S3/MinIO / 本地目录 |
+| 目标端 | PostgreSQL 15+ / 本地 JSON 文件 | Mooncake / S3/MinIO / 本地目录 |
 
-本地 JSON Catalog 与本地目录对象存储端点(第三节)同样可用,但定位是
-**单元测试与本地调试设施**,不是生产路径;Mooncake 只能作导入目标,不支持导出。
+KASandbox 生产环境的典型路径是 PostgreSQL + S3/MinIO(源)→ PostgreSQL +
+Mooncake(目标);本地 JSON Catalog 与本地目录对象存储是同等支持的正式端点,
+适用于无 PostgreSQL/对象存储服务的环境、离线交接与本地验证。Mooncake 只能作
+导入目标,不支持导出。
 
 迁移范围:
 
@@ -30,34 +31,87 @@ Template ID 和 Build UUID 保持不变,Team/Cluster 所有权重新绑定到目
 - ❌ Runtime Snapshot、非 ready Build、缺失 Header 的 legacy Build
   (导出时报 `legacy_headerless_build`)、Mooncake 源端导出
 
-Bundle 是一个**目录**,不是 tar/zip 或单个镜像文件。
+Bundle 是一个**目录**,不是 tar/zip 或单个镜像文件。跨机器交接时可打包传输，
+到目标机解包后，对 Bundle 目录执行 `verify`，再导入。
 
-## 二、二进制与构建
+### Android 三盘模板
 
-发布制品只有一个:`bin/template-migrate`,以 `-tags mooncake` 构建,同时支持
-PostgreSQL、S3/MinIO、File 与 `mooncake://` 导入目标。Mooncake 客户端是 CGO
-绑定,必须在已安装 Mooncake 头文件与动态库的 Linux/ARM64 主机上原生构建:
+命令参数与 Linux 模板相同，无需添加 Android 开关。工具读取每个 Build 的
+`metadata.json` 中 `template.os_type`：缺省或 `linux` 使用单 rootfs；`android`
+使用 rootfs.ext4、persistent.img、sdcard.img 三块盘。未知系统明确拒绝。
+三块盘的 `.header` 必须齐全，数据文件按 Header 的映射从当前或历史 Build
+目录读取；全零区间无需数据对象，完全继承历史层的盘也无需当前 Build 数据文件。
+构建机上某份基础 `persistent.img` 的路径和哈希相同，不能替代这些模板对象。
+
+源对象目录示例（各数据文件是否存在由 Header 引用决定）：
+
+```text
+<BUILD_ID>/metadata.json
+<BUILD_ID>/snapfile
+<BUILD_ID>/memfile.header
+<BUILD_ID>/rootfs.ext4.header
+<BUILD_ID>/persistent.img.header
+<BUILD_ID>/sdcard.img.header
+<REFERENCED_BUILD_ID>/memfile
+<REFERENCED_BUILD_ID>/rootfs.ext4
+<REFERENCED_BUILD_ID>/persistent.img
+<REFERENCED_BUILD_ID>/sdcard.img
+```
+
+纯 Linux 导出仍是 Bundle v1；包含 Android（也可混合 Linux）的导出为 v2。
+v2 manifest 中 `build_layouts` 为每个选中 Build 声明 `build_id`、`os_type` 和
+有序 `disks`；`inspect` 检查声明，`verify` 再与原始元数据及实际对象依赖核对。
+对象字节（包括 vmm_type、android_version 等元数据）保持不变。
+
+**Android 源端至少升级到 v0.2.0，Mooncake 目标端使用 v0.3.1。** 新工具会拒绝
+v0.1.x 导出的不完整 Android 包；旧工具不支持 v2。新工具仍支持完整的旧 Linux 包。
+目标运行时还需支持源模板的 Android/VMM、CPU 和内核组合；迁移工具不转换镜像或快照。
+
+已有完整目标可用 `--conflict-policy skip-identical`，Mooncake 会读取所有分片并核对
+SHA-256。目标已有损坏对象或冲突记录时会报错，需要由环境维护者核对处理；
+工具不自动清理、覆盖或重导已有模板。
+
+## 二、从源码构建
+
+模块要求 Go 1.25.4+。以下命令在源码的 `migrate-tool/` 目录运行。
+`build.sh` 一次输出一个 `bin/template-migrate`，以 `-tags mooncake` 构建，
+同时支持全部正式端点。Mooncake 客户端是 CGO 绑定，必须在具备匹配头文件与
+动态库的 Linux/ARM64 主机上原生构建：
 
 ```bash
 ./build.sh
-BIN="$PWD/bin/template-migrate"   # 本手册后续示例统一用 $BIN 指向该制品
+BIN="$PWD/bin/template-migrate"   # 本手册后续示例用 $BIN 指向构建结果
+"$BIN" version
 ```
+
+`build.sh` 只显式链接 libmooncake_store.so 与 libmooncake_common.so(默认
+目录 /usr/lib64,可用 `MOONCAKE_LIB_DIR` 覆盖),其余传递依赖由动态链接器
+自行解析;头文件只需要 store_c.h(默认目录 /usr/include/mooncake)。如果安装的
+软件包未提供该头文件，可指向与动态库版本匹配的 Mooncake 源码树：
+
+```bash
+MOONCAKE_INCLUDE_DIR=/path/to/Mooncake/mooncake-store/include ./build.sh
+```
+
+Mooncake 构建使用动态链接，运行机器也需具备上述库及其传递依赖；可用
+`ldd "$BIN"` 检查是否有缺失库。
 
 `migrate-tool` 是独立 Go 模块,**不在仓库根 `go.work` 的 `use` 列表里**(与
 `cri-multiplex` 相同)。仓库内脚本都已 `export GOWORK=off`;直接敲 `go` 命令时
 必须自己带上,否则报 `directory prefix . does not contain modules listed in
 go.work`。
 
-开发自测可在任意 Linux(含 WSL)上不带 `mooncake` tag 构建与测试,此时
-Mooncake 支持编译为 stub,单元测试不依赖任何外部服务:
+只使用 PostgreSQL、S3/MinIO 与本地文件端点时，可在 Linux(含 WSL)上不带
+`mooncake` tag 构建，直接用于正式迁移。单元测试不依赖外部服务：
 
 ```bash
 GOWORK=off go build -buildvcs=false -trimpath -o bin/template-migrate ./cmd/template-migrate
+BIN="$PWD/bin/template-migrate"
 ./run-ut.sh
 ```
 
-不带 tag 的开发构建收到 `mooncake://` 时会明确报错 `Mooncake support is not
-included in this binary`;生产环境一律使用 `./build.sh` 的发布制品。
+不带 tag 的构建收到 `mooncake://` 时会明确报错 `Mooncake support is not
+included in this binary`；导入目标为 Mooncake 时，使用 `./build.sh` 构建。
 
 ## 三、端点写法
 
@@ -65,12 +119,30 @@ included in this binary`;生产环境一律使用 `./build.sh` 的发布制品�
 
 ```text
 postgresql://USER@DB_HOST:5432/DB_NAME?sslmode=require
-/path/to/catalog.json                # 测试/调试用
-file:///path/to/catalog.json         # 同上
+/path/to/catalog.json                # 本地 JSON Catalog
+file:///path/to/catalog.json         # 同上,URI 写法
 ```
 
-生产迁移的 Catalog 端点是 PostgreSQL;本地 JSON 文件形式供单元测试与本地
-调试使用。
+PostgreSQL 端点对接 KASandbox 部署库;本地 JSON 文件是单文件 Catalog,与
+PostgreSQL 遵循同一套数据模型和校验,既可作导出源也可作导入目标(提交为
+整文件原子替换)。作导入目标时文件必须已存在且包含目标 Team,最小可用
+结构如下(`schema_version` 记录来源；File 适配器不据此判断运行时兼容性):
+
+```json
+{
+  "schema_version": "20260218120000",
+  "teams": [
+    { "id": "11111111-1111-1111-1111-111111111111",
+      "slug": "target-team", "name": "Target Team" }
+  ],
+  "templates": [],
+  "aliases": [],
+  "builds": [],
+  "assignments": []
+}
+```
+
+完整字段、校验规则及源端示例见 [本地 Catalog 格式](docs/catalog.md)。
 
 PostgreSQL 密码**不要写进 URI**(会进入 shell history):用 `~/.pgpass`
 (`PGPASSFILE`)、`PGSERVICE` 或 `PGPASSWORD` 环境变量提供。`sslmode` 按目标库
@@ -84,11 +156,13 @@ migration baseline `20260218120000`、既定表/列/约束/触发器全部存在
 ### 对象存储端点
 
 ```text
-s3://BUCKET/PREFIX?region=REGION     # 源端
+s3://BUCKET/PREFIX?region=REGION     # 源端/目标端
 mooncake://NAMESPACE                 # 目标端,仅 import --store 可用
-/path/to/objects                     # 测试/调试用
-file:///path/to/objects              # 同上
+/path/to/objects                     # 本地目录,源端/目标端
+file:///path/to/objects              # 同上,URI 写法
 ```
+
+本地目录存储按对象 key 组织子目录,作导入目标时目录与子目录会按需自动创建。
 
 S3 URI 只接受 `region`、`endpoint`、`path_style` 三个查询参数,不接受凭证。
 MinIO 等 S3 兼容服务需要 endpoint 和 path-style,两种写法等价:
@@ -107,8 +181,15 @@ Region 的优先级:URI `region` 参数 → `AWS_REGION` → `AWS_DEFAULT_REGION
 `us-east-1`。AWS/MinIO 凭证走标准 AWS SDK 凭证链(`AWS_ACCESS_KEY_ID`、
 `AWS_SECRET_ACCESS_KEY` 环境变量或 `~/.aws/credentials`)。
 
-`mooncake://` 中只写 namespace,不写主机端口。连接参数来自与 E2B Job 一致的
-`MOONCAKE_*` 环境变量(见第八节)。
+`mooncake://` 中的 NAMESPACE 是对象在 Mooncake 里的 **key 前缀**:工具把每个
+对象写成 `NAMESPACE/<BUILD_ID>/memfile` 这样的 key。它必须与目标 KASandbox
+运行时服务(orchestrator 等)配置的 `TEMPLATE_BUCKET_NAME` **取值相同**——运行时
+使用 Mooncake 存储时并没有真正的桶,这个变量的值就是它读模板对象时用的 key
+前缀,两边不一致运行时就找不到导入的模板。查法:在目标环境的服务进程环境里
+`env | grep TEMPLATE_BUCKET_NAME`,或查看服务的 Job / systemd / .env 配置。
+
+namespace 只写名字,不写主机端口;连接参数来自与 E2B Job 一致的 `MOONCAKE_*`
+环境变量(见第八节)。
 
 ### 环境变量默认值
 
@@ -166,6 +247,49 @@ BUNDLE="$PWD/run/export-$(date +%Y%m%d-%H%M%S).bundle"
 ```
 
 dry-run 输出中的 `"applied": false` 表示预演正常完成,**不是失败**。
+
+### 本地文件到本地文件
+
+源端已有 `src/catalog.json` 与完整的 `src/objects/`；目标 `dst/catalog.json`
+须先包含目标 Team，最小格式见第三节。对象目录由导入按需创建。
+
+```bash
+"$BIN" export --catalog ./src/catalog.json --store ./src/objects \
+  --all --all-tags --out ./transfer.bundle
+"$BIN" verify ./transfer.bundle
+"$BIN" import ./transfer.bundle --catalog ./dst/catalog.json \
+  --store ./dst/objects --target-team slug:target-team
+# 确认计划无冲突后执行
+"$BIN" import ./transfer.bundle --catalog ./dst/catalog.json \
+  --store ./dst/objects --target-team slug:target-team --apply
+```
+
+导入后，目标 JSON Catalog 原子替换为包含新记录的完整文件；对象保持相同逻辑
+路径写入 `dst/objects/`。增量 Build 引用的历史数据也必须在源目录中，不能只复制
+当前 Build 的一个目录；目录布局见 [Catalog 格式](docs/catalog.md)。
+
+### 本地存储的 KASandbox 到 Mooncake
+
+源端使用 PostgreSQL 和本地模板目录时，导出的 `--store` 填源服务器上直接包含
+`<BUILD_ID>/memfile.header` 等路径的对象根目录。导入的 `--store` 再指定
+Mooncake namespace。PostgreSQL 凭证通过 `~/.pgpass` 等方式提供，不写进连接串。
+
+```bash
+# 源服务器：$BIN 可使用普通构建
+"$BIN" export \
+  --catalog 'postgresql://USER@SRC_HOST:5432/DB_NAME' \
+  --store /path/to/source/templates \
+  --template-id TEMPLATE_ID --out ./transfer.bundle
+"$BIN" verify ./transfer.bundle
+
+# 将整个 Bundle 目录传到目标服务器；目标 $BIN 必须含 Mooncake 支持
+# 先按第八节配置 MOONCAKE_*，namespace 填目标运行时 TEMPLATE_BUCKET_NAME 的值
+"$BIN" verify ./transfer.bundle
+"$BIN" import ./transfer.bundle \
+  --catalog 'postgresql://USER@DST_HOST:5432/DB_NAME' \
+  --store 'mooncake://TARGET_NAMESPACE' --target-team slug:TARGET_TEAM
+# 确认计划无冲突后，重跑同一条 import 命令并追加 --apply
+```
 
 ## 五、命令参考
 
@@ -256,9 +380,12 @@ import BUNDLE_DIR [--catalog ENDPOINT] [--store ENDPOINT]
 | `--apply` | 关闭 | 不加时只做 dry-run |
 | `--format` | `table` | `table` 或 `json` |
 
-导入总是先完整 `verify` Bundle,再生成计划;有任何冲突时不执行写入,退出码
-`2`。apply 时先发布对象并逐个复核(File/S3 复核对象版本身份,Mooncake 只复核
-完成 key 仍存在),最后才提交 Catalog 事务。
+导入总是先完整 `verify` Bundle,再生成计划;计划阶段发现冲突时不执行写入,退出码
+`2`。apply 时先发布对象，再复核：File/S3 复核对象版本身份；Mooncake 先关闭
+写入客户端，再新建读取客户端，全量读取 Blob 和每个分片并核对 SHA-256。
+全部通过后才提交 Catalog。缺失分片、短读、摘要不一致都不会报告导入成功。
+apply 中途出错返回退出码 `1`；已写入的对象不会自动回滚，可能留下未被 Catalog
+引用的对象。处理原因后重跑，完整一致的对象可用 `skip-identical` 复用。
 
 ### version — 显示版本
 
@@ -302,10 +429,15 @@ Alias 名的写法:Team/literal Alias 用 `NAMESPACE/ALIAS`,全局 Alias 直接�
 
 ### 记录转换
 
-- Template ID、Build UUID、时间戳等跨环境属性保持不变;
-- Template/Build 的 Team 与 Cluster 绑定到 `--target-team` 指定的 Team;
+- Template ID、Build UUID、资源规格及版本信息保留源值；记录时间保留，
+  PostgreSQL 以微秒精度存储；
+- Template/Build 的 Team 绑定到 `--target-team` 指定的 Team，Template 的
+  Cluster 取目标 Team 的 Cluster；
 - 历史 `cluster_node_id`(Build Node)清空;源端 `created_by` 不复制;
-- Alias 和 Assignment 在目标端生成新 UUID。
+- 新建 Build 的 `legacy_template_id` 取本包关联该 Build 的最小 Template ID，
+  真实关系以 Assignment 为准；
+- 新建 Assignment 的 `source` 固定为 `app`；
+- 新建 Alias 和 Assignment 时生成新 UUID，复用时保留目标已有 ID。
 
 ### Alias Namespace 处理
 
@@ -318,47 +450,64 @@ Alias 名的写法:Team/literal Alias 用 `NAMESPACE/ALIAS`,全局 Alias 直接�
 ### 冲突策略
 
 - `fail`(默认):目标端存在同 ID Template/Build、同名 Alias、重复 Assignment
-  或同 key 对象时全部记为冲突,退出码 `2`,不写入任何数据;
-- `skip-identical`:仅当目标端已有记录/对象**在 Target Team 与 Namespace 转换
-  之后逐字段(对象为逐字节 SHA-256)完全一致**时才复用;任何差异仍是冲突。
+  或同 key 对象时在计划阶段记为冲突，退出码 `2`，不进入写入阶段；
+- `skip-identical`：按上述字段与 Namespace 转换后的结果比较记录，对象核对
+  完整内容的大小与 SHA-256。记录比较会折叠时间等后端表示差异，Build 的兼容
+  `legacy_template_id` 不参与比较；详细规则见 [设计文档](design.md) 第 7.1 节。
+  复用已有内容不会新增记录或对象，但 File Catalog 仍会整文件替换。
 
-注意:向**源环境**回导时,即使数据未变,Build 也会因为导入清空了
-`cluster_node_id` 而与源记录不同,`skip-identical` 仍报告冲突——这是记录的
-迁移语义,不是错误。Mooncake 的已有完成 key 一律按冲突处理(见下节)。
+向**源环境**回导时，即使对象未变，记录也可能因上述转换而不同。例如源 Build
+的 `cluster_node_id` 非空时，清空后的记录就不能复用。Mooncake 的缺失或损坏
+分片仍是冲突，不能用 `skip-identical` 跳过。
 
 ## 八、导入到 Mooncake
 
-前提:使用 `./build.sh` 构建的发布制品(已含 Mooncake 支持)。**连接类**变量(master、metadata、
+前提:使用含 Mooncake 支持的二进制。**连接类**变量(master、metadata、
 hostname、protocol、device)与目标 E2B Job 一致(`env | sort | grep '^MOONCAKE_'`
-检查);**容量类**变量按迁移器自身角色设置——迁移器是纯客户端,不贡献内存段,
-`MOONCAKE_GLOBAL_SEGMENT_SIZE` 应设为 `0`,`MOONCAKE_MOUNT_SEGMENT_SIZE` 保持
-未设置。工具在进入 native 调用前会对 master 和 metadata 两个端点各做一次 3 秒
-TCP 预检,地址错误会快速失败。
+检查)。迁移器固定为纯客户端：SDK Setup 的存储容量始终为 `0`，不调用
+`InitAll` 挂载存储段；忽略 `MOONCAKE_GLOBAL_SEGMENT_SIZE` 和
+`MOONCAKE_MOUNT_SEGMENT_SIZE`，即使继承旧服务环境也不会贡献存储内存。
+无需再手工 export/unset 这两个变量。工具在进入 native 调用前分别预检 master
+和 metadata：每个地址的 TCP 连接超时为 3 秒；列表按顺序尝试，各列表至少一个
+地址可达才通过，总耗时可能超过 3 秒。
 
 | 环境变量 | 未设置时的默认值 | 说明 |
 | --- | --- | --- |
-| `MOONCAKE_MASTER_ADDR` | `localhost:50051` | master RPC 地址(HOST:PORT) |
-| `MOONCAKE_METADATA_SERVER` | `http://localhost:8080/metadata` | metadata 服务 URL |
+| `MOONCAKE_MASTER_ADDR` | `localhost:50051` | master 地址:单机 `HOST:PORT`;高可用部署写 etcd 集群 `etcd://HOST:PORT;HOST:PORT`,由客户端经 etcd 发现 master |
+| `MOONCAKE_METADATA_SERVER` | `http://localhost:8080/metadata` | metadata 服务:HTTP URL,或 etcd 列表 `etcd://HOST:PORT;HOST:PORT` |
 | `MOONCAKE_LOCAL_HOSTNAME` | `localhost` | 本机对外公布地址 |
 | `MOONCAKE_PROTOCOL` | `tcp` | 传输协议 |
 | `MOONCAKE_DEVICE_NAME` | 空 | RDMA 设备名(TCP 留空) |
-| `MOONCAKE_GLOBAL_SEGMENT_SIZE` | `1073741824`(1 GiB) | 迁移器应显式设为 `0` |
+| `MOONCAKE_GLOBAL_SEGMENT_SIZE` | 固定 `0` | 环境变量被忽略 |
 | `MOONCAKE_LOCAL_BUFFER_SIZE` | `134217728`(128 MiB) | 本地缓冲区 |
-| `MOONCAKE_MOUNT_SEGMENT_SIZE` | 未设置 | 保持未设置 |
+| `MOONCAKE_MOUNT_SEGMENT_SIZE` | 不挂载 | 环境变量被忽略，不调用 `InitAll` |
 
-数值变量只接受**十进制字节数**(如 `1073741824`);`1 GiB`、`128 MiB` 这类写法
+`MOONCAKE_LOCAL_BUFFER_SIZE` 只接受正数的**十进制字节数**(如 `134217728`);`1 GiB`、`128 MiB` 这类写法
 无法解析,命令会直接报错。
 
+高可用部署的 etcd 地址支持分号或逗号分隔，例如：
+
+```bash
+export MOONCAKE_MASTER_ADDR='etcd://ETCD_A:2379;ETCD_B:2379;ETCD_C:2379'
+export MOONCAKE_METADATA_SERVER='etcd://ETCD_A:2379;ETCD_B:2379;ETCD_C:2379'
+```
+
+两项分别使用目标环境的实际配置，不要求它们是同一个集群。整串地址原样交给
+Mooncake SDK，服务发现由 SDK 处理。TCP 预检通过只表示至少一个地址可连接，
+不代表 etcd 认证、Master 发现、故障切换或数据传输已经成功。
+
 对象布局与 E2B 的 Mooncake 读取端完全一致:header/snapfile/metadata 等 Blob
-写单 key;memfile/rootfs 按 4 MiB 分块写 `KEY#c#OFFSET`,最后写逻辑 metadata
-key 作为完整性提交点。E2B 侧把 `TEMPLATE_BUCKET_NAME` 指到导入所用的
-namespace 即可读取迁移结果。
+写单 key;memfile 和 rootfs/persistent/sdcard 数据按 4 MiB 分块写 `KEY#c#OFFSET`,最后写逻辑 metadata
+key 作为完整性提交点。所有 key 都带 `NAMESPACE/` 前缀,运行时按
+`TEMPLATE_BUCKET_NAME/<BUILD_ID>/...` 读取,因此导入用的 namespace 必须与目标
+运行时的 `TEMPLATE_BUCKET_NAME` 一致(见第三节)。
 
 约束:
 
 - Mooncake **只能作导入目标**,不支持导出;
-- namespace 中已有逻辑完成 key 时一律报冲突,`skip-identical` 不适用——重跑
-  测试要换新 namespace;
+- 已有对象只有全量读取并核对 SHA-256 一致后才能被 `skip-identical` 复用；
+- apply 关闭写入连接后用新客户端再次全量校验，再提交 Catalog。新读取客户端与
+  写入客户端在同一进程中，二者都不贡献存储容量；这不等于真实 Sandbox 启动验收；
 - dry-run 与 apply 结束后 native 客户端都会显式关闭,可对同一 master 连续执行。
 
 ## 九、退出码
@@ -374,6 +523,7 @@ namespace 即可读取迁移结果。
 | 错误信息 | 原因与处理 |
 | --- | --- |
 | `endpoint is required` | 缺 `--catalog`/`--store`,补参数或设置对应 `TM_*` 环境变量 |
+| `mooncake:// is only supported as the import target` | 把 Mooncake 填成了 `export --store`;导出的 `--store` 是**源端**存储(S3/MinIO 或源服务器上的模板目录),Mooncake 只在导入时作 `--store` |
 | `lookup DB_HOST ... no such host` | 连接串仍是占位符,换成真实值 |
 | `output ... already exists` | `export --out` 目录已存在,换新目录名 |
 | `a template selector is required` | `export` 必须显式给出选择参数(含 `--all`) |
@@ -382,9 +532,9 @@ namespace 即可读取迁移结果。
 | `legacy_headerless_build` | 源桶中缺该 Build 的 Header 对象;当前版本不支持迁移此类 Build,确认桶/前缀是否正确或改用包含完整对象的存储 |
 | `target team ... was not found` | 目标 Catalog 中不存在该 Team,先核对 slug/UUID |
 | `literal namespace ... requires an explicit SOURCE=TARGET mapping` | 补 `--literal-namespace` 映射 |
-| `Mooncake support is not included in this binary` | 用了不带 `mooncake` tag 的开发构建,改用 `./build.sh` 产出的发布制品 |
+| `Mooncake support is not included in this binary` | 当前构建不含 Mooncake；使用 `./build.sh` 构建 |
 | `connect to MOONCAKE_MASTER_ADDR ...` / metadata 超时 | 确认 `MOONCAKE_*` 变量指向正确的集群且网络可达 |
-| 导入返回 `conflicts` | 查看 dry-run 输出的 `conflicts` 明细;Mooncake 测试换新 namespace |
+| 导入返回 `conflicts` | 查看计划明细；只有内容完整一致时才使用 `skip-identical`。损坏或不同内容由环境维护者核对处理，生产 namespace 仍须与运行时配置一致 |
 | `target changed after dry-run` | 同一次 apply 从读取目标快照到提交事务的窗口内,目标 PostgreSQL Catalog 出现了并发写入;重试导入。File Catalog 无此检测 |
 
 ## 十一、单人串行使用(已知限制)
@@ -395,7 +545,9 @@ namespace 即可读取迁移结果。
   丢掉先提交者的记录);PostgreSQL 目标有事务级防护,File 没有。
 - Mooncake 写入没有"仅创建"保护,并行导入同一 namespace 可能交错覆盖分片。
 
-同一时间对同一目标只跑一个 import 即可完全规避,无需其他操作。
+同一时间对同一目标只运行一个 import，并避免其他进程同时修改本次迁移涉及的
+对象或 Catalog 记录。PostgreSQL 的提交事务不覆盖整个导入过程，也不是完整的
+并发变更检测；仅把 import 串行执行不能防止外部写入者造成的干扰。
 
 ## 十二、默认行为速查
 
