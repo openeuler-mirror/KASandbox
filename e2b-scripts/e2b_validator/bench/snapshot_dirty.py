@@ -67,6 +67,7 @@ def run(
             return finish_result(result, ctx)
         ctx.track(created["sandbox_id"])
         source_id = created["sandbox_id"]
+        source_instance = created["instance"]
         restored_id = None
         snapshot_id = None
         try:
@@ -80,7 +81,7 @@ def run(
                     f"mount -t tmpfs -o size={dirty_mb + 64}m tmpfs /mnt/bench-dirty && "
                     f"dd if=/dev/zero of=/mnt/bench-dirty/data bs=1M count={dirty_mb} status=none && sync",
                 )
-            snap = ctx.client.create_snapshot_timed(source_id)
+            snap = sdk_engine.snapshot_one(source_instance)
             if not snap.ok:
                 raise RuntimeError(f"snapshot failed: {snap.error}")
             snapshot_id = _snapshot_id(snap.data)

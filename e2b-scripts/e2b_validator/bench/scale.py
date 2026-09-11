@@ -21,7 +21,7 @@ from .common import (
     pre_tier_settle,
     read_meminfo,
 )
-from .stats import wall_stats
+from .stats import timing_stats
 
 
 def _parse_sizes(raw: str) -> list[int]:
@@ -93,6 +93,7 @@ def run(
         pre_tier_settle(ctx, f"scale-n{size}", pre_wait)
         walls: list[float] = []
         create_times: list[float] = []
+        destroy_times: list[float] = []
         total_ops = 0
         failed_ops = 0
         total_wall_ms = 0.0
@@ -100,20 +101,32 @@ def run(
             measured = round_index >= max(0, warmup)
             # SDK 创建路径（与用户 max_test 脚本一致）：每批 ≤150 并发、失败自动补充
             batch = sdk_engine.batch_create(ctx, ctx.template, size, concurrency=size)
+            destroy = sdk_engine.destroy_all(ctx, batch["instances"])
             if measured:
                 walls.append(batch["wall_ms"])
                 create_times.extend(batch["create_times_ms"])
+                destroy_times.extend(destroy["kill_times_ms"])
                 total_wall_ms += batch["wall_ms"]
                 total_ops += batch["success"] + batch["failed"]
                 failed_ops += batch["failed"]
-            sdk_engine.destroy_all(ctx, batch["instances"])
 
-        metrics = wall_stats(walls, unit_count=size)
-        metrics.update(sdk_engine.percentile_metrics(create_times))
-        metrics["success_rate"] = round((total_ops - failed_ops) * 100 / total_ops, 2) if total_ops else None
-        metrics["throughput_per_s"] = (
-            round((total_ops - failed_ops) * 1000 / total_wall_ms, 1) if total_wall_ms > 0 else None
-        )
+        # 统计口径：单沙箱创建时间的 avg/p50/p90/p95/max（wall/均摊/吞吐另行保留）
+        wall_avg = sum(walls) / len(walls) if walls else None
+        metrics: dict = {
+            "count": total_ops,
+            "success": total_ops - failed_ops,
+            "failed": failed_ops,
+            "success_rate": round((total_ops - failed_ops) * 100 / total_ops, 2) if total_ops else None,
+            "rounds": len(walls),
+            "unit_count": size,
+            "wall_ms": round(wall_avg, 1) if wall_avg is not None else None,
+            "per_unit_avg_ms": round(wall_avg / size, 1) if wall_avg is not None and size else None,
+            "throughput_per_s": (
+                round((total_ops - failed_ops) * 1000 / total_wall_ms, 1) if total_wall_ms > 0 else None
+            ),
+        }
+        metrics.update(sdk_engine.latency_stats(create_times))
+        metrics.update(sdk_engine.latency_stats(destroy_times, "destroy"))
         tier = {"size": size, "pre_wait": pre_wait, "status": "ok", "metrics": metrics}
         if failed_ops:
             tier["status"] = "failed"

@@ -67,19 +67,21 @@ def run(
     for round_index in range(max(0, warmup) + rounds):
         measured = round_index >= max(0, warmup)
         sandbox_ids: list[str] = []
+        instances: list[Any] = []
         for index in range(concurrency):
             # SDK 创建路径（与 max_test 脚本一致）
             created = sdk_engine.create_one(ctx.template, index)
             if created["ok"] and created["sandbox_id"]:
                 ctx.track(created["sandbox_id"])
                 sandbox_ids.append(created["sandbox_id"])
+                instances.append(created["instance"])
         if not sandbox_ids:
             result["status"] = "failed"
             result["error"] = "无法创建快照源沙箱"
             return finish_result(result, ctx)
 
         def _snap(index: int):
-            return ctx.client.create_snapshot_timed(sandbox_ids[index])
+            return sdk_engine.snapshot_one(instances[index])
 
         results, wall_ms = run_concurrent(_snap, len(sandbox_ids), concurrency)
         snapshot_ids = [_snapshot_id(item.data) for item in results if item.ok]

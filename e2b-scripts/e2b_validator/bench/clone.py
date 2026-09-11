@@ -63,7 +63,7 @@ def run(
             raise RuntimeError(f"无法创建源沙箱: {created['error']}")
         ctx.track(created["sandbox_id"])
         source_id = created["sandbox_id"]
-        snap = ctx.client.create_snapshot_timed(source_id)
+        snap = sdk_engine.snapshot_one(created["instance"])
         if not snap.ok:
             raise RuntimeError(f"源沙箱 checkpoint 失败: {snap.error}")
         snapshot_id = _snapshot_id(snap.data)

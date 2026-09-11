@@ -75,7 +75,9 @@ def run(
     metrics = timing_stats(latencies, wall_ms=batch["wall_ms"], attempted=requests)
     metrics.update(sdk_engine.percentile_metrics(latencies))
     if mode == "create-kill":
-        sdk_engine.destroy_all(ctx, batch["instances"])
+        destroy = sdk_engine.destroy_all(ctx, batch["instances"])
+        metrics.update(sdk_engine.latency_stats(destroy["kill_times_ms"], "destroy"))
+        metrics["destroy_wall_ms"] = round(destroy["wall_ms"], 1)
     tier = {"concurrency": concurrency, "metrics": metrics}
     if errors:
         tier["errors"] = errors[:10]

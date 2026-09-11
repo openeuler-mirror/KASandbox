@@ -60,19 +60,21 @@ def _render_create(result: dict[str, Any]) -> list[str]:
 
 def _render_scale(result: dict[str, Any]) -> list[str]:
     lines = [
-        "| 规模 | wall avg | wall min | wall p95 | wall max | 单沙箱均摊 | 吞吐 | 成功率 |",
-        "|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| 规模 | create avg | create p50 | create p90 | create p95 | create max | "
+        "wall avg | 单沙箱均摊 | 吞吐 | destroy avg | destroy p95 | 成功率 |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for tier in result.get("tiers", []):
         metrics = tier.get("metrics")
         if not metrics:
-            lines.append(f"| {tier['size']} | 中止（内存安全闸） | — | — | — | — | — | — |")
+            lines.append(f"| {tier['size']} | 中止（内存安全闸） | — | — | — | — | — | — | — | — | — | — |")
             continue
         lines.append(
-            f"| {tier['size']} | "
-            + " | ".join(_stats_cells(metrics))
-            + f" | {_ms(metrics.get('per_unit_avg_ms'))} "
-            + f"| {_num(metrics.get('throughput_per_s'))} 个/s | {_pct(metrics.get('success_rate'))} |"
+            f"| {tier['size']} | {_ms(metrics.get('avg_ms'))} | {_ms(metrics.get('p50_ms'))} | "
+            f"{_ms(metrics.get('p90_ms'))} | {_ms(metrics.get('p95_ms'))} | {_ms(metrics.get('max_ms'))} | "
+            f"{_ms(metrics.get('wall_ms'))} | {_ms(metrics.get('per_unit_avg_ms'))} "
+            f"| {_num(metrics.get('throughput_per_s'))} 个/s | {_ms(metrics.get('destroy_avg_ms'))} "
+            f"| {_ms(metrics.get('destroy_p95_ms'))} | {_pct(metrics.get('success_rate'))} |"
         )
     return lines
 

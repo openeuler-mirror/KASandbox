@@ -8,6 +8,7 @@ SDK `Sandbox.create(template, timeout=3600)`、ThreadPoolExecutor 每批 ≤150 
 
 from __future__ import annotations
 
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
@@ -15,12 +16,14 @@ from typing import Any
 from e2b import Sandbox
 
 from ..e2e_sdk_common import sdk_options
+from .client import TimedResult
 from .common import BenchContext
 
 # 与用户脚本保持一致的常量
-BATCH_SIZE = 150  # 每批并发创建的最大数量（超过则分批）
+BATCH_SIZE = 600  # 每批并发创建的最大数量（超过则分批）
 MAX_RETRY_ROUNDS = 10  # 失败补充创建的最大轮数，防止无限循环
 CREATE_TIMEOUT = 3600  # 沙箱生命周期秒数（与脚本一致，服务端兜底回收）
+DESTROY_CONCURRENCY = 32  # 统一销毁的并发度（串行 kill 在数百沙箱时卡顿）
 
 
 def percentile(sorted_values: list[float], pct: float) -> float | None:
@@ -48,6 +51,28 @@ def percentile_metrics(create_times_ms: list[float]) -> dict[str, float | None]:
         "create_p90_ms": _rounded(percentile(ordered, 90)),
         "create_p99_ms": _rounded(percentile(ordered, 99)),
         "create_max_ms": _rounded(ordered[-1] if ordered else None),
+    }
+
+
+def latency_stats(samples_ms: list[float], prefix: str = "") -> dict[str, float | None]:
+    """单操作耗时统计：avg / p50 / p90 / p95 / max（毫秒，线性插值百分位）。
+
+    prefix 为空时键名为 avg_ms/p50_ms/...；否则为 <prefix>_avg_ms/...（如 destroy_avg_ms）。
+    """
+    ordered = sorted(samples_ms)
+
+    def _rounded(value: float | None) -> float | None:
+        return round(value, 1) if value is not None else None
+
+    def _key(name: str) -> str:
+        return f"{prefix}_{name}_ms" if prefix else f"{name}_ms"
+
+    return {
+        _key("avg"): _rounded(sum(ordered) / len(ordered)) if ordered else None,
+        _key("p50"): _rounded(percentile(ordered, 50)),
+        _key("p90"): _rounded(percentile(ordered, 90)),
+        _key("p95"): _rounded(percentile(ordered, 95)),
+        _key("max"): _rounded(ordered[-1] if ordered else None),
     }
 
 
@@ -187,28 +212,95 @@ def batch_create(
     }
 
 
-def destroy_all(ctx: BenchContext, instances: list[Any]) -> dict[str, int]:
-    """统一销毁一批存活沙箱实例（与脚本结尾一致：逐个 kill，每 10 个打印一次进度）。
+def snapshot_one(sandbox: Any) -> TimedResult:
+    """通过 SDK（e2b_sdk_compat.create_snapshot）打一次快照并计时。
 
-    销毁成功的 sandbox_id 从 ctx.created_ids 移除；返回销毁统计。
+    返回与 REST 路径相同的 TimedResult（data 规整为 {"snapshotID": ...}），
+    便于与既有调用方和清理逻辑兼容。
+    """
+    from ..e2b_sdk_compat import create_snapshot as sdk_create_snapshot
+
+    start = time.perf_counter()
+    try:
+        snap = sdk_create_snapshot(sandbox)
+        latency_ms = (time.perf_counter() - start) * 1000
+    except Exception as exc:
+        return TimedResult(
+            ok=False,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            error=f"{type(exc).__name__}: {exc}"[:500],
+        )
+    snapshot_id = None
+    for field in ("snapshot_id", "snapshotID", "snapshotId", "id"):
+        value = getattr(snap, field, None) if not isinstance(snap, dict) else snap.get(field)
+        if isinstance(value, str) and value:
+            snapshot_id = value
+            break
+    return TimedResult(
+        ok=True,
+        latency_ms=latency_ms,
+        status=201,
+        data={"snapshotID": snapshot_id} if snapshot_id else None,
+    )
+
+
+def destroy_all(
+    ctx: BenchContext,
+    instances: list[Any],
+    *,
+    concurrency: int = DESTROY_CONCURRENCY,
+) -> dict[str, Any]:
+    """并发销毁一批存活沙箱实例（串行 kill 在数百沙箱时明显卡顿），统计每个沙箱的销毁耗时。
+
+    销毁成功的 sandbox_id 从 ctx.created_ids 移除；返回销毁统计与耗时样本。
     """
     if not instances:
-        return {"destroyed": 0, "failed": 0}
-    print(f"\n🧹 开始销毁所有沙箱（共 {len(instances)} 个）...")
+        return {"destroyed": 0, "failed": 0, "wall_ms": 0.0, "kill_times_ms": []}
+    workers = max(1, min(concurrency, len(instances)))
+    print(f"\n🧹 开始销毁所有沙箱（共 {len(instances)} 个，并发 {workers}）...")
     destroyed = 0
     failed = 0
-    for index, sbx in enumerate(instances):
+    done = 0
+    kill_times_ms: list[float] = []
+    lock = threading.Lock()
+
+    def _kill(sbx: Any) -> None:
+        nonlocal destroyed, failed, done
+        start = time.perf_counter()
         try:
             sbx.kill()
-            destroyed += 1
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            with lock:
+                destroyed += 1
+                kill_times_ms.append(elapsed_ms)
             with ctx._lock:
                 if sbx.sandbox_id in ctx.created_ids:
                     ctx.created_ids.remove(sbx.sandbox_id)
-            if (index + 1) % 10 == 0:
-                print(f"  已销毁 {index + 1}/{len(instances)} 个沙箱...")
         except Exception as exc:
-            failed += 1
+            with lock:
+                failed += 1
             print(f"  [销毁失败] 沙箱ID {sbx.sandbox_id[:8]}... | 原因: {str(exc)[:50]}")
+        with lock:
+            done += 1
+            current = done
+        if current % 50 == 0 or current == len(instances):
+            print(f"  已销毁 {current}/{len(instances)} 个沙箱...")
+
+    wall_start = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(_kill, instances))
+    wall_ms = (time.perf_counter() - wall_start) * 1000
     print("\n【销毁结果】")
-    print(f"  总计销毁成功: {destroyed} | 销毁失败: {failed}")
-    return {"destroyed": destroyed, "failed": failed}
+    print(f"  总计销毁成功: {destroyed} | 销毁失败: {failed} | 耗时: {wall_ms / 1000:.2f}秒")
+    if kill_times_ms:
+        stats = latency_stats(kill_times_ms)
+        print(
+            f"  单沙箱销毁耗时 avg: {stats['avg_ms']:.0f}ms | P50: {stats['p50_ms']:.0f}ms | "
+            f"P90: {stats['p90_ms']:.0f}ms | P95: {stats['p95_ms']:.0f}ms | max: {stats['max_ms']:.0f}ms"
+        )
+    return {
+        "destroyed": destroyed,
+        "failed": failed,
+        "wall_ms": wall_ms,
+        "kill_times_ms": kill_times_ms,
+    }

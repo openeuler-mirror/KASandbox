@@ -49,7 +49,7 @@ def prepare_snapshot(ctx: BenchContext) -> str:
     ctx.track(created["sandbox_id"])
     source_id = created["sandbox_id"]
     try:
-        snap = ctx.client.create_snapshot_timed(source_id)
+        snap = sdk_engine.snapshot_one(created["instance"])
         if not snap.ok:
             raise RuntimeError(f"快照制作失败: {snap.error}")
         snapshot_id = _snapshot_id(snap.data)

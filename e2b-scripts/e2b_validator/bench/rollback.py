@@ -57,6 +57,7 @@ def run(
     result = base_result("rollback", ctx, params)
     pre_tier_settle(ctx, f"rollback-c{concurrency}", pre_wait)
     source_ids: list[str] = []
+    source_instances: list[Any] = []
     try:
         for index in range(concurrency):
             # SDK 创建路径（与 max_test 脚本一致）
@@ -65,6 +66,7 @@ def run(
                 raise RuntimeError(f"无法创建测试沙箱: {created['error']}")
             ctx.track(created["sandbox_id"])
             source_ids.append(created["sandbox_id"])
+            source_instances.append(created["instance"])
 
         walls: list[float] = []
         total_ops = 0
@@ -72,8 +74,7 @@ def run(
 
         def _rollback(index: int):
             """一次 rollback = 自身 create_snapshot 打点 + 基于该 checkpoint 恢复。"""
-            source_id = source_ids[index]
-            checkpoint = ctx.client.create_snapshot_timed(source_id)
+            checkpoint = sdk_engine.snapshot_one(source_instances[index])
             if not checkpoint.ok:
                 return checkpoint
             snapshot_id = _snapshot_id(checkpoint.data)
