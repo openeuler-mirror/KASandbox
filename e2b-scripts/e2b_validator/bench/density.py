@@ -8,6 +8,7 @@ import time
 from ..e2b_common import positive_int, print_json
 from . import config as bench_config
 from . import report as bench_report
+from . import sdk_engine
 from .common import (
     BenchContext,
     add_common_arguments,
@@ -22,8 +23,6 @@ from .common import (
     finish_result,
     guarded,
     read_meminfo,
-    run_concurrent,
-    timed_create,
 )
 
 
@@ -97,12 +96,20 @@ def run(
             )
             break
         batch = min(batch_size, max_sandboxes - alive)
-        results, _wall_ms = run_concurrent(lambda _i: timed_create(ctx), batch, concurrency)
-        succeeded = [item for item in results if item.ok]
-        alive += len(succeeded)
-        failed = len(results) - len(succeeded)
+        # SDK 创建路径（与用户 max_test 脚本一致）：每批并发 min(150, concurrency)，失败自动补充
+        batch_result = sdk_engine.batch_create(ctx, ctx.template, batch, concurrency=concurrency)
+        alive += batch_result["success"]
+        failed = batch_result["failed"]
         if failed:
             ctx.note(f"批次目标 {batch} 个，失败 {failed} 个")
+        batch_percentiles = sdk_engine.percentile_metrics(batch_result["create_times_ms"])
+        if batch_percentiles["create_p50_ms"] is not None:
+            print(
+                f"  本批创建耗时 P50: {batch_percentiles['create_p50_ms']:.0f}ms | "
+                f"P90: {batch_percentiles['create_p90_ms']:.0f}ms | "
+                f"P99: {batch_percentiles['create_p99_ms']:.0f}ms | "
+                f"max: {batch_percentiles['create_max_ms']:.0f}ms"
+            )
         # 静置让 UFFD 懒加载落定后再采集（cgroup v1 + smaps_rollup 双口径）
         time.sleep(2.5)
         with ctx._lock:
@@ -140,7 +147,10 @@ def run(
         ctx.note(f"密度测试结束，已清理沙箱：{outcomes}")
         ensure_clean_slate(ctx, "density-final")
     else:
-        ctx.note(f"按 --keep-sandboxes 保留 {alive} 个存活沙箱；使用 bench kill-all 清理")
+        ctx.note(
+            f"按 --keep-sandboxes 保留 {alive} 个存活沙箱（无 metadata 标记，"
+            "bench kill-all 扫不到）；由服务端沙箱 timeout 兜底回收"
+        )
     if aborted:
         result["status"] = "aborted"
         result["error"] = "内存安全闸触发，测试提前中止（已记录中止前数据）"

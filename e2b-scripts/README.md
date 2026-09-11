@@ -341,7 +341,7 @@ bash start.sh download-file \
 
 ### 4.7 性能基准测试（bench）
 
-`bench` 子命令对标 CubeSandbox 性能基准文章（https://cubesandbox.com/zh/blog/posts/2026-06-01-cubesandbox-perf-benchmark.html）的口径：avg / min / p95 / max（毫秒）+ wall + per（wall ÷ 操作数）+ 吞吐 + 成功率，每轮前 Warm-up（首轮丢弃），各档位串行执行、档间清空沙箱。
+`bench` 子命令对标 CubeSandbox 性能基准文章（https://cubesandbox.com/zh/blog/posts/2026-06-01-cubesandbox-perf-benchmark.html）的口径：avg / min / p95 / max（毫秒）+ wall + per（wall ÷ 操作数）+ 吞吐 + 成功率，各档位串行执行、档间清空沙箱。预热已禁用（`warmup = 0`），每轮都计入正式测量。
 
 **配置文件 `bench.toml`**：所有 bench 参数的单一来源（TOML，stdlib `tomllib` 解析，无新增依赖）。优先级：命令行参数 > `--config` 指定文件 > 默认 `bench.toml` > 代码内置兜底。
 
@@ -350,7 +350,7 @@ bash start.sh download-file \
 | 字段 | 含义 | 默认值 |
 | --- | --- | --- |
 | `template` | 模板 ID；命令行 `-t/--template` 与环境变量 `BENCH_TEMPLATE_ID` 优先 | `""`（必须提供） |
-| `warmup` | 每轮正式测量前的热身轮数，结果丢弃 | `1` |
+| `warmup` | 每轮正式测量前的热身轮数，结果丢弃（已禁用，默认 0） | `0` |
 | `sandbox_timeout` | 沙箱生命周期秒数，到期服务端自动回收防泄漏 | `600` |
 | `mem_threshold_pct` | 内存安全闸：MemAvailable 低于总内存该百分比即中止 density/scale | `15.0` |
 | `result_root` | 结果输出目录（相对路径基于 e2b-scripts/ 解析） | `test-results` |
@@ -405,7 +405,7 @@ bash bench.sh all --profile quick   # 小规模自检
 bash bench.sh all --profile full    # 完整档位，对标文章
 ```
 
-输出写入 `test-results/<run_id>-bench/`：每个测试项一个 `bench_<名称>.json`，`bench all` 额外生成 `bench_all.json` 和中文汇总 `report.md`（含环境信息、各测试项数据表、结论）。每档/每项之间执行残留清理并等待运行时收敛（标记沙箱归零、firecracker/jailer/nbd 回基线、连续 3 个采样稳定），收敛过程记录在同目录 `cleanup.log`。除 `create -m create-only` 和 `density --keep-sandboxes` 外，所有测试项结束后自动清理创建的沙箱；`create-only` 保留的沙箱通过 `bench kill-all` 或下次 `bench all` 的 pre-flight 清理，且沙箱自身 `--sandbox-timeout`（默认 600 秒）到期后也会被服务端回收。
+输出写入 `test-results/<run_id>-bench/`：每个测试项一个 `bench_<名称>.json`，`bench all` 额外生成 `bench_all.json` 和中文汇总 `report.md`（含环境信息、各测试项数据表、结论）。每档/每项之间执行残留清理并等待运行时收敛（标记沙箱归零、firecracker/jailer/nbd 回基线、连续 3 个采样稳定），收敛过程记录在同目录 `cleanup.log`。除 `create -m create-only` 和 `density --keep-sandboxes` 外，所有测试项结束后自动清理创建的沙箱。注意：create/scale/density 走 SDK `Sandbox.create` 的沙箱**不带 metadata 标记**（与用户脚本一致），`bench kill-all` 的 metadata 匹配扫不到它们——正常路径由进程内显式 ID 列表（`ctx.created_ids`）逐个销毁，残留由服务端沙箱 timeout（SDK 创建固定 3600s）兜底回收；`create-only` / `--keep-sandboxes` 保留的沙箱同理，只能靠 timeout 回收。
 
 density 内存计量口径（三层指标，采集器始终开启，无需配置）：每批沙箱创建后静置 2.5s（UFFD 懒加载落定）再采集——① 独立 cgroup v1（`/sys/fs/cgroup/e2b/sbx-<id>/`，兼容 memory 子树布局）usage/stat：Σ 总量准确，但共享页记在首个 touch 的 cgroup，单沙箱均摊有偏差；② 对应 firecracker 进程（`--api-sock /tmp/fc-<沙箱ID>-<buildID>.sock` 映射）的 `smaps_rollup`：PSS 均摊/min/p95/max、私有脏页（含 Private_Hugetlb——VM 内存大页是懒加载主体，本机大页池不占 MemAvailable，故 free 口径会低估真实占用）、共享页均摊与共享比例；③ 原 free available 差值保留为参考列。报告表格为「存活沙箱数 | free 可用（参考） | Σ cgroup usage | PSS 均摊 | 私有脏页均摊 | 共享页均摊 | 共享比例 | 单沙箱开销（free 口径，参考）」；JSON 含每沙箱明细数组（per_sandbox）便于后处理。
 
@@ -425,7 +425,7 @@ bash bench.sh clean-host             # 实际清理：删 ns-* netns、veth-* �
 
 **档位前池恢复等待（pre_wait）**：所有 tiers 类型的档位支持可选字段 `pre_wait`（秒，默认 0）。高并发档（create c=20/c=50、scale 200）失败多与系统池子来不及恢复有关，bench.toml 已给这些档加 `pre_wait = 180`。档的 pre_wait > 0 时：先静置等待（每 30s 打印剩余时间到 stderr，期间不创建任何沙箱），随后执行一次 `clean_host_orphans` + `ensure_clean_slate` 快速确认，再开始 warmup/正式测量；等待时间不计入任何测量指标；pre_wait 值记录在每档 JSON 的 params 与 report.md 参数行中，保证数据可溯源。
 
-**并发计时口径（barrier 同步起跑）**：同一档位的并发请求用 `threading.Barrier` 同步起跑——burst 型（任务数 == 并发数，如 scale 每档 N 拉 N）全部请求同一瞬间发出；流水线型（总请求数 > 并发数，如 create -c 50 -n 500）只同步首波起跑、后续自然流动，不拆 lockstep 批次。wall 计时从 barrier 放行瞬间起算，消除线程池 ramp-up 抖动，使「1 个模板拉起 N 个沙箱」的整批 wall 是真并发口径。
+**并发计时口径（创建走 SDK）**：所有「基于模板创建沙箱」的路径与 max_test 脚本完全一致——SDK `Sandbox.create(template, timeout=3600)`（create / scale / density 三个创建类子命令走 `ThreadPoolExecutor` 分批并发，每批 ≤150，批内失败数下一批自动补充，最多 10 轮，测完统一逐个 `kill()` 销毁；snapshot 系列 / rollback / clone / pause-resume 的源沙箱准备也走同一 SDK 创建），不使用 barrier，不带 metadata；统计 P50/P90/P99/max（线性插值百分位，与脚本口径一致）。唯一仍走 REST 的是「从快照/checkpoint 创建沙箱」——那是 snapshot/rollback/clone 测试项要测量的操作本身；其余被测操作（snapshot 制作、pause/resume 等）也走 REST + `threading.Barrier` 同步起跑：burst 型（任务数 == 并发数）全部请求同一瞬间发出，流水线型（总请求数 > 并发数）只同步首波起跑、后续自然流动；wall 计时从 barrier 放行瞬间起算。
 
 **与 test-e2e 互斥隔离**：test-e2e 是 116 个功能验收用例，bench 是性能压测，两者同时跑会互相污染。`test-e2e` 与所有 `bench` 子命令执行前都会原子抢锁 `test-results/.run.lock`（O_CREAT|O_EXCL，内容为 holder/run_id/started_at/pid 的 JSON）；抢不到即退出并提示持锁方与开始时间，确认对方结束后重试，或加 `--force` 删除旧锁强制继续。正常结束与异常退出（含 Ctrl+C）都会通过 finally/atexit 释放锁。
 

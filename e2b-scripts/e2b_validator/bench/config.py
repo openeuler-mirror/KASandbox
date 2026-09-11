@@ -28,7 +28,7 @@ BENCH_SECTIONS = (
 BUILTIN: dict[str, Any] = {
     "global": {
         "template": "",
-        "warmup": 1,
+        "warmup": 0,
         "sandbox_timeout": 600,
         "mem_threshold_pct": 15.0,
         "result_root": "test-results",

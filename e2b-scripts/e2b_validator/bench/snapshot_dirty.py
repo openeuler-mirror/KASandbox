@@ -7,6 +7,7 @@ import argparse
 from ..e2b_common import positive_int, print_json
 from . import config as bench_config
 from . import report as bench_report
+from . import sdk_engine
 from .common import (
     BenchContext,
     add_common_arguments,
@@ -24,7 +25,6 @@ from .common import (
     kill_ids,
     merge_tier_results,
     run_in_sandbox,
-    timed_create,
 )
 from .snapshot_concurrency import _snapshot_id
 from .stats import timing_stats
@@ -59,12 +59,14 @@ def run(
     failures: list[str] = []
     for round_index in range(max(0, warmup) + rounds):
         measured = round_index >= max(0, warmup)
-        created = timed_create(ctx)
-        if not created.ok or not created.sandbox_id:
+        # SDK 创建路径（与 max_test 脚本一致）
+        created = sdk_engine.create_one(ctx.template, round_index)
+        if not created["ok"] or not created["sandbox_id"]:
             result["status"] = "failed"
-            result["error"] = f"无法创建测试沙箱: {created.error}"
+            result["error"] = f"无法创建测试沙箱: {created['error']}"
             return finish_result(result, ctx)
-        source_id = created.sandbox_id
+        ctx.track(created["sandbox_id"])
+        source_id = created["sandbox_id"]
         restored_id = None
         snapshot_id = None
         try:

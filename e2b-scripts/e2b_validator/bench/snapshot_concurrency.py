@@ -7,6 +7,7 @@ import argparse
 from ..e2b_common import positive_int, print_json
 from . import config as bench_config
 from . import report as bench_report
+from . import sdk_engine
 from .common import (
     BenchContext,
     add_common_arguments,
@@ -23,7 +24,6 @@ from .common import (
     ensure_clean_slate,
     merge_tier_results,
     run_concurrent,
-    timed_create,
 )
 from .stats import wall_stats
 
@@ -67,10 +67,12 @@ def run(
     for round_index in range(max(0, warmup) + rounds):
         measured = round_index >= max(0, warmup)
         sandbox_ids: list[str] = []
-        for _ in range(concurrency):
-            created = timed_create(ctx)
-            if created.ok and created.sandbox_id:
-                sandbox_ids.append(created.sandbox_id)
+        for index in range(concurrency):
+            # SDK 创建路径（与 max_test 脚本一致）
+            created = sdk_engine.create_one(ctx.template, index)
+            if created["ok"] and created["sandbox_id"]:
+                ctx.track(created["sandbox_id"])
+                sandbox_ids.append(created["sandbox_id"])
         if not sandbox_ids:
             result["status"] = "failed"
             result["error"] = "无法创建快照源沙箱"

@@ -7,6 +7,7 @@ import argparse
 from ..e2b_common import positive_int, print_json
 from . import config as bench_config
 from . import report as bench_report
+from . import sdk_engine
 from .common import (
     BenchContext,
     add_common_arguments,
@@ -23,7 +24,6 @@ from .common import (
     ensure_clean_slate,
     merge_tier_results,
     run_concurrent,
-    timed_create,
     wait_state,
 )
 from .stats import wall_stats
@@ -54,11 +54,13 @@ def run(
     pre_tier_settle(ctx, f"pause-resume-c{concurrency}", pre_wait)
     sandbox_ids: list[str] = []
     try:
-        for _ in range(concurrency):
-            created = timed_create(ctx)
-            if not created.ok or not created.sandbox_id:
-                raise RuntimeError(f"无法创建测试沙箱: {created.error}")
-            sandbox_ids.append(created.sandbox_id)
+        for index in range(concurrency):
+            # SDK 创建路径（与 max_test 脚本一致）
+            created = sdk_engine.create_one(ctx.template, index)
+            if not created["ok"] or not created["sandbox_id"]:
+                raise RuntimeError(f"无法创建测试沙箱: {created['error']}")
+            ctx.track(created["sandbox_id"])
+            sandbox_ids.append(created["sandbox_id"])
 
         pause_walls: list[float] = []
         resume_walls: list[float] = []

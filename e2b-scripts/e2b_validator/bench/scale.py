@@ -7,6 +7,7 @@ import argparse
 from ..e2b_common import positive_int, print_json
 from . import config as bench_config
 from . import report as bench_report
+from . import sdk_engine
 from .common import (
     BenchContext,
     add_common_arguments,
@@ -17,11 +18,8 @@ from .common import (
     ensure_clean_slate,
     finish_result,
     guarded,
-    kill_ids,
     pre_tier_settle,
     read_meminfo,
-    run_concurrent,
-    timed_create,
 )
 from .stats import wall_stats
 
@@ -94,28 +92,24 @@ def run(
 
         pre_tier_settle(ctx, f"scale-n{size}", pre_wait)
         walls: list[float] = []
+        create_times: list[float] = []
         total_ops = 0
         failed_ops = 0
         total_wall_ms = 0.0
         for round_index in range(max(0, warmup) + rounds):
             measured = round_index >= max(0, warmup)
-            # 大档位整批 wall 可能超过 global.sandbox_timeout，单沙箱生命周期放宽到至少 1800s
-            create_timeout = max(ctx.sandbox_timeout, 1800)
-            results, wall_ms = run_concurrent(
-                lambda _i: timed_create(ctx, timeout=create_timeout), size, size
-            )
-            created_ids = [item.sandbox_id for item in results if item.ok and item.sandbox_id]
+            # SDK 创建路径（与用户 max_test 脚本一致）：每批 ≤150 并发、失败自动补充
+            batch = sdk_engine.batch_create(ctx, ctx.template, size, concurrency=size)
             if measured:
-                walls.append(wall_ms)
-                total_wall_ms += wall_ms
-                total_ops += len(results)
-                failed_ops += sum(1 for item in results if not item.ok)
-            kill_ids(ctx.client, created_ids)
-            with ctx._lock:
-                dropped = set(created_ids)
-                ctx.created_ids = [sid for sid in ctx.created_ids if sid not in dropped]
+                walls.append(batch["wall_ms"])
+                create_times.extend(batch["create_times_ms"])
+                total_wall_ms += batch["wall_ms"]
+                total_ops += batch["success"] + batch["failed"]
+                failed_ops += batch["failed"]
+            sdk_engine.destroy_all(ctx, batch["instances"])
 
         metrics = wall_stats(walls, unit_count=size)
+        metrics.update(sdk_engine.percentile_metrics(create_times))
         metrics["success_rate"] = round((total_ops - failed_ops) * 100 / total_ops, 2) if total_ops else None
         metrics["throughput_per_s"] = (
             round((total_ops - failed_ops) * 1000 / total_wall_ms, 1) if total_wall_ms > 0 else None
@@ -145,7 +139,7 @@ def execute(args: argparse.Namespace) -> int:
         template=template,
         result_root=bench_config.resolve_result_root(cfg),
         netns_growth_threshold=int(bench_config.global_param(cfg, "netns_growth_threshold")),
-        # 大档位（如 500 个）整批 wall 可能顶到 global.sandbox_timeout，放宽到至少 1800s
+        # SDK 创建路径的沙箱生命周期固定 3600s（sdk_engine.CREATE_TIMEOUT，与用户脚本一致）
         sandbox_timeout=max(
             1800,
             args.sandbox_timeout or int(bench_config.global_param(cfg, "sandbox_timeout")),

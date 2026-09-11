@@ -7,6 +7,7 @@ import argparse
 from ..e2b_common import positive_int, print_json
 from . import config as bench_config
 from . import report as bench_report
+from . import sdk_engine
 from .common import (
     BenchContext,
     add_common_arguments,
@@ -23,7 +24,6 @@ from .common import (
     ensure_clean_slate,
     merge_tier_results,
     run_concurrent,
-    timed_create,
 )
 from .snapshot_concurrency import _snapshot_id
 from .stats import wall_stats
@@ -57,10 +57,12 @@ def run(
     source_id = None
     snapshot_id = None
     try:
-        created = timed_create(ctx)
-        if not created.ok or not created.sandbox_id:
-            raise RuntimeError(f"无法创建源沙箱: {created.error}")
-        source_id = created.sandbox_id
+        # SDK 创建路径（与 max_test 脚本一致）
+        created = sdk_engine.create_one(ctx.template, task_id=0)
+        if not created["ok"] or not created["sandbox_id"]:
+            raise RuntimeError(f"无法创建源沙箱: {created['error']}")
+        ctx.track(created["sandbox_id"])
+        source_id = created["sandbox_id"]
         snap = ctx.client.create_snapshot_timed(source_id)
         if not snap.ok:
             raise RuntimeError(f"源沙箱 checkpoint 失败: {snap.error}")

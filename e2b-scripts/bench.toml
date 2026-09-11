@@ -9,8 +9,8 @@
 # 没有则自动构建一次，后续运行直接复用；填入 ID 或命令行 -t 才使用指定模板
 # 可用 bash start.sh list-templates 查询 ready 状态的模板
 template = ""
-# 热身轮数：每轮正式测量前的预热次数，结果丢弃（默认 1）
-warmup = 1
+# 热身轮数：已禁用预热（0），每轮都计入正式测量
+warmup = 0
 # 沙箱生命周期秒数：到期服务端自动回收，防止泄漏（默认 600）
 sandbox_timeout = 600
 # 内存安全闸：MemAvailable 低于总内存该百分比时，density/scale 立即中止（默认 15）

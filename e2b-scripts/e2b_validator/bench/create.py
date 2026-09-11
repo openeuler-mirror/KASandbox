@@ -7,6 +7,7 @@ import argparse
 from ..e2b_common import positive_int, print_json
 from . import config as bench_config
 from . import report as bench_report
+from . import sdk_engine
 from .common import (
     BenchContext,
     add_common_arguments,
@@ -19,10 +20,7 @@ from .common import (
     ensure_clean_slate,
     finish_result,
     guarded,
-    kill_ids,
     merge_tier_results,
-    run_concurrent,
-    timed_create,
 )
 from .stats import timing_stats
 
@@ -65,26 +63,19 @@ def run(
     pre_tier_settle(ctx, f"create-c{concurrency}", pre_wait)
 
     for _ in range(max(0, warmup)):
-        warm = timed_create(ctx)
-        if warm.ok and warm.sandbox_id:
-            kill_ids(ctx.client, [warm.sandbox_id])
-            with ctx._lock:
-                if warm.sandbox_id in ctx.created_ids:
-                    ctx.created_ids.remove(warm.sandbox_id)
+        warm = sdk_engine.create_one(ctx.template, task_id=0)
+        if warm["ok"]:
+            ctx.track(warm["sandbox_id"])
+            sdk_engine.destroy_all(ctx, [warm["instance"]])
 
-    def _one(_index: int):
-        item = timed_create(ctx)
-        if mode == "create-kill" and item.ok and item.sandbox_id:
-            kill_ids(ctx.client, [item.sandbox_id])
-            with ctx._lock:
-                if item.sandbox_id in ctx.created_ids:
-                    ctx.created_ids.remove(item.sandbox_id)
-        return item
-
-    results, wall_ms = run_concurrent(_one, requests, concurrency)
-    latencies = [item.latency_ms for item in results if item.ok]
-    errors = [item.error for item in results if not item.ok and item.error]
-    metrics = timing_stats(latencies, wall_ms=wall_ms, attempted=requests)
+    # SDK 创建路径（与用户 max_test 脚本一致）：每批并发 min(150, concurrency)，失败自动补充
+    batch = sdk_engine.batch_create(ctx, ctx.template, requests, concurrency=concurrency)
+    latencies = batch["create_times_ms"]
+    errors = batch["errors"]
+    metrics = timing_stats(latencies, wall_ms=batch["wall_ms"], attempted=requests)
+    metrics.update(sdk_engine.percentile_metrics(latencies))
+    if mode == "create-kill":
+        sdk_engine.destroy_all(ctx, batch["instances"])
     tier = {"concurrency": concurrency, "metrics": metrics}
     if errors:
         tier["errors"] = errors[:10]
@@ -92,8 +83,8 @@ def run(
         with ctx._lock:
             tier["alive_sandbox_ids"] = list(ctx.created_ids)
         ctx.note(
-            f"create-only 模式保留 {metrics['success']} 个存活沙箱；"
-            "使用 bench kill-all 清理"
+            f"create-only 模式保留 {metrics['success']} 个存活沙箱（无 metadata 标记，"
+            "bench kill-all 扫不到）；由服务端沙箱 timeout（3600s）兜底回收"
         )
     result["tiers"] = [tier]
     if metrics["failed"]:
@@ -131,7 +122,7 @@ def execute(args: argparse.Namespace) -> int:
                 pre_wait=float(tier.get("pre_wait", 0)),
             )
         )
-        # create-only 的沙箱按设计保留存活（供 kill-all / 下次 bench all pre-flight 清理）
+        # create-only 的沙箱按设计保留存活（无 metadata 标记，由服务端 timeout 兜底回收）
         if args.mode == "create-kill":
             ensure_clean_slate(ctx, f"create-c{tier['concurrency']}")
     result = merge_tier_results("create", tier_results)
