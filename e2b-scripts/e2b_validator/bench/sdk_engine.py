@@ -1,19 +1,30 @@
 """SDK 创建引擎：与用户 max_test 脚本完全一致的 Sandbox.create 分批并发实现。
 
 从 max_test_e2b_with_exec_command_with_batch_until_sucess.current.py 移植核心语义：
-SDK `Sandbox.create(template, timeout=3600)`、ThreadPoolExecutor 每批 ≤150 并发、
-失败自动补充（≤10 轮）、不使用 barrier、成功沙箱全部保留实例直到统一销毁。
-已去掉脚本的 monkey-patch 调试追踪代码（traced_* / POC mode，与计时无关）。
+SDK `Sandbox.create(template, timeout=3600)`、ThreadPoolExecutor 每批 ≤600 并发、
+失败自动补充（≤10 轮）、成功沙箱全部保留实例直到统一销毁。
+
+默认固化用户脚本中验证有效的两个客户端优化（可用环境变量关闭）：
+- 共享 API client（E2B_SDK_CLIENT_POC_MODE=shared-api-client，默认开）：全部线程复用
+  同一个预建 API client，消除每线程构建 ConnectionConfig/transport 的开销与竞争；
+  置空该变量可关闭。仅替换 client 获取方式，不修改已安装的 SDK 文件。
+- barrier 同步起跑（E2B_CREATE_BARRIER，默认开）：批内全部线程在 barrier 处等待，
+  主线程放行后同一瞬间发出请求，wall 从放行瞬间起算，消除线程池 ramp-up 抖动；
+  设为 0/false/off 可关闭。
 """
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from e2b import Sandbox
+from e2b.connection_config import ConnectionConfig
+
+import e2b.sandbox_sync.sandbox_api as sandbox_api_module
 
 from ..e2e_sdk_common import sdk_options
 from .client import TimedResult
@@ -24,6 +35,36 @@ BATCH_SIZE = 600  # 每批并发创建的最大数量（超过则分批）
 MAX_RETRY_ROUNDS = 10  # 失败补充创建的最大轮数，防止无限循环
 CREATE_TIMEOUT = 3600  # 沙箱生命周期秒数（与脚本一致，服务端兜底回收）
 DESTROY_CONCURRENCY = 32  # 统一销毁的并发度（串行 kill 在数百沙箱时卡顿）
+
+# 固化用户脚本验证有效的两个客户端优化；置空/关闭环境变量可回退原行为
+_SHARED_CLIENT_ENABLED = (
+    os.environ.get("E2B_SDK_CLIENT_POC_MODE", "shared-api-client").strip().lower()
+    == "shared-api-client"
+)
+_BARRIER_ENABLED = os.environ.get("E2B_CREATE_BARRIER", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+_original_get_api_client = sandbox_api_module.get_api_client
+_shared_api_client = None
+
+
+def _ensure_shared_api_client() -> None:
+    """预建并全局共享一个 SDK API client，消除每线程客户端构建开销。"""
+    global _shared_api_client
+    if not _SHARED_CLIENT_ENABLED or _shared_api_client is not None:
+        return
+
+    client = _original_get_api_client(ConnectionConfig())
+    try:
+        client.get_httpx_client()
+    except AttributeError:
+        pass
+    _shared_api_client = client
+    sandbox_api_module.get_api_client = lambda *args, **kwargs: client
 
 
 def percentile(sorted_values: list[float], pct: float) -> float | None:
@@ -112,9 +153,12 @@ def batch_create(
     """分批并发创建 target_num 个沙箱，失败自动补充（与脚本 batch_create_sandboxes 一致）。
 
     每批并发 min(BATCH_SIZE, concurrency, 剩余数)，批内失败数在下一批自动补充，
-    最多 MAX_RETRY_ROUNDS 轮；不使用 barrier。成功沙箱实例保留在返回值的
+    最多 MAX_RETRY_ROUNDS 轮；默认 barrier 同步起跑（E2B_CREATE_BARRIER=0 关闭），
+    wall 从 barrier 放行瞬间起算。成功沙箱实例保留在返回值的
     instances 中（存活），sandbox_id 同时登记进 ctx.created_ids 作为残留清理兜底。
     """
+    _ensure_shared_api_client()
+
     results: list[dict[str, Any]] = []
     instances: list[Any] = []
     create_times_ms: list[float] = []
@@ -142,15 +186,27 @@ def batch_create(
             f"\n--- 第 {batch_num} 批：并发创建 {current_batch} 个沙箱"
             f"（进度: {success_count}/{target_num}）---"
         )
-        batch_start = time.perf_counter()
+        barrier = threading.Barrier(current_batch + 1) if _BARRIER_ENABLED else None
         batch_success = 0
         batch_failed = 0
 
+        def _task(index: int) -> dict[str, Any]:
+            if barrier is not None:
+                try:
+                    barrier.wait(timeout=600)
+                except threading.BrokenBarrierError:
+                    pass
+            return create_one(template, batch_num * 1000 + index)
+
         with ThreadPoolExecutor(max_workers=current_batch) as executor:
-            futures = [
-                executor.submit(create_one, template, batch_num * 1000 + i)
-                for i in range(current_batch)
-            ]
+            futures = [executor.submit(_task, i) for i in range(current_batch)]
+            if barrier is not None:
+                try:
+                    barrier.wait(timeout=600)
+                except threading.BrokenBarrierError:
+                    pass
+            # wall 从 barrier 放行瞬间起算，消除线程池 ramp-up 抖动
+            batch_start = time.perf_counter()
             for future in as_completed(futures):
                 item = future.result()
                 results.append(item)
