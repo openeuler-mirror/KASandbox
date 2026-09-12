@@ -355,7 +355,7 @@ wait_e2b_create_failure_observed() {
         log_output=$(tail -n 240 /tmp/cri-multiplex.log 2>/dev/null || true)
         if echo "${describe_output}" | grep -qiE "FailedCreatePodSandBox|failed to create sandbox|build|not found|invalid" &&
            echo "${log_output}" | grep -q "CNI ADD: sandbox=${id}" &&
-           echo "${log_output}" | grep -q "RunPodSandbox: orchestrator.Create FAILED"; then
+           echo "${log_output}" | grep -q "createE2BSandbox: orchestrator.Create FAILED"; then
             return 0
         fi
         sleep 1

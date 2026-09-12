@@ -124,7 +124,7 @@ if [ -z "${POD_UID}" ] || [ -z "${POD_IP}" ]; then
     log_fail "无法读取 Android Pod UID 或 PodIP: uid=${POD_UID}, ip=${POD_IP}"
     exit 1
 fi
-NETNS_NAME="android-${POD_UID:0:12}"
+NETNS_NAME=$(android_netns_name "${POD_UID}")
 NETNS_PATH="/var/run/netns/${NETNS_NAME}"
 log_pass "Android Pod UID=${POD_UID}, PodIP=${POD_IP}"
 

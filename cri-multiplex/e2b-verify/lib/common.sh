@@ -666,6 +666,18 @@ pod_container_id() {
     fi
 }
 
+# android_netns_name <pod-uid> — 推导 Android CNI netns 名。
+# 引擎规则见 pkg/engine/cni_manager.go shortID()：len<=12 时原样使用，
+# 否则为 uid[:6] + sha256(uid)[:6]（e2b- 前缀同理，见 16 号脚本 e2b_netns_name）。
+android_netns_name() {
+    local uid="$1"
+    if [ "${#uid}" -le 12 ]; then
+        echo "android-${uid}"
+    else
+        echo "android-${uid:0:6}$(printf '%s' "${uid}" | sha256sum | cut -c1-6)"
+    fi
+}
+
 android_pgid_from_state() {
     local sandbox_id="$1"
     local state_file="${2:-${STATE_DIR:-/var/lib/cri-multiplex/state}/state.json}"

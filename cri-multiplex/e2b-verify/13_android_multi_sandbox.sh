@@ -91,7 +91,7 @@ verify_android_status() {
         log_fail "无法读取 PodIP: ${pod_name}"
         exit 1
     fi
-    netns_path="/var/run/netns/android-${uid:0:12}"
+    netns_path="/var/run/netns/$(android_netns_name "${uid}")"
     inspect=$(${CRICTL} inspectp "${uid}" 2>&1) || true
     if grep -q "not found\|NotFound\|level=fatal" <<< "${inspect}"; then
         log_fail "无法 inspect Android PodSandbox: ${pod_name}/${uid}"
@@ -168,11 +168,11 @@ verify_android_status "${POD1}" 1 6520
 verify_android_status "${POD2}" 2 6521
 POD1_UID=$(kubectl get pod "${POD1}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
 POD1_IP=$(kubectl get pod "${POD1}" -o jsonpath='{.status.podIP}' 2>/dev/null || true)
-POD1_NETNS="/var/run/netns/android-${POD1_UID:0:12}"
+POD1_NETNS="/var/run/netns/$(android_netns_name "${POD1_UID}")"
 POD1_PGID=$(android_pgid_from_state "${POD1_UID}" || true)
 POD2_UID=$(kubectl get pod "${POD2}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
 POD2_IP=$(kubectl get pod "${POD2}" -o jsonpath='{.status.podIP}' 2>/dev/null || true)
-POD2_NETNS="/var/run/netns/android-${POD2_UID:0:12}"
+POD2_NETNS="/var/run/netns/$(android_netns_name "${POD2_UID}")"
 POD2_PGID=$(android_pgid_from_state "${POD2_UID}" || true)
 
 log_step "5.1 删除 Pod 验证清理"

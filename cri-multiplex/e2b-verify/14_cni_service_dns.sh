@@ -67,7 +67,8 @@ log_step "3.2 从普通 Pod 直接访问 E2B PodIP"
 expect_http_204_from_client "${CLIENT_POD}" "http://${POD_IP}:${ENVD_PORT}/health" "client Pod -> E2B PodIP" || exit 1
 
 log_step "3.3 从普通 Pod 通过 Service DNS 访问 E2B"
-expect_http_204_from_client "${CLIENT_POD}" "http://${SVC_NAME}:${ENVD_PORT}/health" "client Pod -> Service DNS" || exit 1
+# Service ClusterIP 依赖 kube-proxy(IPVS) 编程，偶发延迟可达数十秒，轮询等待 60s
+wait_http_204_from_client "${CLIENT_POD}" "http://${SVC_NAME}:${ENVD_PORT}/health" "client Pod -> Service DNS" 60 || exit 1
 
 log_step "3.4 验证 Service DNS 解析"
 DNS_OUTPUT=$(client_dns_lookup "${CLIENT_POD}" "${SVC_NAME}.default.svc.cluster.local" || true)
