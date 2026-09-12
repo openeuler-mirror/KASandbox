@@ -90,6 +90,7 @@ func StartAndroidServices(ctx context.Context, params AndroidServicesParams) (_ 
 	if configurable, ok := params.Process.(vsockConfigurer); ok {
 		configurable.SetVsockConfig(allocatedCID)
 	}
+	vsocInputEnabled := vmm.AndroidVersion(params.AndroidVersion) == vmm.AndroidVersion14
 	if err := params.Mux.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start global Android vsock mux: %w", err)
 	}
@@ -203,6 +204,7 @@ func StartAndroidServices(ctx context.Context, params AndroidServicesParams) (_ 
 		SandboxID:         params.SandboxID,
 		ConfigBackendPath: configListener.Path,
 		ModemBackendPath:  modemListener.Path,
+		EnableVsocInput:   vsocInputEnabled,
 	}); err != nil {
 		stopErr := services.Stop(ctx)
 		return nil, errors.Join(fmt.Errorf("register Android vsock route: %w", err), stopErr)
