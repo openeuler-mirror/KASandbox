@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/vishvananda/netlink"
@@ -80,6 +81,10 @@ func linkAddTuntap(name string, vnetHdr bool) error {
 	if vnetHdr {
 		tap.Flags = netlink.TUNTAP_VNET_HDR
 	}
+
+	// Keep temporary TAP descriptors out of children until LinkAdd closes them.
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
 
 	return netlink.LinkAdd(tap)
 }
