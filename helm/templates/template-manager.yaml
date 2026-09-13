@@ -69,6 +69,8 @@ spec:
         - containerPort: {{ .Values.templateManagerPort | int }}
           name: grpc
         env:
+        - name: MAX_STARTING_INSTANCES_PER_NODE
+          value: "100"
         - name: ENVD_TIMEOUT
           value: 300s
         - name: CVD_HOST_PACKAGE_DIR
