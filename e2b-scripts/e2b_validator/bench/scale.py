@@ -93,6 +93,8 @@ def run(
         pre_tier_settle(ctx, f"scale-n{size}", pre_wait)
         walls: list[float] = []
         create_times: list[float] = []
+        server_times: list[float] = []
+        server_spans: list[float] = []
         destroy_times: list[float] = []
         total_ops = 0
         failed_ops = 0
@@ -105,6 +107,9 @@ def run(
             if measured:
                 walls.append(batch["wall_ms"])
                 create_times.extend(batch["create_times_ms"])
+                server_times.extend(batch["server_times_ms"])
+                if batch.get("server_batch_span_ms") is not None:
+                    server_spans.append(batch["server_batch_span_ms"])
                 destroy_times.extend(destroy["kill_times_ms"])
                 total_wall_ms += batch["wall_ms"]
                 total_ops += batch["success"] + batch["failed"]
@@ -126,6 +131,13 @@ def run(
             ),
         }
         metrics.update(sdk_engine.latency_stats(create_times))
+        if server_times:
+            # server_*：服务端真值口径（startedAt - 请求发出时刻），剔除客户端 Python 开销
+            metrics.update(sdk_engine.latency_stats(server_times, "server"))
+            metrics["server_samples"] = len(server_times)
+        if server_spans:
+            # 整批服务端跨度：最早请求发出 → 最晚 startedAt（多轮取均值，与 wall 并列对照）
+            metrics["server_batch_span_ms"] = round(sum(server_spans) / len(server_spans), 1)
         metrics.update(sdk_engine.latency_stats(destroy_times, "destroy"))
         tier = {"size": size, "pre_wait": pre_wait, "status": "ok", "metrics": metrics}
         if failed_ops:

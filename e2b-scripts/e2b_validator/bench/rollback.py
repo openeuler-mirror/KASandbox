@@ -8,6 +8,7 @@ from ..e2b_common import positive_int, print_json
 from . import config as bench_config
 from . import report as bench_report
 from . import sdk_engine
+from .client import server_batch_span_ms, server_ms_samples
 from .common import (
     BenchContext,
     add_common_arguments,
@@ -69,6 +70,8 @@ def run(
             source_instances.append(created["instance"])
 
         walls: list[float] = []
+        server_times: list[float] = []
+        server_spans: list[float] = []
         total_ops = 0
         failed_ops = 0
 
@@ -102,10 +105,21 @@ def run(
             results, wall_ms = run_concurrent(_rollback, len(source_ids), concurrency)
             if measured:
                 walls.append(wall_ms)
+                server_times.extend(server_ms_samples(results))
+                span = server_batch_span_ms(results)
+                if span is not None:
+                    server_spans.append(span)
                 total_ops += len(results)
                 failed_ops += sum(1 for item in results if not item.ok)
 
         metrics = wall_stats(walls, unit_count=concurrency)
+        if server_times:
+            # server_*：服务端真值口径（restore 的 startedAt - 请求发出时刻），剔除客户端 Python 开销
+            metrics.update(sdk_engine.latency_stats(server_times, "server"))
+            metrics["server_samples"] = len(server_times)
+        if server_spans:
+            # 整批服务端跨度：最早恢复请求发出 → 最晚 startedAt（多轮取均值）
+            metrics["server_batch_span_ms"] = round(sum(server_spans) / len(server_spans), 1)
         success_rate = round((total_ops - failed_ops) * 100 / total_ops, 2) if total_ops else None
         result["tiers"] = [{
             "concurrency": concurrency,

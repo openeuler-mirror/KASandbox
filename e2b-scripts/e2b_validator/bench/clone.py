@@ -8,6 +8,7 @@ from ..e2b_common import positive_int, print_json
 from . import config as bench_config
 from . import report as bench_report
 from . import sdk_engine
+from .client import server_batch_span_ms, server_ms_samples
 from .common import (
     BenchContext,
     add_common_arguments,
@@ -72,6 +73,8 @@ def run(
         ctx.note(f"源沙箱 {source_id} 保持运行，checkpoint：{snapshot_id}")
 
         walls: list[float] = []
+        server_times: list[float] = []
+        server_spans: list[float] = []
         total_ops = 0
         failed_ops = 0
         for round_index in range(max(0, warmup) + rounds):
@@ -90,6 +93,10 @@ def run(
             clone_ids = [item.sandbox_id for item in results if item.ok and item.sandbox_id]
             if measured:
                 walls.append(wall_ms)
+                server_times.extend(server_ms_samples(results))
+                span = server_batch_span_ms(results)
+                if span is not None:
+                    server_spans.append(span)
                 total_ops += len(results)
                 failed_ops += sum(1 for item in results if not item.ok)
             kill_ids(ctx.client, clone_ids)
@@ -98,6 +105,13 @@ def run(
                 ctx.created_ids = [sid for sid in ctx.created_ids if sid not in dropped]
 
         metrics = wall_stats(walls, unit_count=n)
+        if server_times:
+            # server_*：服务端真值口径（startedAt - 请求发出时刻），剔除客户端 Python 开销
+            metrics.update(sdk_engine.latency_stats(server_times, "server"))
+            metrics["server_samples"] = len(server_times)
+        if server_spans:
+            # 整批服务端跨度：最早请求发出 → 最晚 startedAt（多轮取均值，与 wall 并列对照）
+            metrics["server_batch_span_ms"] = round(sum(server_spans) / len(server_spans), 1)
         success_rate = round((total_ops - failed_ops) * 100 / total_ops, 2) if total_ops else None
         result["tiers"] = [{
             "label": f"{n} 个沙箱 {concurrency} 并发",

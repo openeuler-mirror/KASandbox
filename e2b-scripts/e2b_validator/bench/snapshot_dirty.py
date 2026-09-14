@@ -8,6 +8,7 @@ from ..e2b_common import positive_int, print_json
 from . import config as bench_config
 from . import report as bench_report
 from . import sdk_engine
+from .client import server_ms_samples
 from .common import (
     BenchContext,
     add_common_arguments,
@@ -56,6 +57,7 @@ def run(
 
     snapshot_samples: list[float] = []
     create_samples: list[float] = []
+    server_samples: list[float] = []
     failures: list[str] = []
     for round_index in range(max(0, warmup) + rounds):
         measured = round_index >= max(0, warmup)
@@ -97,6 +99,7 @@ def run(
             if measured:
                 snapshot_samples.append(snap.latency_ms)
                 create_samples.append(restored.latency_ms)
+                server_samples.extend(server_ms_samples([restored]))
         except Exception as exc:
             failures.append(f"round={round_index}: {exc}"[-300:])
             if measured:
@@ -116,10 +119,15 @@ def run(
             if snapshot_id and not delete_snapshot(ctx.client, snapshot_id):
                 ctx.note(f"快照 {snapshot_id} 删除失败")
 
+    create_stats = timing_stats(create_samples)
+    if server_samples:
+        # server_*：服务端真值口径（restore 的 startedAt - 请求发出时刻），剔除客户端 Python 开销
+        create_stats.update(sdk_engine.latency_stats(server_samples, "server"))
+        create_stats["server_samples"] = len(server_samples)
     result["tiers"] = [{
         "dirty_mb": dirty_mb,
         "snapshot": timing_stats(snapshot_samples),
-        "create_from_snapshot": timing_stats(create_samples),
+        "create_from_snapshot": create_stats,
     }]
     if failures:
         result["error"] = "; ".join(failures[:5])

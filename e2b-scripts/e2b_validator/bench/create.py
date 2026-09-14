@@ -74,6 +74,16 @@ def run(
     errors = batch["errors"]
     metrics = timing_stats(latencies, wall_ms=batch["wall_ms"], attempted=requests)
     metrics.update(sdk_engine.percentile_metrics(latencies))
+    server_times = batch["server_times_ms"]
+    if server_times:
+        # server_*：服务端真值口径（startedAt - 请求发出时刻），剔除客户端 Python 开销
+        metrics.update(sdk_engine.latency_stats(server_times, "server"))
+        metrics["server_samples"] = len(server_times)
+    else:
+        ctx.note("startedAt 回读无有效样本，本档无 server_* 指标")
+    if batch.get("server_batch_span_ms") is not None:
+        # 整批服务端跨度：最早请求发出 → 最晚 startedAt（与 wall 并列对照）
+        metrics["server_batch_span_ms"] = batch["server_batch_span_ms"]
     if mode == "create-kill":
         destroy = sdk_engine.destroy_all(ctx, batch["instances"])
         metrics.update(sdk_engine.latency_stats(destroy["kill_times_ms"], "destroy"))

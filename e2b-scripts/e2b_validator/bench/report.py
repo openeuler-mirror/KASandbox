@@ -44,15 +44,17 @@ def _stats_cells(stats: dict[str, Any]) -> list[str]:
 
 def _render_create(result: dict[str, Any]) -> list[str]:
     lines = [
-        "| 并发 | 请求数 | avg | min | p95 | max | wall | 单沙箱均摊 | 吞吐 | 成功率 |",
-        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| 并发 | 请求数 | avg | min | p95 | max | server avg | server p95 | wall | server span | 单沙箱均摊 | 吞吐 | 成功率 |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for tier in result.get("tiers", []):
         metrics = tier["metrics"]
         lines.append(
             f"| {tier['concurrency']} | {metrics['count']} | "
             + " | ".join(_stats_cells(metrics))
-            + f" | {_ms(metrics.get('wall_ms'))} | {_ms(metrics.get('per_ms'))} "
+            + f" | {_ms(metrics.get('server_avg_ms'))} | {_ms(metrics.get('server_p95_ms'))}"
+            + f" | {_ms(metrics.get('wall_ms'))} | {_ms(metrics.get('server_batch_span_ms'))}"
+            + f" | {_ms(metrics.get('per_ms'))} "
             + f"| {_num(metrics.get('throughput_per_s'))} 个/s | {_pct(metrics.get('success_rate'))} |"
         )
     return lines
@@ -61,18 +63,20 @@ def _render_create(result: dict[str, Any]) -> list[str]:
 def _render_scale(result: dict[str, Any]) -> list[str]:
     lines = [
         "| 规模 | create avg | create p50 | create p90 | create p95 | create max | "
-        "wall avg | 单沙箱均摊 | 吞吐 | destroy avg | destroy p95 | 成功率 |",
-        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "server avg | server p95 | wall avg | server span | 单沙箱均摊 | 吞吐 | destroy avg | destroy p95 | 成功率 |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for tier in result.get("tiers", []):
         metrics = tier.get("metrics")
         if not metrics:
-            lines.append(f"| {tier['size']} | 中止（内存安全闸） | — | — | — | — | — | — | — | — | — | — |")
+            lines.append(f"| {tier['size']} | 中止（内存安全闸） | — | — | — | — | — | — | — | — | — | — | — | — | — |")
             continue
         lines.append(
             f"| {tier['size']} | {_ms(metrics.get('avg_ms'))} | {_ms(metrics.get('p50_ms'))} | "
             f"{_ms(metrics.get('p90_ms'))} | {_ms(metrics.get('p95_ms'))} | {_ms(metrics.get('max_ms'))} | "
-            f"{_ms(metrics.get('wall_ms'))} | {_ms(metrics.get('per_unit_avg_ms'))} "
+            f"{_ms(metrics.get('server_avg_ms'))} | {_ms(metrics.get('server_p95_ms'))} | "
+            f"{_ms(metrics.get('wall_ms'))} | {_ms(metrics.get('server_batch_span_ms'))} | "
+            f"{_ms(metrics.get('per_unit_avg_ms'))} "
             f"| {_num(metrics.get('throughput_per_s'))} 个/s | {_ms(metrics.get('destroy_avg_ms'))} "
             f"| {_ms(metrics.get('destroy_p95_ms'))} | {_pct(metrics.get('success_rate'))} |"
         )
@@ -243,8 +247,12 @@ def render_report(
             f"来源：{template.get('source', '用户指定')}）|"
         ),
         "",
-        "指标说明：avg / min / p95 / max 为单请求延迟（毫秒）；wall 为整批端到端耗时；"
-        "per 为 wall ÷ 操作数的均摊耗时；吞吐为每秒完成操作数。预热已禁用（warmup=0），每轮都计入正式测量。",
+        "指标说明：avg / min / p95 / max 为单请求延迟（毫秒，客户端口径，含 Python SDK/HTTP 开销）；"
+        "server avg / server p95 为服务端真值口径（沙箱 startedAt − 请求发出时刻，startedAt 由 API 在 "
+        "orchestrator 创建完成时写入，剔除全部客户端开销；要求与 API 同机时钟）；"
+        "server span 为整批服务端跨度（最早请求发出 → 最晚 startedAt）；"
+        "wall 为整批端到端耗时；per 为 wall ÷ 操作数的均摊耗时；吞吐为每秒完成操作数。"
+        "预热已禁用（warmup=0），每轮都计入正式测量。",
         "",
         "## 2. 测试结果总览",
         "",

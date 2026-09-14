@@ -27,7 +27,7 @@ from e2b.connection_config import ConnectionConfig
 import e2b.sandbox_sync.sandbox_api as sandbox_api_module
 
 from ..e2e_sdk_common import sdk_options
-from .client import TimedResult
+from .client import TimedResult, fetch_started_at_map
 from .common import BenchContext
 
 # 与用户脚本保持一致的常量
@@ -121,7 +121,9 @@ def create_one(template: str, task_id: int, *, timeout: int = CREATE_TIMEOUT) ->
     """创建单个沙箱（仅创建不销毁），返回结果 dict（成功时含存活实例 instance）。
 
     与用户脚本 create_sandbox 一致：perf_counter 包住 Sandbox.create；不带 metadata。
+    request_wall 为请求发出前的墙钟时刻（epoch 秒），供服务端真值回读计算 server_ms。
     """
+    request_wall = time.time()
     start = time.perf_counter()
     try:
         sbx = Sandbox.create(template, timeout=timeout, **sdk_options())
@@ -131,6 +133,7 @@ def create_one(template: str, task_id: int, *, timeout: int = CREATE_TIMEOUT) ->
             "task_id": task_id,
             "sandbox_id": sbx.sandbox_id,
             "create_time_s": create_time,
+            "request_wall": request_wall,
             "instance": sbx,
         }
     except Exception as exc:
@@ -156,12 +159,17 @@ def batch_create(
     最多 MAX_RETRY_ROUNDS 轮；默认 barrier 同步起跑（E2B_CREATE_BARRIER=0 关闭），
     wall 从 barrier 放行瞬间起算。成功沙箱实例保留在返回值的
     instances 中（存活），sandbox_id 同时登记进 ctx.created_ids 作为残留清理兜底。
+    每批结束后在计时窗外回读服务端 startedAt，server_times_ms 为剔除客户端开销的
+    服务端创建耗时样本（server_ms = startedAt - 请求发出时刻，要求与 API 同机时钟）。
     """
     _ensure_shared_api_client()
 
     results: list[dict[str, Any]] = []
     instances: list[Any] = []
     create_times_ms: list[float] = []
+    server_times_ms: list[float] = []
+    first_request_wall: float | None = None
+    last_started_epoch: float | None = None
     errors: list[str] = []
     batch_size = max(1, min(BATCH_SIZE, concurrency))
 
@@ -189,6 +197,7 @@ def batch_create(
         barrier = threading.Barrier(current_batch + 1) if _BARRIER_ENABLED else None
         batch_success = 0
         batch_failed = 0
+        batch_items: list[dict[str, Any]] = []
 
         def _task(index: int) -> dict[str, Any]:
             if barrier is not None:
@@ -210,6 +219,7 @@ def batch_create(
             for future in as_completed(futures):
                 item = future.result()
                 results.append(item)
+                batch_items.append(item)
                 if item["ok"]:
                     batch_success += 1
                     success_count += 1
@@ -236,6 +246,30 @@ def batch_create(
             f"失败: {batch_failed}, 耗时 {batch_duration:.2f}秒 ---"
         )
 
+        # 服务端真值回读（计时窗外）：startedAt 由 API 在 orchestrator 创建完成时写入，
+        # server_ms = startedAt - 请求发出时刻，剔除全部客户端 Python 开销
+        batch_ids = [item["sandbox_id"] for item in batch_items if item["ok"] and item["sandbox_id"]]
+        if batch_ids:
+            started_map = fetch_started_at_map(ctx.client, batch_ids)
+            missed = 0
+            for item in batch_items:
+                if not item["ok"] or not item["sandbox_id"]:
+                    continue
+                # 整批服务端跨度起点：最早请求发出（即使该沙箱 startedAt 回读缺失）
+                if first_request_wall is None or item["request_wall"] < first_request_wall:
+                    first_request_wall = item["request_wall"]
+                epoch = started_map.get(item["sandbox_id"])
+                if epoch is None:
+                    missed += 1
+                    continue
+                server_ms = (epoch - item["request_wall"]) * 1000
+                item["server_time_ms"] = round(server_ms, 1)
+                server_times_ms.append(server_ms)
+                if last_started_epoch is None or epoch > last_started_epoch:
+                    last_started_epoch = epoch
+            if missed:
+                ctx.note(f"第 {batch_num} 批：{missed} 个沙箱 startedAt 回读缺失，server_* 样本减少")
+
         batch_num += 1
         retry_round += 1
 
@@ -249,12 +283,33 @@ def batch_create(
 
     wall_s = time.perf_counter() - start_time
     failed_count = target_num - success_count
+    server_batch_span_ms = (
+        round((last_started_epoch - first_request_wall) * 1000, 1)
+        if first_request_wall is not None and last_started_epoch is not None
+        else None
+    )
+
+    if server_times_ms and min(server_times_ms) < 0:
+        ctx.note(
+            "存在负数 server_ms：startedAt 早于请求发出时刻，说明脚本机与 API 机"
+            "时钟不同步（server_* 口径要求同机部署），本次 server_* 数据不可信"
+        )
 
     print("\n【本轮结果】")
     print(f"  目标创建数: {target_num} | 实际成功: {success_count} | 失败: {max(0, failed_count)}")
     if target_num > 0:
         print(f"  成功率: {success_count / target_num * 100:.1f}%")
     print(f"  本轮耗时: {wall_s:.2f}秒")
+    if server_times_ms:
+        server_stats = latency_stats(server_times_ms, "server")
+        print(
+            f"  服务端创建耗时（server_ms，剔除客户端开销）avg: {server_stats['server_avg_ms']:.0f}ms | "
+            f"P50: {server_stats['server_p50_ms']:.0f}ms | "
+            f"P95: {server_stats['server_p95_ms']:.0f}ms | "
+            f"样本: {len(server_times_ms)}/{success_count}"
+        )
+    if server_batch_span_ms is not None:
+        print(f"  服务端整批跨度（最早请求 → 最晚 startedAt）: {server_batch_span_ms:.0f}ms")
 
     return {
         "target": target_num,
@@ -262,6 +317,8 @@ def batch_create(
         "failed": max(0, failed_count),
         "wall_ms": wall_s * 1000,
         "create_times_ms": create_times_ms,
+        "server_times_ms": server_times_ms,
+        "server_batch_span_ms": server_batch_span_ms,
         "errors": errors,
         "instances": instances,
         "results": results,

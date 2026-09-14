@@ -455,7 +455,10 @@ bash bench.sh kill-all --all    # 删除全部沙箱（慎用）
 | 指标 | 含义 |
 | --- | --- |
 | `wall_ms` | 整批 wall：首个请求发出（barrier 放行）→ 全部完成 |
-| `avg / p50 / p90 / p95 / max（_ms）` | 单操作耗时分布（线性插值百分位） |
+| `avg / p50 / p90 / p95 / max（_ms）` | 单操作耗时分布（线性插值百分位），客户端口径，含 Python SDK/HTTP 开销 |
+| `server_avg / server_p50 / server_p90 / server_p95 / server_max（_ms）` | 服务端真值口径：沙箱 `startedAt` − 请求发出时刻，剔除全部客户端 Python 开销（见 4.7.5） |
+| `server_batch_span_ms` | 整批服务端跨度：最早请求发出 → 最晚 `startedAt`（多轮取均值）；与 `wall_ms` 并列对照，差值即客户端整批开销（见 4.7.5） |
+| `server_samples` | server_* 有效样本数（startedAt 回读成功的沙箱数） |
 | `per_unit_avg_ms` | wall ÷ 操作数，等效串行成本 |
 | `throughput_per_s` | 吞吐：成功操作数 ÷ wall |
 | `success_rate` | 成功率（%） |
@@ -477,6 +480,14 @@ SDK 创建路径默认固化两个客户端优化（均可用环境变量回退�
 | `E2B_CREATE_BARRIER=1` | 开 | 批内线程在 barrier 统一等待，主线程放行后同一瞬间发出全部请求，批 wall 从放行瞬间起算，消除线程池 ramp-up 抖动；设 `0` 关闭 |
 
 **快照制作也走 SDK**：`e2b_sdk_compat.create_snapshot`（同步 `Sandbox.create_snapshot` 缺失时自动桥接 `AsyncSandbox`，e2b 2.20.0 即此路径）。唯一仍走 REST 的是「从快照/checkpoint 创建沙箱」（SDK 无同步 snapshot 恢复创建入口）以及 pause/resume/删除等生命周期操作；REST 并发用 `threading.Barrier` 同步起跑：burst 型（任务数 == 并发数）全部请求同一瞬间发出，流水线型（总请求数 > 并发数）只同步首波起跑、后续自然流动；wall 计时从 barrier 放行瞬间起算。
+
+**服务端真值口径（server_*）**：客户端口径的 `avg/p50/...` 即使做了共享 client 与 barrier，仍包含 Python 自身开销（httpx 收发、JSON 解析、SDK 等待 envd、线程调度，实测高并发下可达数百毫秒）。为此所有「创建沙箱」路径额外输出 `server_*` 指标：
+
+- 定义：`server_ms = 沙箱 startedAt − 请求发出时刻（本地墙钟）`。`startedAt` 由 API 在 orchestrator 放置并创建完成后写入（`packages/api/internal/orchestrator/create_instance.go` 中 placement 后取 `time.Now()`），即「API 受理 → 沙箱 running」的真实服务端耗时，**不含任何客户端 Python 开销**；纳秒精度（RFC3339Nano），报告取毫秒。
+- 整批口径：`server_batch_span_ms = max(startedAt) − min(请求发出时刻)`，即「最早请求进入服务端 → 最晚沙箱创建完成」的服务端视角整批端到端，与客户端视角的 `wall_ms` 并列；两者差值 ≈ 客户端整批开销（barrier 放行前准备 + 结果收集/调度）。barrier 同步起跑时它与 `server_max_ms` 数值接近，流水线模式（请求分波发出）下更能体现真实批量跨度。
+- 回读方式（均在计时窗外，不污染测量）：SDK 创建路径（create / scale / density）每批结束后一次 `GET /sandboxes`（v1，running 全量不分页）批量取数，缺失的逐个 `GET /sandboxes/{id}` 兜底；REST 创建路径（create-from-snapshot / rollback / clone / snapshot-dirty 的恢复创建）在 `create_timed` 返回后立即回读详情，代价是每次创建多一次 loopback GET，不计入 `latency_ms`。
+- 适用范围：仅「创建类」操作（模板创建与快照/checkpoint 恢复创建）；pause/resume、快照制作、销毁无对应服务端时间戳，不提供 server_*。
+- 前提与告警：要求脚本与 API **同机部署**（默认 `127.0.0.1:3000`，时钟同源）。远程运行时两机时钟偏差会直接体现为 server_ms 整体偏移；出现负数 server_ms 时结果 notes 会告警「时钟不同步，server_* 不可信」。
 
 #### 4.7.6 与 test-e2e 互斥隔离
 

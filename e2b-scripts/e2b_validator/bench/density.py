@@ -110,6 +110,15 @@ def run(
                 f"P99: {batch_percentiles['create_p99_ms']:.0f}ms | "
                 f"max: {batch_percentiles['create_max_ms']:.0f}ms"
             )
+        server_times = batch_result["server_times_ms"]
+        server_stats = sdk_engine.latency_stats(server_times, "server") if server_times else None
+        if server_stats:
+            print(
+                f"  本批服务端创建耗时 server avg: {server_stats['server_avg_ms']:.0f}ms | "
+                f"P50: {server_stats['server_p50_ms']:.0f}ms | "
+                f"P95: {server_stats['server_p95_ms']:.0f}ms | "
+                f"样本: {len(server_times)}"
+            )
         # 静置让 UFFD 懒加载落定后再采集（cgroup v1 + smaps_rollup 双口径）
         time.sleep(2.5)
         with ctx._lock:
@@ -136,6 +145,9 @@ def run(
             "overhead_mb_per_sandbox": round(overhead, 1) if overhead is not None else None,
             "memory": memory,
             "batch_failures": failed,
+            "create_server": server_stats,
+            "create_server_samples": len(server_times),
+            "create_server_span_ms": batch_result.get("server_batch_span_ms"),
         })
         if failed == batch:
             ctx.note("整批创建失败，提前结束密度测试")
