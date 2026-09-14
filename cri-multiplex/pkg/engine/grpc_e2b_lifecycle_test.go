@@ -31,6 +31,7 @@ func newTestGRPCE2BEngine(client *fakeSandboxServiceClient) *grpcE2BEngine {
 		streamingReqs:         make(map[string]*execStreamRequest),
 		attachReqs:            make(map[string]*attachStreamRequest),
 		hostPortManager:       NewHostPortManager(20000, 20010),
+		repairPodNeighbor:     func(context.Context, string, string, string) (bool, error) { return false, nil },
 	}
 }
 

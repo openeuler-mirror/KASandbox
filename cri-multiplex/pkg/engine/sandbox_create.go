@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/cri-multiplex/pkg/cnineighbor"
 	"github.com/cri-multiplex/pkg/orchestrator"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
@@ -72,6 +73,23 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 				log.Printf("[GrpcE2BEngine] createE2BSandbox: CNI ADD failed for %s (cni_add_ms=%d): %v", sandboxID, cniAddMs, addErr)
 				return nil, status.Errorf(codes.Unavailable, "cni add failed: %v", addErr)
 			}
+		}
+		repair := e.repairPodNeighbor
+		if repair == nil {
+			repair = cnineighbor.Repair
+		}
+		removed, repairErr := repair(ctx, cniRecord.NetNSPath, cniRecord.IfName, cniRecord.PodIP)
+		if repairErr != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			delErr := e.cniManager.Del(cleanupCtx, cniRecord, p.cniConfig)
+			cancel()
+			if delErr != nil {
+				log.Printf("[GrpcE2BEngine] WARNING: CNI DEL after neighbor repair failure for %s: %v", sandboxID, delErr)
+			}
+			return nil, status.Errorf(codes.Unavailable, "cni neighbor repair failed: %v", repairErr)
+		}
+		if removed {
+			log.Printf("[GrpcE2BEngine] CNI neighbor repaired: sandbox=%s source=%s podIP=%s", sandboxID, cniSource, cniRecord.PodIP)
 		}
 		cfg.RuntimeNetwork = &orchestrator.SandboxRuntimeNetworkConfig{
 			Mode:       orchestrator.SandboxRuntimeNetworkConfig_CNI_EXTERNAL_NETNS,
