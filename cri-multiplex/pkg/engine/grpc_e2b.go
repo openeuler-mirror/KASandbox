@@ -26,6 +26,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/cri-multiplex/pkg/cnineighbor"
 	"github.com/cri-multiplex/pkg/envd/process"
 	"github.com/cri-multiplex/pkg/orchestrator"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -130,10 +131,11 @@ type grpcE2BEngine struct {
 	streamingMu       sync.RWMutex
 	streamingOnce     sync.Once
 
-	hostPortManager *HostPortManager // 新增：宿主机端口管理
-	cniConfig       CNIConfig
-	cniManager      cniNetworkManager
-	cleanupManager  *CleanupManager
+	hostPortManager   *HostPortManager // 新增：宿主机端口管理
+	cniConfig         CNIConfig
+	cniManager        cniNetworkManager
+	cleanupManager    *CleanupManager
+	repairPodNeighbor func(context.Context, string, string, string) (bool, error)
 
 	// CNI 预热池（实现见 cni_pool.go）：PoolEnabled && PoolSize>0 时启用
 	cniPoolReady chan *CNIRecord
@@ -171,6 +173,7 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName 
 		stateStore:            store,
 		pendingNetNS:          make(map[string]int),
 		cniConfig:             cniConfig,
+		repairPodNeighbor:     cnineighbor.Repair,
 		tracker:               newPodTracker(),
 		imageCache:            make(map[string]*e2bImageMeta),
 		streamingReqs:         make(map[string]*execStreamRequest),
