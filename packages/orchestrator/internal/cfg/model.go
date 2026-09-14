@@ -29,6 +29,7 @@ type BuilderConfig struct {
 	CvdHostPackagesRoot        string        `env:"CVD_HOST_PACKAGES_ROOT" envDefault:"/cvd-host-packages"`
 	DefaultCacheDir            string        `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
 	ReadyCheckTimeout          time.Duration `env:"READY_CHECK_TIMEOUT"      envDefault:"30s"`
+	ADBVsockPort               uint32        `env:"ADB_VSOCK_PORT"           envDefault:"5555"`
 
 	StorageConfig storage.Config
 	NetworkConfig network.Config

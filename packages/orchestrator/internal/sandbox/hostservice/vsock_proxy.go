@@ -12,10 +12,8 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
 )
 
-const adbVsockPort = 5555
-
 func NewADBListener() (*os.File, string, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		return nil, "", fmt.Errorf("bind adb tcp listener: %w", err)
 	}
@@ -52,7 +50,7 @@ func BuildVsockProxyService(config cfg.BuilderConfig, androidVersion string, cid
 		"--server_fd=3",
 		"--client_type=vsock",
 		fmt.Sprintf("--client_vsock_id=%d", cid),
-		fmt.Sprintf("--client_vsock_port=%d", adbVsockPort),
+		fmt.Sprintf("--client_vsock_port=%d", config.ADBVsockPort),
 		"--label=adb",
 	}
 

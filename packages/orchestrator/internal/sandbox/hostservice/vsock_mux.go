@@ -30,7 +30,7 @@ const (
 // VsockListen creates an AF_VSOCK SOCK_STREAM listener for the process-local
 // global Android mux.
 func VsockListen(cid, port uint32) (*os.File, error) {
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("vsock socket(cid=%d, port=%d): %w", cid, port, err)
 	}
@@ -157,11 +157,13 @@ type SandboxRoute struct {
 	SandboxID         string
 	ConfigBackendPath string
 	ModemBackendPath  string
+	EnableVsocInput   bool
 }
 
 type routeEntry struct {
 	SandboxID   string
 	BackendPath string
+	vsocInput   bool
 
 	mu                sync.Mutex
 	activeConnections map[net.Conn]struct{}
@@ -204,6 +206,9 @@ func (e *routeEntry) removeConnections(frontend, backend net.Conn) {
 func (e *routeEntry) activeCount() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.vsocInput {
+		return len(e.activeConnections)
+	}
 	return len(e.activeConnections) / 2
 }
 
@@ -262,9 +267,9 @@ func (m *VsockMux) Start(ctx context.Context) error {
 		return nil
 	}
 
-	listeners := make(map[uint32]*vsockListener, 2)
-
-	for _, port := range []uint32{ConfigServerVsockPort, ModemSimulatorVsockPort} {
+	ports := append([]uint32{ConfigServerVsockPort, ModemSimulatorVsockPort}, inputVsockPorts[:]...)
+	listeners := make(map[uint32]*vsockListener, len(ports))
+	for _, port := range ports {
 		file, err := VsockListen(VMADDR_CID_ANY, port)
 		if err != nil {
 			for _, listener := range listeners {
@@ -279,7 +284,6 @@ func (m *VsockMux) Start(ctx context.Context) error {
 
 	m.ctx, m.cancel = context.WithCancel(context.WithoutCancel(ctx))
 	m.listeners = listeners
-
 	for _, listener := range listeners {
 		m.acceptWG.Add(1)
 		go m.acceptLoop(listener)
@@ -314,25 +318,33 @@ func (m *VsockMux) Register(route SandboxRoute) error {
 	}
 	m.routes[RouteKey{CID: route.CID, DestinationPort: ConfigServerVsockPort}] = newRouteEntry(route.SandboxID, route.ConfigBackendPath)
 	m.routes[RouteKey{CID: route.CID, DestinationPort: ModemSimulatorVsockPort}] = newRouteEntry(route.SandboxID, route.ModemBackendPath)
+	if route.EnableVsocInput {
+		for _, port := range inputVsockPorts {
+			entry := newRouteEntry(route.SandboxID, "")
+			entry.vsocInput = true
+			m.routes[RouteKey{CID: route.CID, DestinationPort: port}] = entry
+		}
+	}
 	return nil
 }
 
 func (m *VsockMux) Unregister(ctx context.Context, cid uint32) error {
 	m.mu.Lock()
-	entries := make([]*routeEntry, 0, 2)
+	entries := make(map[RouteKey]*routeEntry)
 	for key, entry := range m.routes {
 		if key.CID == cid {
 			delete(m.routes, key)
-			entries = append(entries, entry)
+			entries[key] = entry
 		}
 	}
 	m.mu.Unlock()
 
 	var errs []error
-	for _, entry := range entries {
+	for key, entry := range entries {
 		if err := entry.closeAndWait(ctx); err != nil {
 			logger.L().Error(ctx, "vsock route unregister timed out",
 				zap.Uint32("guest_cid", cid),
+				zap.Uint32("frontend_port", key.DestinationPort),
 				zap.String("sandbox_id", entry.SandboxID),
 				zap.Int("active_connections", entry.activeCount()),
 				zap.Error(err),
@@ -403,7 +415,11 @@ func (m *VsockMux) acceptLoop(listener *vsockListener) {
 	defer m.acceptWG.Done()
 	fd := int(listener.file.Fd())
 	for {
-		acceptedFD, peer, err := unix.Accept4(fd, unix.SOCK_CLOEXEC)
+		if m.ctx.Err() != nil {
+			return
+		}
+		// Nonblocking FDs let Go polling interrupt reads when cleanup closes them.
+		acceptedFD, peer, err := unix.Accept4(fd, unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK)
 		if err != nil {
 			if m.ctx != nil && m.ctx.Err() != nil {
 				return
@@ -448,6 +464,12 @@ func (m *VsockMux) dispatch(destinationPort, sourceCID uint32, frontend net.Conn
 			zap.Bool("unknown_cid", true),
 		)
 		_ = frontend.Close()
+		return
+	}
+
+	if entry.vsocInput {
+		entry.serveInputConnection(key, frontend)
+		m.mu.RUnlock()
 		return
 	}
 
