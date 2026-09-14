@@ -3,14 +3,22 @@ package stratovirt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
+)
+
+const (
+	waitInterval              = 10 * time.Millisecond
+	defaultWaitTimeoutSeconds = 300
 )
 
 type QMPEvent struct {
@@ -35,10 +43,31 @@ func (c *qmpClient) connect(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	dialer := net.Dialer{}
-	conn, err := dialer.DialContext(ctx, "unix", c.socketPath)
+	timeoutSeconds, err := env.GetEnvAsInt("QMP_CONNECT_TIMEOUT_SECONDS", defaultWaitTimeoutSeconds)
 	if err != nil {
-		return fmt.Errorf("error connecting to QMP socket %s: %w", c.socketPath, err)
+		return err
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(waitInterval)
+	defer ticker.Stop()
+
+	dialer := net.Dialer{}
+	var conn net.Conn
+	for {
+		conn, err = dialer.DialContext(dialCtx, "unix", c.socketPath)
+		if err == nil {
+			break
+		}
+		// The socket path can exist before the server starts listening.
+		if !errors.Is(err, syscall.ECONNREFUSED) {
+			return fmt.Errorf("error connecting to QMP socket %s: %w", c.socketPath, err)
+		}
+		select {
+		case <-dialCtx.Done():
+			return fmt.Errorf("error connecting to QMP socket %s: %w", c.socketPath, dialCtx.Err())
+		case <-ticker.C:
+		}
 	}
 
 	c.conn = conn
