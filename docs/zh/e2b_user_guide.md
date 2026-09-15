@@ -82,32 +82,34 @@
 ### 1.2 Nomad 模式快速上手
 
 ```bash
-# 0. 部署路径：通过 RPM 包部署，组件落地 /opt/e2b-infra/（下述命令均在该目录执行）
+# 1. 安装 RPM 包（下载地址：https://gitcode.com/src-openeuler/KASandbox/releases）
+#    安装后组件落地 /opt/e2b-infra/，下述命令均在该目录执行
+rpm -ivh KASandbox-*.aarch64.rpm        # x86_64 机器选择对应 x86_64 包
 cd /opt/e2b-infra
 
-# 1. 修改 .env 中的 SERVER_IP 为本机 IP
+# 2. 修改 .env 中的 SERVER_IP 为本机 IP
 vi .env
 
-# 2. （可选但推荐）运行前置环境检查，按 FAIL 提示修复环境
+# 3. （可选但推荐）运行前置环境检查，按 FAIL 提示修复环境
 ./check-env.sh
 
-# 3. 下载组件
+# 4. 下载组件
 ./build.sh --download
 
-# 4. 安装
+# 5. 安装
 ./build.sh --install
 
-# 5. 启动
+# 6. 启动
 ./build.sh --start
 
-# 6. 制作并上传沙箱镜像到 Harbor（必须，详见 6.1/6.2）
+# 7. 制作并上传沙箱镜像到 Harbor（必须，详见 6.1/6.2）
 ./build.sh --make ubuntu:22.04
 
-# 7. 构建模板（--server-ip / --harbor-ip 与 .env 中 SERVER_IP 保持一致，
+# 8. 构建模板（--server-ip / --harbor-ip 与 .env 中 SERVER_IP 保持一致，
 #    默认基于镜像 ubuntu:22.04-custom 构建，产出模板别名 ubuntu-22-04-custom-1）
 python3 create_template.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
 
-# 8. 创建沙箱（默认模板即上一步产出的 ubuntu-22-04-custom-1，可用 --template 指定其他别名）
+# 9. 创建沙箱（默认模板即上一步产出的 ubuntu-22-04-custom-1，可用 --template 指定其他别名）
 python3 create_sandbox.py --server-ip <SERVER_IP>
 ```
 
@@ -116,33 +118,35 @@ python3 create_sandbox.py --server-ip <SERVER_IP>
 ### 1.3 K8S 模式快速上手
 
 ```bash
-# 0. 部署路径：通过 RPM 包部署，组件落地 /opt/e2b-infra/（下述命令均在该目录执行）
+# 1. 安装 RPM 包（下载地址：https://gitcode.com/src-openeuler/KASandbox/releases）
+#    安装后组件落地 /opt/e2b-infra/，下述命令均在该目录执行
+rpm -ivh KASandbox-*.aarch64.rpm        # x86_64 机器选择对应 x86_64 包
 cd /opt/e2b-infra
 
-# 1. 修改 .env：SERVER_IP 为本机 IP，DEPLOY_MODE=k8s
+# 2. 修改 .env：SERVER_IP 为本机 IP，DEPLOY_MODE=k8s
 vi .env
 
-# 2. 生成集群配置并创建集群（自动部署 ingress-nginx、配置域名）
+# 3. 生成集群配置并创建集群（自动部署 ingress-nginx、配置域名）
 ./k8s-deploy.sh prep && ./k8s-deploy.sh create
 
-# 3. 下载组件、安装并启动 Master 节点
+# 4. 下载组件、安装并启动 Master 节点
 ./build.sh --download
 ./build.sh --k8s <节点名> --install --start
 
-# 4. 部署 Worker 节点（可多个）
+# 5. 部署 Worker 节点（可多个）
 ./deploy-worker.sh worker1 worker2
 
-# 5. 配置 *.e2b.app 域名访问
+# 6. 配置 *.e2b.app 域名访问
 ./k8s-deploy.sh configure-domain
 
-# 6. 制作并上传沙箱镜像到 Harbor（必须，详见 6.1/6.2；K8S 模式使用 HTTPS 端口 30443）
+# 7. 制作并上传沙箱镜像到 Harbor（必须，详见 6.1/6.2；K8S 模式使用 HTTPS 端口 30443）
 ./build.sh --make ubuntu:22.04
 
-# 7. 构建模板（--server-ip / --harbor-ip 与 .env 中 SERVER_IP 保持一致，
+# 8. 构建模板（--server-ip / --harbor-ip 与 .env 中 SERVER_IP 保持一致，
 #    默认基于镜像 ubuntu:22.04-custom 构建，产出模板别名 ubuntu-22-04-custom-1）
 python3 create_template.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
 
-# 8. 创建沙箱（默认模板即上一步产出的 ubuntu-22-04-custom-1，可用 --template 指定其他别名）
+# 9. 创建沙箱（默认模板即上一步产出的 ubuntu-22-04-custom-1，可用 --template 指定其他别名）
 python3 create_sandbox.py --server-ip <SERVER_IP>
 ```
 
@@ -409,6 +413,23 @@ export MOONCAKE_METADATA_SERVER="http://10.10.10.10:8015"   # 改为元数据服
 
 > **注意**：`MOONCAKE_LOCAL_HOSTNAME` 和 `MC_TCP_BIND_ADDRESS` 在 Nomad 模式下通过 Nomad 属性自动获取节点 IP，在 K8S 模式下通过 Downward API 获取 `status.hostIP`，均无需手动配置。
 
+#### 3.5.1 K8S 模式：orchestrator 镜像构建前置（复制 RPM 包）
+
+K8S 模式启用 Mooncake 时，orchestrator 镜像使用 `deploy/dockerfiles/orchestrator-mooncake.Dockerfile` 构建。该 Dockerfile 会将构建上下文（`/opt/e2b-infra/bin`）下的 `*.rpm` 复制进镜像并 `rpm -ivh` 安装，因此**构建镜像前**需先把 Mooncake 与 spdiag 的 RPM 包复制到 `/opt/e2b-infra/bin/`：
+
+```bash
+# RPM 包下载地址（KASandbox 及 mooncake / spdiag 依赖包均在 Releases 页面发布）：
+#   https://gitcode.com/src-openeuler/KASandbox/releases
+
+# 示例：包名与版本以实际获取的为准（aarch64 / x86_64 与部署架构一致）
+cp mooncake-*.rpm spdiag-*.rpm /opt/e2b-infra/bin/
+
+```
+
+> **注意**：
+> - RPM 包版本需与编排二进制编译时链接的库一致（`build.sh -m` 链接 `-lmooncake_store -lmooncake_common -lspdiag`，见 [3.5 Mooncake 配置（可选）](#35-mooncake-配置可选)）；版本不匹配会导致容器内 orchestrator 启动失败。
+> - 若 `/opt/e2b-infra/bin` 下没有任何 `.rpm`，Dockerfile 会打印 `No RPM packages found, skipping` 跳过安装——镜像可构建成功，但容器启动时会因缺少 `libmooncake_store.so` / `libspdiag.so` 等库而失败，务必确认包已就位再构建。
+
 ---
 
 ## 4. 部署：Nomad 模式（单机）
@@ -527,6 +548,7 @@ curl -sk http://<SERVER_IP>:2900/api/v2.0/health | jq .
 
 - K8S 集群已就绪
 - kubectl 可正常访问集群
+- 启用 Mooncake（`STORAGE_PROVIDER=MooncakeBucket`）时：构建 orchestrator 镜像前需将 Mooncake / spdiag 的 RPM 包复制到 `/opt/e2b-infra/bin/`，见 [3.5.1 K8S 模式：orchestrator 镜像构建前置（复制 RPM 包）](#351-k8s-模式orchestrator-镜像构建前置复制-rpm-包)
 
 ### 5.2 集群部署
 
