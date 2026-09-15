@@ -1,22 +1,26 @@
 import os
 import json
 import argparse
-from e2b import Template, default_build_logger, wait_for_port, Sandbox
+from e2b import Sandbox
 
 if __name__ == '__main__':
     # 默认配置
     DEFAULT_SERVER_IP = "10.10.10.10"
-    
+    DEFAULT_TEMPLATE = "ubuntu-22-04-custom-1"
+
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='创建 E2B Sandbox')
     parser.add_argument('--server-ip', default=DEFAULT_SERVER_IP, help=f'Server IP 地址 (默认：{DEFAULT_SERVER_IP})')
+    parser.add_argument('--template', default=DEFAULT_TEMPLATE, help=f'模板别名 (默认：{DEFAULT_TEMPLATE}，即 create_template.py 默认镜像构建产出)')
     args = parser.parse_args()
-    
+
     SERVER_IP = args.server_ip
-    
+    TEMPLATE = args.template
+
     print(f"使用配置：")
     print(f"  SERVER_IP: {SERVER_IP}")
-    
+    print(f"  模板别名: {TEMPLATE}")
+
     # 设置 E2B 环境变量
     os.environ["E2B_API_URL"] = f"http://{SERVER_IP}:3000"
     os.environ["E2B_HTTP_SSL"] = "false"
@@ -24,7 +28,7 @@ if __name__ == '__main__':
     os.environ["E2B_DOMAIN"] = "e2b.app"
     access_token = None
     team_api_key = None
-    
+
     # 1. 打开并读取文件内容
     with open(config_path, "r", encoding="utf-8") as f:
         # 2. 解析 JSON 内容为 Python 字典
@@ -45,10 +49,9 @@ if __name__ == '__main__':
         # 字段缺失时直接退出，避免后续执行失败
         exit(1)
 
-
     # 设置 E2B 相关环境变量
     os.environ["E2B_ACCESS_TOKEN"] = access_token
     os.environ["E2B_API_KEY"] = team_api_key
-    sbx = Sandbox.create("openclaw")
+    sbx = Sandbox.create(TEMPLATE)
     print(sbx.sandbox_id)
     print(sbx.commands.run("whoami"))
