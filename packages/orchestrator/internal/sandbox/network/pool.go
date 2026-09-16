@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/caarlos0/env/v11"
@@ -11,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
@@ -105,6 +108,11 @@ type Pool struct {
 var ErrClosed = errors.New("cannot read from a closed pool")
 
 func NewPool(newSlotsPoolSize, reusedSlotsPoolSize int, slotStorage Storage, config Config) *Pool {
+	// 必须在创建任何 netns 之前隔离 /run/netns；失败时降级为原行为（仅记录日志）
+	if err := isolateNetNSDir(); err != nil {
+		logger.L().Error(context.Background(), "failed to isolate netns mount dir, named netns mounts may leak via shared propagation", zap.Error(err))
+	}
+
 	// One slot is always in flight being created, so the buffer holds size-1.
 	// Clamp at 0 so a non-positive size disables pre-warming instead of panicking.
 	newSlots := make(chan *Slot, max(newSlotsPoolSize-1, 0))
@@ -122,6 +130,55 @@ func NewPool(newSlotsPoolSize, reusedSlotsPoolSize int, slotStorage Storage, con
 	return pool
 }
 
+// isolateNetNSDir 把 /run/netns 变成独立的 private 挂载点。
+// systemd 系统上 /run 默认是 shared 传播，netns 的 bind mount 会传播出同路径的
+// 叠加副本，而销毁路径只做单次 umount，残留会随时间累积并拖慢所有 netns/mount
+// 操作。等价于 mount --bind /run/netns /run/netns && mount --make-rprivate /run/netns，
+// 与 iproute2 对共享 /run 的处理方式一致。
+// 注意幂等：已是挂载点时不再重复 bind——否则每次重启都会多叠一层，
+// 并把上一层的 netns 挂载掩埋进挂载表（仍能访问旧路径但无法按名清理）。
+func isolateNetNSDir() error {
+	if err := os.MkdirAll(netnsRunDir, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", netnsRunDir, err)
+	}
+
+	mounted, err := isMountPoint(netnsRunDir)
+	if err != nil {
+		return fmt.Errorf("check %s mountpoint: %w", netnsRunDir, err)
+	}
+
+	if !mounted {
+		if err := unix.Mount(netnsRunDir, netnsRunDir, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+			return fmt.Errorf("bind mount %s: %w", netnsRunDir, err)
+		}
+	}
+
+	if err := unix.Mount("", netnsRunDir, "", unix.MS_PRIVATE|unix.MS_REC, ""); err != nil {
+		return fmt.Errorf("make %s private: %w", netnsRunDir, err)
+	}
+
+	return nil
+}
+
+// isMountPoint 判断路径是否为挂载点，以 /proc/self/mountinfo 为准。
+// 不能用 st_dev 与父目录比较——同一文件系统内的 bind mount 设备号相同。
+func isMountPoint(path string) (bool, error) {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return false, fmt.Errorf("read mountinfo: %w", err)
+	}
+
+	// 每行第 5 个字段是挂载点
+	for line := range strings.Lines(string(data)) {
+		fields := strings.Fields(line)
+		if len(fields) >= 5 && fields[4] == path {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 func (p *Pool) Config() Config {
 	return p.config
 }
@@ -134,8 +191,11 @@ func (p *Pool) createNetworkSlot(ctx context.Context) (*Slot, error) {
 
 	err = ips.CreateNetwork(ctx)
 	if err != nil {
+		// CreateNetwork 中途失败可能已留下 netns bind mount、veth 或 iptables 残留，
+		// 先尽力清理再释放槽位，避免残留随时间累积
+		removeErr := ips.RemoveNetwork()
 		releaseErr := p.slotStorage.Release(ips)
-		err = errors.Join(err, releaseErr)
+		err = errors.Join(err, removeErr, releaseErr)
 
 		return nil, fmt.Errorf("failed to create network: %w", err)
 	}
