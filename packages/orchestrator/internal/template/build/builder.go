@@ -308,7 +308,8 @@ func runBuild(
 		bc.Config.Force,
 	)
 
-	skipGuestBuildPhases := bc.Config.IsWindows() || bc.Config.IsAndroid()
+	skipDefaultUser := bc.Config.IsWindows() || bc.Config.IsAndroid()
+	skipGuestBuildPhases := bc.Config.IsWindows()
 	var stepBuilders []phases.BuilderPhase
 	if skipGuestBuildPhases {
 		if len(bc.Config.Steps) > 0 {
@@ -361,7 +362,7 @@ func runBuild(
 	if err != nil {
 		return nil, fmt.Errorf("error checking build version: %w", err)
 	}
-	if ok && !skipGuestBuildPhases {
+	if ok && !skipDefaultUser {
 		builders = append(builders, userBuilder)
 	}
 	if !skipGuestBuildPhases {

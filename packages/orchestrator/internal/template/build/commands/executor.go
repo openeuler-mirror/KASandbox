@@ -57,6 +57,9 @@ func (ce *CommandExecutor) getCommand(
 	case "RUN":
 		cmd = &Run{}
 	case "USER":
+		if ce.Config.IsAndroid() {
+			return nil, fmt.Errorf("USER is not supported on Android templates")
+		}
 		cmd = &User{}
 	case "WORKDIR":
 		cmd = &Workdir{}
@@ -92,6 +95,12 @@ func (ce *CommandExecutor) Execute(
 	cmd, err := ce.getCommand(step)
 	if err != nil {
 		return metadata.Context{}, fmt.Errorf("failed to get command for step %s: %w", step.GetType(), err)
+	}
+
+	// Android images run envd as root and have no Linux default-user phase.
+	// Resolve the empty image user before COPY and WORKDIR derive ownership.
+	if ce.Config.IsAndroid() && cmdMetadata.User == "" {
+		cmdMetadata.User = "root"
 	}
 
 	cmdMetadata, err = cmd.Execute(

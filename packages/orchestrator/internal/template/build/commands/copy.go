@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/sandboxtools"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/storage/paths"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
@@ -33,6 +34,8 @@ type Copy struct {
 var _ Command = (*Copy)(nil)
 
 type copyScriptData struct {
+	IsAndroid bool
+
 	SourcePath  string
 	TargetPath  string
 	Owner       string
@@ -51,14 +54,18 @@ var copyScriptTemplate = txtTemplate.Must(txtTemplate.New("copy-script-template"
 // Execute implements the Copy command.
 // It works in the following steps:
 // 1) Downloads the layer tar file from the storage to the local filesystem
-// 2) Copies the file to the sandbox's /tmp directory
-// 3) Extracts it (still in the /tmp directory)
+// 2) Copies the file to the sandbox's temporary directory
+// 3) Extracts it in the same temporary directory
 // 4) Moves the extracted files to the target path in the sandbox
 //   - If the source is a file, it creates the parent directories and moves the file
 //   - If the source is a directory, it moves all its contents to the target directory
 
+// Linux:
 // Note: The temporary files in the /tmp directory are cleaned up automatically on sandbox restart
 // because the /tmp is mounted as a tmpfs and deleted on restart.
+// Android:
+// Temporary files are staged in /mnt/tmp, under the /mnt tmpfs,
+// and are also cleaned up automatically on sandbox restart.
 func (c *Copy) Execute(
 	ctx context.Context,
 	logger logger.Logger,
@@ -108,7 +115,12 @@ func (c *Copy) Execute(
 
 	// The file is automatically cleaned up by the sandbox restart in the last step.
 	// This is happening because the /tmp is mounted as a tmpfs and deleted on restart.
-	sbxTargetPath := filepath.Join("/tmp", fmt.Sprintf("%s.tar", step.GetFilesHash()))
+	tempDir := "/tmp"
+	isAndroid := cmdMetadata.OsType == string(vmm.OsAndroid)
+	if isAndroid {
+		tempDir = "/mnt/tmp"
+	}
+	sbxTargetPath := filepath.Join(tempDir, fmt.Sprintf("%s.tar", step.GetFilesHash()))
 	// 2) Copy the tar file to the sandbox
 	err = sandboxtools.CopyFile(ctx, proxy, sandboxID, "root", tmpFile.Name(), sbxTargetPath)
 	if err != nil {
@@ -116,9 +128,9 @@ func (c *Copy) Execute(
 	}
 
 	// Create nested unpack directory to allow multiple files in the root be correctly detected
-	sbxUnpackPath := filepath.Join("/tmp", step.GetFilesHash(), "unpack")
+	sbxUnpackPath := filepath.Join(tempDir, step.GetFilesHash(), "unpack")
 
-	// 3) Extract the tar file in the sandbox's /tmp directory
+	// 3) Extract the tar file in the sandbox's temporary directory
 	err = sandboxtools.RunCommand(
 		ctx,
 		proxy,
@@ -132,6 +144,8 @@ func (c *Copy) Execute(
 
 	var moveScript bytes.Buffer
 	err = copyScriptTemplate.Execute(&moveScript, copyScriptData{
+		IsAndroid: isAndroid,
+
 		Workdir: utils.DerefOrDefault(cmdMetadata.WorkDir, ""),
 		User:    cmdMetadata.User,
 

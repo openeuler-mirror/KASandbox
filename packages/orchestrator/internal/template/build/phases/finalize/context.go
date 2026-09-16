@@ -21,7 +21,9 @@ func normalizeTemplateContext(meta metadata.Template, osType vmm.OsType) metadat
 func normalizeCommandContext(cmdCtx metadata.Context, osType vmm.OsType) metadata.Context {
 	cmdCtx = cmdCtx.WithOsType(string(osType))
 	cmdCtx.User = ""
-	cmdCtx.WorkDir = nil
+	if osType == vmm.OsWindows {
+		cmdCtx.WorkDir = nil
+	}
 
 	return cmdCtx
 }

@@ -11,7 +11,12 @@ user="{{ .User }}"
 # Fill the workdir with user home directory if empty
 if [ -z "${workdir}" ]; then
     # Use the user's home directory
+    {{- if .IsAndroid }}
+    # Android envd supplies the current user's HOME; getent is unavailable.
+    workdir="${HOME:-/}"
+    {{- else }}
     workdir=$(getent passwd "$user" | cut -d: -f6)
+    {{- end }}
 fi
 cd "$workdir" || exit 1
 
