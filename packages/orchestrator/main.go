@@ -435,6 +435,11 @@ func run(config cfg.Config) (success bool) {
 		logger.L().Fatal(ctx, "failed to create network pool", zap.Error(err))
 	}
 	networkPool := network.NewPool(config.NetworkConfig.NewSlotsPoolSize, config.NetworkConfig.ReusedSlotsPoolSize, slotStorage, config.NetworkConfig)
+	// 固定最小 mount ns 的 holder 必须在 /run/netns 已隔离（NewPool）、遗留 netns
+	// 已清理（newStorage）之后、网络池开始填充之前创建，这样其冻结的挂载表
+	// 最小且不引用任何 netns；失败仅记录日志并回退原 unshare -m 路径
+	fc.WarmupPinnedMountNS(ctx, config.BuilderConfig)
+
 	startService("network pool", func() error {
 		networkPool.Populate(ctx)
 
