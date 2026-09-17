@@ -5,7 +5,7 @@
 创建完成后输出所有创建的模板名（alias）。
 
 用法示例：
-    # 无参数运行（使用默认值：镜像 ubuntu:22.04-custom，创建 10 个模板）
+    # 无参数运行（使用默认值：镜像 ubuntu:22.04-custom，创建 1个模板）
     python3 create_templates.py
 
     # 指定参数运行

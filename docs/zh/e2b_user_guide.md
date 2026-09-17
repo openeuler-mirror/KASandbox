@@ -88,19 +88,30 @@ cd /opt/e2b-infra
 # 1. 修改 .env 中的 SERVER_IP 为本机 IP
 vi .env
 
-# 2. 下载组件
+# 2. （可选但推荐）运行前置环境检查，按 FAIL 提示修复环境
+./check-env.sh
+
+# 3. 下载组件
 ./build.sh --download
 
-# 3. 安装
+# 4. 安装
 ./build.sh --install
 
-# 4. 启动
+# 5. 启动
 ./build.sh --start
 
-# 5. 构建模板并创建沙箱
-python3 create_template.py
+# 6. 制作并上传沙箱镜像到 Harbor（必须，详见 6.1/6.2）
+./build.sh --make ubuntu:22.04
+
+# 7. 构建模板（--server-ip / --harbor-ip 与 .env 中 SERVER_IP 保持一致，
+#    默认基于镜像 ubuntu:22.04-custom 构建，产出模板别名 ubuntu-22-04-custom-1）
+python3 create_template.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
+
+# 8. 创建沙箱（默认模板即上一步产出的 ubuntu-22-04-custom-1，可用 --template 指定其他别名）
 python3 create_sandbox.py --server-ip <SERVER_IP>
 ```
+
+> **说明**：模板别名由 `create_template.py` 根据镜像名自动派生（规则见 [6.3.1 快速构建](#631-快速构建create_templatepy)），默认产出 `ubuntu-22-04-custom-1`；`create_sandbox.py` 默认使用同名模板，构建其他镜像时通过 `--template` 指定。
 
 ### 1.3 K8S 模式快速上手
 
@@ -123,9 +134,19 @@ vi .env
 
 # 5. 配置 *.e2b.app 域名访问
 ./k8s-deploy.sh configure-domain
+
+# 6. 制作并上传沙箱镜像到 Harbor（必须，详见 6.1/6.2；K8S 模式使用 HTTPS 端口 30443）
+./build.sh --make ubuntu:22.04
+
+# 7. 构建模板（--server-ip / --harbor-ip 与 .env 中 SERVER_IP 保持一致，
+#    默认基于镜像 ubuntu:22.04-custom 构建，产出模板别名 ubuntu-22-04-custom-1）
+python3 create_template.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
+
+# 8. 创建沙箱（默认模板即上一步产出的 ubuntu-22-04-custom-1，可用 --template 指定其他别名）
+python3 create_sandbox.py --server-ip <SERVER_IP>
 ```
 
-> **说明**：上述两条快速路径省略了大量可选项（Harbor 协议、Mooncake、cri-multiplex、e2b-webhook 等），完整步骤见对应章节。
+> **说明**：上述两条快速路径省略了大量可选项（Harbor 协议、Mooncake、cri-multiplex、e2b-webhook 等），完整步骤见对应章节。执行 `--install` 前可先运行 `./check-env.sh` 检查前置条件。
 
 ---
 
@@ -189,10 +210,12 @@ vi .env
 | 项目 | 要求 |
 |------|------|
 | 操作系统 | openEuler2403sp3 |
-| 架构 | arm64 |
+| 架构 | x86_64 / arm64 |
 | 内存 | ≥ 16GB（推荐 32GB） |
 | 磁盘 | ≥ 100GB |
 | 网络 | 可访问外网（下载依赖包时） |
+
+> **提示**：安装前建议先运行 `./check-env.sh` 检查前置条件（支持 `--install` / `--start` 分别检查），任何 FAIL 项均会给出修复提示。
 
 ### 3.2 修改配置文件
 
@@ -756,9 +779,10 @@ kubectl get pods -n e2b -o wide
 |-----|------|
 | `postgres-*` | 元数据存储（teams / users / templates / 沙箱配额） |
 | `redis-*` | 缓存 / 会话存储 |
-| `api-*` | API 服务（端口 3000） |
-| `edge-*` | 客户端代理（端口 3002） |
-| `template-manager-*` | 模板管理 / 沙箱生命周期管理（端口 5008） |
+| `api-*` | API 服务（端口 3000），运行在控制节点池 |
+| `edge-*` | 客户端代理（端口 3002），运行在控制节点池 |
+| `template-manager-*` | 模板构建（gRPC 5008），DaemonSet，运行在构建节点池（`.env` 中 `BUILD_NODE_POOL` 指定的节点池） |
+
 
 **可选组件（按需启用/部署）**
 
@@ -913,9 +937,9 @@ kubectl -n e2b get secret e2b-webhook-tls e2b-api-key
 **Ubuntu 示例**
 
 ```bash
-# 1. 保存原镜像的 Entrypoint 和 Cmd
-ORIG_ENTRY=$(docker inspect ubuntu:22.04 --format='{{json .Config.Entrypoint}}')
-ORIG_CMD=$(docker inspect ubuntu:22.04 --format='{{json .Config.Cmd}}')
+# 1. 保存原镜像的 Entrypoint 和 Cmd（join 输出空格分隔参数串，供 docker import 使用）
+ORIG_ENTRY=$(docker inspect ubuntu:22.04 --format='{{join .Config.Entrypoint " "}}')
+ORIG_CMD=$(docker inspect ubuntu:22.04 --format='{{join .Config.Cmd " "}}')
 echo "原 ENTRYPOINT: $ORIG_ENTRY"
 echo "原 CMD: $ORIG_CMD"
 ```
@@ -931,8 +955,8 @@ docker run -d --name temp-images --privileged --entrypoint tail \
 # 3. 安装必要组件
 docker exec temp-images bash -c " \
     apt-get update && \
-    apt-get install -y systemd systemd-sysv openssh-server sudo chrony \
-    linuxptp socat curl wget iputils iproute2 netcat-openbsd tcpdump passwd && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y systemd systemd-sysv openssh-server sudo chrony \
+    linuxptp socat curl wget iputils-ping bind9-utils iproute2 netcat-openbsd tcpdump passwd && \
     apt-get clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*"
 ```
 
@@ -945,12 +969,12 @@ docker exec temp-images bash -c ' \
 ```
 
 ```bash
-# 5. 导出容器并恢复原始 ENTRYPOINT/CMD
+# 5. 导出容器并恢复原始 ENTRYPOINT/CMD（原镜像无对应配置时跳过该 --change）
 docker stop temp-images
-docker export temp-images | docker import \
-    --change "ENTRYPOINT $ORIG_ENTRY" \
-    --change "CMD $ORIG_CMD" \
-    - ubuntu:22.04-custom
+CHANGE_ARGS=()
+[ -n "$ORIG_ENTRY" ] && [ "$ORIG_ENTRY" != "<no value>" ] && CHANGE_ARGS+=(--change "ENTRYPOINT $ORIG_ENTRY")
+[ -n "$ORIG_CMD" ] && [ "$ORIG_CMD" != "<no value>" ] && CHANGE_ARGS+=(--change "CMD $ORIG_CMD")
+docker export temp-images | docker import "${CHANGE_ARGS[@]}" - ubuntu:22.04-custom
 ```
 
 ```bash
@@ -961,9 +985,9 @@ docker rm -f temp-images
 **openEuler 示例**
 
 ```bash
-# 1. 保存原镜像的 Entrypoint 和 Cmd
-ORIG_ENTRY=$(docker inspect openeuler/openeuler:24.03 --format='{{json .Config.Entrypoint}}')
-ORIG_CMD=$(docker inspect openeuler/openeuler:24.03 --format='{{json .Config.Cmd}}')
+# 1. 保存原镜像的 Entrypoint 和 Cmd（join 输出空格分隔参数串，供 docker import 使用）
+ORIG_ENTRY=$(docker inspect openeuler/openeuler:24.03 --format='{{join .Config.Entrypoint " "}}')
+ORIG_CMD=$(docker inspect openeuler/openeuler:24.03 --format='{{join .Config.Cmd " "}}')
 echo "原 ENTRYPOINT: $ORIG_ENTRY"
 echo "原 CMD: $ORIG_CMD"
 ```
@@ -992,12 +1016,12 @@ docker exec temp-images bash -c ' \
 ```
 
 ```bash
-# 5. 导出容器并恢复原始 ENTRYPOINT/CMD
+# 5. 导出容器并恢复原始 ENTRYPOINT/CMD（原镜像无对应配置时跳过该 --change）
 docker stop temp-images
-docker export temp-images | docker import \
-    --change "ENTRYPOINT $ORIG_ENTRY" \
-    --change "CMD $ORIG_CMD" \
-    - openeuler:24.03-custom
+CHANGE_ARGS=()
+[ -n "$ORIG_ENTRY" ] && [ "$ORIG_ENTRY" != "<no value>" ] && CHANGE_ARGS+=(--change "ENTRYPOINT $ORIG_ENTRY")
+[ -n "$ORIG_CMD" ] && [ "$ORIG_CMD" != "<no value>" ] && CHANGE_ARGS+=(--change "CMD $ORIG_CMD")
+docker export temp-images | docker import "${CHANGE_ARGS[@]}" - openeuler:24.03-custom
 ```
 
 ```bash
@@ -1014,9 +1038,12 @@ docker rm -f temp-images
 ```bash
 # 直接使用已有的基础镜像作为沙箱镜像
 docker tag ubuntu:22.04 <SERVER_IP>:30443/e2b-orchestration/ubuntu:22.04
+docker push <SERVER_IP>:30443/e2b-orchestration/ubuntu:22.04
 ```
 
-> **注意**：直接使用基础镜像缺少 systemd、sshd、websocat 等组件，沙箱功能受限（无法 SSH 连接、无法使用 websocat 代理）。仅推荐测试用途。
+> **注意**：
+> - 直接使用基础镜像缺少 systemd、sshd、websocat 等组件，沙箱功能受限（无法 SSH 连接、无法使用 websocat 代理）。仅推荐测试用途。
+> - 该方式产出的镜像名为 `ubuntu:22.04`（无 `-custom` 后缀），对应 `create_template.py` 需传 `--image ubuntu:22.04`，模板别名为 `ubuntu-22-04-1`（别名派生规则见 [6.3.1 快速构建](#631-快速构建create_templatepy)）。
 
 ### 6.2 上传镜像到 Harbor
 
@@ -1073,24 +1100,37 @@ docker pull <SERVER_IP>:30443/e2b-orchestration/ubuntu:22.04-custom
 
 #### 6.3.1 快速构建（create_template.py）
 
-`create_template.py` 默认构建别名为 `openclaw` 的模板（固定从 `<HARBOR_IP>:30443/e2b-orchestration/ubuntu:22.04-custom` 镜像构建）：
+`create_template.py` 支持批量构建模板，默认从 `<HARBOR_IP>:30443/e2b-orchestration/ubuntu:22.04-custom` 镜像构建 1 个模板（需先按 [6.1 制作沙箱镜像](#61-制作沙箱镜像) / [6.2 上传镜像到 Harbor](#62-上传镜像到-harbor) 准备好该镜像）。
+
+**模板别名派生规则**：别名 = 镜像名最后一段（非小写字母/数字的字符转为 `-`，截断至 30 字符）+ 序号。默认镜像 `ubuntu:22.04-custom` → 模板别名 **`ubuntu-22-04-custom-1`**；批量构建时序号递增（`-1`、`-2`、...）。
 
 ```bash
-# 使用默认 IP（10.10.10.10），适用于本地快速验证
-python3 create_template.py
-
-# 指定 SERVER_IP 和 HARBOR_IP
+# 使用默认镜像 ubuntu:22.04-custom（产出别名 ubuntu-22-04-custom-1）
 python3 create_template.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
+
+# 指定其他镜像（如 6.1.3 的测试镜像 ubuntu:22.04，产出别名 ubuntu-22-04-1）
+python3 create_template.py --image ubuntu:22.04 --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
 ```
+
+**常用参数**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--image` | `ubuntu:22.04-custom` | 基础镜像（不含仓库地址时自动补全 `<HARBOR_IP>:30443/e2b-orchestration/` 前缀） |
+| `--template-count` | `1` | 创建模板个数 |
+| `--concurrency` | `1` | 并发创建数 |
+| `--image-count` | `1` | 根据基础镜像派生的镜像变体数 |
+| `--server-ip` | `10.10.10.10` | E2B API 地址（与 `.env` 中 `SERVER_IP` 保持一致） |
+| `--harbor-ip` | `10.10.10.10` | Harbor 地址 |
 
 脚本内部流程：
 
 1. 从 `/root/.e2b/config.json` 读取 API Token
 2. 设置环境变量 `E2B_API_URL`、`E2B_API_KEY` 等
-3. 调用 `Template.build()` 从 Harbor 镜像构建模板
-4. 模板别名为 `openclaw`
+3. 调用 `Template.build()` 从 Harbor 镜像构建模板（默认 2 vCPU / 2048MB 内存）
+4. 输出所有创建成功的模板别名列表
 
-如需修改模板别名、镜像或资源配置，直接编辑 [create_template.py](create_template.py) 中的 `Template.build()` 调用。
+如需修改资源配置，编辑 [create_template.py](create_template.py) 中的 `CPU_COUNT` / `MEMORY_MB`。
 
 #### 6.3.2 自定义模板构建
 
@@ -1150,15 +1190,28 @@ Template.build(
 
 #### 7.1.2 一键脚本
 
+`create_sandbox.py` 通过 `--template` 指定模板别名，默认 `ubuntu-22-04-custom-1`（即 `create_template.py` 默认镜像构建产出，见 [6.3.1 快速构建](#631-快速构建create_templatepy)）：
+
 ```bash
+# 创建沙箱（--server-ip 与 .env 中 SERVER_IP 保持一致）
 python3 create_sandbox.py --server-ip <SERVER_IP>
+
+# 指定其他模板别名
+python3 create_sandbox.py --server-ip <SERVER_IP> --template <模板别名>
 ```
+
+**常用参数**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--server-ip` | `10.10.10.10` | E2B API 地址（与 `.env` 中 `SERVER_IP` 保持一致） |
+| `--template` | `ubuntu-22-04-custom-1` | 模板别名，需为已构建的模板 |
 
 脚本内部流程：
 
 1. 读取 `/root/.e2b/config.json` 获取认证信息
 2. 设置环境变量（`E2B_API_URL`、`E2B_HTTP_SSL`、`E2B_DOMAIN`、`E2B_ACCESS_TOKEN`、`E2B_API_KEY`）
-3. 调用 `Sandbox.create("openclaw")` 创建沙箱
+3. 调用 `Sandbox.create(<模板别名>)` 创建沙箱
 4. 输出沙箱 ID，并执行 `whoami` 验证
 
 #### 7.1.3 Python SDK 完整示例
@@ -1179,8 +1232,8 @@ with open("/root/.e2b/config.json") as f:
 os.environ["E2B_ACCESS_TOKEN"] = data["accessToken"]
 os.environ["E2B_API_KEY"] = data["teamApiKey"]
 
-# 3. 创建沙箱（模板名 openclaw）
-sbx = Sandbox.create("openclaw")
+# 3. 创建沙箱（模板名替换为实际已构建的别名，默认镜像构建产出 ubuntu-22-04-custom-1）
+sbx = Sandbox.create("ubuntu-22-04-custom-1")
 print(f"沙箱 ID: {sbx.sandbox_id}")
 
 # 4. 关闭沙箱
@@ -1189,7 +1242,9 @@ sbx.kill()
 
 #### 7.1.4 SSH 连接沙箱
 
-通过 websocat 代理连接沙箱的 SSH 服务：
+通过 websocat 代理连接沙箱的 SSH 服务。
+
+**前提**：沙箱镜像包含 openssh-server 且镜像内已设置用户密码（[6.1.2 手动制作](#612-方式二手动制作) 示例已安装 openssh-server 与 passwd，构建镜像时可通过 `passwd <user>` 设置密码）；使用 [6.1.3 测试镜像](#613-方式三直接使用测试镜像) 的沙箱无法 SSH 连接。
 
 ```bash
 # 设置沙箱 ID
@@ -1213,7 +1268,7 @@ ssh -o "ProxyCommand=websocat --binary -B 65536 ws://8081-${SANDBOX_ID}.e2b.app"
 
 - K8S 模式部署完成，`cri-multiplex` 已部署并创建 RuntimeClass `e2b`（见 [5.7 可选组件：cri-multiplex](#57-可选组件cri-multiplex)）
 - `ENABLE_WEBHOOK=true` 且 e2b-webhook 已部署（见 [5.8 可选组件：e2b-webhook](#58-可选组件e2b-webhook)）
-- 目标模板已存在（如 `openclaw`）
+- 目标模板已存在（如按 [6.3.1 快速构建](#631-快速构建create_templatepy) 默认产出的 `ubuntu-22-04-custom-1`）
 
 #### 7.2.2 创建沙箱 Pod
 
@@ -1235,7 +1290,7 @@ spec:
       image: e2b.dev/k9tscfp28i8tjmm97c9b:6858033e-db33-40df-87ca-7734c94031d9
       env:
         - name: TEMPLATE_NAME            # 必填: webhook 据此调用 transform API
-          value: "openclaw"
+          value: "ubuntu-22-04-custom-1"  # 替换为实际已构建的模板别名
 ```
 
 ```bash
@@ -1332,6 +1387,8 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 | `selector` | K8S 标签选择器 | `app=openclaw-deploy-for-local-exec` |
 | `namespace` | K8S 命名空间 | `default` |
 
+> **注意**：`template` 参数需与实际已构建的模板别名一致（默认镜像构建产出为 `ubuntu-22-04-custom-1`，见 [6.3.1 快速构建](#631-快速构建create_templatepy)），否则插件创建沙箱时报 `Sandbox not found`。
+
 ---
 
 ## 9. 运维操作
@@ -1420,19 +1477,29 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 
 ### 9.6 修改沙箱配置
 
+以下以修改 `tiers` 表为例，按部署模式选择对应命令。
+
 **修改默认超时时间**：
 
 ```bash
-# 默认 24 小时
+# Nomad 模式（默认 24 小时）
 docker exec postgres psql -U postgres -d mydatabase \
+    -c "UPDATE tiers SET max_length_hours = 24 WHERE id = 'base_v1';"
+
+# K8S 模式
+kubectl exec -n e2b deploy/postgres -- psql -U postgres -d mydatabase \
     -c "UPDATE tiers SET max_length_hours = 24 WHERE id = 'base_v1';"
 ```
 
 **修改最大并发数**：
 
 ```bash
-# 默认 50
+# Nomad 模式（默认 50）
 docker exec postgres psql -U postgres -d mydatabase \
+    -c "UPDATE tiers SET concurrent_instances = 50 WHERE id = 'base_v1';"
+
+# K8S 模式
+kubectl exec -n e2b deploy/postgres -- psql -U postgres -d mydatabase \
     -c "UPDATE tiers SET concurrent_instances = 50 WHERE id = 'base_v1';"
 ```
 
@@ -1489,12 +1556,15 @@ BuildException: dial tcp xxx:5008: connect: connection refused
 
 **原因**：Template Manager 内存不足。
 
-**解决**：通过 Nomad Web 界面增加 Template Manager 资源：
+**解决**：增加 Template Manager 资源（需与节点实际规格匹配，如 32GB 内存机器可设 16384）：
+
+- 方式一（推荐）：修改 `.env` 中 `TEMPLATE_MANAGER_RESOURCES_MEMORY_MB` / `TEMPLATE_MANAGER_LIMITS_MEMORY_MB`（如 16384）后重新部署 `./build.sh --deploy services`
+- 方式二：通过 Nomad Web 界面编辑任务资源：
 
 ```hcl
 resources {
-    memory = 81920
-    cpu    = 20480
+    memory = 16384
+    cpu    = 4096
 }
 ```
 
