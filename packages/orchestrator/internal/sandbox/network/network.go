@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 )
@@ -88,6 +90,9 @@ func linkAddTuntap(name string, vnetHdr bool) error {
 
 	return netlink.LinkAdd(tap)
 }
+
+// netnsRunDir 与 vishvananda/netns 的 bindMountPath 保持一致
+const netnsRunDir = "/run/netns"
 
 func (s *Slot) CreateNetwork(ctx context.Context) error {
 	if s.ExternalNetNS {
@@ -443,12 +448,44 @@ func (s *Slot) RemoveNetwork() error {
 		}
 	}
 
-	err = netns.DeleteNamed(s.NamespaceID())
+	err = deleteNamedNamespace(s.NamespaceID())
 	if err != nil {
 		errs = append(errs, fmt.Errorf("error deleting namespace: %w", err))
 	}
 
 	return errors.Join(errs...)
+}
+
+// deleteNamedNamespace 删除命名 netns。/run 在 systemd 系统上是 shared 挂载，
+// bind mount 可能被传播出同路径的多份叠加副本，而 netns.DeleteNamed 只做一次
+// umount，叠挂时只摘顶层导致残留。DeleteNamed 失败时循环 umount 直到目标不再
+// 是挂载点（EINVAL），再删除持久化文件。
+func deleteNamedNamespace(name string) error {
+	err := netns.DeleteNamed(name)
+	if err == nil {
+		return nil
+	}
+
+	path := filepath.Join(netnsRunDir, name)
+	for range 8 {
+		umountErr := unix.Unmount(path, unix.MNT_DETACH)
+		if umountErr == nil {
+			continue
+		}
+		// EINVAL：已不是挂载点（卸载干净）；ENOENT：残留已被并发清理
+		if errors.Is(umountErr, unix.EINVAL) || errors.Is(umountErr, unix.ENOENT) {
+			break
+		}
+
+		return errors.Join(err, fmt.Errorf("error unmounting duplicated namespace mount %s: %w", path, umountErr))
+	}
+
+	removeErr := os.Remove(path)
+	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return errors.Join(err, fmt.Errorf("error removing namespace file %s: %w", path, removeErr))
+	}
+
+	return nil
 }
 
 func (s *Slot) CreateExternalNetNSNetwork(ctx context.Context) error {

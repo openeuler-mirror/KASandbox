@@ -42,6 +42,10 @@ type Process struct {
 
 	cmd *exec.Cmd
 
+	// closeNetnsFD 关闭拉起链 ExtraFiles 传入的 netns fd 的父进程副本，
+	// 在 cmd 启动后调用；无 fd 传入时为空操作
+	closeNetnsFD func()
+
 	config                cfg.BuilderConfig
 	firecrackerSocketPath string
 
@@ -102,14 +106,17 @@ func NewProcess(
 		time.Since(tStatKernel).Seconds()*1000, versions.HostKernelPath(config))
 
 	tCmd := time.Now()
-	cmd := exec.CommandContext(execCtx,
-		"unshare",
-		"-m",
-		"--",
-		"bash",
-		"-c",
-		startScript.Value,
-	)
+	restoredSandbox := rootfsPaths.TemplateID != "" && rootfsPaths.BuildID != ""
+
+	// V2 恢复沙箱可走 fc-netns-exec --prepare-vm 合并链（helper 探测与
+	// E2B_FC_PREPARE_VM 开关在 buildStartCommand 内判定）；其余情况传 nil
+	// 保持原 bash 脚本路径
+	var prepArgv []string
+	if restoredSandbox && rootfsPaths.TemplateVersion >= 2 {
+		prepArgv = startBuilder.PrepareVMArgv(versions, files, rootfsPaths, slot.NamespaceID())
+	}
+
+	cmd, closeNetnsFD := buildStartCommand(ctx, execCtx, config, startScript.Value, slot, restoredSandbox, prepArgv)
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid: true, // Create a new session
@@ -121,6 +128,7 @@ func NewProcess(
 		Versions:              versions,
 		exitOnce:              utils.NewErrorOnce(),
 		cmd:                   cmd,
+		closeNetnsFD:          closeNetnsFD,
 		firecrackerSocketPath: files.SandboxFirecrackerSocketPath(),
 		config:                config,
 		client:                newApiClient(files.SandboxFirecrackerSocketPath()),
@@ -170,6 +178,8 @@ func (p *Process) configure(
 
 	tStart := time.Now()
 	err := p.cmd.Start()
+	// ExtraFiles 在 fork 时已 dup 进子进程，父进程副本随启动完成即可关闭
+	p.closeNetnsFD()
 	if err != nil {
 		return fmt.Errorf("error starting fc process: %w", err)
 	}

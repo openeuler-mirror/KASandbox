@@ -191,3 +191,29 @@ func (sb *StartScriptBuilder) getRootfsPath(args startScriptArgs, rootfsPaths vm
 func (sb *StartScriptBuilder) getKernelPath(args startScriptArgs) string {
 	return filepath.Join(args.SandboxDir, args.SandboxKernelDir, args.SandboxKernelFile)
 }
+
+// PrepareVMArgv 生成 fc-netns-exec --prepare-vm 模式的完整 argv（含 helper
+// 自身与 firecracker 命令），用于把 V2 startScript 的 bash 准备链并入
+// helper。仅 V2 布局适用；V1 与模板构建 VM 仍走原脚本路径。
+func (sb *StartScriptBuilder) PrepareVMArgv(
+	versions Config,
+	files *storage.SandboxFiles,
+	rootfsPaths vmm.RootfsPaths,
+	namespaceID string,
+) []string {
+	args := sb.buildArgs(versions, files, rootfsPaths, namespaceID)
+
+	helper := strings.TrimSpace(sb.builderConfig.FirecrackerNetnsExecHelper)
+
+	return []string{
+		helper, "--prepare-vm",
+		"-sandbox-dir", args.SandboxDir,
+		"-rootfs-src", args.HostRootfsPath,
+		"-rootfs-name", args.SandboxRootfsFile,
+		"-kernel-src", args.HostKernelPath,
+		"-kernel-dir", args.SandboxKernelDir,
+		"-kernel-name", args.SandboxKernelFile,
+		args.NamespaceID,
+		args.FirecrackerPath, "--api-sock", args.FirecrackerSocket,
+	}
+}
