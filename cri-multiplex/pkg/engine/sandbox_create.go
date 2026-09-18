@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -29,13 +31,32 @@ type e2bCreateParams struct {
 	cniConfig *runtime.PodSandboxConfig // CRI=req.Config；admin=合成最小 config
 }
 
-// createE2BSandbox 是沙箱创建的完整生命周期主体：CNI（预热池优先 / pending 标记 /
-// RuntimeNetwork 注入）→ orchestrator Create（失败 CNI DEL 回滚）→ HostPort 分配
-// 与 iptables → tracker + stateStore 登记。由 RunPodSandbox（CRI 面）与
-// AdminCreate（admin 面）共用；幂等重试检查与 inflight 计数保留在各适配层。
+// createE2BSandbox 是沙箱创建的完整生命周期主体：expose-ports 解析（malformed 即
+// InvalidArgument fail-fast）→ CNI（预热池优先 / pending 标记 / RuntimeNetwork 注入）
+// → orchestrator Create（失败 CNI DEL 回滚）→ HostPort 分配（失败即创建失败并回滚
+// orchestrator Delete + CNI DEL）与 iptables 批量安装 → tracker + stateStore 登记。
+// 由 RunPodSandbox（CRI 面）与 AdminCreate（admin 面）共用；幂等重试检查与 inflight
+// 计数保留在各适配层。
 func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams) (*orchestrator.SandboxCreateResponse, error) {
 	sandboxID := p.sandboxID
 	cfg := p.cfg
+
+	// expose-ports 提前解析（设计文档 4.4.2.6）：malformed 直接 InvalidArgument
+	// fail-fast，不进入 CNI/orchestrator，避免"声明被静默丢弃但业务以为已暴露"。
+	var exposeSpecs []ExposePortSpec
+	if portsStr, ok := p.metadata[annExposePorts]; ok && portsStr != "" {
+		specs, err := parseExposePorts(portsStr)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid %s: %v", annExposePorts, err)
+		}
+		exposeSpecs = specs
+	}
+
+	// per-sandbox egress 代理注解前置校验（设计文档 §6.2）：与 malformed
+	// expose-ports 同语义，CNI/orchestrator 调用之前 fail-fast，零回滚。
+	if err := validateEgressConfig(p.metadata); err != nil {
+		return nil, err
+	}
 
 	// 阶段耗时打点：CNI（池化/直连）→ orchestrator Create → HostPort，结束时输出
 	// 单行 [PerfTrace] 日志，供并发压测脚本（28/29 号用例）采集统计。
@@ -120,33 +141,29 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 	// ===== 多端口分配 =====
 	hostPortStart := time.Now()
 	var allMappings []PortMapping
-	if hostIP != "" && e.hostPortManager != nil {
-		// 1. 收集需要暴露的端口（仅来自 metadata）
-		var ports []int
-		if portsStr, ok := p.metadata[annExposePorts]; ok && portsStr != "" {
-			for _, pt := range strings.Split(portsStr, ",") {
-				if port, err := strconv.Atoi(strings.TrimSpace(pt)); err == nil && port > 0 && port < 65536 {
-					ports = append(ports, port)
-				}
-			}
-		}
-
-		// 2. 分配所有端口
-		if len(ports) > 0 {
-			mappings, err := e.hostPortManager.AllocatePorts(sandboxID, ports)
+	if len(exposeSpecs) > 0 {
+		if hostIP == "" || e.hostPortManager == nil {
+			// 无沙箱 IP 无法安装 DNAT 规则，保持现状跳过（不满足分配前置条件）
+			log.Printf("[GrpcE2BEngine] WARNING: expose-ports declared for %s but host_ip is unavailable, skip host port allocation", sandboxID)
+		} else {
+			// 分配失败即创建失败（行为变更，三种写法统一）：AllocatePorts 内部
+			// 已回滚本批端口占用，此处按序回滚 orchestrator Delete → CNI DEL；
+			// pending netns 标记由 defer 解除，tracker/stateStore 尚未登记无需回滚。
+			mappings, err := e.hostPortManager.AllocatePorts(sandboxID, exposeSpecs)
 			if err != nil {
-				log.Printf("[GrpcE2BEngine] WARNING: failed to allocate host ports for %s: %v", sandboxID, err)
-			} else {
-				// 3. 为每个端口创建 iptables 规则
-				for _, m := range mappings {
-					if err := e.hostPortOps.setup(e.nodeIP, m.HostPort, hostIP, m.SandboxPort); err != nil {
-						log.Printf("[GrpcE2BEngine] WARNING: failed to setup mapping %d->%d for %s: %v", m.HostPort, m.SandboxPort, sandboxID, err)
-					} else {
-						log.Printf("[GrpcE2BEngine] HostPort mapping: %s:%d -> %s:%d", e.nodeIP, m.HostPort, hostIP, m.SandboxPort)
-					}
-				}
-				allMappings = mappings
+				log.Printf("[GrpcE2BEngine] createE2BSandbox: allocate host ports failed for %s: %v", sandboxID, err)
+				e.rollbackFailedCreate(ctx, sandboxID, cfg.SandboxId, cniRecord, p.cniConfig)
+				return nil, status.Errorf(codes.ResourceExhausted, "allocate host ports for %s: %v", sandboxID, err)
 			}
+			// 批量安装 iptables 规则（单次 iptables-restore 事务）；
+			// 单条/整批规则安装失败仅 WARNING 不阻断创建（与现状一致）。
+			if setupErr := e.setupHostPortMappings(mappings, hostIP); setupErr != nil {
+				log.Printf("[GrpcE2BEngine] WARNING: failed to setup host port mappings for %s: %v", sandboxID, setupErr)
+			}
+			for _, m := range mappings {
+				log.Printf("[GrpcE2BEngine] HostPort mapping: %s:%d -> %s:%d", e.nodeIP, m.HostPort, hostIP, m.SandboxPort)
+			}
+			allMappings = mappings
 		}
 	}
 	// ===== 多端口分配结束 =====
@@ -207,4 +224,86 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 		orchCreateMs, hostPortMs, persistMs, time.Since(perfStart).Milliseconds())
 
 	return resp, nil
+}
+
+// setupHostPortMappings 优先走批量安装（setupBatch，单次 iptables-restore 事务）；
+// 未配置批量实现时回退为逐条 setup。
+func (e *grpcE2BEngine) setupHostPortMappings(mappings []PortMapping, hostIP string) error {
+	if e.hostPortOps.setupBatch != nil {
+		return e.hostPortOps.setupBatch(e.nodeIP, mappings, hostIP)
+	}
+	var errs []error
+	for _, m := range mappings {
+		if err := e.hostPortOps.setup(e.nodeIP, m.HostPort, hostIP, m.SandboxPort); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// rollbackFailedCreate 回滚 orchestrator Create 成功之后才失败的创建（如 hostport
+// 分配失败）：orchestrator Delete（幂等，销毁已建 VM）→ CNI DEL（沿用 Create 失败
+// 路径的写法，含预热池 entry 回收）。失败仅记日志，由 remove/orphan reconcile 兜底。
+func (e *grpcE2BEngine) rollbackFailedCreate(ctx context.Context, sandboxID, e2bSandboxID string, cniRecord *CNIRecord, podCfg *runtime.PodSandboxConfig) {
+	if _, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: e2bSandboxID}); err != nil {
+		log.Printf("[GrpcE2BEngine] WARNING: rollback delete sandbox %s (e2b_id=%s) failed: %v (left for remove/reconcile)", sandboxID, e2bSandboxID, err)
+	}
+	if cniRecord != nil {
+		if err := e.cniManager.Del(context.Background(), cniRecord, podCfg); err != nil {
+			log.Printf("[GrpcE2BEngine] WARNING: rollback CNI DEL failed for %s: %v", sandboxID, err)
+		}
+	}
+}
+
+// validateEgressConfig 校验 per-sandbox egress 代理注解取值（设计文档 §3.2/§6.2）。
+// 空值 = 未指定，合法；非法一律 InvalidArgument。egress-mode=per-sandbox 显式指定
+// 时 sandbox-mis 必填——addon.py 中 SANDBOX_MIS 为空会静默禁用策略客户端
+// （addon.py:1863-1868），不拦截会造成"业务以为有管控实际没有"；按 §8.2 推导命中
+// per-sandbox 的场景由 orchestrator 侧校验，不在此层。
+func validateEgressConfig(metadata map[string]string) error {
+	mode := metadata[annEgressMode]
+	switch mode {
+	case "", "per-sandbox", "off":
+	default:
+		return status.Errorf(codes.InvalidArgument, "invalid %s=%q: expected per-sandbox or off", annEgressMode, mode)
+	}
+	// 当前仅支持 internal 发行版（UserId 取 SANDBOX_ID、策略 id_type=virtual），
+	// 缺省亦由 orchestrator 侧按 internal 注入。
+	if profile := metadata[annEgressProfile]; profile != "" && profile != "internal" {
+		return status.Errorf(codes.InvalidArgument, "invalid %s=%q: only internal is supported", annEgressProfile, profile)
+	}
+	if mitm := metadata[annEgressMitm]; mitm != "" && mitm != "true" && mitm != "false" {
+		return status.Errorf(codes.InvalidArgument, "invalid %s=%q: expected true or false", annEgressMitm, mitm)
+	}
+	if upstream := metadata[annEgressUpstream]; upstream != "" && upstream != "off" {
+		if err := validateEgressUpstreamURL(upstream); err != nil {
+			return status.Errorf(codes.InvalidArgument, "invalid %s=%q: %v", annEgressUpstream, upstream, err)
+		}
+	}
+	if mode == "per-sandbox" && metadata[annSandboxMIS] == "" {
+		return status.Errorf(codes.InvalidArgument, "%s is required when %s=per-sandbox", annSandboxMIS, annEgressMode)
+	}
+	return nil
+}
+
+// validateEgressUpstreamURL 校验上游代理 URL：scheme 限 http/https，host 必填，
+// 端口（如指定）须为 1-65535；允许 URL 内嵌凭据（user:pass@）。
+func validateEgressUpstreamURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("expected http or https scheme")
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("missing host")
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("invalid port %q", p)
+		}
+	}
+	return nil
 }

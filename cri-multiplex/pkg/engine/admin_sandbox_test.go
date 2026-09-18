@@ -52,8 +52,8 @@ func TestAdminCreateFullLifecycle(t *testing.T) {
 	e.cniManager = fakeCNI
 	e.stateStore = store
 	e.hostPortOps = hostPortMappingOps{
-		setup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
-			setupCalls = append(setupCalls, PortMapping{HostPort: hostPort, SandboxPort: sandboxPort})
+		setupBatch: func(nodeIP string, mappings []PortMapping, sandboxIP string) error {
+			setupCalls = append(setupCalls, mappings...)
 			return nil
 		},
 		cleanup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error { return nil },

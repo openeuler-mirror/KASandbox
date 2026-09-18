@@ -155,7 +155,7 @@ if [ -z "${POD_IP}" ]; then
     exit 1
 fi
 log_pass "Android PodIP: ${POD_IP}"
-NETNS_NAME="android-${POD_UID:0:12}"
+NETNS_NAME=$(android_netns_name "${POD_UID}")
 NETNS_PATH="/var/run/netns/${NETNS_NAME}"
 
 log_step "4.1 验证 CRI PodSandboxStatus Android annotations"

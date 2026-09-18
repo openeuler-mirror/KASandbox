@@ -130,7 +130,7 @@ assert_kubectl_exec_output() {
 
     local output
     output=$(kubectl_exec_output_with_retry "${pod}" 45 "$@" 2>&1) || true
-    if echo "${output}" | grep -q "${expected}"; then
+    if grep -q "${expected}" <<< "${output}"; then
         log_pass "kubectl exec 路由正确: ${pod}"
         return 0
     fi
@@ -150,7 +150,7 @@ assert_attach_output() {
 
     log_info "kubectl attach ${pod} 退出码: ${rc}"
     log_info "kubectl attach ${pod} 输出:\n${output}"
-    if echo "${output}" | grep -q "${expected}"; then
+    if grep -q "${expected}" <<< "${output}"; then
         log_pass "kubectl attach 路由正确: ${pod}"
         return 0
     fi
@@ -208,16 +208,16 @@ log_step "3.1 验证 ListPodSandbox 多后端合并"
 pods_output=""
 for _ in $(seq 1 30); do
     pods_output=$(${CRICTL} pods 2>&1 || true)
-    if echo "${pods_output}" | grep -q "${DEFAULT_POD}" &&
-       echo "${pods_output}" | grep -q "${ANDROID_POD}" &&
-       echo "${pods_output}" | grep -q "${E2B_POD}"; then
+    if grep -q "${DEFAULT_POD}" <<< "${pods_output}" &&
+       grep -q "${ANDROID_POD}" <<< "${pods_output}" &&
+       grep -q "${E2B_POD}" <<< "${pods_output}"; then
         break
     fi
     sleep 1
 done
-if echo "${pods_output}" | grep -q "${DEFAULT_POD}" &&
-   echo "${pods_output}" | grep -q "${ANDROID_POD}" &&
-   echo "${pods_output}" | grep -q "${E2B_POD}"; then
+if grep -q "${DEFAULT_POD}" <<< "${pods_output}" &&
+   grep -q "${ANDROID_POD}" <<< "${pods_output}" &&
+   grep -q "${E2B_POD}" <<< "${pods_output}"; then
     log_pass "ListPodSandbox 同时包含 containerd 默认、Android 和 E2B Pod"
 else
     log_fail "ListPodSandbox 合并结果缺失: ${pods_output}"
@@ -234,20 +234,22 @@ E2B_CID=$(pod_container_id "${E2B_POD}" "${E2B_UID}")
 containers_output=""
 for _ in $(seq 1 30); do
     containers_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" 2>&1 || true)
+    # 用 herestring 而非 echo|grep：输出超过 64KB 管道缓冲时 grep -q 提前退出
+    # 会让 echo 收到 SIGPIPE(141)，在 set -o pipefail 下误判为不匹配
     if [ -n "${DEFAULT_CID}" ] &&
        [ -n "${ANDROID_CID}" ] &&
        [ -n "${E2B_CID}" ] &&
-       echo "${containers_output}" | grep -q "${DEFAULT_CID}" &&
-       echo "${containers_output}" | grep -q "${ANDROID_CID}" &&
-       echo "${containers_output}" | grep -q "${E2B_CID}"; then
+       grep -q "${DEFAULT_CID}" <<< "${containers_output}" &&
+       grep -q "${ANDROID_CID}" <<< "${containers_output}" &&
+       grep -q "${E2B_CID}" <<< "${containers_output}"; then
         break
     fi
     sleep 1
 done
 if [ -n "${DEFAULT_CID}" ] && [ -n "${ANDROID_CID}" ] && [ -n "${E2B_CID}" ] &&
-   echo "${containers_output}" | grep -q "${DEFAULT_CID}" &&
-   echo "${containers_output}" | grep -q "${ANDROID_CID}" &&
-   echo "${containers_output}" | grep -q "${E2B_CID}"; then
+   grep -q "${DEFAULT_CID}" <<< "${containers_output}" &&
+   grep -q "${ANDROID_CID}" <<< "${containers_output}" &&
+   grep -q "${E2B_CID}" <<< "${containers_output}"; then
     log_pass "ListContainers 同时包含 containerd 默认、Android 和 E2B Container"
 else
     log_fail "ListContainers 合并结果缺失: pod_default=${DEFAULT_CID} android=${ANDROID_CID} e2b=${E2B_CID} output=${containers_output}"
@@ -258,8 +260,8 @@ log_step "3.3 验证 Android PodSandboxStatus 路由"
 ANDROID_UID=$(kubectl get pod "${ANDROID_POD}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
 ANDROID_STATUS=$(${CRICTL} inspectp "${ANDROID_UID}" 2>&1 || true)
 if [ -n "${ANDROID_UID}" ] &&
-   echo "${ANDROID_STATUS}" | grep -q '"android.dev/adb-url"' &&
-   echo "${ANDROID_STATUS}" | grep -q '"android.dev/cvd-state"'; then
+   grep -q '"android.dev/adb-url"' <<< "${ANDROID_STATUS}" &&
+   grep -q '"android.dev/cvd-state"' <<< "${ANDROID_STATUS}"; then
     log_pass "Android PodSandboxStatus 已按 sandboxID 路由到 Android engine"
 else
     log_fail "Android PodSandboxStatus 路由或 annotations 异常: uid=${ANDROID_UID} output=${ANDROID_STATUS}"

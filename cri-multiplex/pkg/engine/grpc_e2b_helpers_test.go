@@ -210,6 +210,17 @@ func TestE2BIDAndStateHelpers(t *testing.T) {
 	if got := e2bSandboxIDFromCRI("short"); len(got) != 32 {
 		t.Fatalf("short id should be hashed to 32 chars, got %q", got)
 	}
+	// Annotation path: must match envd proxy's sandboxIDRegex (^[a-z0-9]+$) —
+	// a '-' would pass creation but fail every envd exec with 400.
+	if got, err := e2bSandboxIDFromAnnotations(map[string]string{annSandboxID: "abc123"}, "ignored"); err != nil || got != "abc123" {
+		t.Fatalf("valid annotation id = %q, err=%v", got, err)
+	}
+	if _, err := e2bSandboxIDFromAnnotations(map[string]string{annSandboxID: "e2b35a-123"}, "ignored"); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("annotation id with '-' should be InvalidArgument, got %v", err)
+	}
+	if _, err := e2bSandboxIDFromAnnotations(map[string]string{annSandboxID: "ABC123"}, "ignored"); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("uppercase annotation id should be InvalidArgument, got %v", err)
+	}
 	if inferPodSandboxState(stateRunning) != runtime.PodSandboxState_SANDBOX_READY {
 		t.Fatal("running pod should map to SANDBOX_READY")
 	}
@@ -414,13 +425,59 @@ func TestRevealsHiddenFromCRIList(t *testing.T) {
 }
 
 func TestNewGRPCE2BEngineHideLabelParsing(t *testing.T) {
-	e := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "flux-sandbox.io/direct=true")
+	e := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "flux-sandbox.io/direct=true", 0, 0)
 	if e.hideLabelKey != "flux-sandbox.io/direct" || e.hideLabelValue != "true" {
 		t.Fatalf("hide label parsed wrong: %q=%q", e.hideLabelKey, e.hideLabelValue)
 	}
 	// 非法格式：告警并禁用
-	e2 := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "no-equals-sign")
+	e2 := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "no-equals-sign", 0, 0)
 	if e2.hideLabelKey != "" {
 		t.Fatalf("invalid hide label should be disabled, got key=%q", e2.hideLabelKey)
+	}
+}
+
+func TestAnnotationsToSandboxConfigEgressAnnotations(t *testing.T) {
+	e := &grpcE2BEngine{}
+	cfg, err := e.annotationsToSandboxConfig(map[string]string{
+		annEgressMode:     "per-sandbox",
+		annEgressUpstream: "http://user:pass@proxy.internal:3128",
+		annSandboxMIS:     "mis-001",
+		annEgressProfile:  "internal",
+		annEgressMitm:     "true",
+	}, "sandbox-a", "alias-a", map[string]string{
+		"app":         "e2b",
+		annEgressMode: "off", // label 存在同 key 时注解优先
+	})
+	if err != nil {
+		t.Fatalf("annotationsToSandboxConfig: %v", err)
+	}
+
+	want := map[string]string{
+		annEgressMode:     "per-sandbox",
+		annEgressUpstream: "http://user:pass@proxy.internal:3128",
+		annSandboxMIS:     "mis-001",
+		annEgressProfile:  "internal",
+		annEgressMitm:     "true",
+	}
+	for k, v := range want {
+		if cfg.Metadata[k] != v {
+			t.Fatalf("metadata[%s] = %q, want %q (metadata=%v)", k, cfg.Metadata[k], v, cfg.Metadata)
+		}
+	}
+	if cfg.Metadata["app"] != "e2b" {
+		t.Fatalf("labels must be preserved in metadata: %v", cfg.Metadata)
+	}
+}
+
+func TestAnnotationsToSandboxConfigEgressAnnotationsNilMetadata(t *testing.T) {
+	e := &grpcE2BEngine{}
+	cfg, err := e.annotationsToSandboxConfig(map[string]string{
+		annSandboxMIS: "mis-001",
+	}, "sandbox-a", "alias-a", nil)
+	if err != nil {
+		t.Fatalf("annotationsToSandboxConfig: %v", err)
+	}
+	if cfg.Metadata == nil || cfg.Metadata[annSandboxMIS] != "mis-001" {
+		t.Fatalf("nil metadata should be initialized with egress annotation: %v", cfg.Metadata)
 	}
 }

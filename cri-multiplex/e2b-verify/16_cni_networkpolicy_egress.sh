@@ -201,7 +201,19 @@ POD_B_IP=$(get_pod_ip_or_fail "${POD_NAME_B}") || exit 1
 log_pass "E2B Pod B PodIP: ${POD_B_IP}"
 
 log_step "3.1 baseline：E2B VM A 访问普通 Service ClusterIP"
-BASE_CODE=$(e2b_http_code "${POD_NAME}" "http://${TARGET_CLUSTER_IP}:${TARGET_PORT}/")
+# ClusterIP 依赖 kube-proxy(IPVS) 编程，偶发延迟可达数十秒，轮询等待 60s
+BASE_CODE=""
+BASE_DEADLINE=$(( $(date +%s) + 60 ))
+while true; do
+    BASE_CODE=$(e2b_http_code "${POD_NAME}" "http://${TARGET_CLUSTER_IP}:${TARGET_PORT}/")
+    if [ "${BASE_CODE}" = "200" ] || [ "${BASE_CODE}" = "NO_HTTP_CLIENT" ]; then
+        break
+    fi
+    if [ "$(date +%s)" -ge "${BASE_DEADLINE}" ]; then
+        break
+    fi
+    sleep 2
+done
 if [ "${BASE_CODE}" = "200" ]; then
     log_pass "baseline 成功：E2B VM -> target Service HTTP ${BASE_CODE}"
 elif [ "${BASE_CODE}" = "NO_HTTP_CLIENT" ]; then

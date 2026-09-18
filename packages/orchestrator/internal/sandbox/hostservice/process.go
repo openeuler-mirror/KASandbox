@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -12,10 +13,23 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapio"
 
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
+	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
+)
+
+var (
+	meter = otel.Meter("github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/hostservice")
+
+	hostServiceRestartCounter = utils.Must(meter.Int64Counter("orchestrator.hostservice.process_restarts",
+		metric.WithDescription("Number of host service process restarts by the crash supervisor."),
+		metric.WithUnit("{restart}"),
+	))
 )
 
 type procEntry struct {
@@ -47,13 +61,23 @@ func startService(ctx context.Context, svc Service) (*procEntry, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	svcLogger := logger.L().Detach(ctx).With(zap.String("service", svc.Name))
-	stdoutW := &zapio.Writer{Log: svcLogger, Level: zap.InfoLevel}
-	stderrW := &zapio.Writer{Log: svcLogger, Level: zap.InfoLevel}
-	closeWriters := true
+	var stdoutW, stderrW io.Writer
+	closeWriters := func() {}
+	if svc.LogWriter != nil {
+		stdoutW, stderrW = svc.LogWriter, svc.LogWriter
+	} else {
+		out := &zapio.Writer{Log: svcLogger, Level: zap.InfoLevel}
+		errW := &zapio.Writer{Log: svcLogger, Level: zap.ErrorLevel}
+		stdoutW, stderrW = out, errW
+		closeWriters = func() {
+			_ = out.Close()
+			_ = errW.Close()
+		}
+	}
+	started := false
 	defer func() {
-		if closeWriters {
-			_ = stdoutW.Close()
-			_ = stderrW.Close()
+		if !started {
+			closeWriters()
 		}
 	}()
 	cmd.Stdout = stdoutW
@@ -65,7 +89,7 @@ func startService(ctx context.Context, svc Service) (*procEntry, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start service %s: %w", svc.Name, err)
 	}
-	closeWriters = false
+	started = true
 
 	entry := &procEntry{
 		service: svc,
@@ -74,8 +98,7 @@ func startService(ctx context.Context, svc Service) (*procEntry, error) {
 	}
 
 	go func() {
-		defer stdoutW.Close()
-		defer stderrW.Close()
+		defer closeWriters()
 		waitErr := cmd.Wait()
 		entry.waitMu.Lock()
 		entry.waitErr = waitErr
@@ -242,6 +265,7 @@ func monitorAndRestart(ctx context.Context, entry *procEntry, restart func(conte
 				zap.Int("attempt", restartCount),
 				zap.Duration("backoff", backoff),
 			)
+			hostServiceRestartCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("service", entry.service.Name)))
 
 			timer := time.NewTimer(backoff)
 			select {

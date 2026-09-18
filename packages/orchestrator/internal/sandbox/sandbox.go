@@ -78,6 +78,12 @@ type Config struct {
 	Network        *orchestrator.SandboxNetworkConfig
 	RuntimeNetwork *orchestrator.SandboxRuntimeNetworkConfig
 
+	// EgressIdentity carries the per-sandbox egress proxy selection and
+	// identity keys (cri-multiplex.dev/egress-* and sandbox-mis) extracted
+	// from SandboxConfig.Metadata. Nil/empty = the egress proxy form is not
+	// requested and mode resolution derives from the node capability alone.
+	EgressIdentity map[string]string
+
 	Envd EnvdMetadata
 
 	VMMConfig vmm.VMMConfig
@@ -289,7 +295,19 @@ func (f *Factory) CreateSandbox(
 		}
 	}()
 
-	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork)
+	// Resolve the per-sandbox egress routing mode before acquiring the network
+	// slot: the decision travels with the slot (a per-sandbox slot skips the
+	// host tcpProxy redirect, gets the vrt SNAT rule and all-protocols user
+	// firewall rules in CreateNetwork).
+	netCfg := f.networkPool.Config()
+	egressMode, err := network.ResolveEgressMode(ctx, netCfg,
+		config.RuntimeNetwork.GetMode() == orchestrator.SandboxRuntimeNetworkConfig_CNI_EXTERNAL_NETNS,
+		runtime.SandboxID, config.EgressIdentity)
+	if err != nil {
+		return nil, err
+	}
+
+	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork, egressMode)
 
 	sandboxFiles := template.Files().NewSandboxFiles(runtime.SandboxID)
 	cleanup.Add(ctx, cleanupFiles(f.config, sandboxFiles))
@@ -344,6 +362,15 @@ func (f *Factory) CreateSandbox(
 	ips, err := ipsPromise.Wait(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	// Per-sandbox egress proxy (no-op for any other resolved mode): spawn the
+	// proxy in the slot netns and install the redirect rules before the guest
+	// boots. The manager cleanup registered here runs before the slot cleanup
+	// (LIFO), so the proxy process is killed before the netns is removed.
+	err = f.startEgressProxy(ctx, cleanup, netCfg, ips, config, runtime, sandboxFiles.SandboxHostDir(), egressMode)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start egress proxy: %w", err)
 	}
 
 	vmmFactory, err := newVMMFactory(config.VMMConfig.Backend())
@@ -593,7 +620,18 @@ func (f *Factory) ResumeSandbox(
 	}()
 
 	// Slot initialization
-	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork)
+	// Resolve the per-sandbox egress routing mode first: the decision travels
+	// with the slot (per-sandbox slots skip the host tcpProxy redirect, get
+	// the vrt SNAT rule and all-protocols user firewall rules).
+	netCfg := f.networkPool.Config()
+	egressMode, err := network.ResolveEgressMode(ctx, netCfg,
+		config.RuntimeNetwork.GetMode() == orchestrator.SandboxRuntimeNetworkConfig_CNI_EXTERNAL_NETNS,
+		runtime.SandboxID, config.EgressIdentity)
+	if err != nil {
+		return nil, err
+	}
+
+	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork, egressMode)
 
 	// Rootfs initialization
 	overlayPromise := utils.NewPromise(func() ([]rootfs.Provider, error) {
@@ -665,6 +703,13 @@ func (f *Factory) ResumeSandbox(
 	zap.L().Sugar().Infof("[ResumeSandbox] wait network slot cost: %.3f ms, traceID=%s", time.Since(t2).Seconds()*1000, traceID)
 
 	telemetry.ReportEvent(ctx, "got network slot")
+
+	// Per-sandbox egress proxy (no-op for any other resolved mode), same
+	// wiring as CreateSandbox: spawn + redirect rules before the VMM resumes.
+	err = f.startEgressProxy(ctx, cleanup, netCfg, ips, config, runtime, sandboxFiles.SandboxHostDir(), egressMode)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start egress proxy: %w", err)
+	}
 
 	tOverlay := time.Now()
 	rootfsProviders, err := overlayPromise.Wait(ctx)
@@ -1407,6 +1452,7 @@ func getNetworkSlot(
 	cleanup *Cleanup,
 	networkConfig *orchestrator.SandboxNetworkConfig,
 	runtimeNetwork *orchestrator.SandboxRuntimeNetworkConfig,
+	egressMode network.EgressMode,
 ) *utils.Promise[*network.Slot] {
 	return utils.NewPromise(func() (*network.Slot, error) {
 		ctx, span := tracer.Start(ctx, "get network-slot")
@@ -1428,6 +1474,38 @@ func getNetworkSlot(
 			cleanup.Add(ctx, func(ctx context.Context) error {
 				return slot.RemoveNetwork()
 			})
+			return slot, nil
+		}
+
+		if egressMode == network.EgressModePerSandbox {
+			// Per-sandbox egress proxy slots come from the dedicated proxy
+			// sub-pool (pre-warmed in proxy shape: no host tcpProxy redirect,
+			// vrt SNAT, all-protocols user firewall baseline).
+			slot, err := networkPool.GetEgressProxySlot(ctx, networkConfig)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get egress-proxy network slot: %w", err)
+			}
+
+			cleanup.Add(ctx, func(ctx context.Context) error {
+				ctx, span := tracer.Start(ctx, "clean egress-proxy network-slot")
+				defer span.End()
+
+				// Return (not Discard) serves both create-failure rollback
+				// and normal teardown: removeEgressProxyRules is idempotent
+				// and tolerant, and Return falls back to Discard on any
+				// cleanup failure, so the slot only re-enters the proxy
+				// reuse pool with its per-sandbox state fully peeled.
+				// Asynchronous, as it is not important for the sandbox
+				// lifecycle.
+				go func(ctx context.Context) {
+					if returnErr := networkPool.Return(ctx, slot); returnErr != nil {
+						logger.L().Error(ctx, "failed to return egress-proxy network slot", zap.Error(returnErr))
+					}
+				}(context.WithoutCancel(ctx))
+
+				return nil
+			})
+
 			return slot, nil
 		}
 
