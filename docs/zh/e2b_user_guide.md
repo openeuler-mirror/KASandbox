@@ -4,85 +4,209 @@
 
 ## 目录
 
-- [1. 快速开始](#1-快速开始)
-  - [1.1 部署模式选择](#11-部署模式选择)
-  - [1.2 Nomad 模式快速上手](#12-nomad-模式快速上手)
-  - [1.3 K8S 模式快速上手](#13-k8s-模式快速上手)
-- [2. 概述](#2-概述)
-  - [2.1 核心概念](#21-核心概念)
-  - [2.2 架构与端口一览](#22-架构与端口一览)
-  - [2.3 目录结构](#23-目录结构)
-- [3. 环境准备](#3-环境准备)
-  - [3.1 系统要求](#31-系统要求)
-  - [3.2 修改配置文件](#32-修改配置文件)
-  - [3.3 关闭 SELinux](#33-关闭-selinux)
-  - [3.4 组件下载](#34-组件下载)
-  - [3.5 Mooncake 配置（可选）](#35-mooncake-配置可选)
-- [4. 部署：Nomad 模式（单机）](#4-部署nomad-模式单机)
-  - [4.1 下载组件](#41-下载组件)
-  - [4.2 安装](#42-安装)
-  - [4.3 启动服务](#43-启动服务)
-  - [4.4 Harbor 协议配置](#44-harbor-协议配置)
-  - [4.5 验证](#45-验证)
-- [5. 部署：K8S 模式（生产）](#5-部署k8s-模式生产)
-  - [5.1 前置条件](#51-前置条件)
-  - [5.2 集群部署](#52-集群部署)
-  - [5.3 Master 节点部署](#53-master-节点部署)
-  - [5.4 Worker 节点部署](#54-worker-节点部署)
-  - [5.5 配置域名访问](#55-配置域名访问)
-  - [5.6 验证](#56-验证)
-  - [5.7 可选组件：cri-multiplex](#57-可选组件cri-multiplex)
-  - [5.8 可选组件：e2b-webhook](#58-可选组件e2b-webhook)
-- [6. 模板管理](#6-模板管理)
-  - [6.1 制作沙箱镜像](#61-制作沙箱镜像)
-  - [6.2 上传镜像到 Harbor](#62-上传镜像到-harbor)
-  - [6.3 构建模板](#63-构建模板)
-- [7. 创建沙箱](#7-创建沙箱)
-  - [7.1 方式一：SDK 创建](#71-方式一sdk-创建)
-  - [7.2 方式二：K8S 沙箱 Pod 创建](#72-方式二k8s-沙箱-pod-创建)
-  - [7.3 环境变量说明](#73-环境变量说明)
-  - [7.4 认证信息](#74-认证信息)
-- [8. E2B 插件部署](#8-e2b-插件部署)
-  - [8.1 部署插件](#81-部署插件)
-  - [8.2 插件部署流程](#82-插件部署流程)
-  - [8.3 插件配置参数](#83-插件配置参数)
-- [9. 运维操作](#9-运维操作)
-  - [9.1 服务管理](#91-服务管理)
-  - [9.2 单独部署组件](#92-单独部署组件)
-  - [9.3 单独卸载组件](#93-单独卸载组件)
-  - [9.4 Harbor 项目管理](#94-harbor-项目管理)
-  - [9.5 Nomad 任务管理](#95-nomad-任务管理)
-  - [9.6 修改沙箱配置](#96-修改沙箱配置)
-  - [9.7 下载离线包](#97-下载离线包)
-  - [9.8 全量卸载](#98-全量卸载)
-- [10. 常见问题](#10-常见问题)
-  - [10.1 部署脚本失败（Nomad 403 错误）](#101-部署脚本失败nomad-403-错误)
-  - [10.2 模板构建失败（连接拒绝）](#102-模板构建失败连接拒绝)
-  - [10.3 Consul 启动失败](#103-consul-启动失败)
-  - [10.4 API 部署失败](#104-api-部署失败)
-  - [10.5 Template 启动失败](#105-template-启动失败)
-  - [10.6 Harbor 镜像拉取失败](#106-harbor-镜像拉取失败)
-  - [10.7 K8S 域名解析失败](#107-k8s-域名解析失败)
-- [11. 命令速查](#11-命令速查)
+- [1. 源码编译](#1-源码编译)
+  - [1.1 编译环境准备](#11-编译环境准备)
+  - [1.2 获取源码](#12-获取源码)
+  - [1.3 编译组件二进制](#13-编译组件二进制)
+  - [1.4 Mooncake 编译（可选）](#14-mooncake-编译可选)
+  - [1.5 构建 RPM 安装包（推荐）](#15-构建-rpm-安装包推荐)
+  - [1.6 构建 Docker 镜像（可选）](#16-构建-docker-镜像可选)
+  - [1.7 源码打包分发（可选）](#17-源码打包分发可选)
+- [2. 快速开始](#2-快速开始)
+  - [2.1 部署模式选择](#21-部署模式选择)
+  - [2.2 Nomad 模式快速上手](#22-nomad-模式快速上手)
+  - [2.3 K8S 模式快速上手](#23-k8s-模式快速上手)
+- [3. 概述](#3-概述)
+  - [3.1 核心概念](#31-核心概念)
+  - [3.2 架构与端口一览](#32-架构与端口一览)
+  - [3.3 目录结构](#33-目录结构)
+- [4. 环境准备](#4-环境准备)
+  - [4.1 系统要求](#41-系统要求)
+  - [4.2 修改配置文件](#42-修改配置文件)
+  - [4.3 关闭 SELinux](#43-关闭-selinux)
+  - [4.4 组件下载](#44-组件下载)
+  - [4.5 Mooncake 配置（可选）](#45-mooncake-配置可选)
+- [5. 部署：Nomad 模式（单机）](#5-部署nomad-模式单机)
+  - [5.1 下载组件](#51-下载组件)
+  - [5.2 安装](#52-安装)
+  - [5.3 启动服务](#53-启动服务)
+  - [5.4 Harbor 协议配置](#54-harbor-协议配置)
+  - [5.5 验证](#55-验证)
+- [6. 部署：K8S 模式（生产）](#6-部署k8s-模式生产)
+  - [6.1 前置条件](#61-前置条件)
+  - [6.2 集群部署](#62-集群部署)
+  - [6.3 Master 节点部署](#63-master-节点部署)
+  - [6.4 Worker 节点部署](#64-worker-节点部署)
+  - [6.5 配置域名访问](#65-配置域名访问)
+  - [6.6 验证](#66-验证)
+  - [6.7 可选组件：cri-multiplex](#67-可选组件cri-multiplex)
+  - [6.8 可选组件：e2b-webhook](#68-可选组件e2b-webhook)
+- [7. 模板管理](#7-模板管理)
+  - [7.1 制作沙箱镜像](#71-制作沙箱镜像)
+  - [7.2 上传镜像到 Harbor](#72-上传镜像到-harbor)
+  - [7.3 构建模板](#73-构建模板)
+- [8. 创建沙箱](#8-创建沙箱)
+  - [8.1 方式一：SDK 创建](#81-方式一sdk-创建)
+  - [8.2 方式二：K8S 沙箱 Pod 创建](#82-方式二k8s-沙箱-pod-创建)
+  - [8.3 环境变量说明](#83-环境变量说明)
+  - [8.4 认证信息](#84-认证信息)
+- [9. E2B 插件部署](#9-e2b-插件部署)
+  - [9.1 部署插件](#91-部署插件)
+  - [9.2 插件部署流程](#92-插件部署流程)
+  - [9.3 插件配置参数](#93-插件配置参数)
+- [10. 运维操作](#10-运维操作)
+  - [10.1 服务管理](#101-服务管理)
+  - [10.2 单独部署组件](#102-单独部署组件)
+  - [10.3 单独卸载组件](#103-单独卸载组件)
+  - [10.4 Harbor 项目管理](#104-harbor-项目管理)
+  - [10.5 Nomad 任务管理](#105-nomad-任务管理)
+  - [10.6 修改沙箱配置](#106-修改沙箱配置)
+  - [10.7 下载离线包](#107-下载离线包)
+  - [10.8 全量卸载](#108-全量卸载)
+- [11. 常见问题](#11-常见问题)
+  - [11.1 部署脚本失败（Nomad 403 错误）](#111-部署脚本失败nomad-403-错误)
+  - [11.2 模板构建失败（连接拒绝）](#112-模板构建失败连接拒绝)
+  - [11.3 Consul 启动失败](#113-consul-启动失败)
+  - [11.4 API 部署失败](#114-api-部署失败)
+  - [11.5 Template 启动失败](#115-template-启动失败)
+  - [11.6 Harbor 镜像拉取失败](#116-harbor-镜像拉取失败)
+  - [11.7 K8S 域名解析失败](#117-k8s-域名解析失败)
+- [12. 命令速查](#12-命令速查)
 - [附录 A：环境变量全览](#附录-a环境变量全览)
 - [附录 B：组件端口与地址](#附录-b组件端口与地址)
 - [附录 C：目录结构](#附录-c目录结构)
 
 ---
 
-## 1. 快速开始
+## 1. 源码编译
 
-### 1.1 部署模式选择
+> 直接使用 Releases 页面 RPM 安装包部署的用户可跳过本章。本章介绍如何从源码编译各组件二进制、构建 RPM 安装包及源码分发包。
+
+### 1.1 编译环境准备
+
+| 依赖 | 要求 | 用途 |
+|---|---|---|
+| Go | ≥ 1.25.4（以 go.mod 为准） | 编译全部 Go 组件 |
+| gcc / make / git | 系统包管理器安装 | CGo 编译与源码打包 |
+| rpm-build | 仅构建 RPM 时需要 | 制作 RPM 安装包 |
+| Docker | 仅 `-i` / `-f` 选项需要 | 构建组件镜像 / Firecracker |
+| Mooncake 依赖库 | 仅 `-m` 选项需要 | 提供 `libmooncake_store` 等头文件与库，见 [4.5 Mooncake 配置（可选）](#45-mooncake-配置可选) |
+
+```bash
+# 国内环境建议先配置 Go 模块代理（RPM 构建 spec 已内置该配置）
+export GOPROXY=https://mirrors.huaweicloud.com/repository/goproxy/,direct
+export GONOSUMDB=*
+```
+
+### 1.2 获取源码
+
+```bash
+git clone https://gitcode.com/openeuler/KASandbox.git
+cd KASandbox
+```
+
+### 1.3 编译组件二进制
+
+```bash
+# 标准构建：自动执行 go mod tidy / vendor，并并行编译全部组件
+./build.sh
+
+# 追加编译 cri-multiplex（K8S 模式可选组件）
+./build.sh -c
+```
+
+产物输出到 `bin/<架构>/`（`amd64` 或 `arm64`）：
+
+| 产物 | 来源模块 | 说明 |
+|---|---|---|
+| `api` | packages/api | API 服务 |
+| `client-proxy` | packages/client-proxy | 边缘代理（edge） |
+| `envd` | packages/envd | 沙箱内守护进程（随模板构建进入沙箱镜像） |
+| `orchestrator` | packages/orchestrator | 编排服务，部署安装时同时复制为 `template-manager` |
+| `e2b-webhook` | e2b-webhook | K8S 准入控制器（K8S 模式可选） |
+| `migrator` / `seed-db` | packages/db | 数据库迁移 / 初始化工具 |
+| `fc-netns-exec` | packages/orchestrator | Firecracker 网络命名空间工具 |
+
+`build.sh` 编译相关选项一览：
+
+| 选项 | 说明 |
+|---|---|
+| `-m, --mooncake` | Mooncake 存储后端编译（见 1.4） |
+| `-c, --cri-multiplex` | 编译 cri-multiplex |
+| `-i, --images` | 基于 `bin/` 产物构建 Docker 镜像（见 1.6） |
+| `-f, --firecracker` | 构建 Firecracker（依赖 Docker） |
+| `-p, --package` / `--package-slim` | 源码打包分发（见 1.7） |
+| `-n, --package-name` | 指定打包输出文件名 |
+
+### 1.4 Mooncake 编译（可选）
+
+仅当存储后端使用 Mooncake（`STORAGE_PROVIDER=MooncakeBucket`）时需要：
+
+```bash
+./build.sh -m     # 标准构建 + -tags mooncake + CGo 链接 Mooncake 依赖库
+./build.sh -c     # 需要 cri-multiplex 时另行追加
+```
+
+> **注意**：
+> - 构建机需提前安装 Mooncake / spdiag / urma 等依赖 RPM（Releases 页面下载，同 [4.5 Mooncake 配置（可选）](#45-mooncake-配置可选)），脚本通过 CGo 链接 `/usr/lib64` 下的 `libmooncake_store`、`libmooncake_common`、`liburma` 等库。
+> - 检测到 CUDA（`/usr/local/cuda/lib64`）时自动追加链接 `-lcudart`。
+> - K8S 模式部署前还需按 [4.5.1 K8S 模式：orchestrator 镜像构建前置（复制 RPM 包）](#451-k8s-模式orchestrator-镜像构建前置复制-rpm-包) 将 Mooncake RPM 复制到 `/opt/e2b-infra/bin/`，供 orchestrator 镜像构建时安装。
+
+### 1.5 构建 RPM 安装包（推荐）
+
+```bash
+./scripts/build-rpm.sh                 # 标准 RPM
+./scripts/build-rpm.sh -m              # Mooncake 版本（rpmbuild --with mooncake）
+./scripts/build-rpm.sh -v 1.0.0 -r 2   # 指定版本号 / Release
+./scripts/build-rpm.sh --srpm          # 同时构建 SRPM
+```
+
+> **说明**：
+> - 脚本自动检查构建依赖（git / rpm-build / gcc / make / golang）；Go 版本不满足 go.mod 要求（当前 1.25.4）时自动下载官方 Go 安装到 `/usr/local`。
+> - 通过 `git archive HEAD` 打包源码，**未提交的修改不会进入 RPM**。
+> - 默认版本号格式 `<spec 版本>.git<8 位 commit>`（如 `1.0.0.gitabcdef12`）。
+> - 产物输出到 `/tmp/rpmbuild/RPMS/<架构>/KASandbox-<版本>-<release>.<架构>.rpm`，可用 `-o` 复制到指定目录。
+
+```bash
+# 安装 RPM 后，回到快速开始继续执行「修改 .env」及后续步骤
+rpm -ivh /tmp/rpmbuild/RPMS/$(uname -m)/KASandbox-*.rpm
+```
+
+### 1.6 构建 Docker 镜像（可选）
+
+```bash
+./build.sh -i   # 基于 bin/ 产物构建 api / orchestrator / client-proxy / e2b-webhook 镜像
+```
+
+> 说明：部署阶段 `--deploy services` 本身会构建所需镜像；此选项适用于单独预构建，或需要自定义镜像内容（如 Mooncake 版 orchestrator，见 4.5.1）的场景。
+
+### 1.7 源码打包分发（可选）
+
+用于将源码包拷贝到离线环境编译：
+
+```bash
+./build.sh -p                             # 完整源码包（排除 vendor / bin / firecracker / doc 等）
+./build.sh --package-slim                 # 最小构建包（仅构建与部署所需文件，< 5MB）
+./build.sh --package-slim -n my-release   # 指定输出名 my-release.tar.xz
+```
+
+目标机器解压后按 1.1 准备编译环境，再执行 `./build.sh`（或 `./scripts/build-rpm.sh`）即可。
+
+---
+
+## 2. 快速开始
+
+### 2.1 部署模式选择
 
 | 场景 | 推荐路径 | 说明 |
 |------|----------|------|
-| 单机 / 小规模 / 快速体验 | [4. 部署：Nomad 模式（单机）](#4-部署nomad-模式单机) | Docker + Nomad + Consul，脚本一键部署 |
-| 多节点 / 生产 / 需要 K8S 原生调度 | [5. 部署：K8S 模式（生产）](#5-部署k8s-模式生产) | Kubernetes + containerd + nerdctl，可选 cri-multiplex 与 e2b-webhook |
+| 单机 / 小规模 / 快速体验 | [5. 部署：Nomad 模式（单机）](#5-部署nomad-模式单机) | Docker + Nomad + Consul，脚本一键部署 |
+| 多节点 / 生产 / 需要 K8S 原生调度 | [6. 部署：K8S 模式（生产）](#6-部署k8s-模式生产) | Kubernetes + containerd + nerdctl，可选 cri-multiplex 与 e2b-webhook |
 
-### 1.2 Nomad 模式快速上手
+### 2.2 Nomad 模式快速上手
 
 ```bash
-# 1. 安装 RPM 包（下载地址：https://gitcode.com/src-openeuler/KASandbox/releases）
+# 1. 安装 RPM 包（下载地址：https://gitcode.com/src-openeuler/KASandbox/releases；或从源码构建，见第 1 章「源码编译」）
 #    安装后组件落地 /opt/e2b-infra/，下述命令均在该目录执行
 rpm -ivh KASandbox-*.aarch64.rpm        # x86_64 机器选择对应 x86_64 包
 cd /opt/e2b-infra
@@ -102,7 +226,7 @@ vi .env
 # 6. 启动
 ./build.sh --start
 
-# 7. 制作并上传沙箱镜像到 Harbor（必须，详见 6.1/6.2）
+# 7. 制作并上传沙箱镜像到 Harbor（必须，详见 7.1/7.2）
 ./build.sh --make ubuntu:22.04
 
 # 8. 构建模板（--server-ip / --harbor-ip 与 .env 中 SERVER_IP 保持一致，
@@ -113,12 +237,12 @@ python3 create_template.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
 python3 create_sandbox.py --server-ip <SERVER_IP>
 ```
 
-> **说明**：模板别名由 `create_template.py` 根据镜像名自动派生（规则见 [6.3.1 快速构建](#631-快速构建create_templatepy)），默认产出 `ubuntu-22-04-custom-1`；`create_sandbox.py` 默认使用同名模板，构建其他镜像时通过 `--template` 指定。
+> **说明**：模板别名由 `create_template.py` 根据镜像名自动派生（规则见 [7.3.1 快速构建](#731-快速构建create_templatepy)），默认产出 `ubuntu-22-04-custom-1`；`create_sandbox.py` 默认使用同名模板，构建其他镜像时通过 `--template` 指定。
 
-### 1.3 K8S 模式快速上手
+### 2.3 K8S 模式快速上手
 
 ```bash
-# 1. 安装 RPM 包（下载地址：https://gitcode.com/src-openeuler/KASandbox/releases）
+# 1. 安装 RPM 包（下载地址：https://gitcode.com/src-openeuler/KASandbox/releases；或从源码构建，见第 1 章「源码编译」）
 #    安装后组件落地 /opt/e2b-infra/，下述命令均在该目录执行
 rpm -ivh KASandbox-*.aarch64.rpm        # x86_64 机器选择对应 x86_64 包
 cd /opt/e2b-infra
@@ -139,7 +263,7 @@ vi .env
 # 6. 配置 *.e2b.app 域名访问
 ./k8s-deploy.sh configure-domain
 
-# 7. 制作并上传沙箱镜像到 Harbor（必须，详见 6.1/6.2；K8S 模式使用 HTTPS 端口 30443）
+# 7. 制作并上传沙箱镜像到 Harbor（必须，详见 7.1/7.2；K8S 模式使用 HTTPS 端口 30443）
 ./build.sh --make ubuntu:22.04
 
 # 8. 构建模板（--server-ip / --harbor-ip 与 .env 中 SERVER_IP 保持一致，
@@ -154,9 +278,9 @@ python3 create_sandbox.py --server-ip <SERVER_IP>
 
 ---
 
-## 2. 概述
+## 3. 概述
 
-### 2.1 核心概念
+### 3.1 核心概念
 
 | 概念 | 说明 |
 |------|------|
@@ -170,7 +294,7 @@ python3 create_sandbox.py --server-ip <SERVER_IP>
 | **e2b-webhook** | K8S 准入控制器，拦截沙箱 Pod 创建（可选） |
 | **cri-multiplex** | CRI 多路复用器，让 K8S 原生调度 E2B 沙箱 Pod（可选） |
 
-### 2.2 架构与端口一览
+### 3.2 架构与端口一览
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -197,19 +321,19 @@ python3 create_sandbox.py --server-ip <SERVER_IP>
 | cri-multiplex | `/run/cri-multiplex.sock` | CRI gRPC 多路复用（K8S 模式可选） |
 | envd | 49983（沙箱内） | 沙箱内守护进程，供 SDK 操作沙箱 |
 
-### 2.3 目录结构
+### 3.3 目录结构
 
 完整的源码目录树与部署目标目录树见 [附录 C：目录结构](#附录-c目录结构)。要点如下：
 
 - 源码仓库 `deploy/` 含构建 / 部署脚本（`build.sh`、`k8s-deploy.sh`、`deploy-worker.sh` 等）、配置模板（`.env`）与 Nomad 任务定义（`nomad/`）。
 - 通过 RPM 安装后落地到 `/opt/e2b-infra/`，包含脚本、`bin/`（二进制与 Dockerfile）、`helm/`（Helm 模板）、`dep/`（部署依赖脚本副本）。
-- 所有环境变量统一在 `.env` 中配置，详见 [3.2 修改配置文件](#32-修改配置文件) 与 [附录 A：环境变量全览](#附录-a环境变量全览)。
+- 所有环境变量统一在 `.env` 中配置，详见 [4.2 修改配置文件](#42-修改配置文件) 与 [附录 A：环境变量全览](#附录-a环境变量全览)。
 
 ---
 
-## 3. 环境准备
+## 4. 环境准备
 
-### 3.1 系统要求
+### 4.1 系统要求
 
 | 项目 | 要求 |
 |------|------|
@@ -221,7 +345,7 @@ python3 create_sandbox.py --server-ip <SERVER_IP>
 
 > **提示**：安装前建议先运行 `./check-env.sh` 检查前置条件（支持 `--install` / `--start` 分别检查），任何 FAIL 项均会给出修复提示。
 
-### 3.2 修改配置文件
+### 4.2 修改配置文件
 
 编辑 `.env`，将 `SERVER_IP` 修改为本机 IP 地址：
 
@@ -255,17 +379,17 @@ export TEMPLATE_MANAGER_LIMITS_CPU_COUNT=2048           # CPU 上限 ≈2 核
 export TEMPLATE_MANAGER_LIMITS_MEMORY_MB=8192           # 内存上限 8GB
 ```
 
-### 3.3 关闭 SELinux
+### 4.3 关闭 SELinux
 
 ```bash
 setenforce 0
 ```
 
-### 3.4 组件下载
+### 4.4 组件下载
 
 > **重要**：安装前**必须**先下载好所有组件包，否则 `--install` 会失败。
 
-#### 3.4.1 自动下载（推荐）
+#### 4.4.1 自动下载（推荐）
 
 ```bash
 ./build.sh --download
@@ -273,7 +397,7 @@ setenforce 0
 
 自动下载所有必需组件到 `dep/` 目录，包括二进制包、Docker 镜像、Python 依赖等。
 
-#### 3.4.2 手动下载（二进制组件）
+#### 4.4.2 手动下载（二进制组件）
 
 如网络受限，可手动下载以下组件到 `dep/` 目录。
 
@@ -295,14 +419,14 @@ K8S 模式包含 Nomad 模式的全部组件（除 Docker / Docker Compose 外�
 | 组件 | 说明 | 安装方式 |
 |------|------|----------|
 | Kubernetes | K8S 集群（kubelet, kubectl, kubeadm） | 需预先安装，脚本不负责部署 |
-| Nginx Ingress Controller | Ingress 路由控制器 | 内置清单 `dep/ingress-nginx.yaml`，未安装时手动 apply（见 [5.1 前置条件](#51-前置条件)） |
+| Nginx Ingress Controller | Ingress 路由控制器 | 内置清单 `dep/ingress-nginx.yaml`，未安装时手动 apply（见 [6.1 前置条件](#61-前置条件)） |
 | containerd | 容器运行时 | K8S 节点自带 |
 | nerdctl | containerd CLI | 替代 Docker 命令 |
 | helm | K8S 包管理器 | 用于卸载 e2b-api |
 
 > **注意**：K8S 集群、kubectl 需在运行脚本前自行安装配置。Ingress Controller 可使用内置清单部署。
 
-#### 3.4.3 容器镜像
+#### 4.4.3 容器镜像
 
 以下镜像从华为云 SWR 镜像仓库拉取，部署时自动处理：
 
@@ -328,9 +452,9 @@ K8S 模式包含 Nomad 模式的全部组件（除 Docker / Docker Compose 外�
 > **说明**：
 > - 下载后保存为 `dep/e2b-webhook.tar`，`pull_docker_images` 会自动通过 `docker load -i` 导入为本地镜像 `e2b-webhook`。
 > - 仅 K8S 模式下载（nomad 模式不需要）。
-> - 部署时由 `deploy.sh` 推送到 Harbor，详见 [5.8 可选组件：e2b-webhook](#58-可选组件e2b-webhook)。
+> - 部署时由 `deploy.sh` 推送到 Harbor，详见 [6.8 可选组件：e2b-webhook](#68-可选组件e2b-webhook)。
 
-#### 3.4.4 Python 与系统依赖
+#### 4.4.4 Python 与系统依赖
 
 **Python 依赖**
 
@@ -354,7 +478,7 @@ K8S 模式包含 Nomad 模式的全部组件（除 Docker / Docker Compose 外�
 | socat | 端口转发 | `yum install -y socat` |
 | websocat | WebSocket 代理 | https://github.com/vi/websocat/releases/latest/download/websocat.aarch64-unknown-linux-musl |
 
-### 3.5 Mooncake 配置（可选）
+### 4.5 Mooncake 配置（可选）
 
 Mooncake 是分布式内存语义层组件，用于加速跨节点内存共享。**仅当 `STORAGE_PROVIDER=MooncakeBucket` 时需要配置**，其他存储后端可跳过本节。
 
@@ -413,7 +537,7 @@ export MOONCAKE_METADATA_SERVER="http://10.10.10.10:8015"   # 改为元数据服
 
 > **注意**：`MOONCAKE_LOCAL_HOSTNAME` 和 `MC_TCP_BIND_ADDRESS` 在 Nomad 模式下通过 Nomad 属性自动获取节点 IP，在 K8S 模式下通过 Downward API 获取 `status.hostIP`，均无需手动配置。
 
-#### 3.5.1 K8S 模式：orchestrator 镜像构建前置（复制 RPM 包）
+#### 4.5.1 K8S 模式：orchestrator 镜像构建前置（复制 RPM 包）
 
 K8S 模式启用 Mooncake 时，orchestrator 镜像使用 `deploy/dockerfiles/orchestrator-mooncake.Dockerfile` 构建。该 Dockerfile 会将构建上下文（`/opt/e2b-infra/bin`）下的 `*.rpm` 复制进镜像并 `rpm -ivh` 安装，因此**构建镜像前**需先把 Mooncake 与 spdiag 的 RPM 包复制到 `/opt/e2b-infra/bin/`：
 
@@ -427,22 +551,22 @@ cp mooncake-*.rpm spdiag-*.rpm /opt/e2b-infra/bin/
 ```
 
 > **注意**：
-> - RPM 包版本需与编排二进制编译时链接的库一致（`build.sh -m` 链接 `-lmooncake_store -lmooncake_common -lspdiag`，见 [3.5 Mooncake 配置（可选）](#35-mooncake-配置可选)）；版本不匹配会导致容器内 orchestrator 启动失败。
+> - RPM 包版本需与编排二进制编译时链接的库一致（`build.sh -m` 链接 `-lmooncake_store -lmooncake_common -lspdiag`，见 [4.5 Mooncake 配置（可选）](#45-mooncake-配置可选)）；版本不匹配会导致容器内 orchestrator 启动失败。
 > - 若 `/opt/e2b-infra/bin` 下没有任何 `.rpm`，Dockerfile 会打印 `No RPM packages found, skipping` 跳过安装——镜像可构建成功，但容器启动时会因缺少 `libmooncake_store.so` / `libspdiag.so` 等库而失败，务必确认包已就位再构建。
 
 ---
 
-## 4. 部署：Nomad 模式（单机）
+## 5. 部署：Nomad 模式（单机）
 
 适用于单机或小规模环境，使用 Docker + Nomad + Consul 调度。
 
-### 4.1 下载组件
+### 5.1 下载组件
 
 ```bash
 ./build.sh --download
 ```
 
-### 4.2 安装
+### 5.2 安装
 
 ```bash
 ./build.sh --install
@@ -458,7 +582,7 @@ cp mooncake-*.rpm spdiag-*.rpm /opt/e2b-infra/bin/
 - Harbor 镜像仓库安装
 - Harbor SSL 证书生成（/etc/harbor/certs/）
 
-### 4.3 启动服务
+### 5.3 启动服务
 
 ```bash
 ./build.sh --start
@@ -474,7 +598,7 @@ cp mooncake-*.rpm spdiag-*.rpm /opt/e2b-infra/bin/
 - Nomad 客户端配置追加
 - E2B 业务服务部署（API, Template Manager, Redis 等）
 
-### 4.4 Harbor 协议配置
+### 5.4 Harbor 协议配置
 
 Harbor 支持 HTTP、HTTPS、两者并存三种模式，通过环境变量 `HARBOR_PROTOCOL` 控制：
 
@@ -504,7 +628,7 @@ HTTP 模式下需配置 Docker 信任（脚本自动完成）：
 }
 ```
 
-### 4.5 验证
+### 5.5 验证
 
 ```bash
 # 检查 Nomad 状态
@@ -538,19 +662,19 @@ curl -sk http://<SERVER_IP>:2900/api/v2.0/health | jq .
 
 ---
 
-## 5. 部署：K8S 模式（生产）
+## 6. 部署：K8S 模式（生产）
 
 适用于多节点/生产环境，使用 Kubernetes + containerd + nerdctl。
 
-> **可选组件**：ingress-nginx（`*.e2b.app` 域名访问，通过 E2B SDK 执行沙箱命令时需要，见 [5.5 配置域名访问](#55-配置域名访问)）、cri-multiplex 与 e2b-webhook 均为 K8S 模式下的可选组件，分别见 [5.7 可选组件：cri-multiplex](#57-可选组件cri-multiplex) 与 [5.8 可选组件：e2b-webhook](#58-可选组件e2b-webhook)。如不需要 K8S 原生调度沙箱 Pod，可直接跳过。
+> **可选组件**：ingress-nginx（`*.e2b.app` 域名访问，通过 E2B SDK 执行沙箱命令时需要，见 [6.5 配置域名访问](#65-配置域名访问)）、cri-multiplex 与 e2b-webhook 均为 K8S 模式下的可选组件，分别见 [6.7 可选组件：cri-multiplex](#67-可选组件cri-multiplex) 与 [6.8 可选组件：e2b-webhook](#68-可选组件e2b-webhook)。如不需要 K8S 原生调度沙箱 Pod，可直接跳过。
 
-### 5.1 前置条件
+### 6.1 前置条件
 
 - K8S 集群已就绪
 - kubectl 可正常访问集群
-- 启用 Mooncake（`STORAGE_PROVIDER=MooncakeBucket`）时：构建 orchestrator 镜像前需将 Mooncake / spdiag 的 RPM 包复制到 `/opt/e2b-infra/bin/`，见 [3.5.1 K8S 模式：orchestrator 镜像构建前置（复制 RPM 包）](#351-k8s-模式orchestrator-镜像构建前置复制-rpm-包)
+- 启用 Mooncake（`STORAGE_PROVIDER=MooncakeBucket`）时：构建 orchestrator 镜像前需将 Mooncake / spdiag 的 RPM 包复制到 `/opt/e2b-infra/bin/`，见 [4.5.1 K8S 模式：orchestrator 镜像构建前置（复制 RPM 包）](#451-k8s-模式orchestrator-镜像构建前置复制-rpm-包)
 
-### 5.2 集群部署
+### 6.2 集群部署
 
 通过 `k8s-deploy.sh` 使用 KubeKey 部署 K8S 集群（支持 x86_64 / arm64）。
 
@@ -603,8 +727,8 @@ CONFIG_FILE=config-k8s-arm64.yaml ./k8s-deploy.sh all
 | `prep` | 安装依赖、下载 kk/CNI、生成集群配置 |
 | `create` | 根据配置创建集群、验证状态、部署 ingress-nginx、配置域名 |
 | `all` | prep + create（需通过 `CONFIG_FILE` 指定已编辑配置） |
-| `configure-domain` | 单独配置 `*.e2b.app` 域名访问（见 [5.5 配置域名访问](#55-配置域名访问)） |
-| `cri-multiplex` | 部署 cri-multiplex（见 [5.7 可选组件：cri-multiplex](#57-可选组件cri-multiplex)） |
+| `configure-domain` | 单独配置 `*.e2b.app` 域名访问（见 [6.5 配置域名访问](#65-配置域名访问)） |
+| `cri-multiplex` | 部署 cri-multiplex（见 [6.7 可选组件：cri-multiplex](#67-可选组件cri-multiplex)） |
 | `buildkit` | 安装并启用 buildkit |
 | `download-cni` | 单独下载并安装 CNI 插件到 `/opt/cni/bin` |
 
@@ -627,7 +751,7 @@ kubectl get nodes
 kubectl get pods -A
 ```
 
-### 5.3 Master 节点部署
+### 6.3 Master 节点部署
 
 依次执行组件下载、安装与启动三步。
 
@@ -663,7 +787,7 @@ kubectl get pods -A
 - 节点标签设置（如 `sandbox=true`）
 - K8S Deployment 部署
 
-### 5.4 Worker 节点部署
+### 6.4 Worker 节点部署
 
 **前置条件确认**
 
@@ -671,10 +795,10 @@ Worker 部署依赖 Master 节点生成的安装包与证书，执行前请确�
 
 | 项目 | 默认路径 | 说明 |
 |------|----------|------|
-| e2b-infra 代码包 | `/home/e2b`（`E2B_INFRA_SRC` 可覆盖） | 待分发的部署代码包，由 [5.3 Master 节点部署](#53-master-节点部署) 步骤二生成 |
-| containerd 证书 | `/etc/containerd/certs.d/<SERVER_IP>:30443` | containerd 拉取 Harbor 私有仓库所需，由 [5.3 Master 节点部署](#53-master-节点部署) 步骤三生成 |
-| Harbor 证书 | `/etc/harbor/certs/harbor.crt` | Harbor SSL 证书，由 [5.3 Master 节点部署](#53-master-节点部署) 步骤三生成 |
-| E2B API Token | `/root/.e2b/config.json` | E2B API 访问令牌，由 [5.3 Master 节点部署](#53-master-节点部署) 步骤三生成 |
+| e2b-infra 代码包 | `/home/e2b`（`E2B_INFRA_SRC` 可覆盖） | 待分发的部署代码包，由 [6.3 Master 节点部署](#63-master-节点部署) 步骤二生成 |
+| containerd 证书 | `/etc/containerd/certs.d/<SERVER_IP>:30443` | containerd 拉取 Harbor 私有仓库所需，由 [6.3 Master 节点部署](#63-master-节点部署) 步骤三生成 |
+| Harbor 证书 | `/etc/harbor/certs/harbor.crt` | Harbor SSL 证书，由 [6.3 Master 节点部署](#63-master-节点部署) 步骤三生成 |
+| E2B API Token | `/root/.e2b/config.json` | E2B API 访问令牌，由 [6.3 Master 节点部署](#63-master-节点部署) 步骤三生成 |
 | SSH 私钥 | `~/.ssh/id_rsa` | 免密登录目标节点（不存在时脚本自动生成） |
 | 本地工具 | `kubectl` / `ssh` / `scp` | 本地环境依赖 |
 
@@ -697,7 +821,7 @@ Worker 节点部署内容：
 - 远程执行安装和初始化
 - 设置节点标签
 
-### 5.5 配置域名访问
+### 6.5 配置域名访问
 
 通过 E2B SDK 执行沙箱命令时，需配置三层域名解析，确保宿主机和集群内部 Pod 均可通过 `*.e2b.app` 访问沙箱。可选自动或手动两种方式。
 
@@ -785,7 +909,7 @@ kubectl edit configmap coredns -n kube-system
 kubectl rollout restart deployment coredns -n kube-system
 ```
 
-### 5.6 验证
+### 6.6 验证
 
 验证 K8S 是否部署成功，检查以下组件是否正常运行。
 
@@ -815,7 +939,7 @@ kubectl get pods -n e2b -o wide
 | coredns | `kube-system` | `kubectl get pods -n kube-system \| grep coredns` | Running |
 | wildcard-e2b-app | `e2b`（Ingress） | `kubectl get ingress -n e2b` | 存在 `wildcard-e2b-app`（域名访问配置后） |
 
-### 5.7 可选组件：cri-multiplex
+### 6.7 可选组件：cri-multiplex
 
 cri-multiplex 是 CRI gRPC 多路复用器，让 kubelet 通过单一 Unix socket 调度 **containerd**（普通 Pod）和 **E2B orchestrator**（沙箱 Pod）。
 
@@ -877,7 +1001,7 @@ systemctl restart kubelet
 
 > **注意**：切换 kubelet endpoint 会短暂影响节点上所有 Pod，建议在维护窗口操作；回滚只需改回 `containerd.sock` 并重启 kubelet。
 
-### 5.8 可选组件：e2b-webhook
+### 6.8 可选组件：e2b-webhook
 
 e2b-webhook 是 K8S 模式下的可选准入控制器，用于拦截沙箱 Pod（以及 BatchSandbox CR）的创建请求，自动注入沙箱配置注解。默认关闭，通过 `ENABLE_WEBHOOK` 控制。
 
@@ -919,11 +1043,11 @@ kubectl -n e2b get secret e2b-webhook-tls e2b-api-key
 
 ---
 
-## 6. 模板管理
+## 7. 模板管理
 
 模板是沙箱的镜像定义。创建沙箱前，必须先构建模板。
 
-### 6.1 制作沙箱镜像
+### 7.1 制作沙箱镜像
 
 沙箱镜像需要推送到 Harbor 仓库，供后续模板构建使用。整个流程分为**可选的镜像制作**和**必需的 Harbor 上传**两部分。
 
@@ -933,9 +1057,9 @@ kubectl -n e2b get secret e2b-webhook-tls e2b-api-key
 - 已执行 `docker login` 或 containerd 已配置 Harbor 证书
 - 本地或镜像仓库中已有基础镜像（如 `ubuntu:22.04`）
 
-#### 6.1.1 方式一：脚本制作（推荐）
+#### 7.1.1 方式一：脚本制作（推荐）
 
-如果已有安装好必要组件的镜像，可跳过本步，直接进入 [6.2 上传镜像到 Harbor](#62-上传镜像到-harbor)。
+如果已有安装好必要组件的镜像，可跳过本步，直接进入 [7.2 上传镜像到 Harbor](#72-上传镜像到-harbor)。
 
 沙箱镜像需包含以下组件：systemd、openssh-server、websocat、socat、curl 等。以下以 `ubuntu:22.04` 为例。
 
@@ -952,7 +1076,7 @@ kubectl -n e2b get secret e2b-webhook-tls e2b-api-key
 4. 推送到 Harbor：`<HARBOR_URL>/e2b-orchestration/ubuntu:22.04`
 5. 验证并清理临时容器
 
-#### 6.1.2 方式二：手动制作
+#### 7.1.2 方式二：手动制作
 
 手动流程与脚本一致（保存 ENTRYPOINT/CMD → 启动临时容器 → 安装组件 → websocat → 导出恢复 → 清理），仅安装命令因发行版而异。以下给出 Ubuntu 与 openEuler 两个示例。
 
@@ -1053,7 +1177,7 @@ docker rm -f temp-images
 
 > **提示**：除安装命令外，两示例其余步骤完全一致，仅替换基础镜像名与最终镜像标签即可。
 
-#### 6.1.3 方式三：直接使用测试镜像
+#### 7.1.3 方式三：直接使用测试镜像
 
 如果仅用于测试，可直接使用基础镜像跳过制作步骤。`--download` 阶段已拉取 `ubuntu:22.04`，可直接上传到 Harbor 使用：
 
@@ -1065,9 +1189,9 @@ docker push <SERVER_IP>:30443/e2b-orchestration/ubuntu:22.04
 
 > **注意**：
 > - 直接使用基础镜像缺少 systemd、sshd、websocat 等组件，沙箱功能受限（无法 SSH 连接、无法使用 websocat 代理）。仅推荐测试用途。
-> - 该方式产出的镜像名为 `ubuntu:22.04`（无 `-custom` 后缀），对应 `create_template.py` 需传 `--image ubuntu:22.04`，模板别名为 `ubuntu-22-04-1`（别名派生规则见 [6.3.1 快速构建](#631-快速构建create_templatepy)）。
+> - 该方式产出的镜像名为 `ubuntu:22.04`（无 `-custom` 后缀），对应 `create_template.py` 需传 `--image ubuntu:22.04`，模板别名为 `ubuntu-22-04-1`（别名派生规则见 [7.3.1 快速构建](#731-快速构建create_templatepy)）。
 
-### 6.2 上传镜像到 Harbor
+### 7.2 上传镜像到 Harbor
 
 无论镜像是通过制作得到还是直接使用测试镜像，都必须上传到 Harbor 的 `e2b-orchestration` 项目下。
 
@@ -1118,11 +1242,11 @@ e2b-orchestration/ubuntu:22.04
 docker pull <SERVER_IP>:30443/e2b-orchestration/ubuntu:22.04-custom
 ```
 
-### 6.3 构建模板
+### 7.3 构建模板
 
-#### 6.3.1 快速构建（create_template.py）
+#### 7.3.1 快速构建（create_template.py）
 
-`create_template.py` 支持批量构建模板，默认从 `<HARBOR_IP>:30443/e2b-orchestration/ubuntu:22.04-custom` 镜像构建 1 个模板（需先按 [6.1 制作沙箱镜像](#61-制作沙箱镜像) / [6.2 上传镜像到 Harbor](#62-上传镜像到-harbor) 准备好该镜像）。
+`create_template.py` 支持批量构建模板，默认从 `<HARBOR_IP>:30443/e2b-orchestration/ubuntu:22.04-custom` 镜像构建 1 个模板（需先按 [7.1 制作沙箱镜像](#71-制作沙箱镜像) / [7.2 上传镜像到 Harbor](#72-上传镜像到-harbor) 准备好该镜像）。
 
 **模板别名派生规则**：别名 = 镜像名最后一段（非小写字母/数字的字符转为 `-`，截断至 30 字符）+ 序号。默认镜像 `ubuntu:22.04-custom` → 模板别名 **`ubuntu-22-04-custom-1`**；批量构建时序号递增（`-1`、`-2`、...）。
 
@@ -1154,7 +1278,7 @@ python3 create_template.py --image ubuntu:22.04 --server-ip <SERVER_IP> --harbor
 
 如需修改资源配置，编辑 [create_template.py](create_template.py) 中的 `CPU_COUNT` / `MEMORY_MB`。
 
-#### 6.3.2 自定义模板构建
+#### 7.3.2 自定义模板构建
 
 **基础示例**：
 
@@ -1193,7 +1317,7 @@ Template.build(
 
 ---
 
-## 7. 创建沙箱
+## 8. 创建沙箱
 
 沙箱支持两种创建方式：
 
@@ -1202,17 +1326,17 @@ Template.build(
 | **SDK 创建** | E2B Python SDK / `create_sandbox.py` | Nomad / K8S | 通过 API 服务创建，返回沙箱 ID，可在脚本/程序中调用 |
 | **K8S 沙箱 Pod** | `kubectl apply` 沙箱 Pod | 仅 K8S | 以 Pod 形式由 K8S 原生调度，webhook 自动注入沙箱配置 |
 
-### 7.1 方式一：SDK 创建
+### 8.1 方式一：SDK 创建
 
-#### 7.1.1 前提条件
+#### 8.1.1 前提条件
 
-- API 服务已启动（见 [4. 部署：Nomad 模式（单机）](#4-部署nomad-模式单机) / [5. 部署：K8S 模式（生产）](#5-部署k8s-模式生产)）
+- API 服务已启动（见 [5. 部署：Nomad 模式（单机）](#5-部署nomad-模式单机) / [6. 部署：K8S 模式（生产）](#6-部署k8s-模式生产)）
 - 已安装 Python SDK：`pip install e2b==2.20.0 e2b_code_interpreter==2.4.1`
-- 认证信息已写入 `/root/.e2b/config.json`（部署时自动生成，见 [7.4 认证信息](#74-认证信息)）
+- 认证信息已写入 `/root/.e2b/config.json`（部署时自动生成，见 [8.4 认证信息](#84-认证信息)）
 
-#### 7.1.2 一键脚本
+#### 8.1.2 一键脚本
 
-`create_sandbox.py` 通过 `--template` 指定模板别名，默认 `ubuntu-22-04-custom-1`（即 `create_template.py` 默认镜像构建产出，见 [6.3.1 快速构建](#631-快速构建create_templatepy)）：
+`create_sandbox.py` 通过 `--template` 指定模板别名，默认 `ubuntu-22-04-custom-1`（即 `create_template.py` 默认镜像构建产出，见 [7.3.1 快速构建](#731-快速构建create_templatepy)）：
 
 ```bash
 # 创建沙箱（--server-ip 与 .env 中 SERVER_IP 保持一致）
@@ -1236,7 +1360,7 @@ python3 create_sandbox.py --server-ip <SERVER_IP> --template <模板别名>
 3. 调用 `Sandbox.create(<模板别名>)` 创建沙箱
 4. 输出沙箱 ID，并执行 `whoami` 验证
 
-#### 7.1.3 Python SDK 完整示例
+#### 8.1.3 Python SDK 完整示例
 
 ```python
 import os
@@ -1262,11 +1386,11 @@ print(f"沙箱 ID: {sbx.sandbox_id}")
 sbx.kill()
 ```
 
-#### 7.1.4 SSH 连接沙箱
+#### 8.1.4 SSH 连接沙箱
 
 通过 websocat 代理连接沙箱的 SSH 服务。
 
-**前提**：沙箱镜像包含 openssh-server 且镜像内已设置用户密码（[6.1.2 手动制作](#612-方式二手动制作) 示例已安装 openssh-server 与 passwd，构建镜像时可通过 `passwd <user>` 设置密码）；使用 [6.1.3 测试镜像](#613-方式三直接使用测试镜像) 的沙箱无法 SSH 连接。
+**前提**：沙箱镜像包含 openssh-server 且镜像内已设置用户密码（[7.1.2 手动制作](#712-方式二手动制作) 示例已安装 openssh-server 与 passwd，构建镜像时可通过 `passwd <user>` 设置密码）；使用 [7.1.3 测试镜像](#713-方式三直接使用测试镜像) 的沙箱无法 SSH 连接。
 
 ```bash
 # 设置沙箱 ID
@@ -1282,17 +1406,17 @@ ssh -o "ProxyCommand=websocat --binary -B 65536 ws://8081-${SANDBOX_ID}.e2b.app"
     user@8081-${SANDBOX_ID}.e2b.app
 ```
 
-### 7.2 方式二：K8S 沙箱 Pod 创建
+### 8.2 方式二：K8S 沙箱 Pod 创建
 
 通过 K8S 自定义资源或直接创建沙箱 Pod，沙箱以 Pod 形式由 K8S 原生调度。
 
-#### 7.2.1 前提条件
+#### 8.2.1 前提条件
 
-- K8S 模式部署完成，`cri-multiplex` 已部署并创建 RuntimeClass `e2b`（见 [5.7 可选组件：cri-multiplex](#57-可选组件cri-multiplex)）
-- `ENABLE_WEBHOOK=true` 且 e2b-webhook 已部署（见 [5.8 可选组件：e2b-webhook](#58-可选组件e2b-webhook)）
-- 目标模板已存在（如按 [6.3.1 快速构建](#631-快速构建create_templatepy) 默认产出的 `ubuntu-22-04-custom-1`）
+- K8S 模式部署完成，`cri-multiplex` 已部署并创建 RuntimeClass `e2b`（见 [6.7 可选组件：cri-multiplex](#67-可选组件cri-multiplex)）
+- `ENABLE_WEBHOOK=true` 且 e2b-webhook 已部署（见 [6.8 可选组件：e2b-webhook](#68-可选组件e2b-webhook)）
+- 目标模板已存在（如按 [7.3.1 快速构建](#731-快速构建create_templatepy) 默认产出的 `ubuntu-22-04-custom-1`）
 
-#### 7.2.2 创建沙箱 Pod
+#### 8.2.2 创建沙箱 Pod
 
 webhook 通过 `generateName: spotbox-*` 与 `batch-sandbox.sandbox.opensandbox.io/pod-index` 标签识别沙箱 Pod（BatchSandbox CR 为可选的高层封装，最终也以带同样标识的 Pod 形式落地）。以下为沙箱 Pod 示例：
 
@@ -1326,7 +1450,7 @@ kubectl apply -f sandbox-demo.yaml
 3. webhook 将配置注入为 `e2b.dev/*` 注解，并设置 `runtimeClassName: e2b`
 4. cri-multiplex 将带 `runtimeClassName: e2b` 的 Pod 调度到 E2B orchestrator，以 Firecracker 微虚拟机启动沙箱
 
-#### 7.2.3 验证
+#### 8.2.3 验证
 
 ```bash
 # 查看沙箱 Pod
@@ -1339,7 +1463,7 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 
 > 说明：通过 BatchSandbox CR 创建时，可用 `kubectl get batchsandbox` 查看 CR 状态。
 
-### 7.3 环境变量说明
+### 8.3 环境变量说明
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
@@ -1349,7 +1473,7 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 | `E2B_ACCESS_TOKEN` | 访问令牌 | 从 `/root/.e2b/config.json` 获取 |
 | `E2B_API_KEY` | 团队 API Key | 从 `/root/.e2b/config.json` 获取 |
 
-### 7.4 认证信息
+### 8.4 认证信息
 
 认证信息存储在 `/root/.e2b/config.json`：
 
@@ -1362,11 +1486,11 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 
 ---
 
-## 8. E2B 插件部署
+## 9. E2B 插件部署
 
 将 E2B 沙箱能力集成到 OpenClaw 容器中。
 
-### 8.1 部署插件
+### 9.1 部署插件
 
 ```bash
 # Nomad 模式（Docker 容器）
@@ -1376,7 +1500,7 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 ./build.sh --deploy-plugin <pod名> <模板名> <selector> <namespace>
 ```
 
-### 8.2 插件部署流程
+### 9.2 插件部署流程
 
 ```
 [1/7] 克隆插件源码 (openclaw-sandbox-exec)
@@ -1400,7 +1524,7 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 [7/7] 配置 DNS 劫持 + 端口转发
 ```
 
-### 8.3 插件配置参数
+### 9.3 插件配置参数
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
@@ -1409,13 +1533,13 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 | `selector` | K8S 标签选择器 | `app=openclaw-deploy-for-local-exec` |
 | `namespace` | K8S 命名空间 | `default` |
 
-> **注意**：`template` 参数需与实际已构建的模板别名一致（默认镜像构建产出为 `ubuntu-22-04-custom-1`，见 [6.3.1 快速构建](#631-快速构建create_templatepy)），否则插件创建沙箱时报 `Sandbox not found`。
+> **注意**：`template` 参数需与实际已构建的模板别名一致（默认镜像构建产出为 `ubuntu-22-04-custom-1`，见 [7.3.1 快速构建](#731-快速构建create_templatepy)），否则插件创建沙箱时报 `Sandbox not found`。
 
 ---
 
-## 9. 运维操作
+## 10. 运维操作
 
-### 9.1 服务管理
+### 10.1 服务管理
 
 ```bash
 # 启动服务
@@ -1431,7 +1555,7 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 ./build.sh --deploy
 ```
 
-### 9.2 单独部署组件
+### 10.2 单独部署组件
 
 ```bash
 ./build.sh --deploy nomad       # 重新部署 Nomad
@@ -1441,7 +1565,7 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 ./build.sh --deploy services    # 构建镜像并部署 E2B 服务（Nomad/K8S 任务 + 生成 Token）
 ```
 
-### 9.3 单独卸载组件
+### 10.3 单独卸载组件
 
 ```bash
 ./build.sh --remove nomad       # 卸载 Nomad
@@ -1450,7 +1574,7 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 ./build.sh --remove postgres    # 卸载 PostgreSQL
 ```
 
-### 9.4 Harbor 项目管理
+### 10.4 Harbor 项目管理
 
 单独创建 Harbor 项目，无需重新部署 Harbor：
 
@@ -1464,7 +1588,7 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 
 脚本会自动等待 Harbor 就绪、登录、然后创建项目。
 
-### 9.5 Nomad 任务管理
+### 10.5 Nomad 任务管理
 
 对 Nomad 任务进行独立操作，不影响基础设施：
 
@@ -1497,7 +1621,7 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 
 支持的任务名：`redis`、`template-manager`、`edge`、`api`、`all`（默认）
 
-### 9.6 修改沙箱配置
+### 10.6 修改沙箱配置
 
 以下以修改 `tiers` 表为例，按部署模式选择对应命令。
 
@@ -1525,7 +1649,7 @@ kubectl exec -n e2b deploy/postgres -- psql -U postgres -d mydatabase \
     -c "UPDATE tiers SET concurrent_instances = 50 WHERE id = 'base_v1';"
 ```
 
-### 9.7 下载离线包
+### 10.7 下载离线包
 
 ```bash
 # x86_64
@@ -1535,7 +1659,7 @@ ARCH=x86 ./build.sh --download
 ARCH=arm64 ./build.sh --download
 ```
 
-### 9.8 全量卸载
+### 10.8 全量卸载
 
 ```bash
 ./build.sh --uninstall
@@ -1543,9 +1667,9 @@ ARCH=arm64 ./build.sh --download
 
 ---
 
-## 10. 常见问题
+## 11. 常见问题
 
-### 10.1 部署脚本失败（Nomad 403 错误）
+### 11.1 部署脚本失败（Nomad 403 错误）
 
 **现象**：
 
@@ -1568,7 +1692,7 @@ ss -tlnp | grep 4646
 ./build.sh --stop && ./build.sh --start
 ```
 
-### 10.2 模板构建失败（连接拒绝）
+### 11.2 模板构建失败（连接拒绝）
 
 **现象**：
 
@@ -1590,17 +1714,17 @@ resources {
 }
 ```
 
-### 10.3 Consul 启动失败
+### 11.3 Consul 启动失败
 
 **原因**：代理干扰。
 
 **解决**：关闭系统代理后重启。
 
-### 10.4 API 部署失败
+### 11.4 API 部署失败
 
 **原因**：PostgreSQL 连接异常。
 
-**解决**（Nomad 模式，详见 [4.3 启动服务](#43-启动服务)；K8S 模式，详见 [5.3 Master 节点部署](#53-master-节点部署)（步骤三））：
+**解决**（Nomad 模式，详见 [5.3 启动服务](#53-启动服务)；K8S 模式，详见 [6.3 Master 节点部署](#63-master-节点部署)（步骤三））：
 
 ```bash
 # 检查 PostgreSQL 状态
@@ -1623,7 +1747,7 @@ ls -ld /data/postgres
 kubectl delete pod -n e2b -l app=postgres
 ```
 
-### 10.5 Template 启动失败
+### 11.5 Template 启动失败
 
 **原因**：`.env` 配置缺失。
 
@@ -1633,7 +1757,7 @@ kubectl delete pod -n e2b -l app=postgres
 export API_NODE_POOL=api
 ```
 
-### 10.6 Harbor 镜像拉取失败
+### 11.6 Harbor 镜像拉取失败
 
 根据 `HARBOR_PROTOCOL` 配置，检查对应协议。
 
@@ -1665,7 +1789,7 @@ nerdctl login <SERVER_IP>:30443 -u admin -p "${HARBOR_PASSWORD}"
 
 > 提示：使用 `HARBOR_PROTOCOL=both` 可同时支持两种协议，便于排查问题。
 
-### 10.7 K8S 域名解析失败
+### 11.7 K8S 域名解析失败
 
 ```bash
 # 检查 dnsmasq
@@ -1684,7 +1808,7 @@ kubectl get svc ingress-nginx-controller -n ingress-nginx
 
 ---
 
-## 11. 命令速查
+## 12. 命令速查
 
 | 操作 | Nomad 模式 | K8S 模式 |
 |------|-----------|----------|
@@ -1746,7 +1870,7 @@ kubectl get svc ingress-nginx-controller -n ingress-nginx
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `STORAGE_PROVIDER` | 存储后端（`MooncakeBucket` 时需配置 Mooncake，见 [3.5 Mooncake 配置（可选）](#35-mooncake-配置可选)） | `Local` |
+| `STORAGE_PROVIDER` | 存储后端（`MooncakeBucket` 时需配置 Mooncake，见 [4.5 Mooncake 配置（可选）](#45-mooncake-配置可选)） | `Local` |
 
 **Mooncake（仅 `STORAGE_PROVIDER=MooncakeBucket` 时需要）**
 
@@ -1786,7 +1910,7 @@ kubectl get svc ingress-nginx-controller -n ingress-nginx
 | `ENABLE_WEBHOOK` | 是否启用 e2b-webhook | `false` |
 | `API_NODE_POOL` | API 节点池名（Template 启动需配置） | - |
 
-**E2B 客户端环境变量**（SDK / 脚本中设置，见 [7.3 环境变量说明](#73-环境变量说明)）
+**E2B 客户端环境变量**（SDK / 脚本中设置，见 [8.3 环境变量说明](#83-环境变量说明)）
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
