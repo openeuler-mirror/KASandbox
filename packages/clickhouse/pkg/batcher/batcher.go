@@ -111,8 +111,10 @@ func (b *Batcher[T]) Start(ctx context.Context) error {
 	b.doneCh = make(chan struct{})
 
 	go func() {
+		// Close via defer so Stop never blocks even if the goroutine dies
+		// early (e.g. FailNow called inside BatcherFunc, or a panic).
+		defer close(b.doneCh)
 		processBatches(ctx, b.Func, b.ch, b.MaxBatchSize, b.MaxDelay, b.ErrorHandler)
-		close(b.doneCh)
 	}()
 
 	return nil
