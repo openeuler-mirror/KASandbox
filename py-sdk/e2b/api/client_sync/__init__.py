@@ -2,6 +2,7 @@ from typing import Optional
 
 import httpx
 import logging
+import threading
 
 from e2b.api import ApiClient, limits
 from e2b.connection_config import ConnectionConfig
@@ -36,15 +37,20 @@ class TransportWithLogger(httpx.HTTPTransport):
 
 
 _transport: Optional[TransportWithLogger] = None
+_transport_lock = threading.Lock()
 
 
 def get_transport(config: ConnectionConfig) -> TransportWithLogger:
     if TransportWithLogger.singleton is not None:
         return TransportWithLogger.singleton
 
-    transport = TransportWithLogger(
-        limits=limits,
-        proxy=config.proxy,
-    )
-    TransportWithLogger.singleton = transport
-    return transport
+    # Serialize the first construction so concurrent clients share one pool.
+    # Once published, the fast path above remains lock-free.
+    with _transport_lock:
+        if TransportWithLogger.singleton is None:
+            TransportWithLogger.singleton = TransportWithLogger(
+                limits=limits,
+                proxy=config.proxy,
+            )
+
+    return TransportWithLogger.singleton
