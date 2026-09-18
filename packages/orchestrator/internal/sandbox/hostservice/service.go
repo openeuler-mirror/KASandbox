@@ -2,6 +2,7 @@ package hostservice
 
 import (
 	"context"
+	"io"
 	"os"
 )
 
@@ -26,7 +27,12 @@ type Service struct {
 	ExtraFiles []*os.File
 	// ParentFiles are retained only by the orchestrator. They keep socketpair
 	// and pipe peers alive but are not inherited by the child process.
-	ParentFiles   []*os.File
+	ParentFiles []*os.File
+	// LogWriter, when non-nil, receives the process's stdout/stderr instead of
+	// the default zapio piping into the orchestrator log. Ownership stays with
+	// the caller (closed via Cleanup); it is deliberately not closed per
+	// (re)start so RestartOnCrash restarts keep appending to it.
+	LogWriter     io.Writer
 	Cleanup       func()
 	RestartPolicy RestartPolicy
 	ReadyCheck    ReadyCheck

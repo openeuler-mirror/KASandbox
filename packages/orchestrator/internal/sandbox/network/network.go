@@ -250,6 +250,17 @@ func (s *Slot) CreateNetwork(ctx context.Context) error {
 		return fmt.Errorf("error creating cvd-mtap postrouting masquerade rule: %w", err)
 	}
 
+	// Per-sandbox egress proxy slots: the in-netns proxy sources its upstream
+	// connections from the vpeer (vrt network) address, which the SNAT rules
+	// above and the host MASQUERADE don't cover — add the vrt SNAT so the
+	// proxy's upstream traffic can leave the node.
+	if s.egressProxy {
+		err = tables.Append("nat", "POSTROUTING", s.egressProxyVrtSNATSpec()...)
+		if err != nil {
+			return fmt.Errorf("error creating egress proxy vrt postrouting rule: %w", err)
+		}
+	}
+
 	err = tables.Append("nat", "PREROUTING", "-i", s.VpeerName(), "-d", s.HostIPString(), "-j", "DNAT", "--to", s.NamespaceIP())
 	if err != nil {
 		return fmt.Errorf("error creating postrouting rule from vpeer: %w", err)
@@ -324,9 +335,14 @@ func (s *Slot) CreateNetwork(ctx context.Context) error {
 
 	// Redirect TCP traffic to appropriate egress proxy ports based on destination port.
 	// This preserves the original destination IP for SO_ORIGINAL_DST.
-	err = s.tcpProxyConfig().append(tables)
-	if err != nil {
-		return err
+	// Per-sandbox egress proxy slots skip this: their TCP egress is redirected
+	// to the in-netns proxy, and the tcpProxy catch-all would hijack the
+	// proxy's own upstream connections arriving via the host veth.
+	if s.installTCPProxy() {
+		err = s.tcpProxyConfig().append(tables)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -375,8 +391,11 @@ func (s *Slot) RemoveNetwork() error {
 			errs = append(errs, fmt.Errorf("error deleting sandbox hyperloop proxy redirect rule: %w", err))
 		}
 
-		// Delete egress proxy redirect rules
-		errs = append(errs, s.tcpProxyConfig().delete(tables)...)
+		// Delete egress proxy redirect rules (never installed on per-sandbox
+		// egress proxy slots)
+		if s.installTCPProxy() {
+			errs = append(errs, s.tcpProxyConfig().delete(tables)...)
+		}
 	}
 
 	// Delete routing from host to FC namespace

@@ -9,6 +9,20 @@ import (
 const annTemplateID = "e2b.dev/template-id"
 const annExposePorts = "e2b.dev/expose-ports" // 新增
 
+// per-sandbox egress 代理注解（设计文档 §3.2/§6.1）：cri-multiplex 从 CRI
+// annotations 摘出并入 SandboxConfig.Metadata 透传给 orchestrator；取值校验见
+// sandbox_create.go 的 validateEgressConfig。
+const (
+	annEgressMode     = "cri-multiplex.dev/egress-mode"     // per-sandbox / off；空 = 未指定（由 orchestrator 按 §8.2 推导）
+	annEgressUpstream = "cri-multiplex.dev/egress-upstream" // http(s)://[user:pass@]host:port 覆盖节点默认上游；off = 拦截后直连
+	annSandboxMIS     = "cri-multiplex.dev/sandbox-mis"     // 沙箱身份（代理进程 env SANDBOX_MIS）；per-sandbox 显式指定时必填
+	annEgressProfile  = "cri-multiplex.dev/egress-profile"  // 仅支持 internal（代理进程 env SPOTBOX_PROFILE，缺省同）
+	annEgressMitm     = "cri-multiplex.dev/egress-mitm"     // true/false，MITM 门控（默认 true）
+)
+
+// egressAnnotationKeys 是需要从 annotations 透传进 cfg.Metadata 的全部 egress 注解 key。
+var egressAnnotationKeys = []string{annEgressMode, annEgressUpstream, annSandboxMIS, annEgressProfile, annEgressMitm}
+
 type E2BConfig struct {
 	OrchestratorAddr      string
 	OrchestratorProxyAddr string

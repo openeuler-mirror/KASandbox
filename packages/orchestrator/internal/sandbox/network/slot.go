@@ -80,6 +80,14 @@ type Slot struct {
 	// firewallCustomRules is used to track if custom firewall rules are set for the slot and need a cleanup.
 	firewallCustomRules atomic.Bool
 
+	// egressProxy marks a native slot dedicated to a sandbox running its own
+	// in-netns egress proxy (egress-mode=per-sandbox). Such slots bypass the
+	// pre-warmed/reused pools (Pool.GetEgressProxySlot), skip the host-side
+	// tcpProxy redirect, install an extra vrt SNAT rule for the proxy's
+	// upstream connections, and initialize the slot firewall with
+	// all-protocols user rules.
+	egressProxy bool
+
 	vPeerIp net.IP
 	vEthIp  net.IP
 	vrtMask net.IPMask
@@ -343,8 +351,11 @@ func (s *Slot) InitializeFirewall() error {
 		s.config.FirewallAllowedCIDRs,
 		s.config.DeniedPodCIDRs,
 		// In external netns (CNI) mode no TCP egress proxy is installed,
-		// so the user allow/deny rules must cover TCP as well.
-		s.ExternalNetNS,
+		// so the user allow/deny rules must cover TCP as well. Same for
+		// per-sandbox egress proxy slots: their TCP egress is redirected
+		// to the in-netns proxy instead of the tcpProxy, so the user rules
+		// become the only pre-redirect TCP enforcement point.
+		s.userRulesAllProtocols(),
 		s.ExtraTapName(),
 	)
 	if err != nil {
@@ -448,6 +459,12 @@ func (s *Slot) NamespacePath() string {
 		return s.NetNSPath
 	}
 	return filepath.Join(netNamespacesDir, s.NamespaceID())
+}
+
+// NamedNetNSPath returns the host mount path of a named network namespace
+// (e.g. "ns-7" → /var/run/netns/ns-7).
+func NamedNetNSPath(name string) string {
+	return filepath.Join(netNamespacesDir, name)
 }
 
 func getHostNetworkCIDR() *net.IPNet {

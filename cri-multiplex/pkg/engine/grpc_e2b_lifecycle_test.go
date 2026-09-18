@@ -753,23 +753,23 @@ func TestGRPCE2BRunPodSandboxSandboxIDAnnotation(t *testing.T) {
 	client := &fakeSandboxServiceClient{}
 	e := newTestGRPCE2BEngine(client)
 	req := e2bRunReq("uid-sbx")
-	req.Config.Annotations[annSandboxID] = "my-sandbox-01"
+	req.Config.Annotations[annSandboxID] = "mysandbox01"
 	req.Config.Annotations[annExecutionID] = "exec-1"
 
 	if _, err := e.RunPodSandbox(context.Background(), req); err != nil {
 		t.Fatalf("RunPodSandbox: %v", err)
 	}
-	if client.lastCreate == nil || client.lastCreate.Sandbox.SandboxId != "my-sandbox-01" {
+	if client.lastCreate == nil || client.lastCreate.Sandbox.SandboxId != "mysandbox01" {
 		t.Fatalf("create sandbox id = %+v", client.lastCreate)
 	}
 	pod, ok := e.tracker.Get("uid-sbx")
-	if !ok || pod.e2bSandboxID != "my-sandbox-01" {
+	if !ok || pod.e2bSandboxID != "mysandbox01" {
 		t.Fatalf("tracker pod mismatch: %+v ok=%v", pod, ok)
 	}
 	if pod.executionID != "exec-1" || pod.teamID != "team-a" {
 		t.Fatalf("pod identity fields mismatch: %+v", pod)
 	}
-	if got, ok := e.tracker.GetByE2B("my-sandbox-01"); !ok || got.sandboxID != "uid-sbx" {
+	if got, ok := e.tracker.GetByE2B("mysandbox01"); !ok || got.sandboxID != "uid-sbx" {
 		t.Fatalf("reverse index mismatch: %+v ok=%v", got, ok)
 	}
 }
@@ -845,5 +845,85 @@ func TestGRPCE2BRunPodSandboxStaleRecordRecreate(t *testing.T) {
 	pod, ok := e.tracker.Get("uid-s")
 	if !ok || pod.state != stateRunning {
 		t.Fatalf("re-created pod mismatch: %+v ok=%v", pod, ok)
+	}
+}
+
+func TestGRPCE2BRunPodSandboxInvalidEgressAnnotations(t *testing.T) {
+	cases := map[string]map[string]string{
+		"bad egress-mode":             {annEgressMode: "gateway"},
+		"bad egress-profile":          {annEgressMode: "off", annEgressProfile: "unknown"},
+		"egress-profile 仅支持 internal": {annEgressProfile: "personal"},
+		"bad egress-mitm":             {annEgressMitm: "yes"},
+		"upstream bad scheme":         {annEgressUpstream: "ftp://proxy:3128"},
+		"upstream missing host":       {annEgressUpstream: "http://"},
+		"upstream port range":         {annEgressUpstream: "http://proxy:99999"},
+		"upstream non-numeric":        {annEgressUpstream: "http://proxy:abc"},
+		"per-sandbox without mis":     {annEgressMode: "per-sandbox"},
+	}
+	for name, anns := range cases {
+		t.Run(name, func(t *testing.T) {
+			client := &fakeSandboxServiceClient{}
+			fakeCNI := &fakeCNIManager{}
+			e := newTestGRPCE2BEngine(client)
+			e.cniConfig.Enabled = true
+			e.cniManager = fakeCNI
+
+			req := e2bRunReq("uid-a")
+			for k, v := range anns {
+				req.Config.Annotations[k] = v
+			}
+
+			if _, err := e.RunPodSandbox(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("RunPodSandbox error code = %v, want InvalidArgument (err=%v)", status.Code(err), err)
+			}
+			// fail-fast：不应触达 CNI / orchestrator
+			if client.createCalls != 0 || fakeCNI.addCalls != 0 {
+				t.Fatalf("invalid egress annotations must fail before CNI/orchestrator: create=%d cniAdd=%d", client.createCalls, fakeCNI.addCalls)
+			}
+		})
+	}
+}
+
+func TestGRPCE2BRunPodSandboxValidEgressAnnotations(t *testing.T) {
+	cases := map[string]map[string]string{
+		"full per-sandbox with credentialed upstream": {
+			annEgressMode:     "per-sandbox",
+			annSandboxMIS:     "mis-001",
+			annEgressProfile:  "internal",
+			annEgressMitm:     "true",
+			annEgressUpstream: "http://user:pass@proxy.internal:3128",
+		},
+		"explicit off without mis": {annEgressMode: "off"},
+		"upstream off":             {annEgressUpstream: "off"},
+		"upstream https no port":   {annEgressUpstream: "https://proxy.internal"},
+	}
+	i := 0
+	for name, anns := range cases {
+		t.Run(name, func(t *testing.T) {
+			client := &fakeSandboxServiceClient{}
+			fakeCNI := &fakeCNIManager{}
+			e := newTestGRPCE2BEngine(client)
+			e.cniConfig.Enabled = true
+			e.cniManager = fakeCNI
+
+			req := e2bRunReq(fmt.Sprintf("uid-valid-%d", i))
+			i++
+			for k, v := range anns {
+				req.Config.Annotations[k] = v
+			}
+
+			if _, err := e.RunPodSandbox(context.Background(), req); err != nil {
+				t.Fatalf("RunPodSandbox: %v", err)
+			}
+			if client.createCalls != 1 {
+				t.Fatalf("create calls = %d, want 1", client.createCalls)
+			}
+			md := client.lastCreate.Sandbox.Metadata
+			for k, v := range anns {
+				if md[k] != v {
+					t.Fatalf("orchestrator metadata[%s] = %q, want %q (metadata=%v)", k, md[k], v, md)
+				}
+			}
+		})
 	}
 }

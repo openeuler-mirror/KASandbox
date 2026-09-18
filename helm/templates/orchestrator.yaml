@@ -75,6 +75,32 @@ spec:
           value: "{{ .Values.sandboxDeniedPodCIDR }}"
         - name: SANDBOX_FIREWALL_ALLOWED_CIDRS
           value: "{{ .Values.sandboxFirewallAllowedCIDRs }}"
+        - name: SANDBOX_EGRESS_PROXY_MODE
+          value: "{{ .Values.sandboxEgressProxyMode }}"
+        - name: SANDBOX_PROXY_LISTEN_PORT
+          value: "{{ .Values.sandboxProxyListenPort }}"
+        - name: SANDBOX_PROXY_BINARY
+          value: "{{ .Values.sandboxProxyBinary }}"
+        - name: SANDBOX_PROXY_ADDON
+          value: "{{ .Values.sandboxProxyAddon }}"
+        - name: SANDBOX_PROXY_CONFDIR
+          value: "{{ .Values.sandboxProxyConfdir }}"
+        - name: SANDBOX_PROXY_APPLY
+          value: "{{ .Values.sandboxProxyApply }}"
+        - name: SANDBOX_PROXY_EXEMPT_CIDRS
+          value: "{{ .Values.sandboxProxyExemptCIDRs }}"
+        - name: SANDBOX_PROXY_RESTART
+          value: "{{ .Values.sandboxProxyRestart }}"
+        - name: SANDBOX_PROXY_LOG_DIR
+          value: "{{ .Values.sandboxProxyLogDir }}"
+        - name: SANDBOX_PROXY_UPSTREAM
+          value: "{{ .Values.sandboxProxyUpstream }}"
+        - name: SANDBOX_PROXY_EXTRA_ARGS
+          value: "{{ .Values.sandboxProxyExtraArgs }}"
+        - name: SANDBOX_PROXY_POOL_SIZE
+          value: "{{ .Values.sandboxProxyPoolSize }}"
+        - name: SANDBOX_PROXY_REUSED_POOL_SIZE
+          value: "{{ .Values.sandboxProxyReusedPoolSize }}"
         - name: SHARED_CHUNK_CACHE_PATH
           value: "{{ .Values.sharedChunkCachePath }}"
         - name: CLICKHOUSE_CONNECTION_STRING

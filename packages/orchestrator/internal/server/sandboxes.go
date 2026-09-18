@@ -22,6 +22,7 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
+	sandbox_network_internal "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
 	"github.com/e2b-dev/infra/packages/shared/pkg/events"
@@ -183,6 +184,11 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 			Network:        network,
 			RuntimeNetwork: req.GetSandbox().GetRuntimeNetwork(),
 
+			// Per-sandbox egress proxy selection + identity, carried through
+			// as SandboxConfig.Metadata by cri-multiplex (§6.3 of the design:
+			// orchestrator consumes the metadata map, never raw annotations).
+			EgressIdentity: sandbox_network_internal.EgressIdentityFromMetadata(req.GetSandbox().GetMetadata()),
+
 			Envd: sandbox.EnvdMetadata{
 				Version:     req.GetSandbox().GetEnvdVersion(),
 				AccessToken: req.GetSandbox().EnvdAccessToken,
@@ -214,6 +220,13 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 			telemetry.ReportError(ctx, "sandbox files not found", err, telemetry.WithSandboxID(req.GetSandbox().GetSandboxId()))
 
 			return nil, status.Errorf(codes.FailedPrecondition, "sandbox files for '%s' not found", req.GetSandbox().GetSandboxId())
+		}
+
+		// Preserve gRPC status codes produced by pre-flight validation (e.g.
+		// egress proxy mode resolution: InvalidArgument / FailedPrecondition)
+		// instead of flattening everything to Internal.
+		if st, ok := status.FromError(err); ok {
+			return nil, st.Err()
 		}
 
 		err = errors.Join(err, context.Cause(ctx))

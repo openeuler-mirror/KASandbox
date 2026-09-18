@@ -385,6 +385,9 @@ func (e *grpcE2BEngine) ensureConn() error {
 	conn, err := grpc.Dial(
 		e.orchestratorAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		// 注意：不要加 grpc.WaitForReady(true)——orchestrator 宕机/滚动期间本引擎的
+		// RPC 会无限阻塞，mux fan-out（ListPodSandbox/ListContainers）随之卡死，
+		// kubelet PLEG 超时导致节点 NotReady。fast-fail + 调用方重试更安全。
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16*1024*1024)),
 	)
 	if err != nil {
@@ -1753,6 +1756,17 @@ func (e *grpcE2BEngine) annotationsToSandboxConfig(annotations map[string]string
 		}
 		cfg.AutoResume = &autoResume
 	}
+	// per-sandbox egress 代理注解透传（设计文档 §6.2）：从 annotations 摘出并入
+	// cfg.Metadata，orchestrator 只认 metadata map、不解析裸 annotation；
+	// label 存在同 key 时注解优先，Metadata 为 nil 时先初始化。
+	for _, key := range egressAnnotationKeys {
+		if v, ok := annotations[key]; ok {
+			if cfg.Metadata == nil {
+				cfg.Metadata = map[string]string{}
+			}
+			cfg.Metadata[key] = v
+		}
+	}
 	return cfg, nil
 }
 
@@ -1771,7 +1785,9 @@ func stripContainerSuffix(containerID string) string {
 }
 
 // e2bSandboxIDFromAnnotations 解析稳定逻辑 sandbox ID：优先 e2b.dev/sandbox-id
-// annotation（仅允许小写字母/数字/'-'，长度 1-64），缺省从 CRI ID 派生。
+// annotation（仅允许小写字母/数字，长度 1-64——与 envd proxy 的 sandboxIDRegex
+// ^[a-z0-9]+$ 对齐，否则 Exec 流量在 envd 侧 400 Invalid sandbox ID），
+// 缺省从 CRI ID 派生。
 func e2bSandboxIDFromAnnotations(annotations map[string]string, criID string) (string, error) {
 	id := annotations[annSandboxID]
 	if id == "" {
@@ -1781,10 +1797,10 @@ func e2bSandboxIDFromAnnotations(annotations map[string]string, criID string) (s
 		return "", status.Errorf(codes.InvalidArgument, "invalid %s annotation %q: length must be 1-64", annSandboxID, id)
 	}
 	for _, r := range id {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
 			continue
 		}
-		return "", status.Errorf(codes.InvalidArgument, "invalid %s annotation %q: only lowercase letters, digits and '-' are allowed", annSandboxID, id)
+		return "", status.Errorf(codes.InvalidArgument, "invalid %s annotation %q: only lowercase letters and digits are allowed", annSandboxID, id)
 	}
 	return id, nil
 }

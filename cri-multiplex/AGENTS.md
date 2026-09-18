@@ -91,11 +91,23 @@ Set on `PodSandboxConfig.Annotations`:
 | `e2b.dev/template-id` | none |
 | `e2b.dev/build-id` | `"latest"` |
 | `e2b.dev/team-id` | `"cri-multiplex"` |
-| `e2b.dev/sandbox-id` | none (derived from Pod UID); stable logical sandbox ID, lowercase letters/digits/`-`, 1-64 chars |
+| `e2b.dev/sandbox-id` | none (derived from Pod UID); stable logical sandbox ID, lowercase letters/digits only, 1-64 chars（与 envd proxy `^[a-z0-9]+$` 对齐，含 `-` 会在 envd 侧 400） |
 | `e2b.dev/vcpu` | `1` |
 | `e2b.dev/ram-mb` | `2048` |
 | `e2b.dev/allow-internet` | `true` |
 | `e2b.dev/expose-ports` | none — HostPort 暴露，逗号分隔，每条目三种写法：`P`（池内自动分配）/ `P:H`（指定宿主端口）/ `P:H1-H2`（区间内取空闲端口）；malformed → `InvalidArgument`，任一分配失败（含池耗尽）→ 整个沙箱创建失败并完整回滚 |
+
+### Per-sandbox egress 代理注解（`cri-multiplex.dev/*`）
+
+同样设在 `PodSandboxConfig.Annotations`，由 cri-multiplex 摘出并入 `SandboxConfig.Metadata` 透传给 orchestrator（label 存在同 key 时注解优先），取值在 `createE2BSandbox` 前置校验（`validateEgressConfig`），非法一律 `InvalidArgument` fail-fast。详见《E2B原生网络沙箱按 netns 起 per-sandbox 代理进程详细设计与实现步骤.md》§3.2/§6.1。
+
+| Annotation | Default |
+|---|---|
+| `cri-multiplex.dev/egress-mode` | 空 = 未指定（由 orchestrator 按 §8.2 推导：节点具备 per-sandbox 能力且携带身份注解 → `per-sandbox`，否则 `off`）；取值限 `per-sandbox`/`off` |
+| `cri-multiplex.dev/egress-upstream` | 节点 `SANDBOX_PROXY_UPSTREAM` | 仅 per-sandbox 消费：`http(s)://[user:pass@]host:port` 覆盖本沙箱上游代理；`off` = 拦截后直连不走上游 |
+| `cri-multiplex.dev/sandbox-mis` | 空 | 沙箱身份（代理进程 env `SANDBOX_MIS`）；`egress-mode=per-sandbox` 显式指定时必填，否则 `InvalidArgument` |
+| `cri-multiplex.dev/egress-profile` | `internal` | 仅支持 `internal`（代理进程 env `SPOTBOX_PROFILE`；internal 下 `X-AI-UserId` 取 `SANDBOX_ID`、策略 `id_type=virtual`），其它取值 `InvalidArgument` |
+| `cri-multiplex.dev/egress-mitm` | `true` | 取值限 `true`/`false`，MITM 门控（前提：模板镜像已内置代理 CA）；显式 `false` 派生 per-sandbox no-MITM 配置 |
 
 CRI `Labels` → SandboxConfig `Metadata` (gRPC backend). CRI `Metadata.Uid` → `SandboxId`, `Metadata.Name` → `Alias`.
 

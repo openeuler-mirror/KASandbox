@@ -3,7 +3,10 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
+	"net/url"
+	"strconv"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -47,6 +50,12 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 			return nil, status.Errorf(codes.InvalidArgument, "invalid %s: %v", annExposePorts, err)
 		}
 		exposeSpecs = specs
+	}
+
+	// per-sandbox egress 代理注解前置校验（设计文档 §6.2）：与 malformed
+	// expose-ports 同语义，CNI/orchestrator 调用之前 fail-fast，零回滚。
+	if err := validateEgressConfig(p.metadata); err != nil {
+		return nil, err
 	}
 
 	// 阶段耗时打点：CNI（池化/直连）→ orchestrator Create → HostPort，结束时输出
@@ -244,4 +253,57 @@ func (e *grpcE2BEngine) rollbackFailedCreate(ctx context.Context, sandboxID, e2b
 			log.Printf("[GrpcE2BEngine] WARNING: rollback CNI DEL failed for %s: %v", sandboxID, err)
 		}
 	}
+}
+
+// validateEgressConfig 校验 per-sandbox egress 代理注解取值（设计文档 §3.2/§6.2）。
+// 空值 = 未指定，合法；非法一律 InvalidArgument。egress-mode=per-sandbox 显式指定
+// 时 sandbox-mis 必填——addon.py 中 SANDBOX_MIS 为空会静默禁用策略客户端
+// （addon.py:1863-1868），不拦截会造成"业务以为有管控实际没有"；按 §8.2 推导命中
+// per-sandbox 的场景由 orchestrator 侧校验，不在此层。
+func validateEgressConfig(metadata map[string]string) error {
+	mode := metadata[annEgressMode]
+	switch mode {
+	case "", "per-sandbox", "off":
+	default:
+		return status.Errorf(codes.InvalidArgument, "invalid %s=%q: expected per-sandbox or off", annEgressMode, mode)
+	}
+	// 当前仅支持 internal 发行版（UserId 取 SANDBOX_ID、策略 id_type=virtual），
+	// 缺省亦由 orchestrator 侧按 internal 注入。
+	if profile := metadata[annEgressProfile]; profile != "" && profile != "internal" {
+		return status.Errorf(codes.InvalidArgument, "invalid %s=%q: only internal is supported", annEgressProfile, profile)
+	}
+	if mitm := metadata[annEgressMitm]; mitm != "" && mitm != "true" && mitm != "false" {
+		return status.Errorf(codes.InvalidArgument, "invalid %s=%q: expected true or false", annEgressMitm, mitm)
+	}
+	if upstream := metadata[annEgressUpstream]; upstream != "" && upstream != "off" {
+		if err := validateEgressUpstreamURL(upstream); err != nil {
+			return status.Errorf(codes.InvalidArgument, "invalid %s=%q: %v", annEgressUpstream, upstream, err)
+		}
+	}
+	if mode == "per-sandbox" && metadata[annSandboxMIS] == "" {
+		return status.Errorf(codes.InvalidArgument, "%s is required when %s=per-sandbox", annSandboxMIS, annEgressMode)
+	}
+	return nil
+}
+
+// validateEgressUpstreamURL 校验上游代理 URL：scheme 限 http/https，host 必填，
+// 端口（如指定）须为 1-65535；允许 URL 内嵌凭据（user:pass@）。
+func validateEgressUpstreamURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("expected http or https scheme")
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("missing host")
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("invalid port %q", p)
+		}
+	}
+	return nil
 }

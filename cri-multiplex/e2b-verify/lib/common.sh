@@ -246,6 +246,7 @@ start_non_cni_multiplex() {
     if ! STATE_DIR="${STATE_DIR:-/var/lib/cri-multiplex/state}" \
         ANDROID_ENABLED=0 \
         CNI_ENABLED=0 \
+        HIDE_SANDBOX_LABEL="${HIDE_SANDBOX_LABEL:-flux-sandbox.io/direct=true}" \
         E2B_FORCE_RESTART=1 \
         "${SCRIPT_DIR_COMMON}/01_start_multiplex.sh" >&2; then
         log_fail "${desc} 失败"
@@ -969,6 +970,16 @@ run_pod_sandbox() {
                 attempt=$((attempt+1))
                 continue
             fi
+        fi
+
+        # orchestrator 滚动窗口（DaemonSet set env / 镜像升级）：cri-multiplex 的
+        # gRPC 通道处于 TRANSIENT_FAILURE 退避，fast-fail 报 connection refused /
+        # Unavailable；等待通道重连后重试（max_retries 次内收敛）
+        if echo "${output}" | grep -qiE "connection refused|code = Unavailable"; then
+            log_info "orchestrator 连接未就绪（可能在滚动窗口），10s 后重试..."
+            sleep 10
+            attempt=$((attempt+1))
+            continue
         fi
 
         # 其他错误
