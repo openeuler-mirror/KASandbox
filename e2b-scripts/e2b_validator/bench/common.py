@@ -675,11 +675,17 @@ def _iptables_restore_checked(filtered: str, original: str, ctx: BenchContext, l
 
 
 def clean_host_orphans(ctx: BenchContext, label: str) -> dict[str, int]:
-    """清理宿主网络孤儿资源：半对子（veth-N 无 ns-N / ns-N 无 veth-N）、引用已消失
-    veth 的规则、以及 HostIP 映射到已消失槽位的 10.11 MASQUERADE 规则。
+    """清理宿主网络孤儿资源：孤儿 veth（veth-N 无 ns-N）、引用已消失 veth 的规则、
+    以及 HostIP 映射到已消失槽位的 10.11 MASQUERADE 规则。
 
-    v35 槽位 N 严格对应 netns ns-N + 宿主机 veth-N（1:1）；池化槽位（双活）与活动
-    沙箱一律不碰。仅在无沙箱活动（firecracker=0 且 jailer=0）时执行。
+    槽位 N 对应 netns ns-N + 宿主机 veth-N（1:1）。注意「ns-N 无 veth-N」的半对子
+    不再自动删除：netns 生命周期归 orchestrator 网络池管理（mint 时先建 ns 再建 veth，
+    存在短暂的半对子窗口；失效槽位由 orchestrator 启动时的归属标记回收自愈）。池化
+    槽位的 ns 被外部删掉后，池内记录不会感知，下次分发该槽位会让 fc-netns-exec 因
+    open /run/netns/ns-N 失败而连锁创建失败（毒槽位乒乓）。因此这里只统计告警，
+    需要彻底清理时用 bench clean-host 并重启 template-manager。
+
+    仅在无沙箱活动（firecracker=0 且 jailer=0）时执行。
     """
     import os
 
@@ -717,12 +723,13 @@ def clean_host_orphans(ctx: BenchContext, label: str) -> dict[str, int]:
     orphan_veth = sorted(veth_ids - netns_ids)
 
     if orphan_netns:
-        completed = subprocess.run(
-            ["xargs", "-n1", "-P16", "ip", "netns", "del"],
-            input="\n".join(f"ns-{slot}" for slot in orphan_netns),
-            capture_output=True, text=True, timeout=600, check=False,
+        # 不自动删除：这些 ns 可能属于池化槽位（mint 窗口或半失败残留），删了会毒化
+        # 池内槽位。仅记录明细，交给 orchestrator 启动回收或 clean-host + 重启处理。
+        stats["orphan_netns"] = len(orphan_netns)
+        _line(
+            f"orphan_netns kept (not deleted): {[f'ns-{slot}' for slot in orphan_netns]}；"
+            "netns 归 orchestrator 网络池管理，如需清理请 bench clean-host 并重启 template-manager"
         )
-        stats["orphan_netns"] = len(orphan_netns) - completed.stderr.count("Cannot")
     if orphan_veth:
         completed = subprocess.run(
             ["xargs", "-n1", "-P16", "ip", "link", "del"],

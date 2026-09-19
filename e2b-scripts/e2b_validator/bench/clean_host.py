@@ -3,7 +3,12 @@
 v35 架构的 orchestrator 为每个沙箱预建 netns（ns-*）+ veth（veth-*）+ iptables 规则，
 正常 kill 后槽位进入复用池（设计保留，上限 1000），但创建失败/超时回收的沙箱会泄漏
 这些资源。本命令在两次 full 压测之间做宿主级清理。池化槽位与被埋泄漏无法按名字区分，
-因此一律全清：清空后网络池会按 tap_init_num 重新预建，代价是下一次启动略慢。
+因此一律全清。
+
+重要：orchestrator 的网络池是进程内状态（另有限时归属标记 /run/e2b-netslots），
+清空 netns 后运行中的 orchestrator 不会感知，会继续把已删除的槽位分发给新沙箱，
+导致 fc-netns-exec open /run/netns/ns-N 失败、连锁创建失败。因此执行本命令后
+**必须重启 template-manager**（由它在启动时回收无主槽位并按需重新 mint）。
 """
 
 from __future__ import annotations
@@ -206,8 +211,10 @@ def execute(args: argparse.Namespace) -> int:
     }
     _log(f"清理后：{after}")
     _log(
-        "注意：网络池预建槽位已一并清空，下一次批量启动会重新预建（略慢）；"
-        "建议在下次 full 之前重启 template-manager（本命令不做任何 nomad 操作，请手动执行）"
+        "警告：网络池预建槽位已一并清空。运行中的 orchestrator 不会感知槽位被删，"
+        "继续分发会导致 fc-netns-exec 报 open /run/netns/ns-N 不存在而创建失败；"
+        "请在下次压测前务必重启 template-manager（本命令不做任何 nomad 操作，请手动执行），"
+        "由它启动时回收无主槽位并重新 mint"
     )
     print_json({
         "status": "ok",
