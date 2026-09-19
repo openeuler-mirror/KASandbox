@@ -23,6 +23,7 @@ BENCH_SECTIONS = (
     "rollback",
     "clone",
     "pause_resume",
+    "replay",
 )
 
 BUILTIN: dict[str, Any] = {
@@ -93,6 +94,15 @@ BUILTIN: dict[str, Any] = {
             {"concurrency": 5, "rounds": 5},
             {"concurrency": 10, "rounds": 5},
         ],
+    },
+    "replay": {
+        "target_count": 60,
+        "concurrency": 20,
+        "running_concurrency": 10,
+        "launch_interval_sec": 0.3,
+        "control_plane_qps": 100,
+        "action_timeout": 300,
+        "synthetic_steps": 10,
     },
     "profiles": {
         "quick": {

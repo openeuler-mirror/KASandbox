@@ -175,6 +175,18 @@ rounds = 5
 concurrency = 10
 rounds = 5
 
+# 轨迹回放密度测试：模拟真实 agent 负载节奏（创建→pause→按 delay_time 逐条 resume 执行→pause），
+# 大量沙箱以 paused 形态存活、仅 running_concurrency 个名额在 RUNNING，
+# 测的是宿主机可稳定承载的 paused+running 混合密度
+[replay]
+target_count = 60        # 总回放次数（0 = 每条轨迹一次；超过文件数循环复用）
+concurrency = 20         # 生命周期并发：同时进行回放的轨迹数
+running_concurrency = 10 # RUNNING 名额硬上限
+launch_interval_sec = 0.3 # 相邻轨迹启动最小间隔秒
+control_plane_qps = 100  # 全局控制面 QPS（create/pause/resume/command/cleanup 统一排队）
+action_timeout = 300     # 单条 action 超时秒
+synthetic_steps = 10     # 合成轨迹的步数（不传 --trajectory-dir 时生效）
+
 # profile 只覆盖各节的档位规模；quick 为小规模自检，full 对标 CubeSandbox 文章
 [profiles.quick]
 scale = { tiers = [ { size = 1 }, { size = 10 } ], rounds = 2 }

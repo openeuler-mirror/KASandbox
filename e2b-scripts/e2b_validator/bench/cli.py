@@ -1,4 +1,4 @@
-"""bench 子命令路由：create / kill-all / scale / density / snapshot-* / rollback / clone / pause-resume / all."""
+"""bench 子命令路由：create / kill-all / scale / density / snapshot-* / rollback / clone / pause-resume / replay / all."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from . import (
     create_from_snapshot,
     density,
     pause_resume,
+    replay,
     rollback,
     runner,
     scale,
@@ -59,4 +60,5 @@ def register_subcommand(subparsers) -> None:
     rollback.register(bench_subparsers)
     clone.register(bench_subparsers)
     pause_resume.register(bench_subparsers)
+    replay.register(bench_subparsers)
     runner.register(bench_subparsers)

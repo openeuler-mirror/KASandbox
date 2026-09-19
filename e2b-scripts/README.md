@@ -356,6 +356,7 @@ bash start.sh download-file \
 | 回滚 | `bench rollback` | 沙箱回滚耗时 | 逐档串行 |
 | 克隆 | `bench clone` | 沙箱克隆耗时与吞吐 | 逐档串行 |
 | 暂停恢复 | `bench pause-resume` | pause / resume 耗时 | 逐档串行 |
+| 轨迹回放密度 | `bench replay` | 真实 agent 负载节奏下的 paused+running 混合密度（见 4.7.8） | 内存安全闸兜底 |
 | 一键编排 | `bench all` | 串行执行全部测试项并生成汇总报告 | `--profile quick` 自检 / `full` 完整档位 |
 
 辅助命令：`bench kill-all` 清理 bench 创建的沙箱（默认仅清理带 bench 标记的；`--all` 删除全部）；`bench clean-host` 宿主级清理（见 4.7.7）。
@@ -512,6 +513,37 @@ bash bench.sh clean-host             # 实际清理：删 ns-* netns、veth-* �
 **scale 档位上限**：`[scale]` 基础节为 tiers 形式（size=1 / 100 / 200，从 500 降档——当前环境网络池容量与孤儿残留风险的实测平衡点）；旧的 `sizes = [...]` 写法仍然兼容；需要更大档位前先 `bench clean-host` 清理宿主。
 
 **档位前池恢复等待（pre_wait）**：所有 tiers 类型的档位支持可选字段 `pre_wait`（秒，默认 0）。高并发档（create c=20/c=50、scale 200）失败多与系统池子来不及恢复有关，bench.toml 已给这些档加 `pre_wait = 180`。档的 pre_wait > 0 时：先静置等待（每 30s 打印剩余时间到 stderr，期间不创建任何沙箱），随后执行一次 `clean_host_orphans` + `ensure_clean_slate` 快速确认，再开始 warmup/正式测量；等待时间不计入任何测量指标；pre_wait 值记录在每档 JSON 的 params 与 report.md 参数行中，保证数据可溯源。
+
+#### 4.7.8 轨迹回放密度测试（bench replay）
+
+借鉴 replay-aenv 的轨迹回放模型，模拟真实 agent 负载节奏：每条轨迹**创建沙箱 → 立即 pause → 每条 action 循环{等待 delay_time（保持 paused，模拟 LLM 推理间隔）→ 抢 RUNNING 名额 → resume → 执行命令 → pause → 释放名额} → 结束后删除沙箱**。大量沙箱以 paused 形态存活（占内存/槽位），同一时刻只有 `--running-concurrency` 个名额处于 RUNNING——与 `density`（空沙箱堆积、测内存/槽位上限）不同，replay 测的是**真实负载节奏下宿主机可稳定承载的 paused+running 混合密度**。
+
+```bash
+# 最小示例：合成轨迹自检（不传 --trajectory-dir 时用通用只读命令合成，
+# delay_time 从 replay-aenv 真实轨迹分布采样，目录缺失时兜底 0.5~8s 均匀分布）
+bash bench.sh replay --target-count 5 -c 5 --running-concurrency 2
+
+# 真实轨迹回放：目录第一层 .json/.traj 文件，target_count 超过文件数时循环复用
+bash bench.sh replay --trajectory-dir /path/to/delay_time_trajectories --target-count 60
+
+# 只校验配置与轨迹、打印调度预览，不创建沙箱（不连接环境）
+bash bench.sh replay --dry-run --target-count 5
+```
+
+| 参数 | 默认 | 含义 |
+| --- | --- | --- |
+| `--trajectory-dir` | 无（合成轨迹） | 轨迹目录（第一层 .json/.traj；缺省/非法 delay_time 按 0 秒处理并告警） |
+| `--target-count` | 60 | 总回放次数；`0` = 每条轨迹一次；超过文件数循环复用 |
+| `-c/--concurrency` | 20 | 生命周期并发：同时进行回放的轨迹数（paused 常驻规模上限） |
+| `--running-concurrency` | 10 | RUNNING 名额硬上限（RunningSlotScheduler，FIFO + delay_time 延时堆， lease 从预约起算，客户端准入永不超限） |
+| `--launch-interval-sec` | 0.3 | 相邻轨迹启动最小间隔 |
+| `--control-plane-qps` | 100 | 全局控制面 QPS（SmoothRateLimiter：create/pause/resume/command/cleanup 统一 FIFO 排队，按 1/qps 平滑分发、不补发追突发；瞬断错误 502/503/504/429/timeout/connection reset 等自动重试最多 3 次，重试重新排队） |
+| `--action-timeout` | 300 | 单条 action 超时秒 |
+| `--synthetic-steps` | 10 | 合成轨迹的步数 |
+| `--dry-run` | 关 | 只校验配置和轨迹、打印调度预览，不创建沙箱 |
+| `--mem-threshold-pct` | `global.mem_threshold_pct` | 内存安全闸：MemAvailable 低于阈值时停止发射新轨迹（在途跑完），结果标 `aborted` |
+
+报告字段（`bench_replay.json`）：`summary`（total/succeeded/failed/elapsed_sec）；`running_slots`（maximum/active/peak_active/waiting/granted/average_queue_wait_sec）；`control_plane`（qps/in_flight/waiting/dispatched/average_wait_sec/max_wait_sec/按操作类型分布）；`latency`（resume/command/pause/queue_wait 各自的 avg/p50/p90/p95/max，毫秒）；`create`（客户端 create_* + 服务端真值 server_* 口径，同 4.7.5）；`memory_curve`（每 5s 采样的 {elapsed_s, alive, mem_available_mb} 曲线）；`trajectories`（每条的 create_ms 与逐步 queue_wait/resume/command/pause/exit_code 明细）。pause/resume 走 REST 计时路径（同 pause-resume），命令执行走 SDK `commands.run`。
 
 ## 5. E2E 用例清单
 
