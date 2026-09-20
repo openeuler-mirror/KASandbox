@@ -59,6 +59,75 @@ TRANSIENT_RETRY_ATTEMPTS = 3  # 瞬断错误最大重试次数（重试重新进
 SNAPSHOT_MODES = ("none", "same-sandbox", "chain")
 
 
+def _register_summary(subparsers) -> None:
+    parser = subparsers.add_parser(
+        "replay-summary",
+        help="汇总 test-results 下所有 replay 运行，输出跨档位密度对比表（配 density 爬坡使用）",
+    )
+    parser.add_argument("--last", type=positive_int, help="只取最近 N 场（默认全部）")
+    parser.add_argument("--config", type=Path, help="bench 配置文件路径（用于定位 result_root）")
+    parser.add_argument("-o", "--output", type=Path, help="汇总表另存为 Markdown 文件")
+    parser.set_defaults(handler=execute_summary)
+
+
+def execute_summary(args: argparse.Namespace) -> int:
+    import json as _json
+    import os as _os
+
+    cfg = bench_config.load(args.config)
+    root = bench_config.resolve_result_root(cfg)
+    rows: list[dict] = []
+    for path in sorted(root.glob("*-bench/bench_replay.json"), key=lambda p: _os.path.getmtime(p)):
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        summary = data.get("summary") or {}
+        latency = data.get("latency") or {}
+        slots = data.get("running_slots") or {}
+        curve = data.get("memory_curve") or []
+        params = data.get("params") or {}
+
+        def _p95(key: str) -> float | None:
+            stats = latency.get(key) or {}
+            return stats.get("p95_ms")
+
+        rows.append({
+            "run": path.parent.name.replace("-bench", ""),
+            "档位": params.get("target_count"),
+            "名额": params.get("running_concurrency"),
+            "成功率": f"{summary.get('succeeded', 0)}/{summary.get('total', 0)}",
+            "耗时s": summary.get("elapsed_sec"),
+            "命令失败": summary.get("command_failures", 0),
+            "名额peak": slots.get("peak_active"),
+            "平均排队s": round(slots.get("average_queue_wait_sec") or 0, 1),
+            "resume_p95": _p95("resume"),
+            "command_p95": _p95("command"),
+            "pause_p95": _p95("pause"),
+            "alive峰值": max((p.get("alive", 0) for p in curve), default=None),
+            "可用内存最低MiB": min((p.get("mem_available_mb", 0) for p in curve), default=None),
+            "status": data.get("status"),
+        })
+    if args.last:
+        rows = rows[-args.last:]
+    if not rows:
+        print(f"没有找到 replay 结果（{root}/*-bench/bench_replay.json）")
+        return 1
+
+    headers = ["run", "档位", "名额", "成功率", "耗时s", "命令失败", "名额peak",
+               "平均排队s", "resume_p95", "command_p95", "pause_p95",
+               "alive峰值", "可用内存最低MiB", "status"]
+    lines = ["| " + " | ".join(headers) + " |", "|" + "---|" * len(headers)]
+    for row in rows:
+        lines.append("| " + " | ".join(str(row.get(h, "")) for h in headers) + " |")
+    table = "\n".join(lines)
+    print(table)
+    if args.output:
+        args.output.write_text(table + "\n", encoding="utf-8")
+        print(f"已写入 {args.output}")
+    return 0
+
+
 def register(subparsers) -> None:
     parser = subparsers.add_parser(
         "replay",
@@ -116,6 +185,7 @@ def register(subparsers) -> None:
     parser.add_argument("-o", "--output", help="JSON 报告输出路径")
     parser.add_argument("--sandbox-timeout", type=positive_int, help="沙箱生命周期秒数")
     parser.set_defaults(handler=guarded(execute))
+    _register_summary(subparsers)
 
 
 def _retry(operation, *, what: str, attempts: int = TRANSIENT_RETRY_ATTEMPTS):
