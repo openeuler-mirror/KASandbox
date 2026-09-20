@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ..e2b_common import positive_int, print_json
+from e2b import CommandExitException
 from . import config as bench_config
 from . import report as bench_report
 from . import sdk_engine
@@ -45,6 +46,7 @@ from .trajectory import (
     find_trajectories,
     generate_synthetic_trajectories,
     load_trajectory,
+    wrap_action,
 )
 
 TRANSIENT_RETRY_ATTEMPTS = 3  # 瞬断错误最大重试次数（重试重新进限流队列）
@@ -66,6 +68,16 @@ def register(subparsers) -> None:
     parser.add_argument("--launch-interval-sec", type=float, help="相邻轨迹启动最小间隔秒（默认 0.3）")
     parser.add_argument("--control-plane-qps", type=float, help="全局控制面 QPS（默认 100）")
     parser.add_argument("--action-timeout", type=positive_int, help="单条 action 超时秒（默认 300）")
+    parser.add_argument(
+        "--workdir",
+        help="action 执行前 cd 的工作目录并做 SWE 包装（str_replace_editor 归一化 + bash -lc）；"
+        "默认：--trajectory-dir 模式为 /testbed，合成轨迹不包装",
+    )
+    parser.add_argument(
+        "--cmd-user",
+        help="沙箱内执行命令的用户；默认：--trajectory-dir 模式为 root（对齐 replay-aenv task.toml），"
+        "合成轨迹为模板默认用户",
+    )
     parser.add_argument("--synthetic-steps", type=positive_int, help="合成轨迹的步数（默认 10）")
     parser.add_argument("--dry-run", action="store_true", help="只校验配置和轨迹、打印调度预览，不创建沙箱")
     parser.add_argument(
@@ -103,6 +115,8 @@ def run(
     control_plane_qps: float,
     action_timeout: int,
     mem_threshold_pct: float,
+    workdir: str | None,
+    cmd_user: str | None,
 ) -> dict:
     params = {
         "target_count": target_count,
@@ -112,6 +126,8 @@ def run(
         "control_plane_qps": control_plane_qps,
         "action_timeout": action_timeout,
         "mem_threshold_pct": mem_threshold_pct,
+        "workdir": workdir,
+        "cmd_user": cmd_user,
         "trajectory_count": len(trajectories),
     }
     result = base_result("replay", ctx, params)
@@ -193,14 +209,20 @@ def run(
 
         return _retry(_op, what=f"沙箱 {sandbox_id[:8]} resume")
 
-    def _command(sandbox, action: str) -> tuple[float, int]:
-        def _op() -> tuple[float, int]:
+    def _command(sandbox, action: str) -> tuple[float, int, str]:
+        def _op() -> tuple[float, int, str]:
             # 同步 SDK 的 commands.run 建连与执行不可拆分，COMMAND 名额覆盖整个调用；
             # 实际并发由 running_concurrency 硬上限兜底，限流只平滑启动节奏
             with limiter.slot(OperationType.COMMAND):
                 started = time.perf_counter()
-                completed = sandbox.commands.run(action, timeout=action_timeout)
-            return (time.perf_counter() - started) * 1000, completed.exit_code
+                try:
+                    completed = sandbox.commands.run(action, timeout=action_timeout, user=cmd_user)
+                except CommandExitException as exc:
+                    # 命令非零退出是负载内容本身（agent 探索失败、编辑不匹配等），
+                    # 不是基础设施错误：记录 exit_code 继续回放（对齐 replay-aenv
+                    # stop_on_error=False 语义），不进瞬断重试
+                    return (time.perf_counter() - started) * 1000, exc.exit_code, (exc.stderr or "")[-300:]
+            return (time.perf_counter() - started) * 1000, completed.exit_code, ""
 
         return _retry(_op, what=f"命令 {action[:40]!r}")
 
@@ -227,6 +249,7 @@ def run(
             "create_ms": None,
             "server_ms": None,
             "steps": [],
+            "failed_commands": 0,
             "error": None,
         }
         sandbox_id: str | None = None
@@ -269,9 +292,13 @@ def run(
                 }
                 try:
                     step_record["resume_ms"] = round(_resume(sandbox_id), 1)
-                    command_ms, exit_code = _command(sandbox, step.action)
+                    action = wrap_action(step.action, workdir) if workdir else step.action
+                    command_ms, exit_code, stderr_tail = _command(sandbox, action)
                     step_record["command_ms"] = round(command_ms, 1)
                     step_record["exit_code"] = exit_code
+                    if exit_code != 0:
+                        step_record["stderr_tail"] = stderr_tail
+                        record["failed_commands"] += 1
                     step_record["pause_ms"] = round(_pause(sandbox_id), 1)
                 except BaseException:
                     # lease 必须持有到沙箱确认 paused 或 deleted 为止
@@ -327,13 +354,20 @@ def run(
 
     succeeded = sum(1 for record in records if record["ok"])
     failed = len(records) - succeeded
+    command_failures = sum(record["failed_commands"] for record in records)
     result["summary"] = {
         "target": target_count,
         "total": len(records),
         "succeeded": succeeded,
         "failed": failed,
+        "command_failures": command_failures,
         "elapsed_sec": round(time.monotonic() - started_monotonic, 1),
     }
+    if command_failures:
+        ctx.note(
+            f"共 {command_failures} 条 action 非零退出（agent 负载内容本身，"
+            "非基础设施错误；明细见 trajectories[].steps[].stderr_tail）"
+        )
     result["running_slots"] = scheduler.snapshot()
     result["control_plane"] = limiter.snapshot()
     result["latency"] = {
@@ -397,6 +431,11 @@ def execute(args: argparse.Namespace) -> int:
             (path.name, load_trajectory(path)) for path in paths
         ]
         trajectory_source = str(Path(args.trajectory_dir).expanduser().resolve())
+        # 真实轨迹来自 SWE 任务模板，默认在 /testbed 下执行并做 SWE 包装
+        workdir = args.workdir if args.workdir is not None else "/testbed"
+        # 对齐 replay-aenv task.toml（user = "root"）：SWE 工具的 registry
+        # 状态文件在 /root/.swe-agent-env，非 root 执行 str_replace_editor 会 PermissionError
+        cmd_user = args.cmd_user if args.cmd_user is not None else "root"
     else:
         synthetic_count = target_count if target_count > 0 else 60
         trajectories = [
@@ -406,6 +445,8 @@ def execute(args: argparse.Namespace) -> int:
             )
         ]
         trajectory_source = f"合成轨迹（{synthetic_count} 条 × {synthetic_steps} 步）"
+        workdir = args.workdir or None
+        cmd_user = args.cmd_user
     effective_target = target_count if target_count > 0 else len(trajectories)
 
     if args.dry_run:
@@ -430,6 +471,7 @@ def execute(args: argparse.Namespace) -> int:
             "control_plane_qps": control_plane_qps,
             "action_timeout": action_timeout,
             "mem_threshold_pct": mem_threshold_pct,
+            "workdir": workdir,
         }
         print(
             f"[replay dry-run] 轨迹来源：{trajectory_source}；{len(trajectories)} 条轨迹，"
@@ -458,6 +500,8 @@ def execute(args: argparse.Namespace) -> int:
         control_plane_qps=control_plane_qps,
         action_timeout=action_timeout,
         mem_threshold_pct=mem_threshold_pct,
+        workdir=workdir,
+        cmd_user=cmd_user,
     )
     environment = collect_environment(ctx.client, ctx.template, template_source=ctx.template_source)
     json_path = bench_report.write_bench_json(ctx.result_dir, "replay", result)

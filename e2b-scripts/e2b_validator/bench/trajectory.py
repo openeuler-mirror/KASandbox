@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import random
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -135,3 +136,73 @@ def generate_synthetic_trajectories(
             )
         trajectories.append(trajectory)
     return trajectories
+
+
+# --- action 包装与归一化（移植自 replay-aenv agent/replay_agent.py，语义 1:1） ---
+
+
+def _remove_one_boundary_newline(value: str) -> str:
+    """去掉工具参数首尾各一个展示用换行。"""
+    if value.startswith("\r\n"):
+        value = value[2:]
+    elif value.startswith("\n"):
+        value = value[1:]
+    if value.endswith("\r\n"):
+        value = value[:-2]
+    elif value.endswith("\n"):
+        value = value[:-1]
+    return value
+
+
+def normalize_str_replace_editor_action(action: str) -> str:
+    """对齐原始 SWE 结构化工具对多行编辑的处理。
+
+    轨迹里 str_replace_editor 的 old_str/new_str 在渲染成 CLI 时首尾各多一个
+    展示换行，原始结构化调用会先剥掉再匹配；直接按字面执行 CLI 会匹配失败。
+    只对 str_replace 子命令做边界归一化，其余 action 原样返回。
+    """
+    try:
+        arguments = shlex.split(action)
+    except ValueError:
+        return action
+    if (
+        len(arguments) < 3
+        or arguments[0] != "str_replace_editor"
+        or arguments[1] != "str_replace"
+    ):
+        return action
+
+    flag_indexes: dict[str, int] = {}
+    for flag in ("--old_str", "--new_str"):
+        try:
+            index = arguments.index(flag)
+        except ValueError:
+            return action
+        if index + 1 >= len(arguments):
+            return action
+        flag_indexes[flag] = index + 1
+
+    normalized_old_str = _remove_one_boundary_newline(arguments[flag_indexes["--old_str"]])
+    if not normalized_old_str:
+        return action
+    arguments[flag_indexes["--old_str"]] = normalized_old_str
+    arguments[flag_indexes["--new_str"]] = _remove_one_boundary_newline(
+        arguments[flag_indexes["--new_str"]]
+    )
+    return shlex.join(arguments)
+
+
+def wrap_action(action: str, workdir: str) -> str:
+    """把轨迹 action 包装成 bash -lc 调用：对齐 SWE bash 工具行为（末段管道状态码、
+    关闭分页器、切到 workdir）。str_replace_editor 先做边界归一化。"""
+    action = normalize_str_replace_editor_action(action)
+    commands = [
+        "set +o pipefail",
+        "export PAGER=cat",
+        "export MANPAGER=cat",
+        "export GIT_PAGER=cat",
+        "export LESS=-FRX",
+        f"cd {shlex.quote(workdir)}",
+        action,
+    ]
+    return f"bash -lc {shlex.quote('; '.join(commands))}"
