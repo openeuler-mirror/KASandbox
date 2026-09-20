@@ -163,6 +163,8 @@ func (ppb *PostProcessingBuilder) Build(
 	}
 	if osType == vmm.OsWindows || osType == vmm.OsAndroid {
 		defaultUser = nil
+	}
+	if osType == vmm.OsWindows {
 		defaultWorkdir = nil
 	}
 

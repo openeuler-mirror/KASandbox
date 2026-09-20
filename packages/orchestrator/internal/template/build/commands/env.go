@@ -41,9 +41,12 @@ func (e *Env) Execute(
 	}
 
 	envVars := maps.Clone(cmdMetadata.EnvVars)
+	if envVars == nil {
+		envVars = make(map[string]string)
+	}
 	for i := 0; i < len(args)-1; i += 2 {
 		k := args[i]
-		v, err := evaluateValue(ctx, proxy, sandboxID, args[i+1])
+		v, err := evaluateValue(ctx, proxy, sandboxID, args[i+1], cmdMetadata.OsType)
 		if err != nil {
 			return metadata.Context{}, fmt.Errorf("failed to evaluate environment variable %s: %w", k, err)
 		}
@@ -61,6 +64,7 @@ func evaluateValue(
 	proxy *proxy.SandboxProxy,
 	sandboxID string,
 	envValue string,
+	osType string,
 ) (string, error) {
 	// Escape characters that would break parsing or cause command execution.
 	// $VAR expansion is preserved for environment variable interpolation.
@@ -78,7 +82,8 @@ func evaluateValue(
 		sandboxID,
 		cmd,
 		metadata.Context{
-			User: "root",
+			User:   "root",
+			OsType: osType,
 		},
 		func(stdout, _ string) {
 			envValue = stdout

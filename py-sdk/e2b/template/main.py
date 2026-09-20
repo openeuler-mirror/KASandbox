@@ -71,13 +71,12 @@ class TemplateBuilder:
     def __init__(self, template: "TemplateBase"):
         self._template = template
 
-    def _assert_linux_instruction(self, method: str) -> None:
-        if self._template._os_type in ("windows", "android"):
+    def _assert_supported_os(self, method: str, *supported_os: OsType) -> None:
+        os_type = self._template._os_type
+        if os_type not in supported_os:
             raise NotSupportedException(
-                f"{method} is not supported on {self._template._os_type} templates. "
-                "Windows and Android template builds currently only support "
-                "set_start_cmd / "
-                "set_ready_cmd."
+                f"{method} is not supported on {os_type} templates. "
+                f"Supported operating systems: {', '.join(supported_os)}."
             )
 
     def copy(
@@ -107,7 +106,7 @@ class TemplateBuilder:
         template.copy(['app.py', 'config.py'], '/app/', mode=0o755)
         ```
         """
-        self._assert_linux_instruction("copy")
+        self._assert_supported_os("copy", "linux", "android")
         srcs = [src] if isinstance(src, (str, Path)) else src
 
         # Get the caller frame for stack trace in validation errors
@@ -328,7 +327,7 @@ class TemplateBuilder:
         template.run_cmd('apt-get install vim', user='root')
         ```
         """
-        self._assert_linux_instruction("run_cmd")
+        self._assert_supported_os("run_cmd", "linux", "android")
         commands = [command] if isinstance(command, str) else command
         args = [" && ".join(commands)]
 
@@ -358,7 +357,7 @@ class TemplateBuilder:
         template.set_workdir('/app')
         ```
         """
-        self._assert_linux_instruction("set_workdir")
+        self._assert_supported_os("set_workdir", "linux", "android")
         instruction: Instruction = {
             "type": InstructionType.WORKDIR,
             "args": [str(workdir)],
@@ -382,7 +381,7 @@ class TemplateBuilder:
         template.set_user('root')
         ```
         """
-        self._assert_linux_instruction("set_user")
+        self._assert_supported_os("set_user", "linux")
         instruction: Instruction = {
             "type": InstructionType.USER,
             "args": [user],
@@ -412,6 +411,7 @@ class TemplateBuilder:
         template.pip_install()  # Installs from current directory
         ```
         """
+        self._assert_supported_os("pip_install", "linux")
         if isinstance(packages, str):
             packages = [packages]
 
@@ -450,6 +450,7 @@ class TemplateBuilder:
         template.npm_install()  # Installs from package.json
         ```
         """
+        self._assert_supported_os("npm_install", "linux")
         if isinstance(packages, str):
             packages = [packages]
 
@@ -489,6 +490,7 @@ class TemplateBuilder:
         template.bun_install()  // Installs from package.json
         ```
         """
+        self._assert_supported_os("bun_install", "linux")
         if isinstance(packages, str):
             packages = [packages]
 
@@ -526,6 +528,7 @@ class TemplateBuilder:
         template.apt_install('vim', fix_missing=True)
         ```
         """
+        self._assert_supported_os("apt_install", "linux")
         if isinstance(packages, str):
             packages = [packages]
 
@@ -555,6 +558,7 @@ class TemplateBuilder:
         template.add_mcp_server(['brave', 'firecrawl', 'duckduckgo'])
         ```
         """
+        self._assert_supported_os("add_mcp_server", "linux")
         if self._template._base_template != "mcp-gateway":
             caller_frame = get_caller_frame(STACK_TRACE_DEPTH - 1)
             stack_trace = make_traceback(caller_frame)
@@ -595,6 +599,7 @@ class TemplateBuilder:
         template.git_clone('https://github.com/user/repo.git', '/app/repo', user='root')
         ```
         """
+        self._assert_supported_os("git_clone", "linux")
         args = ["git", "clone", url]
         if branch:
             args.append(f"--branch {branch}")
@@ -624,6 +629,7 @@ class TemplateBuilder:
         template.beta_dev_container_prebuild('/my-devcontainer')
         ```
         """
+        self._assert_supported_os("beta_dev_container_prebuild", "linux")
         if self._template._base_template != "devcontainer":
             caller_frame = get_caller_frame(STACK_TRACE_DEPTH - 1)
             stack_trace = make_traceback(caller_frame)
@@ -696,7 +702,7 @@ class TemplateBuilder:
         template.set_envs({'NODE_ENV': 'production', 'PORT': '8080'})
         ```
         """
-        self._assert_linux_instruction("set_envs")
+        self._assert_supported_os("set_envs", "linux", "android")
         if len(envs) == 0:
             return self
 
@@ -1112,10 +1118,14 @@ class TemplateBase:
         Start template from a raw disk image stored in an OCI-compatible registry.
 
         Raw-image template builds currently support Android and Windows guest
-        operating systems. These builds currently only support ``set_start_cmd``
-        and ``set_ready_cmd``. Calling Linux/Docker-specific instructions (e.g.
-        ``copy``, ``run_cmd``, ``apt_install``, ``set_user``) raises
-        ``NotSupportedException``.
+        operating systems.
+
+        Android supports ``copy``, ``copy_items``, ``run_cmd``, ``remove``,
+        ``rename``, ``make_dir``, ``make_symlink``, ``set_workdir``, ``set_envs``,
+        ``set_start_cmd`` and ``set_ready_cmd`` with the same semantics as Linux.
+        Windows supports only ``set_start_cmd`` and ``set_ready_cmd``.
+        Linux-specific helpers such as ``apt_install`` and ``set_user`` remain
+        unsupported for both Android and Windows.
 
         :param url: Registry reference without a URL scheme
         :param username: Optional registry username; omit for public images

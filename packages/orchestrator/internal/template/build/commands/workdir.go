@@ -81,6 +81,7 @@ func (w *Workdir) Execute(
     `, workdirArg, cmdMetadata.User, cmdMetadata.User),
 		metadata.Context{
 			User:    "root",
+			OsType:  cmdMetadata.OsType,
 			EnvVars: cmdMetadata.EnvVars,
 			// Workdir can't be set here to not error when current workdir is deleted
 		},
@@ -107,6 +108,7 @@ func saveWorkdirMeta(
 		fmt.Sprintf(`cd "%s" && pwd`, workdir),
 		metadata.Context{
 			User: "root",
+			OsType: cmdMetadata.OsType,
 			// Workdir can't be set here to not error when current workdir is deleted
 		},
 		func(stdout, stderr string) {
