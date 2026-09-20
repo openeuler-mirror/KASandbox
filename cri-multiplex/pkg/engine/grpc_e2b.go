@@ -418,6 +418,10 @@ func mapE2BError(err error) error {
 			return status.Error(codes.DeadlineExceeded, st.Message())
 		case codes.Unavailable:
 			return status.Error(codes.Unavailable, st.Message())
+		case codes.InvalidArgument:
+			return status.Error(codes.InvalidArgument, st.Message())
+		case codes.FailedPrecondition:
+			return status.Error(codes.FailedPrecondition, st.Message())
 		default:
 			return status.Error(codes.Internal, fmt.Sprintf("e2b error: %v", err))
 		}
@@ -632,8 +636,20 @@ func (e *grpcE2BEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSa
 		anns["e2b.dev/cni-netns"] = pod.cniRecord.NetNSPath
 		anns["e2b.dev/pod-ip"] = pod.cniRecord.PodIP
 	}
+	// e2b.dev/host-port 返回全部端口映射（JSON：沙箱端口 -> 宿主端口）；
+	// 旧版持久化记录仅有默认端口字段时回退为单条目 JSON
+	if len(pod.portMappings) > 0 {
+		ports := make(map[string]int, len(pod.portMappings))
+		for _, m := range pod.portMappings {
+			ports[strconv.Itoa(m.SandboxPort)] = m.HostPort
+		}
+		if b, err := json.Marshal(ports); err == nil {
+			anns["e2b.dev/host-port"] = string(b)
+		}
+	} else if pod.hostPort > 0 {
+		anns["e2b.dev/host-port"] = fmt.Sprintf("{\"%d\":%d}", envdSandboxPort, pod.hostPort)
+	}
 	if pod.hostPort > 0 {
-		anns["e2b.dev/host-port"] = strconv.Itoa(pod.hostPort)
 		anns["e2b.dev/access-url"] = fmt.Sprintf("http://%s:%d", e.nodeIP, pod.hostPort)
 	}
 	// 新增：返回所有端口映射
