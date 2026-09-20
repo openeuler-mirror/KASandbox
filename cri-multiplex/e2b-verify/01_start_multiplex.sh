@@ -194,8 +194,9 @@ fi
 # 使用 setsid 完全脱离会话，防止脚本退出时进程被杀
 setsid ./cri-multiplex "${args[@]}" > /tmp/cri-multiplex.log 2>&1 < /dev/null &
 
-# 等待 socket 就绪
-retries=10
+# 等待 socket 就绪（节点 netns/iptables 存量大时 startup orphan reconcile 的
+# nft list ruleset 会拖到 15s 级，10 次不够）
+retries=30
 while [ $retries -gt 0 ]; do
     if cri_multiplex_ready; then
         startup_pass "cri-multiplex 已启动，socket: ${SOCKET}, mode=${MODE_DESC}"
