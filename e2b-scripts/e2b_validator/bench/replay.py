@@ -837,9 +837,9 @@ def execute(args: argparse.Namespace) -> int:
             3600, int(bench_config.global_param(cfg, "sandbox_timeout"))
         ),
     )
-    if not args.mix_config and not template:
-        # 未显式指定模板时 build_context 自动解析/构建基准模板，
-        # 任务的模板以解析结果为准（否则空模板会导致 400 Invalid template reference）
+    if not args.mix_config:
+        # 任务的模板始终以 build_context 解析结果为准：未显式 -t 时由 ensure/自动构建
+        # 在任务列表构建之后才确定模板（空模板会被 SDK 当成默认 'base' 导致 404）
         tasks = [MixTask(t.workload, ctx.template, t.trajectory, t.steps) for t in tasks]
     result = run(
         ctx,
