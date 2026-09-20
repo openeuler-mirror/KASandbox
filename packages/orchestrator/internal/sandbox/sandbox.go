@@ -307,6 +307,11 @@ func (f *Factory) CreateSandbox(
 		return nil, err
 	}
 
+	// §7.4.2：CA 自动生成开启时，per-sandbox + egress-mitm 未关闭的沙箱需要
+	// 把 CA 注入 guest 信任库；注入依赖 envd，因此 REDIRECT 规则延后到注入
+	// 成功之后安装（强制 immediate 语义，与 SANDBOX_PROXY_APPLY 无关）。
+	caInject := egressProxyCANeedsInjection(netCfg, egressMode, config.EgressIdentity)
+
 	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork, egressMode)
 
 	sandboxFiles := template.Files().NewSandboxFiles(runtime.SandboxID)
@@ -367,8 +372,10 @@ func (f *Factory) CreateSandbox(
 	// Per-sandbox egress proxy (no-op for any other resolved mode): spawn the
 	// proxy in the slot netns and install the redirect rules before the guest
 	// boots. The manager cleanup registered here runs before the slot cleanup
-	// (LIFO), so the proxy process is killed before the netns is removed.
-	err = f.startEgressProxy(ctx, cleanup, netCfg, ips, config, runtime, sandboxFiles.SandboxHostDir(), egressMode)
+	// (LIFO), so the proxy process is killed before the netns is removed. When
+	// the guest CA injection is pending (caInject), rule installation is
+	// deferred until after the injection below.
+	err = f.startEgressProxy(ctx, cleanup, netCfg, ips, config, runtime, sandboxFiles.SandboxHostDir(), egressMode, caInject)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start egress proxy: %w", err)
 	}
@@ -492,6 +499,18 @@ func (f *Factory) CreateSandbox(
 		defer cancelRIL()
 		if err := androidServices.WaitForModemConnection(rilCtx); err != nil {
 			return nil, fmt.Errorf("guest RIL did not reconnect to modem simulator: %w", err)
+		}
+	}
+
+	// §7.4.2 guest CA 注入（仅 CA 自动生成开启时的 per-sandbox mitm 沙箱）：
+	// 等 envd 就绪 → 注入 CA 到 guest 信任库 → 安装延后的 REDIRECT 规则。
+	// 强制 immediate 语义：任何失败都使创建失败并走 cleanup 回滚。
+	if caInject {
+		if err := sbx.WaitForEnvd(ctx, f.config.EnvdTimeout); err != nil {
+			return nil, fmt.Errorf("failed to wait for envd before egress CA injection: %w", err)
+		}
+		if err := f.injectEgressProxyCAAndInstallRules(ctx, sbx, netCfg, ips, runtime); err != nil {
+			return nil, err
 		}
 	}
 
@@ -631,6 +650,11 @@ func (f *Factory) ResumeSandbox(
 		return nil, err
 	}
 
+	// §7.4.2：CA 自动生成开启时，per-sandbox + egress-mitm 未关闭的沙箱需要
+	// 把 CA 注入 guest 信任库；注入依赖 envd，因此 REDIRECT 规则延后到注入
+	// 成功之后安装（强制 immediate 语义，与 SANDBOX_PROXY_APPLY 无关）。
+	caInject := egressProxyCANeedsInjection(netCfg, egressMode, config.EgressIdentity)
+
 	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork, egressMode)
 
 	// Rootfs initialization
@@ -706,7 +730,9 @@ func (f *Factory) ResumeSandbox(
 
 	// Per-sandbox egress proxy (no-op for any other resolved mode), same
 	// wiring as CreateSandbox: spawn + redirect rules before the VMM resumes.
-	err = f.startEgressProxy(ctx, cleanup, netCfg, ips, config, runtime, sandboxFiles.SandboxHostDir(), egressMode)
+	// When the guest CA injection is pending (caInject), rule installation is
+	// deferred until after the injection below.
+	err = f.startEgressProxy(ctx, cleanup, netCfg, ips, config, runtime, sandboxFiles.SandboxHostDir(), egressMode, caInject)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start egress proxy: %w", err)
 	}
@@ -958,6 +984,15 @@ func (f *Factory) ResumeSandbox(
 	zap.L().Sugar().Infof("[ResumeSandbox] wait envd ready cost: %.3f ms, traceID=%s", time.Since(tEnvd).Seconds()*1000, traceID)
 
 	telemetry.ReportEvent(execCtx, "envd initialized")
+
+	// §7.4.2 guest CA 注入（与 CreateSandbox 对称）：rootfs 变更随快照持久化，
+	// 恢复路径靠指纹幂等兜底不重复执行 update-ca-certificates；注入成功后
+	// 才安装延后的 REDIRECT 规则，失败即恢复失败并回滚。
+	if caInject {
+		if err := f.injectEgressProxyCAAndInstallRules(ctx, sbx, netCfg, ips, runtime); err != nil {
+			return nil, fmt.Errorf("failed to inject egress proxy CA: %w", err)
+		}
+	}
 
 
 	if f.featureFlags.BoolFlag(execCtx, featureflags.HostStatsEnabled) {

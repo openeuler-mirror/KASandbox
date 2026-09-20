@@ -76,6 +76,15 @@ func (t *timingReadyCheck) spawnMillis() int64 {
 //     and a broken proxy never slows down creation. Both orders are
 //     fail-close (an unlistened REDIRECT target RSTs connections), so this is
 //     deliberate design semantics, not a race window.
+//
+// deferRules (SANDBOX_PROXY_CA_AUTO guest injection path, §7.4.2): spawn +
+// ready check run synchronously regardless of the apply mode, but redirect
+// rule installation is deferred to the caller — the rules must only go in
+// after the CA cert has been injected into the guest trust store (which needs
+// a running envd). The caller then runs inject + rule install synchronously
+// (forced immediate semantics: a "rules installed but CA not injected" window
+// would fail every guest HTTPS handshake, so injection failure must fail the
+// creation and roll back via the cleanup stack).
 func (f *Factory) startEgressProxy(
 	ctx context.Context,
 	cleanup *Cleanup,
@@ -85,10 +94,15 @@ func (f *Factory) startEgressProxy(
 	runtime RuntimeMetadata,
 	sandboxDir string,
 	egressMode network.EgressMode,
+	deferRules bool,
 ) error {
 	if egressMode != network.EgressModePerSandbox {
 		return nil
 	}
+
+	// deferRules 强制 immediate 语义：代理起不来/规则装不上都直接创建失败，
+	// 不允许「规则已装、CA 未注入」的半配置沙箱运行。
+	failFast := deferRules || netCfg.SandboxProxyApply == network.EgressProxyApplyImmediate
 
 	start := time.Now()
 
@@ -109,7 +123,7 @@ func (f *Factory) startEgressProxy(
 		config.EgressIdentity,
 	)
 	if err != nil {
-		if netCfg.SandboxProxyApply == network.EgressProxyApplyImmediate {
+		if failFast {
 			return fmt.Errorf("build egress proxy service: %w", err)
 		}
 		egressProxyFailCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("phase", "build")))
@@ -127,31 +141,38 @@ func (f *Factory) startEgressProxy(
 	manager := hostservice.NewManager([]hostservice.Service{svc}, f.config.ReadyCheckTimeout)
 	cleanup.Add(ctx, manager.StopAll)
 
-	runStartup := func(ctx context.Context) error {
+	runStartup := func(ctx context.Context, installRules bool) error {
 		if err := manager.StartAll(ctx); err != nil {
 			return fmt.Errorf("start egress proxy: %w", err)
 		}
 		readyAt := time.Now()
 
-		rulesStart := time.Now()
-		if err := slot.InstallEgressProxyRulesWithRetry(ctx); err != nil {
-			return fmt.Errorf("install egress proxy rules: %w", err)
+		var rulesMillis int64
+		if installRules {
+			rulesStart := time.Now()
+			if err := slot.InstallEgressProxyRulesWithRetry(ctx); err != nil {
+				return fmt.Errorf("install egress proxy rules: %w", err)
+			}
+			rulesMillis = time.Since(rulesStart).Milliseconds()
+
+			egressProxySpawnCounter.Add(ctx, 1)
 		}
 
-		egressProxySpawnCounter.Add(ctx, 1)
 		logger.L().Info(ctx, "egress proxy up",
 			zap.String("sandbox_id", runtime.SandboxID),
 			zap.String("namespace_id", slot.NamespaceID()),
 			zap.Int64("proxy_spawn_ms", timing.spawnMillis()),
 			zap.Int64("proxy_ready_ms", readyAt.Sub(start).Milliseconds()),
-			zap.Int64("proxy_rules_ms", time.Since(rulesStart).Milliseconds()),
+			zap.Int64("proxy_rules_ms", rulesMillis),
+			zap.Bool("rules_deferred", !installRules),
 		)
 
 		return nil
 	}
 
-	if netCfg.SandboxProxyApply == network.EgressProxyApplyImmediate {
-		return runStartup(ctx)
+	if failFast {
+		// immediate：同步装规则；deferRules：规则延后到 CA 注入完成之后。
+		return runStartup(ctx, !deferRules)
 	}
 
 	go func() {
@@ -160,7 +181,7 @@ func (f *Factory) startEgressProxy(
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), network.EgressProxyApplyTimeout)
 		defer cancel()
 
-		if err := runStartup(ctx); err != nil {
+		if err := runStartup(ctx, true); err != nil {
 			egressProxyFailCounter.Add(ctx, 1)
 			logger.L().Error(ctx, "egress proxy startup failed, sandbox egresses directly",
 				zap.Error(err),
@@ -171,4 +192,49 @@ func (f *Factory) startEgressProxy(
 	}()
 
 	return nil
+}
+
+// installDeferredEgressProxyRules installs the redirect rules that
+// startEgressProxy deferred for the CA injection path, with the same retry +
+// metrics semantics as the synchronous apply mode. Must run after the guest
+// CA injection succeeded.
+func installDeferredEgressProxyRules(ctx context.Context, slot *network.Slot, runtime RuntimeMetadata) error {
+	rulesStart := time.Now()
+	if err := slot.InstallEgressProxyRulesWithRetry(ctx); err != nil {
+		egressProxyFailCounter.Add(ctx, 1)
+
+		return fmt.Errorf("install egress proxy rules: %w", err)
+	}
+
+	egressProxySpawnCounter.Add(ctx, 1)
+	logger.L().Info(ctx, "egress proxy rules installed after guest CA injection",
+		zap.String("sandbox_id", runtime.SandboxID),
+		zap.String("namespace_id", slot.NamespaceID()),
+		zap.Int64("proxy_rules_ms", time.Since(rulesStart).Milliseconds()),
+	)
+
+	return nil
+}
+
+// injectEgressProxyCAAndInstallRules 是 §7.4.2 在创建/恢复路径上的收尾：
+// 等 envd 就绪后把代理 CA 注入 guest 信任库，成功后再安装延后的 REDIRECT
+// 规则。任一步失败即返回错误，创建/恢复失败并走 cleanup 回滚。
+func (f *Factory) injectEgressProxyCAAndInstallRules(
+	ctx context.Context,
+	sbx *Sandbox,
+	netCfg network.Config,
+	slot *network.Slot,
+	runtime RuntimeMetadata,
+) error {
+	injectStart := time.Now()
+	if err := sbx.injectEgressProxyCA(ctx, netCfg); err != nil {
+		return fmt.Errorf("inject egress proxy CA into guest: %w", err)
+	}
+
+	logger.L().Info(ctx, "egress proxy CA injected, installing deferred redirect rules",
+		zap.String("sandbox_id", runtime.SandboxID),
+		zap.Int64("ca_inject_ms", time.Since(injectStart).Milliseconds()),
+	)
+
+	return installDeferredEgressProxyRules(ctx, slot, runtime)
 }

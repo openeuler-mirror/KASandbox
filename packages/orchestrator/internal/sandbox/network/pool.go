@@ -134,6 +134,17 @@ type Config struct {
 	// when sandboxes must still reach the real internet.
 	SandboxProxyExtraArgs string `env:"SANDBOX_PROXY_EXTRA_ARGS"`
 
+	// SandboxProxyCAAuto (SANDBOX_PROXY_CA_AUTO) enables automatic proxy CA
+	// generation ("true"/"false", default "false" = the pre-feature behavior is
+	// byte-for-byte unchanged: a missing CA is a WARNING and sandboxes run
+	// mitm_capable=false). With "true" in per-sandbox mode, ParseConfig
+	// generates the CA into SandboxProxyConfDir when missing (idempotent,
+	// fail-fast on any error) and the create/resume path injects the CA cert
+	// into the guest trust store via envd before installing redirect rules.
+	// Only meaningful in per-sandbox mode; an invalid value always fails
+	// config parsing.
+	SandboxProxyCAAuto string `env:"SANDBOX_PROXY_CA_AUTO" envDefault:"false"`
+
 	// SandboxProxyPoolSize is the pre-warm size of the egress-proxy slot
 	// sub-pool (nil = unset → defaultProxySlotsPoolSize; 0 = no proxy
 	// pre-warming). The sub-pool only exists when SandboxEgressProxyMode is
@@ -171,7 +182,7 @@ func ParseConfig() (Config, error) {
 		return Config{}, err
 	}
 
-	if err := cfg.validateEgressProxy(); err != nil {
+	if err := cfg.ValidateEgressProxy(); err != nil {
 		return Config{}, err
 	}
 
@@ -211,6 +222,12 @@ func (c Config) ProxyReusedSlotsPoolSize() int {
 	}
 
 	return *c.SandboxProxyReusedPoolSize
+}
+
+// ProxyCAAutoEnabled reports whether SANDBOX_PROXY_CA_AUTO is enabled
+// (validated to be exactly "true"/"false" by ValidateEgressProxy).
+func (c Config) ProxyCAAutoEnabled() bool {
+	return c.SandboxProxyCAAuto == "true"
 }
 
 type Pool struct {

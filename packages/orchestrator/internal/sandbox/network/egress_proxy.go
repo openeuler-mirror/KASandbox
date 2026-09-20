@@ -50,11 +50,17 @@ var egressProxyRetryBackoffs = []time.Duration{200 * time.Millisecond, 500 * tim
 // (spawn + ready check + rule install) so it always terminates.
 const EgressProxyApplyTimeout = 10 * time.Second
 
-// validateEgressProxy implements the SANDBOX_PROXY_* fail-fast validation
-// rules. The addon/confdir checks run only in per-sandbox mode; a missing CA
-// in the confdir is a WARNING (every sandbox treated as mitm_capable=false),
-// never a startup blocker — CA material may be provisioned later.
-func (c Config) validateEgressProxy() error {
+// ValidateEgressProxy implements the SANDBOX_PROXY_* fail-fast validation
+// rules. The addon/confdir checks run only in per-sandbox mode. Without
+// SANDBOX_PROXY_CA_AUTO a missing CA in the confdir is a WARNING (every
+// sandbox treated as mitm_capable=false), never a startup blocker — CA
+// material may be provisioned later. With SANDBOX_PROXY_CA_AUTO=true the CA
+// is auto-generated into the confdir instead (idempotent), and any
+// generation/write failure fails startup.
+//
+// It runs from both config entry points: cfg.Parse (orchestrator daemon) and
+// network.ParseConfig (create-build tool).
+func (c Config) ValidateEgressProxy() error {
 	switch c.SandboxEgressProxyMode {
 	case "", EgressProxyModePerSandbox:
 	case EgressProxyModeShared:
@@ -62,6 +68,13 @@ func (c Config) validateEgressProxy() error {
 	default:
 		return fmt.Errorf("SANDBOX_EGRESS_PROXY_MODE must be empty, %q or %q, got %q",
 			EgressProxyModePerSandbox, EgressProxyModeShared, c.SandboxEgressProxyMode)
+	}
+
+	// 无论模式先校验取值合法性（fail-fast）；生成本身只在 per-sandbox 模式下发生。
+	switch c.SandboxProxyCAAuto {
+	case "true", "false":
+	default:
+		return fmt.Errorf("SANDBOX_PROXY_CA_AUTO must be %q or %q, got %q", "true", "false", c.SandboxProxyCAAuto)
 	}
 
 	switch c.SandboxProxyApply {
@@ -110,7 +123,12 @@ func (c Config) validateEgressProxy() error {
 		return fmt.Errorf("SANDBOX_PROXY_ADDON %q: %w", c.SandboxProxyAddon, err)
 	}
 
-	if !egressProxyCAPresent(c.SandboxProxyConfDir) {
+	if c.ProxyCAAutoEnabled() {
+		// CA 自动生成：缺失/半文件/过期时补齐或重生成，任何失败 fail-fast。
+		if err := ensureProxyCA(c.SandboxProxyConfDir); err != nil {
+			return fmt.Errorf("SANDBOX_PROXY_CA_AUTO: ensure proxy CA in confdir %q: %w", c.SandboxProxyConfDir, err)
+		}
+	} else if !egressProxyCAPresent(c.SandboxProxyConfDir) {
 		logger.L().Warn(context.Background(),
 			"SANDBOX_PROXY_CONFDIR has no mitmproxy CA material; per-sandbox proxies run with mitm_capable=false until it is provisioned",
 			zap.String("confdir", c.SandboxProxyConfDir),

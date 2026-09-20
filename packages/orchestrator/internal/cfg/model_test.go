@@ -1,6 +1,8 @@
 package cfg
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -61,5 +63,39 @@ func TestParse(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "/a/b/c/build", config.DefaultCacheDir)
 		assert.Equal(t, "/a/b/c/sandbox", config.StorageConfig.SandboxCacheDir)
+	})
+
+	// Parse must run the network egress-proxy validation (the daemon bypasses
+	// network.ParseConfig), otherwise SANDBOX_PROXY_* fail-fast rules and
+	// CA_AUTO generation are dead code in the orchestrator daemon.
+	t.Run("egress proxy validation rejects invalid values", func(t *testing.T) {
+		t.Setenv("SANDBOX_PROXY_CA_AUTO", "maybe")
+
+		_, err := Parse()
+		require.ErrorContains(t, err, "SANDBOX_PROXY_CA_AUTO")
+	})
+
+	t.Run("egress proxy validation rejects shared mode", func(t *testing.T) {
+		t.Setenv("SANDBOX_EGRESS_PROXY_MODE", "shared")
+
+		_, err := Parse()
+		require.ErrorContains(t, err, "SANDBOX_EGRESS_PROXY_MODE")
+	})
+
+	t.Run("egress proxy auto CA generates material", func(t *testing.T) {
+		confdir := t.TempDir()
+		addon := filepath.Join(t.TempDir(), "addon.py")
+		require.NoError(t, os.WriteFile(addon, []byte("# addon"), 0o644))
+		t.Setenv("SANDBOX_EGRESS_PROXY_MODE", "per-sandbox")
+		t.Setenv("SANDBOX_PROXY_CA_AUTO", "true")
+		t.Setenv("SANDBOX_PROXY_CONFDIR", confdir)
+		t.Setenv("SANDBOX_PROXY_ADDON", addon)
+
+		_, err := Parse()
+		require.NoError(t, err)
+
+		for _, name := range []string{"mitmproxy-ca.pem", "mitmproxy-ca-cert.pem"} {
+			assert.FileExists(t, filepath.Join(confdir, name))
+		}
 	})
 }

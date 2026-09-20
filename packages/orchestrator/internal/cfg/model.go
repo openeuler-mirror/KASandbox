@@ -111,6 +111,13 @@ func Parse() (Config, error) {
 		return config, err
 	}
 
+	// The daemon parses the embedded network.Config through env.ParseAs, which
+	// bypasses network.ParseConfig — run its SANDBOX_PROXY_* fail-fast
+	// validation (and CA_AUTO generation) here so startup behavior matches.
+	if err = config.NetworkConfig.ValidateEgressProxy(); err != nil {
+		return config, err
+	}
+
 	bc := config.BuilderConfig
 	if err = makePathsAbsolute(&bc); err != nil {
 		return config, err
