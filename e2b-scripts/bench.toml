@@ -186,6 +186,13 @@ launch_interval_sec = 0.3 # 相邻轨迹启动最小间隔秒
 control_plane_qps = 100  # 全局控制面 QPS（create/pause/resume/command/cleanup 统一排队）
 action_timeout = 300     # 单条 action 超时秒
 synthetic_steps = 10     # 合成轨迹的步数（不传 --trajectory-dir 时生效）
+# 真实轨迹的默认任务模板：--trajectory-dir 模式且未传 -t 时自动查找 ready 模板复用，
+# 找不到则从 task_template_image 自动构建（镜像需已推送到本环境可达的 registry，
+# 镜像构建推送用 e2b-scripts/prepare-replay-image.sh）
+task_template_name = "django-money-task-v2"
+task_template_image = "193.30.8.2:30443/e2b-orchestration/django-money:poc_v2"
+task_template_cpu = 1
+task_template_memory_mb = 2048
 
 # profile 只覆盖各节的档位规模；quick 为小规模自检，full 对标 CubeSandbox 文章
 [profiles.quick]

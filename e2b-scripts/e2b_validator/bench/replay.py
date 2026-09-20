@@ -740,6 +740,25 @@ def execute(args: argparse.Namespace) -> int:
         print_json(preview)
         return 0
 
+    if not args.mix_config and args.trajectory_dir and not template:
+        # 真实轨迹未显式指定模板：自动就位任务模板（查 ready 复用 / 从 registry 镜像构建），
+        # 镜像不存在时先用 e2b-scripts/prepare-replay-image.sh 构建推送
+        from .client import BenchClient
+        from .replay_template import ensure_replay_task_template
+
+        template, _task_name, _task_source = ensure_replay_task_template(
+            BenchClient(timeout=600),
+            name=str(section.get("task_template_name", "django-money-task-v2")),
+            image=str(
+                section.get(
+                    "task_template_image",
+                    "193.30.8.2:30443/e2b-orchestration/django-money:poc_v2",
+                )
+            ),
+            cpu=int(section.get("task_template_cpu", 1)),
+            memory_mb=int(section.get("task_template_memory_mb", 2048)),
+        )
+
     ctx = build_context(
         template=template,
         result_root=bench_config.resolve_result_root(cfg),

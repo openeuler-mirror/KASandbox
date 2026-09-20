@@ -530,6 +530,15 @@ bash bench.sh replay --trajectory-dir /path/to/delay_time_trajectories --target-
 bash bench.sh replay --dry-run --target-count 5
 ```
 
+真实轨迹模式不传 `-t` 时自动就位任务模板（默认 `django-money-task-v2`，1 vCPU / 2048 MiB）：先按名称找 ready 且本地产物齐全的模板复用，找不到则从 `[replay].task_template_image` 配置的 registry 镜像自动构建。镜像本身用下面的脚本一次性构建推送（全新机器）：
+
+```bash
+# 需要 replay-aenv 源码（Dockerfile 在其 dockerfiles/ 下）；TARGET_REPO 默认走 gitcode 镜像，
+# 可访问 GitHub 时可覆盖为 https://github.com/django-money/django-money.git
+bash prepare-replay-image.sh <registry前缀，如 193.30.8.2:30443/e2b-orchestration> [replay-aenv源码目录]
+# 然后把 bench.toml [replay].task_template_image 改为 <registry前缀>/django-money:poc_v2
+```
+
 | 参数 | 默认 | 含义 |
 | --- | --- | --- |
 | `--trajectory-dir` | 无（合成轨迹） | 轨迹目录（第一层 .json/.traj；缺省/非法 delay_time 按 0 秒处理并告警） |
