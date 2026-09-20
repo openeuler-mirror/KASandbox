@@ -53,6 +53,9 @@ func startService(ctx context.Context, svc Service, metadata sbxlogger.SandboxMe
 		args = append([]string{"netns", "exec", svc.NetNSName, svc.Binary}, svc.Args...)
 	}
 	cmd := exec.Command(binary, args...)
+	if svc.WorkDir != "" {
+		cmd.Dir = svc.WorkDir
+	}
 	mergedEnv, err := mergeProcessEnv(os.Environ(), svc.Env)
 	if err != nil {
 		return nil, fmt.Errorf("merge service %s environment: %w", svc.Name, err)

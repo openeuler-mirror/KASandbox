@@ -138,6 +138,7 @@ func BuildSecureEnvService(
 		NetNSName:  netNSName,
 		Env:        env,
 		ExtraFiles: extraFiles,
+		WorkDir:    sandboxDir,
 		Cleanup: func() {
 			if rerr := os.Remove(confuiPath); rerr != nil && !os.IsNotExist(rerr) {
 				_ = rerr // best-effort; sandbox dir cleanup will catch it
