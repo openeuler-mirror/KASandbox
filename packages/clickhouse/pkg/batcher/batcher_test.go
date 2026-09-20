@@ -246,8 +246,10 @@ func testBatcherPushMaxDelay(t *testing.T, itemsCount int, maxDelay time.Duratio
 	n := 0
 	nn := 0
 	b, err := NewBatcher[int](func(_ context.Context, batch []int) error {
+		// Errorf, not Fatalf: BatcherFunc runs on the batcher goroutine where
+		// FailNow would Goexit it and hang Stop().
 		if time.Since(lastTime) > maxDelay+10*time.Millisecond {
-			t.Fatalf("Unexpected delay between batches: %s. Expected no more than %s. itemsCount=%d",
+			t.Errorf("Unexpected delay between batches: %s. Expected no more than %s. itemsCount=%d",
 				time.Since(lastTime), maxDelay, itemsCount)
 		}
 		lastTime = time.Now()
@@ -296,11 +298,13 @@ func testBatcherPushMaxBatchSize(t *testing.T, itemsCount, batchSize int) {
 	n := 0
 	nn := 0
 	b, err := NewBatcher[int](func(_ context.Context, batch []int) error {
+		// Errorf, not Fatalf: BatcherFunc runs on the batcher goroutine where
+		// FailNow would Goexit it and hang Stop().
 		if len(batch) > batchSize {
-			t.Fatalf("Unexpected batch size=%d. Must not exceed %d. itemsCount=%d", len(batch), batchSize, itemsCount)
+			t.Errorf("Unexpected batch size=%d. Must not exceed %d. itemsCount=%d", len(batch), batchSize, itemsCount)
 		}
 		if len(batch) == 0 {
-			t.Fatalf("Empty batch. itemsCount=%d, batchSize=%d", itemsCount, batchSize)
+			t.Errorf("Empty batch. itemsCount=%d, batchSize=%d", itemsCount, batchSize)
 		}
 		nn += len(batch)
 		n++
