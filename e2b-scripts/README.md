@@ -540,10 +540,34 @@ bash bench.sh replay --dry-run --target-count 5
 | `--control-plane-qps` | 100 | 全局控制面 QPS（SmoothRateLimiter：create/pause/resume/command/cleanup 统一 FIFO 排队，按 1/qps 平滑分发、不补发追突发；瞬断错误 502/503/504/429/timeout/connection reset 等自动重试最多 3 次，重试重新排队） |
 | `--action-timeout` | 300 | 单条 action 超时秒 |
 | `--synthetic-steps` | 10 | 合成轨迹的步数 |
+| `--workdir` | 真实轨迹/mix 为 `/testbed`，合成轨迹不包装 | action 执行前 cd 的工作目录并做 SWE 包装（str_replace_editor 边界换行归一化 + bash -lc） |
+| `--cmd-user` | 真实轨迹/mix 为 `root`，合成轨迹为模板默认用户 | 沙箱内执行命令的用户（SWE 工具 registry 状态文件在 /root/.swe-agent-env，非 root 会 PermissionError） |
+| `--mix-config` | 无 | 多模板混合回放配置（JSON），与 `--trajectory-dir`/`-t` 互斥 |
 | `--dry-run` | 关 | 只校验配置和轨迹、打印调度预览，不创建沙箱 |
 | `--mem-threshold-pct` | `global.mem_threshold_pct` | 内存安全闸：MemAvailable 低于阈值时停止发射新轨迹（在途跑完），结果标 `aborted` |
 
-报告字段（`bench_replay.json`）：`summary`（total/succeeded/failed/elapsed_sec）；`running_slots`（maximum/active/peak_active/waiting/granted/average_queue_wait_sec）；`control_plane`（qps/in_flight/waiting/dispatched/average_wait_sec/max_wait_sec/按操作类型分布）；`latency`（resume/command/pause/queue_wait 各自的 avg/p50/p90/p95/max，毫秒）；`create`（客户端 create_* + 服务端真值 server_* 口径，同 4.7.5）；`memory_curve`（每 5s 采样的 {elapsed_s, alive, mem_available_mb} 曲线）；`trajectories`（每条的 create_ms 与逐步 queue_wait/resume/command/pause/exit_code 明细）。pause/resume 走 REST 计时路径（同 pause-resume），命令执行走 SDK `commands.run`。
+##### 多模板混合回放（--mix-config）
+
+对齐 replay-aenv 的 mix 模式：一个批次内混合多个模板/轨迹目录的负载，各负载共享全局并发、RUNNING 名额与控制面 QPS；发射顺序按各负载 `vm_count` 做平滑加权轮询（SWRR）交错，单负载内轨迹循环复用。
+
+```json
+{
+  "concurrency": 60,
+  "workloads": [
+    {"name": "django-money", "template": "django-money-task-v2", "trajectory_dir": "/data/traces/django-money", "vm_count": 40},
+    {"name": "std-2c2g", "template": "e2b/bench-standard-2c2g", "trajectory_dir": "/data/traces/std", "vm_count": 20}
+  ]
+}
+```
+
+```bash
+bash bench.sh replay --mix-config ./mix-config.json --dry-run   # 先看调度预览（schedule_head）
+bash bench.sh replay --mix-config ./mix-config.json --running-concurrency 30
+```
+
+配置字段：`concurrency`（可选，生命周期并发；优先级：命令行 `-c` > 配置 > bench.toml）；`workloads[].name`（缺省取 template，slug 化后必须唯一）；`workloads[].template`（各负载独立模板）；`workloads[].trajectory_dir`（相对路径以配置文件所在目录为基准）；`workloads[].vm_count`（该负载的**总回放次数**，不是并发数）。报告中 `workload_summaries` 按负载分别汇总 total/succeeded/failed/command_failures。
+
+报告字段（`bench_replay.json`）：`summary`（total/succeeded/failed/command_failures/elapsed_sec）；`workload_summaries`（按负载分别汇总 total/succeeded/failed/command_failures，单轨迹模式 workload 恒为 `-`）；`running_slots`（maximum/active/peak_active/waiting/granted/average_queue_wait_sec）；`control_plane`（qps/in_flight/waiting/dispatched/average_wait_sec/max_wait_sec/按操作类型分布）；`latency`（resume/command/pause/queue_wait 各自的 avg/p50/p90/p95/max，毫秒）；`create`（客户端 create_* + 服务端真值 server_* 口径，同 4.7.5）；`memory_curve`（每 5s 采样的 {elapsed_s, alive, mem_available_mb} 曲线）；`trajectories`（每条的 workload/template/create_ms 与逐步 queue_wait/resume/command/pause/exit_code/stderr_tail 明细）。pause/resume 走 REST 计时路径（同 pause-resume），命令执行走 SDK `commands.run`。
 
 ## 5. E2E 用例清单
 

@@ -42,9 +42,12 @@ from .scheduler import (
     is_transient_sandbox_error,
 )
 from .trajectory import (
+    MixTask,
     ReplayStep,
+    build_mix_schedule,
     find_trajectories,
     generate_synthetic_trajectories,
+    load_mix_config,
     load_trajectory,
     wrap_action,
 )
@@ -58,6 +61,12 @@ def register(subparsers) -> None:
         help="轨迹回放密度测试：创建→pause→按 delay_time 逐条 resume 执行→pause（paused 常驻 + 限量 RUNNING）",
     )
     parser.add_argument("--trajectory-dir", type=Path, help="轨迹目录（第一层 .json/.traj；不传则用合成轨迹）")
+    parser.add_argument(
+        "--mix-config",
+        type=Path,
+        help="多模板混合回放配置（JSON：{concurrency?, workloads: [{name?, template, trajectory_dir, vm_count}]}；"
+        "与 --trajectory-dir/-t 互斥，各负载共享全局并发/RUNNING 名额/控制面 QPS）",
+    )
     parser.add_argument(
         "--target-count",
         type=int,
@@ -107,8 +116,7 @@ def _retry(operation, *, what: str, attempts: int = TRANSIENT_RETRY_ATTEMPTS):
 def run(
     ctx: BenchContext,
     *,
-    trajectories: list[tuple[str, list[ReplayStep]]],
-    target_count: int,
+    tasks: list[MixTask],
     concurrency: int,
     running_concurrency: int,
     launch_interval_sec: float,
@@ -118,6 +126,9 @@ def run(
     workdir: str | None,
     cmd_user: str | None,
 ) -> dict:
+    target_count = len(tasks)
+    templates = sorted({task.template for task in tasks})
+    workloads = sorted({task.workload for task in tasks if task.workload != "-"})
     params = {
         "target_count": target_count,
         "concurrency": concurrency,
@@ -128,7 +139,9 @@ def run(
         "mem_threshold_pct": mem_threshold_pct,
         "workdir": workdir,
         "cmd_user": cmd_user,
-        "trajectory_count": len(trajectories),
+        "trajectory_count": len({(task.workload, task.trajectory) for task in tasks}),
+        "templates": templates,
+        "workloads": workloads,
     }
     result = base_result("replay", ctx, params)
     clean_host_orphans(ctx, "replay-pre")
@@ -179,10 +192,10 @@ def run(
                     "停止发射新轨迹，在途轨迹跑完"
                 )
 
-    def _create(index: int) -> dict:
+    def _create(task: MixTask, index: int) -> dict:
         def _op() -> dict:
             with limiter.slot(OperationType.CREATE):
-                outcome = sdk_engine.create_one(ctx.template, index, timeout=ctx.sandbox_timeout)
+                outcome = sdk_engine.create_one(task.template, index, timeout=ctx.sandbox_timeout)
             if not outcome["ok"]:
                 raise RuntimeError(outcome["error"])
             return outcome
@@ -240,10 +253,14 @@ def run(
 
     def _replay_one(index: int) -> None:
         nonlocal alive
-        name, steps = trajectories[index % len(trajectories)]
+        task = tasks[index]
+        name = task.trajectory
+        steps = task.steps
         task_id = f"replay-{index}"
         record: dict = {
             "index": index,
+            "workload": task.workload,
+            "template": task.template,
             "trajectory": name,
             "ok": False,
             "create_ms": None,
@@ -255,7 +272,7 @@ def run(
         sandbox_id: str | None = None
         killed = False
         try:
-            outcome = _create(index)
+            outcome = _create(task, index)
             sandbox_id = outcome["sandbox_id"]
             ctx.track(sandbox_id)
             with lock:
@@ -363,6 +380,17 @@ def run(
         "command_failures": command_failures,
         "elapsed_sec": round(time.monotonic() - started_monotonic, 1),
     }
+    # 按 workload 汇总（mix 模式定位哪个负载拖后腿；单轨迹模式 workload 恒为 "-"）
+    by_workload: dict[str, dict] = {}
+    for record in records:
+        bucket = by_workload.setdefault(
+            record["workload"],
+            {"template": record["template"], "total": 0, "succeeded": 0, "failed": 0, "command_failures": 0},
+        )
+        bucket["total"] += 1
+        bucket["succeeded" if record["ok"] else "failed"] += 1
+        bucket["command_failures"] += record["failed_commands"]
+    result["workload_summaries"] = by_workload
     if command_failures:
         ctx.note(
             f"共 {command_failures} 条 action 非零退出（agent 负载内容本身，"
@@ -414,7 +442,6 @@ def execute(args: argparse.Namespace) -> int:
     target_count = int(_resolve_param(args.target_count, section, "target_count", 60))
     if target_count < 0:
         raise ValueError("--target-count 不能为负数（0 = 每条轨迹一次）")
-    concurrency = int(_resolve_param(args.concurrency, section, "concurrency", 20))
     running_concurrency = int(_resolve_param(args.running_concurrency, section, "running_concurrency", 10))
     launch_interval_sec = float(_resolve_param(args.launch_interval_sec, section, "launch_interval_sec", 0.3))
     control_plane_qps = float(_resolve_param(args.control_plane_qps, section, "control_plane_qps", 100))
@@ -426,43 +453,70 @@ def execute(args: argparse.Namespace) -> int:
         else float(bench_config.global_param(cfg, "mem_threshold_pct"))
     )
 
+    if args.mix_config and (args.trajectory_dir or args.template):
+        raise ValueError("--mix-config 与 --trajectory-dir/-t 互斥（模板由配置中各 workload 指定）")
+
     # 轨迹准备先于 build_context：dry-run 不连接环境即可完成校验与预览
-    if args.trajectory_dir:
-        paths = find_trajectories(args.trajectory_dir)
-        if not paths:
-            raise ValueError(f"轨迹目录中没有 .json/.traj 文件：{args.trajectory_dir}")
-        trajectories: list[tuple[str, list[ReplayStep]]] = [
-            (path.name, load_trajectory(path)) for path in paths
-        ]
-        trajectory_source = str(Path(args.trajectory_dir).expanduser().resolve())
-        # 真实轨迹来自 SWE 任务模板，默认在 /testbed 下执行并做 SWE 包装
+    mix_config_concurrency: int | None = None
+    if args.mix_config:
+        mix_config_concurrency, workloads = load_mix_config(args.mix_config)
+        tasks = build_mix_schedule(workloads)
+        trajectory_source = str(Path(args.mix_config).expanduser().resolve())
+        # mix 与真实轨迹同语义：SWE 包装 + root 执行（可用 --workdir/--cmd-user 覆盖）
         workdir = args.workdir if args.workdir is not None else "/testbed"
-        # 对齐 replay-aenv task.toml（user = "root"）：SWE 工具的 registry
-        # 状态文件在 /root/.swe-agent-env，非 root 执行 str_replace_editor 会 PermissionError
         cmd_user = args.cmd_user if args.cmd_user is not None else "root"
+        template = "mix:" + "+".join(workload.name for workload in workloads)
     else:
-        synthetic_count = target_count if target_count > 0 else 60
-        trajectories = [
-            (f"synthetic-{index}", steps)
-            for index, steps in enumerate(
-                generate_synthetic_trajectories(synthetic_count, synthetic_steps, rng_seed=42)
+        template = bench_config.resolve_template(args.template, cfg)
+        if args.trajectory_dir:
+            paths = find_trajectories(args.trajectory_dir)
+            if not paths:
+                raise ValueError(f"轨迹目录中没有 .json/.traj 文件：{args.trajectory_dir}")
+            trajectories: list[tuple[str, list[ReplayStep]]] = [
+                (path.name, load_trajectory(path)) for path in paths
+            ]
+            trajectory_source = str(Path(args.trajectory_dir).expanduser().resolve())
+            # 真实轨迹来自 SWE 任务模板，默认在 /testbed 下执行并做 SWE 包装
+            workdir = args.workdir if args.workdir is not None else "/testbed"
+            # 对齐 replay-aenv task.toml（user = "root"）：SWE 工具的 registry
+            # 状态文件在 /root/.swe-agent-env，非 root 执行 str_replace_editor 会 PermissionError
+            cmd_user = args.cmd_user if args.cmd_user is not None else "root"
+        else:
+            synthetic_count = target_count if target_count > 0 else 60
+            trajectories = [
+                (f"synthetic-{index}", steps)
+                for index, steps in enumerate(
+                    generate_synthetic_trajectories(synthetic_count, synthetic_steps, rng_seed=42)
+                )
+            ]
+            trajectory_source = f"合成轨迹（{synthetic_count} 条 × {synthetic_steps} 步）"
+            workdir = args.workdir or None
+            cmd_user = args.cmd_user
+        effective_target = target_count if target_count > 0 else len(trajectories)
+        tasks = [
+            MixTask(
+                workload="-",
+                template=template,
+                trajectory=trajectories[index % len(trajectories)][0],
+                steps=tuple(trajectories[index % len(trajectories)][1]),
             )
+            for index in range(effective_target)
         ]
-        trajectory_source = f"合成轨迹（{synthetic_count} 条 × {synthetic_steps} 步）"
-        workdir = args.workdir or None
-        cmd_user = args.cmd_user
-    effective_target = target_count if target_count > 0 else len(trajectories)
+
+    # 并发优先级：命令行 > mix 配置 > bench.toml > 内置默认
+    concurrency = int(
+        args.concurrency
+        if args.concurrency is not None
+        else (mix_config_concurrency or section.get("concurrency", 20))
+    )
 
     if args.dry_run:
-        step_counts = [len(steps) for _name, steps in trajectories]
-        delay_total = sum(
-            step.delay_time_sec for _name, steps in trajectories for step in steps
-        )
+        step_counts = [len(task.steps) for task in tasks]
+        delay_total = sum(step.delay_time_sec for task in tasks for step in task.steps)
         preview = {
             "dry_run": True,
             "trajectory_source": trajectory_source,
-            "trajectory_count": len(trajectories),
-            "target_count": effective_target,
+            "target_count": len(tasks),
             "steps_per_trajectory": {
                 "min": min(step_counts),
                 "max": max(step_counts),
@@ -476,16 +530,29 @@ def execute(args: argparse.Namespace) -> int:
             "action_timeout": action_timeout,
             "mem_threshold_pct": mem_threshold_pct,
             "workdir": workdir,
+            "cmd_user": cmd_user,
         }
+        if args.mix_config:
+            preview["workloads"] = [
+                {
+                    "name": workload.name,
+                    "template": workload.template,
+                    "vm_count": workload.vm_count,
+                    "trajectory_dir": str(workload.trajectory_dir),
+                }
+                for workload in workloads
+            ]
+            preview["schedule_head"] = [
+                f"{task.workload}:{task.trajectory}" for task in tasks[:10]
+            ]
         print(
-            f"[replay dry-run] 轨迹来源：{trajectory_source}；{len(trajectories)} 条轨迹，"
-            f"目标回放 {effective_target} 次；生命周期并发 {concurrency}，"
-            f"RUNNING 名额 {running_concurrency}，控制面 {control_plane_qps} QPS"
+            f"[replay dry-run] 轨迹来源：{trajectory_source}；目标回放 {len(tasks)} 次；"
+            f"生命周期并发 {concurrency}，RUNNING 名额 {running_concurrency}，"
+            f"控制面 {control_plane_qps} QPS"
         )
         print_json(preview)
         return 0
 
-    template = bench_config.resolve_template(args.template, cfg)
     ctx = build_context(
         template=template,
         result_root=bench_config.resolve_result_root(cfg),
@@ -496,8 +563,7 @@ def execute(args: argparse.Namespace) -> int:
     )
     result = run(
         ctx,
-        trajectories=trajectories,
-        target_count=effective_target,
+        tasks=tasks,
         concurrency=concurrency,
         running_concurrency=running_concurrency,
         launch_interval_sec=launch_interval_sec,

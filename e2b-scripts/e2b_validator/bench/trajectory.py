@@ -138,6 +138,144 @@ def generate_synthetic_trajectories(
     return trajectories
 
 
+# --- mix 多模板混合回放（移植自 replay-aenv agent/replay_agent.py，语义 1:1） ---
+
+
+@dataclass(frozen=True)
+class WorkloadSpec:
+    """mix 配置中的单个负载：一组轨迹 + 模板 + 总回放次数。"""
+
+    name: str
+    template: str
+    trajectory_dir: Path
+    vm_count: int
+
+
+@dataclass(frozen=True)
+class MixTask:
+    """调度产物：一次轨迹回放任务（模板/轨迹/步序列已解析）。"""
+
+    workload: str
+    template: str
+    trajectory: str
+    steps: tuple[ReplayStep, ...]
+
+
+def slugify(value: str, limit: int = 72) -> str:
+    """workload 名规整：小写、非字母数字折叠为 '-'，对齐 replay-aenv。"""
+    import re
+
+    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    return (slug or "workload")[:limit].strip("-") or "workload"
+
+
+def load_mix_config(path: str | Path) -> tuple[int | None, list[WorkloadSpec]]:
+    """加载 mix 配置：{"concurrency": int?, "workloads": [{name?, template, trajectory_dir, vm_count}]}。
+
+    校验语义对齐 replay-aenv load_mix_config：name 缺省取 template、slug 后必须唯一；
+    vm_count 是该负载的总回放次数（不是并发数）；trajectory_dir 相对路径以配置文件所在目录为基准。
+    返回 (concurrency, workloads)。
+    """
+    config_path = Path(path).expanduser().resolve()
+    if not config_path.is_file():
+        raise FileNotFoundError(f"mix 配置不存在：{config_path}")
+    try:
+        raw: Any = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"mix 配置 JSON 解析失败：{config_path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("mix 配置根节点必须是 JSON object")
+
+    concurrency = raw.get("concurrency")
+    if concurrency is not None:
+        if isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency < 1:
+            raise ValueError("concurrency 必须是正整数")
+
+    raw_workloads = raw.get("workloads")
+    if not isinstance(raw_workloads, list) or not raw_workloads:
+        raise ValueError("workloads 必须是非空数组")
+
+    workloads: list[WorkloadSpec] = []
+    names: set[str] = set()
+    for index, raw_workload in enumerate(raw_workloads):
+        field = f"workloads[{index}]"
+        if not isinstance(raw_workload, dict):
+            raise ValueError(f"{field} 必须是 JSON object")
+        template = raw_workload.get("template")
+        if not isinstance(template, str) or not template.strip():
+            raise ValueError(f"{field}.template 必须是非空字符串")
+        template = template.strip()
+        raw_name = raw_workload.get("name", template)
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise ValueError(f"{field}.name 必须是非空字符串")
+        name = slugify(raw_name)
+        if name in names:
+            raise ValueError(f"workload 名称重复：{name}")
+        names.add(name)
+        vm_count = raw_workload.get("vm_count")
+        if isinstance(vm_count, bool) or not isinstance(vm_count, int) or vm_count < 1:
+            raise ValueError(f"{field}.vm_count 必须是正整数")
+        raw_dir = raw_workload.get("trajectory_dir")
+        if not isinstance(raw_dir, str) or not raw_dir.strip():
+            raise ValueError(f"{field}.trajectory_dir 必须是非空字符串")
+        trajectory_dir = Path(raw_dir.strip()).expanduser()
+        if not trajectory_dir.is_absolute():
+            trajectory_dir = config_path.parent / trajectory_dir
+        trajectory_dir = trajectory_dir.resolve()
+        if not find_trajectories(trajectory_dir):
+            raise ValueError(f"{field}.trajectory_dir 中没有 .json/.traj 文件：{trajectory_dir}")
+        workloads.append(
+            WorkloadSpec(
+                name=name,
+                template=template,
+                trajectory_dir=trajectory_dir,
+                vm_count=vm_count,
+            )
+        )
+    return concurrency, workloads
+
+
+def build_mix_schedule(workloads: list[WorkloadSpec]) -> list[MixTask]:
+    """平滑加权轮询（SWRR）交错各负载，单负载内轨迹循环复用。
+
+    对齐 replay-aenv build_mixed_schedule：按 vm_count 加权交错，保证任意时刻
+    各负载的已发射比例贴近其 vm_count 占比。
+    """
+    remaining = {w.name: w.vm_count for w in workloads}
+    current = {w.name: 0 for w in workloads}
+    emitted = {w.name: 0 for w in workloads}
+    by_name = {w.name: w for w in workloads}
+    total = sum(remaining.values())
+    steps_cache: dict[Path, list[tuple[str, list[ReplayStep]]]] = {}
+    schedule: list[MixTask] = []
+    while len(schedule) < total:
+        active = [w for w in workloads if remaining[w.name]]
+        active_weight = sum(w.vm_count for w in active)
+        for w in active:
+            current[w.name] += w.vm_count
+        selected = max(active, key=lambda w: current[w.name])
+        current[selected.name] -= active_weight
+
+        if selected.trajectory_dir not in steps_cache:
+            steps_cache[selected.trajectory_dir] = [
+                (path.name, load_trajectory(path))
+                for path in find_trajectories(selected.trajectory_dir)
+            ]
+        pool = steps_cache[selected.trajectory_dir]
+        name, steps = pool[emitted[selected.name] % len(pool)]
+        schedule.append(
+            MixTask(
+                workload=selected.name,
+                template=by_name[selected.name].template,
+                trajectory=name,
+                steps=tuple(steps),
+            )
+        )
+        emitted[selected.name] += 1
+        remaining[selected.name] -= 1
+    return schedule
+
+
 # --- action 包装与归一化（移植自 replay-aenv agent/replay_agent.py，语义 1:1） ---
 
 
