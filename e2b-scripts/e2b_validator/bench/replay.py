@@ -384,12 +384,16 @@ def run(
     result["memory_curve"] = memory_curve
     result["trajectories"] = records
 
-    leftovers = cleanup_created(ctx)
-    if leftovers.get("failed"):
-        ctx.note(f"收尾清理存在失败：{leftovers}")
-    elif leftovers.get("deleted"):
-        ctx.note(f"轨迹外残留沙箱已清理：{leftovers}")
-    ensure_clean_slate(ctx, "replay-final")
+    # 收尾清理失败（如 result_dir 被外部清理）不能毁掉整场数据，先出报告再清理
+    try:
+        leftovers = cleanup_created(ctx)
+        if leftovers.get("failed"):
+            ctx.note(f"收尾清理存在失败：{leftovers}")
+        elif leftovers.get("deleted"):
+            ctx.note(f"轨迹外残留沙箱已清理：{leftovers}")
+        ensure_clean_slate(ctx, "replay-final")
+    except Exception as exc:
+        ctx.note(f"收尾清理异常（数据已保留）：{type(exc).__name__}: {exc}")
 
     if abort_event.is_set():
         result["status"] = "aborted"

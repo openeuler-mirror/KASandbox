@@ -491,8 +491,7 @@ def ensure_clean_slate(
 
     def _line(message: str) -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-        with log_path.open("a", encoding="utf-8") as stream:
-            stream.write(f"{stamp} label={label} {message}\n")
+        _log_line(log_path, label, message)
 
     baseline_firecracker = _pgrep_count("firecracker")
     baseline_jailer = _pgrep_count("jailer")
@@ -699,9 +698,7 @@ def clean_host_orphans(ctx: BenchContext, label: str) -> dict[str, int]:
     log_path = ctx.result_dir / "cleanup.log"
 
     def _line(message: str) -> None:
-        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-        with log_path.open("a", encoding="utf-8") as stream:
-            stream.write(f"{stamp} label={label} clean_host_orphans {message}\n")
+        _log_line(log_path, label, f"clean_host_orphans {message}")
 
     firecracker = _pgrep_count("firecracker")
     jailer = _pgrep_count("jailer")
@@ -795,6 +792,9 @@ def pre_tier_settle(ctx: BenchContext, label: str, pre_wait: float) -> None:
 
 def _log_line(log_path: Path, label: str, message: str) -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    # result_dir 可能被外部清理/同步删掉（实测发生过），写日志前兜底重建，
+    # 不能让写日志失败毁掉整轮压测的收尾
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as stream:
         stream.write(f"{stamp} label={label} {message}\n")
 
