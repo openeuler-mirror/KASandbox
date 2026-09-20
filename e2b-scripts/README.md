@@ -543,6 +543,8 @@ bash bench.sh replay --dry-run --target-count 5
 | `--workdir` | 真实轨迹/mix 为 `/testbed`，合成轨迹不包装 | action 执行前 cd 的工作目录并做 SWE 包装（str_replace_editor 边界换行归一化 + bash -lc） |
 | `--cmd-user` | 真实轨迹/mix 为 `root`，合成轨迹为模板默认用户 | 沙箱内执行命令的用户（SWE 工具 registry 状态文件在 /root/.swe-agent-env，非 root 会 PermissionError） |
 | `--mix-config` | 无 | 多模板混合回放配置（JSON），与 `--trajectory-dir`/`-t` 互斥 |
+| `--snapshot-mode` | `none` | 快照变体：`same-sandbox`（同一沙箱每步执行后原地打快照，测连续快照开销）；`chain`（每步从上一快照重建沙箱→执行→打快照→删除，测快照链式恢复，沙箱不常驻）；报告分别增加 `latency.snapshot` / `latency.reload` 口径 |
+| `--write-mode` | `buffered` | `writeTxt N` 动作写入改写：`tmpfs`（dd 写 /dev/shm）/ `directio`（dd oflag=direct 直写 workdir），用于对比不同写入路径对快照耗时的影响 |
 | `--dry-run` | 关 | 只校验配置和轨迹、打印调度预览，不创建沙箱 |
 | `--mem-threshold-pct` | `global.mem_threshold_pct` | 内存安全闸：MemAvailable 低于阈值时停止发射新轨迹（在途跑完），结果标 `aborted` |
 

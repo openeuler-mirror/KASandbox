@@ -30,6 +30,7 @@ from .common import (
     clean_host_orphans,
     collect_environment,
     connect_sdk,
+    delete_snapshot,
     ensure_clean_slate,
     finish_result,
     guarded,
@@ -42,6 +43,7 @@ from .scheduler import (
     is_transient_sandbox_error,
 )
 from .trajectory import (
+    WRITE_MODES,
     MixTask,
     ReplayStep,
     build_mix_schedule,
@@ -49,10 +51,12 @@ from .trajectory import (
     generate_synthetic_trajectories,
     load_mix_config,
     load_trajectory,
+    rewrite_write_txt_action,
     wrap_action,
 )
 
 TRANSIENT_RETRY_ATTEMPTS = 3  # 瞬断错误最大重试次数（重试重新进限流队列）
+SNAPSHOT_MODES = ("none", "same-sandbox", "chain")
 
 
 def register(subparsers) -> None:
@@ -90,6 +94,19 @@ def register(subparsers) -> None:
     parser.add_argument("--synthetic-steps", type=positive_int, help="合成轨迹的步数（默认 10）")
     parser.add_argument("--dry-run", action="store_true", help="只校验配置和轨迹、打印调度预览，不创建沙箱")
     parser.add_argument(
+        "--snapshot-mode",
+        choices=SNAPSHOT_MODES,
+        help="快照变体：none（默认，paused 常驻）；same-sandbox（同一沙箱每步执行后原地打快照，"
+        "测连续快照开销，对齐 replay_agent_snapshot_same_sandbox）；chain（每步从上一快照重建沙箱、"
+        "执行、打快照、删除，测快照链式恢复，对齐 replay_agent_snapshot）",
+    )
+    parser.add_argument(
+        "--write-mode",
+        choices=WRITE_MODES,
+        help="writeTxt N 动作的写入模式改写：buffered（默认不改写）/tmpfs（dd 写 /dev/shm）/"
+        "directio（dd oflag=direct 直写 workdir），用于测量不同写入路径对快照增长的影响",
+    )
+    parser.add_argument(
         "--mem-threshold-pct",
         type=float,
         help="内存安全闸：MemAvailable 低于总内存该百分比时停止发射新轨迹（默认取 global.mem_threshold_pct）",
@@ -125,6 +142,8 @@ def run(
     mem_threshold_pct: float,
     workdir: str | None,
     cmd_user: str | None,
+    snapshot_mode: str = "none",
+    write_mode: str = "buffered",
 ) -> dict:
     target_count = len(tasks)
     templates = sorted({task.template for task in tasks})
@@ -139,6 +158,8 @@ def run(
         "mem_threshold_pct": mem_threshold_pct,
         "workdir": workdir,
         "cmd_user": cmd_user,
+        "snapshot_mode": snapshot_mode,
+        "write_mode": write_mode,
         "trajectory_count": len({(task.workload, task.trajectory) for task in tasks}),
         "templates": templates,
         "workloads": workloads,
@@ -171,6 +192,8 @@ def run(
     command_ms_samples: list[float] = []
     pause_ms_samples: list[float] = []
     queue_wait_ms_samples: list[float] = []
+    reload_ms_samples: list[float] = []
+    snapshot_ms_samples: list[float] = []
     started_monotonic = time.monotonic()
 
     def _memory_sampler() -> None:
@@ -239,6 +262,51 @@ def run(
 
         return _retry(_op, what=f"命令 {action[:40]!r}")
 
+    def _prepare_action(raw_action: str) -> str:
+        action = raw_action
+        if write_mode != "buffered":
+            action = rewrite_write_txt_action(action, write_mode, workdir or "/testbed")
+        return wrap_action(action, workdir) if workdir else action
+
+    def _snapshot(sandbox) -> tuple[float, str | None]:
+        """原地打一次快照（SDK 路径，SNAPSHOT 名额），返回 (耗时ms, snapshotID)。"""
+
+        def _op():
+            with limiter.slot(OperationType.SNAPSHOT):
+                timed = sdk_engine.snapshot_one(sandbox)
+            if not timed.ok:
+                raise RuntimeError(timed.error or "snapshot failed")
+            return timed
+
+        timed = _retry(_op, what="sandbox snapshot")
+        snapshot_id = timed.data.get("snapshotID") if isinstance(timed.data, dict) else None
+        return timed.latency_ms, snapshot_id
+
+    def _reload(base: str, index: int) -> tuple[float, str]:
+        """从模板或快照 ID 重建沙箱（RELOAD 名额），返回 (耗时ms, sandbox_id)。"""
+
+        def _op():
+            with limiter.slot(OperationType.RELOAD):
+                timed = ctx.client.create_timed(
+                    base, timeout=ctx.sandbox_timeout, metadata=ctx.metadata
+                )
+            if not timed.ok:
+                raise RuntimeError(timed.error or "reload failed")
+            return timed
+
+        timed = _retry(_op, what=f"轨迹 {index} reload")
+        return timed.latency_ms, timed.sandbox_id
+
+    def _untrack(sandbox_id: str) -> None:
+        with ctx._lock:
+            if sandbox_id in ctx.created_ids:
+                ctx.created_ids.remove(sandbox_id)
+
+    def _delete_snapshots(snapshot_ids: list[str], label: str) -> None:
+        for snapshot_id in snapshot_ids:
+            if not delete_snapshot(ctx.client, snapshot_id):
+                ctx.note(f"轨迹 {label} 的快照 {snapshot_id} 删除失败（需手工清理）")
+
     def _kill(sandbox_id: str) -> None:
         def _op() -> None:
             with limiter.slot(OperationType.CLEANUP):
@@ -252,6 +320,9 @@ def run(
             ctx.note(f"轨迹沙箱 {sandbox_id} 销毁失败：{str(exc)[:120]}（残留由收尾清理兜底）")
 
     def _replay_one(index: int) -> None:
+        if snapshot_mode == "chain":
+            _replay_chain(index)
+            return
         nonlocal alive
         task = tasks[index]
         name = task.trajectory
@@ -267,10 +338,12 @@ def run(
             "server_ms": None,
             "steps": [],
             "failed_commands": 0,
+            "snapshot_count": 0,
             "error": None,
         }
         sandbox_id: str | None = None
         killed = False
+        snapshot_ids: list[str] = []
         try:
             outcome = _create(task, index)
             sandbox_id = outcome["sandbox_id"]
@@ -309,13 +382,19 @@ def run(
                 }
                 try:
                     step_record["resume_ms"] = round(_resume(sandbox_id), 1)
-                    action = wrap_action(step.action, workdir) if workdir else step.action
+                    action = _prepare_action(step.action)
                     command_ms, exit_code, stderr_tail = _command(sandbox, action)
                     step_record["command_ms"] = round(command_ms, 1)
                     step_record["exit_code"] = exit_code
                     if exit_code != 0:
                         step_record["stderr_tail"] = stderr_tail
                         record["failed_commands"] += 1
+                    if snapshot_mode == "same-sandbox":
+                        # 每步执行后原地打快照（不删不重建），测连续快照开销
+                        snapshot_ms, snapshot_id = _snapshot(sandbox)
+                        step_record["snapshot_ms"] = round(snapshot_ms, 1)
+                        if snapshot_id:
+                            snapshot_ids.append(snapshot_id)
                     step_record["pause_ms"] = round(_pause(sandbox_id), 1)
                 except BaseException:
                     # lease 必须持有到沙箱确认 paused 或 deleted 为止
@@ -335,6 +414,8 @@ def run(
                     resume_ms_samples.append(step_record["resume_ms"])
                     command_ms_samples.append(command_ms)
                     pause_ms_samples.append(step_record["pause_ms"])
+                    if "snapshot_ms" in step_record:
+                        snapshot_ms_samples.append(step_record["snapshot_ms"])
             record["ok"] = True
         except Exception as exc:
             record["error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -343,6 +424,103 @@ def run(
                 _kill(sandbox_id)
                 with lock:
                     alive -= 1
+            record["snapshot_count"] = len(snapshot_ids)
+            _delete_snapshots(snapshot_ids, f"replay-{index}")
+            with lock:
+                records.append(record)
+
+    def _replay_chain(index: int) -> None:
+        """chain 快照变体：每步从上一快照重建沙箱 → 执行 → 打快照 → 删除。
+
+        对齐 replay-aenv replay_agent_snapshot.py：沙箱不常驻，快照作为下一棒的
+        templateID（持久 checkpoint），测快照链式恢复性能。与 paused 常驻模型对照。
+        """
+        nonlocal alive
+        task = tasks[index]
+        task_id = f"replay-{index}"
+        record: dict = {
+            "index": index,
+            "workload": task.workload,
+            "template": task.template,
+            "trajectory": task.trajectory,
+            "ok": False,
+            "create_ms": None,
+            "server_ms": None,
+            "steps": [],
+            "failed_commands": 0,
+            "snapshot_count": 0,
+            "error": None,
+        }
+        current_snapshot_id: str | None = None
+        snapshot_ids: list[str] = []
+        sandbox_id: str | None = None
+        try:
+            for step_index, step in enumerate(task.steps):
+                lease = scheduler.acquire(
+                    task_id, ready_at=time.monotonic() + step.delay_time_sec
+                )
+                step_record: dict = {
+                    "index": step_index,
+                    "delay_time_sec": step.delay_time_sec,
+                    "queue_wait_ms": round(lease.queue_wait_sec * 1000, 1),
+                    "reload_ms": None,
+                    "command_ms": None,
+                    "snapshot_ms": None,
+                    "exit_code": None,
+                }
+                try:
+                    # 首步从模板创建，后续从上一快照重建
+                    reload_ms, sandbox_id = _reload(current_snapshot_id or task.template, index)
+                    step_record["reload_ms"] = round(reload_ms, 1)
+                    ctx.track(sandbox_id)
+                    with lock:
+                        alive += 1
+                        reload_ms_samples.append(step_record["reload_ms"])
+                    sandbox = connect_sdk(sandbox_id, timeout=ctx.sandbox_timeout)
+                    action = _prepare_action(step.action)
+                    command_ms, exit_code, stderr_tail = _command(sandbox, action)
+                    step_record["command_ms"] = round(command_ms, 1)
+                    step_record["exit_code"] = exit_code
+                    if exit_code != 0:
+                        step_record["stderr_tail"] = stderr_tail
+                        record["failed_commands"] += 1
+                    snapshot_ms, snapshot_id = _snapshot(sandbox)
+                    step_record["snapshot_ms"] = round(snapshot_ms, 1)
+                    if not snapshot_id:
+                        raise RuntimeError("快照响应缺少 snapshotID，无法链式继续")
+                    snapshot_ids.append(snapshot_id)
+                    current_snapshot_id = snapshot_id
+                    _kill(sandbox_id)
+                    _untrack(sandbox_id)
+                    with lock:
+                        alive -= 1
+                    sandbox_id = None
+                except BaseException:
+                    if sandbox_id is not None:
+                        _kill(sandbox_id)
+                        _untrack(sandbox_id)
+                        with lock:
+                            alive -= 1
+                        sandbox_id = None
+                    raise
+                finally:
+                    lease.release()
+                record["steps"].append(step_record)
+                with lock:
+                    queue_wait_ms_samples.append(step_record["queue_wait_ms"])
+                    command_ms_samples.append(command_ms)
+                    snapshot_ms_samples.append(step_record["snapshot_ms"])
+            record["ok"] = True
+        except Exception as exc:
+            record["error"] = f"{type(exc).__name__}: {exc}"[:300]
+        finally:
+            if sandbox_id is not None:
+                _kill(sandbox_id)
+                _untrack(sandbox_id)
+                with lock:
+                    alive -= 1
+            record["snapshot_count"] = len(snapshot_ids)
+            _delete_snapshots(snapshot_ids, f"replay-{index}")
             with lock:
                 records.append(record)
 
@@ -378,6 +556,7 @@ def run(
         "succeeded": succeeded,
         "failed": failed,
         "command_failures": command_failures,
+        "snapshots_created": sum(record["snapshot_count"] for record in records),
         "elapsed_sec": round(time.monotonic() - started_monotonic, 1),
     }
     # 按 workload 汇总（mix 模式定位哪个负载拖后腿；单轨迹模式 workload 恒为 "-"）
@@ -404,6 +583,10 @@ def run(
         "pause": sdk_engine.latency_stats(pause_ms_samples),
         "queue_wait": sdk_engine.latency_stats(queue_wait_ms_samples),
     }
+    if reload_ms_samples:
+        result["latency"]["reload"] = sdk_engine.latency_stats(reload_ms_samples)
+    if snapshot_ms_samples:
+        result["latency"]["snapshot"] = sdk_engine.latency_stats(snapshot_ms_samples)
     result["create"] = {
         **sdk_engine.latency_stats(create_ms_samples, "create"),
         "server": sdk_engine.latency_stats(server_ms_samples, "server") if server_ms_samples else None,
@@ -447,6 +630,8 @@ def execute(args: argparse.Namespace) -> int:
     control_plane_qps = float(_resolve_param(args.control_plane_qps, section, "control_plane_qps", 100))
     action_timeout = int(_resolve_param(args.action_timeout, section, "action_timeout", 300))
     synthetic_steps = int(_resolve_param(args.synthetic_steps, section, "synthetic_steps", 10))
+    snapshot_mode = _resolve_param(args.snapshot_mode, section, "snapshot_mode", "none")
+    write_mode = _resolve_param(args.write_mode, section, "write_mode", "buffered")
     mem_threshold_pct = (
         args.mem_threshold_pct
         if args.mem_threshold_pct is not None
@@ -531,6 +716,8 @@ def execute(args: argparse.Namespace) -> int:
             "mem_threshold_pct": mem_threshold_pct,
             "workdir": workdir,
             "cmd_user": cmd_user,
+            "snapshot_mode": snapshot_mode,
+            "write_mode": write_mode,
         }
         if args.mix_config:
             preview["workloads"] = [
@@ -561,6 +748,10 @@ def execute(args: argparse.Namespace) -> int:
             3600, int(bench_config.global_param(cfg, "sandbox_timeout"))
         ),
     )
+    if not args.mix_config and not template:
+        # 未显式指定模板时 build_context 自动解析/构建基准模板，
+        # 任务的模板以解析结果为准（否则空模板会导致 400 Invalid template reference）
+        tasks = [MixTask(t.workload, ctx.template, t.trajectory, t.steps) for t in tasks]
     result = run(
         ctx,
         tasks=tasks,
@@ -572,6 +763,8 @@ def execute(args: argparse.Namespace) -> int:
         mem_threshold_pct=mem_threshold_pct,
         workdir=workdir,
         cmd_user=cmd_user,
+        snapshot_mode=snapshot_mode,
+        write_mode=write_mode,
     )
     environment = collect_environment(ctx.client, ctx.template, template_source=ctx.template_source)
     json_path = bench_report.write_bench_json(ctx.result_dir, "replay", result)

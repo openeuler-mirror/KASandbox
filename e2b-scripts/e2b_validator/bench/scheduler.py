@@ -56,6 +56,10 @@ class OperationType(IntEnum):
     PAUSE = 20
     CREATE = 30
     COMMAND = 40
+    # 快照变体（对齐 replay-aenv control_plane_scheduler_snapshot.py）：
+    # chain 模式 RELOAD 取代 RESUME（从快照重建沙箱），SNAPSHOT 取代 PAUSE（打快照）
+    RELOAD = 50
+    SNAPSHOT = 60
 
 
 class _RunRequest:

@@ -344,3 +344,47 @@ def wrap_action(action: str, workdir: str) -> str:
         action,
     ]
     return f"bash -lc {shlex.quote('; '.join(commands))}"
+
+
+# --- writeTxt 写入模式改写（移植自 replay-aenv，测快照/pause 增长） ---
+
+WRITE_MODES = ("buffered", "tmpfs", "directio")
+
+
+def rewrite_write_txt_action(action: str, write_mode: str, workdir: str) -> str:
+    """把 `writeTxt N`（写 N 个 1 MiB 高熵文件）按批次写入模式改写。
+
+    buffered：不改写（走工具自身的缓冲写）；tmpfs：改写为 dd 写 /dev/shm；
+    directio：改写为 dd oflag=direct 直写 workdir。非 writeTxt 的 action 原样返回。
+    """
+    if write_mode not in WRITE_MODES:
+        raise ValueError(f"unsupported write mode: {write_mode}")
+    try:
+        arguments = shlex.split(action)
+    except ValueError:
+        return action
+    if len(arguments) != 2 or arguments[0] != "writeTxt":
+        return action
+    try:
+        size_mib = int(arguments[1])
+    except ValueError:
+        return action
+    if size_mib < 0:
+        return action
+    if write_mode == "buffered":
+        return action
+
+    if write_mode == "tmpfs":
+        target = "/dev/shm/pause-growth-tmpfs.bin"
+        return (
+            'test "$(findmnt -n -o FSTYPE -T /dev/shm)" = tmpfs && '
+            f"dd if=/dev/urandom of={shlex.quote(target)} bs=1048576 "
+            f"count={size_mib} status=none"
+        )
+    target = f"{workdir.rstrip('/')}/pause-growth-directio.bin"
+    return (
+        f"fstype=$(findmnt -n -o FSTYPE -T {shlex.quote(workdir)}) && "
+        'case "$fstype" in tmpfs|ramfs) exit 1;; esac && '
+        f"dd if=/dev/urandom of={shlex.quote(target)} bs=1048576 "
+        f"count={size_mib} oflag=direct conv=fsync status=none"
+    )
