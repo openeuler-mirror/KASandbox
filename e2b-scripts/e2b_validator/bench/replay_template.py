@@ -19,9 +19,9 @@ from typing import Any
 from .bench_template import local_artifacts_ready
 from .client import BenchClient
 
-REPLAY_TASK_TEMPLATE_NAME = "django-money-task-v2"
+REPLAY_TASK_TEMPLATE_NAME = "django-money-task-2c2g"
 REPLAY_TASK_TEMPLATE_IMAGE = "193.30.8.2:30443/e2b-orchestration/django-money:poc_v2"
-REPLAY_TASK_TEMPLATE_CPU = 1
+REPLAY_TASK_TEMPLATE_CPU = 2
 REPLAY_TASK_TEMPLATE_MEMORY_MB = 2048
 BUILD_POLL_INTERVAL = 10
 BUILD_TIMEOUT = 1800
@@ -31,8 +31,10 @@ def _log(message: str) -> None:
     print(f"[bench] {message}", file=sys.stderr, flush=True)
 
 
-def find_task_template(client: BenchClient, name: str) -> dict[str, Any] | None:
-    """按名称找 ready 且本地产物齐全的任务模板。"""
+def find_task_template(
+    client: BenchClient, name: str, *, cpu: int, memory_mb: int
+) -> dict[str, Any] | None:
+    """按名称找 ready、本地产物齐全且规格匹配的任务模板（规格不符视为不可用）。"""
     try:
         templates = client.list_templates()
     except Exception as exc:
@@ -49,11 +51,15 @@ def find_task_template(client: BenchClient, name: str) -> dict[str, Any] | None:
             continue
         status = str(template.get("buildStatus") or "").lower()
         build_id = template.get("buildID")
-        if status == "ready" and local_artifacts_ready(build_id):
+        tpl_cpu = template.get("cpuCount")
+        tpl_mem = template.get("memoryMB")
+        spec_match = tpl_cpu == cpu and tpl_mem == memory_mb
+        if status == "ready" and local_artifacts_ready(build_id) and spec_match:
             return template
         _log(
             f"找到 {name}（{template.get('templateID')}）但不可用："
-            f"buildStatus={status or 'unknown'}, 本地产物={'就绪' if local_artifacts_ready(build_id) else '缺失'}"
+            f"buildStatus={status or 'unknown'}, 本地产物={'就绪' if local_artifacts_ready(build_id) else '缺失'}, "
+            f"规格={tpl_cpu}C/{tpl_mem}MiB（要求 {cpu}C/{memory_mb}MiB）"
         )
     return None
 
@@ -99,7 +105,7 @@ def ensure_replay_task_template(
     memory_mb: int = REPLAY_TASK_TEMPLATE_MEMORY_MB,
 ) -> tuple[str, str, str]:
     """返回 (template_id, name, source_label)；source_label 为 自动任务模板（复用|新建）。"""
-    existing = find_task_template(client, name)
+    existing = find_task_template(client, name, cpu=cpu, memory_mb=memory_mb)
     if existing:
         template_id = str(existing["templateID"])
         _log(f"复用任务模板 {template_id}（{name}，{cpu} vCPU / {memory_mb} MiB）")
@@ -115,7 +121,7 @@ def ensure_replay_task_template(
     attempt = 0
     while time.monotonic() < deadline:
         attempt += 1
-        template = find_task_template(client, name)
+        template = find_task_template(client, name, cpu=cpu, memory_mb=memory_mb)
         if template:
             template_id = str(template["templateID"])
             _log(f"任务模板构建完成并复用：{template_id}（{name}）")

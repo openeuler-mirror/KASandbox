@@ -530,7 +530,7 @@ bash bench.sh replay --trajectory-dir /path/to/delay_time_trajectories --target-
 bash bench.sh replay --dry-run --target-count 5
 ```
 
-真实轨迹模式不传 `-t` 时自动就位任务模板（默认 `django-money-task-v2`，1 vCPU / 2048 MiB）：先按名称找 ready 且本地产物齐全的模板复用，找不到则从 `[replay].task_template_image` 配置的 registry 镜像自动构建。镜像本身用下面的脚本一次性构建推送（全新机器）：
+真实轨迹模式不传 `-t` 时自动就位任务模板（默认 `django-money-task-2c2g`，2 vCPU / 2048 MiB）：先按名称找 ready 且本地产物齐全的模板复用，找不到则从 `[replay].task_template_image` 配置的 registry 镜像自动构建。镜像本身用下面的脚本一次性构建推送（全新机器）：
 
 ```bash
 # 需要 replay-aenv 源码（Dockerfile 在其 dockerfiles/ 下）；TARGET_REPO 默认走 gitcode 镜像，
@@ -565,7 +565,7 @@ bash prepare-replay-image.sh <registry前缀，如 193.30.8.2:30443/e2b-orchestr
 {
   "concurrency": 60,
   "workloads": [
-    {"name": "django-money", "template": "django-money-task-v2", "trajectory_dir": "/data/traces/django-money", "vm_count": 40},
+    {"name": "django-money", "template": "django-money-task-2c2g", "trajectory_dir": "/data/traces/django-money", "vm_count": 40},
     {"name": "std-2c2g", "template": "e2b/bench-standard-2c2g", "trajectory_dir": "/data/traces/std", "vm_count": 20}
   ]
 }

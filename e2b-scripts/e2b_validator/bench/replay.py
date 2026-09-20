@@ -748,14 +748,14 @@ def execute(args: argparse.Namespace) -> int:
 
         template, _task_name, _task_source = ensure_replay_task_template(
             BenchClient(timeout=600),
-            name=str(section.get("task_template_name", "django-money-task-v2")),
+            name=str(section.get("task_template_name", "django-money-task-2c2g")),
             image=str(
                 section.get(
                     "task_template_image",
                     "193.30.8.2:30443/e2b-orchestration/django-money:poc_v2",
                 )
             ),
-            cpu=int(section.get("task_template_cpu", 1)),
+            cpu=int(section.get("task_template_cpu", 2)),
             memory_mb=int(section.get("task_template_memory_mb", 2048)),
         )
 

@@ -103,9 +103,9 @@ BUILTIN: dict[str, Any] = {
         "control_plane_qps": 100,
         "action_timeout": 300,
         "synthetic_steps": 10,
-        "task_template_name": "django-money-task-v2",
+        "task_template_name": "django-money-task-2c2g",
         "task_template_image": "193.30.8.2:30443/e2b-orchestration/django-money:poc_v2",
-        "task_template_cpu": 1,
+        "task_template_cpu": 2,
         "task_template_memory_mb": 2048,
     },
     "profiles": {
