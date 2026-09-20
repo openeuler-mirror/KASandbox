@@ -332,11 +332,13 @@ def run(
 
         return _retry(_op, what=f"命令 {action[:40]!r}")
 
-    def _prepare_action(raw_action: str) -> str:
+    def _prepare_action(raw_action: str, task_workdir: str | None = None) -> str:
+        # 负载级 workdir（mix 配置）优先于全局 --workdir
+        effective_workdir = task_workdir or workdir
         action = raw_action
         if write_mode != "buffered":
-            action = rewrite_write_txt_action(action, write_mode, workdir or "/testbed")
-        return wrap_action(action, workdir) if workdir else action
+            action = rewrite_write_txt_action(action, write_mode, effective_workdir or "/testbed")
+        return wrap_action(action, effective_workdir) if effective_workdir else action
 
     def _snapshot(sandbox) -> tuple[float, str | None]:
         """原地打一次快照（SDK 路径，SNAPSHOT 名额），返回 (耗时ms, snapshotID)。"""
@@ -452,7 +454,7 @@ def run(
                 }
                 try:
                     step_record["resume_ms"] = round(_resume(sandbox_id), 1)
-                    action = _prepare_action(step.action)
+                    action = _prepare_action(step.action, task.workdir)
                     command_ms, exit_code, stderr_tail = _command(sandbox, action)
                     step_record["command_ms"] = round(command_ms, 1)
                     step_record["exit_code"] = exit_code
@@ -547,7 +549,7 @@ def run(
                         alive += 1
                         reload_ms_samples.append(step_record["reload_ms"])
                     sandbox = connect_sdk(sandbox_id, timeout=ctx.sandbox_timeout)
-                    action = _prepare_action(step.action)
+                    action = _prepare_action(step.action, task.workdir)
                     command_ms, exit_code, stderr_tail = _command(sandbox, action)
                     step_record["command_ms"] = round(command_ms, 1)
                     step_record["exit_code"] = exit_code
@@ -828,6 +830,23 @@ def execute(args: argparse.Namespace) -> int:
             cpu=int(section.get("task_template_cpu", 2)),
             memory_mb=int(section.get("task_template_memory_mb", 2048)),
         )
+
+    if args.mix_config:
+        # mix 模式模板自动就位：workload 配了 image 的，模板缺失/规格不符时自动构建
+        from .client import BenchClient
+        from .replay_template import ensure_replay_task_template
+
+        ensure_client = BenchClient(timeout=600)
+        for workload in workloads:
+            if not workload.image:
+                continue
+            ensure_replay_task_template(
+                ensure_client,
+                name=workload.template,
+                image=workload.image,
+                cpu=int(section.get("task_template_cpu", 2)),
+                memory_mb=int(section.get("task_template_memory_mb", 2048)),
+            )
 
     ctx = build_context(
         template=template,

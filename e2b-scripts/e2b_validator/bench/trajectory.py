@@ -149,6 +149,8 @@ class WorkloadSpec:
     template: str
     trajectory_dir: Path
     vm_count: int
+    workdir: str | None = None  # 按负载覆盖命令执行目录（默认跟随全局 --workdir）
+    image: str | None = None    # 模板不存在时用于自动构建的镜像地址
 
 
 @dataclass(frozen=True)
@@ -159,6 +161,7 @@ class MixTask:
     template: str
     trajectory: str
     steps: tuple[ReplayStep, ...]
+    workdir: str | None = None
 
 
 def slugify(value: str, limit: int = 72) -> str:
@@ -222,17 +225,36 @@ def load_mix_config(path: str | Path) -> tuple[int | None, list[WorkloadSpec]]:
         if not trajectory_dir.is_absolute():
             trajectory_dir = config_path.parent / trajectory_dir
         trajectory_dir = trajectory_dir.resolve()
-        if not find_trajectories(trajectory_dir):
+        if not _trajectory_paths(trajectory_dir):
             raise ValueError(f"{field}.trajectory_dir 中没有 .json/.traj 文件：{trajectory_dir}")
+        # 可选：按负载覆盖工作目录（如 TerminalBench 的 /app）；缺省跟随全局 --workdir
+        workdir = raw_workload.get("workdir")
+        if workdir is not None and (not isinstance(workdir, str) or not workdir.strip()):
+            raise ValueError(f"{field}.workdir 必须是非空字符串")
+        # 可选：模板不存在时用于自动构建的镜像地址
+        image = raw_workload.get("image")
+        if image is not None and (not isinstance(image, str) or not image.strip()):
+            raise ValueError(f"{field}.image 必须是非空字符串")
         workloads.append(
             WorkloadSpec(
                 name=name,
                 template=template,
                 trajectory_dir=trajectory_dir,
                 vm_count=vm_count,
+                workdir=workdir.strip() if isinstance(workdir, str) else None,
+                image=image.strip() if isinstance(image, str) else None,
             )
         )
     return concurrency, workloads
+
+
+def _trajectory_paths(path: Path) -> list[Path]:
+    """轨迹路径可以是目录（第一层 .json/.traj）或单个轨迹文件。"""
+    if path.is_file():
+        if path.name.endswith((".json", ".traj")):
+            return [path]
+        raise ValueError(f"轨迹文件后缀必须是 .json/.traj：{path}")
+    return find_trajectories(path)
 
 
 def build_mix_schedule(workloads: list[WorkloadSpec]) -> list[MixTask]:
@@ -259,7 +281,7 @@ def build_mix_schedule(workloads: list[WorkloadSpec]) -> list[MixTask]:
         if selected.trajectory_dir not in steps_cache:
             steps_cache[selected.trajectory_dir] = [
                 (path.name, load_trajectory(path))
-                for path in find_trajectories(selected.trajectory_dir)
+                for path in _trajectory_paths(selected.trajectory_dir)
             ]
         pool = steps_cache[selected.trajectory_dir]
         name, steps = pool[emitted[selected.name] % len(pool)]
@@ -269,6 +291,7 @@ def build_mix_schedule(workloads: list[WorkloadSpec]) -> list[MixTask]:
                 template=by_name[selected.name].template,
                 trajectory=name,
                 steps=tuple(steps),
+                workdir=by_name[selected.name].workdir,
             )
         )
         emitted[selected.name] += 1
