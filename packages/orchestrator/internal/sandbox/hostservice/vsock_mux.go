@@ -23,7 +23,9 @@ import (
 const VMADDR_CID_ANY uint32 = 0xFFFFFFFF
 
 const (
-	vsockListenBacklog = 5
+	vsockListenBacklog = 128
+	routeQueueCapacity = 8
+	backendDialTimeout = 10 * time.Second
 	unixSocketPathMax  = 107
 )
 
@@ -165,20 +167,28 @@ type routeEntry struct {
 	BackendPath string
 	vsocInput   bool
 
-	mu                sync.Mutex
-	activeConnections map[net.Conn]struct{}
-	activeWG          sync.WaitGroup
-	closing           bool
-	connected         chan struct{}
-	connectedOnce     sync.Once
+	ctx                context.Context
+	cancel             context.CancelFunc
+	connectionQueue    chan net.Conn
+	pendingConnections map[net.Conn]struct{}
+	mu                 sync.Mutex
+	activeConnections  map[net.Conn]struct{}
+	activeWG           sync.WaitGroup
+	closing            bool
+	connected          chan struct{}
+	connectedOnce      sync.Once
 }
 
 func newRouteEntry(sandboxID, backendPath string) *routeEntry {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &routeEntry{
-		SandboxID:         sandboxID,
-		BackendPath:       backendPath,
-		activeConnections: make(map[net.Conn]struct{}),
-		connected:         make(chan struct{}),
+		ctx:                ctx,
+		cancel:             cancel,
+		pendingConnections: make(map[net.Conn]struct{}),
+		SandboxID:          sandboxID,
+		BackendPath:        backendPath,
+		activeConnections:  make(map[net.Conn]struct{}),
+		connected:          make(chan struct{}),
 	}
 }
 
@@ -215,8 +225,12 @@ func (e *routeEntry) activeCount() int {
 func (e *routeEntry) closeAndWait(ctx context.Context) error {
 	e.mu.Lock()
 	e.closing = true
+	e.cancel()
 	connections := make([]net.Conn, 0, len(e.activeConnections))
 	for conn := range e.activeConnections {
+		connections = append(connections, conn)
+	}
+	for conn := range e.pendingConnections {
 		connections = append(connections, conn)
 	}
 	e.mu.Unlock()
@@ -316,8 +330,17 @@ func (m *VsockMux) Register(route SandboxRoute) error {
 			return fmt.Errorf("guest CID %d is already registered", route.CID)
 		}
 	}
-	m.routes[RouteKey{CID: route.CID, DestinationPort: ConfigServerVsockPort}] = newRouteEntry(route.SandboxID, route.ConfigBackendPath)
-	m.routes[RouteKey{CID: route.CID, DestinationPort: ModemSimulatorVsockPort}] = newRouteEntry(route.SandboxID, route.ModemBackendPath)
+	for port, backendPath := range map[uint32]string{
+		ConfigServerVsockPort:   route.ConfigBackendPath,
+		ModemSimulatorVsockPort: route.ModemBackendPath,
+	} {
+		key := RouteKey{CID: route.CID, DestinationPort: port}
+		entry := newRouteEntry(route.SandboxID, backendPath)
+		entry.connectionQueue = make(chan net.Conn, routeQueueCapacity)
+		entry.activeWG.Add(1)
+		m.routes[key] = entry
+		go m.routeWorker(key, entry)
+	}
 	if route.EnableVsocInput {
 		for _, port := range inputVsockPorts {
 			entry := newRouteEntry(route.SandboxID, "")
@@ -446,8 +469,8 @@ func (m *VsockMux) acceptLoop(listener *vsockListener) {
 			local:  vsockAddr{cid: VMADDR_CID_ANY, port: listener.port},
 			remote: vsockAddr{cid: peerVM.CID, port: peerVM.Port},
 		}
-		// Dispatch performs the backend dial synchronously. This preserves the
-		// accept order for modem connections before the next accept is handled.
+		// Backend routes queue in accept order. A full queue applies backpressure
+		// to this shared listener until space is available or the route closes.
 		m.dispatch(listener.port, peerVM.CID, frontend)
 	}
 }
@@ -456,8 +479,8 @@ func (m *VsockMux) dispatch(destinationPort, sourceCID uint32, frontend net.Conn
 	key := RouteKey{CID: sourceCID, DestinationPort: destinationPort}
 	m.mu.RLock()
 	entry := m.routes[key]
+	m.mu.RUnlock()
 	if entry == nil {
-		m.mu.RUnlock()
 		logger.L().Warn(context.Background(), "vsock connection for unknown CID",
 			zap.Uint32("guest_cid", sourceCID),
 			zap.Uint32("frontend_port", destinationPort),
@@ -469,17 +492,64 @@ func (m *VsockMux) dispatch(destinationPort, sourceCID uint32, frontend net.Conn
 
 	if entry.vsocInput {
 		entry.serveInputConnection(key, frontend)
-		m.mu.RUnlock()
 		return
 	}
 
-	backend, err := net.Dial("unix", entry.BackendPath)
+	// Own the frontend before waiting for queue space or dialing. The wait
+	// group also covers dispatch so shutdown cannot finish while it is enqueueing.
+	entry.mu.Lock()
+	if entry.closing {
+		entry.mu.Unlock()
+		_ = frontend.Close()
+		return
+	}
+	entry.pendingConnections[frontend] = struct{}{}
+	entry.activeWG.Add(1)
+	entry.mu.Unlock()
+	defer entry.activeWG.Done()
+
+	// The queue stays open: cancellation can race with a send, but the
+	// frontend is already tracked and will be closed by closeAndWait.
+	select {
+	case entry.connectionQueue <- frontend:
+	case <-entry.ctx.Done():
+		entry.removePending(frontend)
+		_ = frontend.Close()
+	}
+}
+
+func (e *routeEntry) removePending(frontend net.Conn) {
+	e.mu.Lock()
+	delete(e.pendingConnections, frontend)
+	e.mu.Unlock()
+}
+
+func (m *VsockMux) routeWorker(key RouteKey, entry *routeEntry) {
+	defer entry.activeWG.Done()
+	for {
+		select {
+		case <-entry.ctx.Done():
+			return
+		case frontend := <-entry.connectionQueue:
+			m.connectBackend(key, entry, frontend)
+		}
+	}
+}
+
+func (m *VsockMux) connectBackend(key RouteKey, entry *routeEntry, frontend net.Conn) {
+	defer entry.removePending(frontend)
+	ctx, cancel := context.WithTimeout(entry.ctx, backendDialTimeout)
+	defer cancel()
+	if ctx.Err() != nil {
+		_ = frontend.Close()
+		return
+	}
+	backend, err := (&net.Dialer{}).DialContext(ctx, "unix", entry.BackendPath)
 	if err != nil {
-		m.mu.RUnlock()
 		logger.L().Error(context.Background(), "vsock backend dial failed",
 			zap.String("sandbox_id", entry.SandboxID),
-			zap.Uint32("guest_cid", sourceCID),
-			zap.Uint32("frontend_port", destinationPort),
+			zap.Uint32("guest_cid", key.CID),
+			zap.Uint32("frontend_port", key.DestinationPort),
 			zap.String("backend_path", entry.BackendPath),
 			zap.Bool("backend_dial_error", true),
 			zap.Error(err),
@@ -488,12 +558,10 @@ func (m *VsockMux) dispatch(destinationPort, sourceCID uint32, frontend net.Conn
 		return
 	}
 	if err := entry.addConnections(frontend, backend); err != nil {
-		m.mu.RUnlock()
 		_ = frontend.Close()
 		_ = backend.Close()
 		return
 	}
-	m.mu.RUnlock()
 
 	go m.forward(key, entry, frontend, backend)
 }
