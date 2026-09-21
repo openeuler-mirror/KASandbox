@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
+	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
 )
 
 // Manager orchestrates a set of host-side service processes. A manager may
@@ -24,6 +25,7 @@ import (
 type Manager struct {
 	mu                sync.Mutex
 	services          []Service
+	metadata          sbxlogger.SandboxMetadata
 	readyCheckTimeout time.Duration
 	entries           []*procEntry
 	cancel            context.CancelFunc
@@ -37,12 +39,13 @@ type Manager struct {
 // in order; callers control the startup order by the position in the slice.
 // Returns nil when services is empty so callers can short-circuit downstream
 // nil-checks.
-func NewManager(services []Service, readyCheckTimeout time.Duration) *Manager {
+func NewManager(services []Service, readyCheckTimeout time.Duration, metadata sbxlogger.SandboxMetadata) *Manager {
 	if len(services) == 0 {
 		return nil
 	}
 	return &Manager{
 		services:          services,
+		metadata:          metadata,
 		readyCheckTimeout: readyCheckTimeout,
 	}
 }
@@ -86,7 +89,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	}
 
 	for i, svc := range m.services {
-		entry, err := startService(svcCtx, svc)
+		entry, err := startService(svcCtx, svc, m.metadata)
 		if err != nil {
 			rollback()
 			return fmt.Errorf("start host service %s: %w", svc.Name, err)
@@ -135,7 +138,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 					return nil, fmt.Errorf("host service %s entry is no longer managed", old.service.Name)
 				}
 
-				newEntry, err := startService(ctx, old.service)
+				newEntry, err := startService(ctx, old.service, m.metadata)
 				if err != nil {
 					return nil, err
 				}

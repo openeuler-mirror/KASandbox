@@ -34,6 +34,7 @@ func (b *CommandBuilder) Build(
 	files *storage.SandboxFiles,
 	slot *network.Slot,
 	kernelArgs string,
+	guestConsoleLogs bool,
 	memoryMB int64,
 	vcpuCount int64,
 	_ bool,
@@ -45,8 +46,6 @@ func (b *CommandBuilder) Build(
 	hostKernelPath := versions.HostKernelPath(b.config)
 	hostRootfsLinkPath := files.SandboxCacheRootfsLinkPath(b.config.StorageConfig)
 	qmpSocket := files.SandboxFirecrackerSocketPath()
-	serialLogPath := files.SandboxSerialLogPath()
-
 	memArgs := fmt.Sprintf("-smp %d -m %d", vcpuCount, memoryMB)
 
 	incomingArg := ""
@@ -68,11 +67,17 @@ func (b *CommandBuilder) Build(
 			slot,
 			machineType,
 			memArgs,
+			guestConsoleLogs,
 			incomingArg,
 		)
 	}
 	if versions.OsType.OrDefault() == vmm.OsAndroid {
-		return b.buildAndroidCommand(versions, files, slot, qmpSocket, memoryMB, vcpuCount, incomingArg, vsockGuestCID)
+		return b.buildAndroidCommand(versions, files, slot, qmpSocket, guestConsoleLogs, memoryMB, vcpuCount, incomingArg, vsockGuestCID)
+	}
+
+	serialBackend := "null"
+	if guestConsoleLogs {
+		serialBackend = "redirect-to-log"
 	}
 
 	vsockArg := ""
@@ -98,7 +103,7 @@ func (b *CommandBuilder) Build(
 			"-netdev tap,id=netdev,ifname=%s "+
 			"-pci virtio-net-pci,netdev=netdev,id=%s,mac=%s "+
 			"-qmp unix:%s,server,nowait "+
-			"-serial file,path=%s "+
+			"-serial %s "+
 			"%s"+
 			"%s",
 		b.config.SandboxDir,
@@ -120,7 +125,7 @@ func (b *CommandBuilder) Build(
 		slot.VpeerName(),
 		slot.TapMAC(),
 		qmpSocket,
-		serialLogPath,
+		serialBackend,
 		vsockArg,
 		incomingArg,
 	)
@@ -133,7 +138,7 @@ func (b *CommandBuilder) Build(
 	}
 }
 
-func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.SandboxFiles, slot *network.Slot, qmpSocket string, memoryMB, vcpuCount int64, incomingArg string, vsockGuestCID int64) *CommandResult {
+func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.SandboxFiles, slot *network.Slot, qmpSocket string, guestConsoleLogs bool, memoryMB, vcpuCount int64, incomingArg string, vsockGuestCID int64) *CommandResult {
 	diskNames := []string{storage.RootfsName, storage.PersistentName, storage.SDCardName}
 	guestDiskPaths := make([]string, len(diskNames))
 	var preamble strings.Builder
@@ -160,12 +165,12 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 	}
 	preamble.WriteString("\n")
 
-	// Co-locate serial and logcat logs with the StratoVirt -D log.
-	serialLogPath := filepath.Join("/tmp/templates", filepath.Base(files.SandboxSerialLogPath()))
-	logcatPath := filepath.Join("/tmp/templates", filepath.Base(files.SandboxAndroidLogcatPath()))
-
 	diskArgs := buildAndroidDiskArgs(guestDiskPaths)
-	virtconsoleArgs := buildAndroidVirtconsoleArgs(pipeDir, logcatPath)
+	virtconsoleArgs := buildAndroidVirtconsoleArgs(pipeDir, guestConsoleLogs)
+	serialBackend := "null"
+	if guestConsoleLogs {
+		serialBackend = "redirect-to-log"
+	}
 
 	vsockArg := ""
 	if vsockGuestCID > 0 {
@@ -175,7 +180,6 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 	cmd := fmt.Sprintf(
 		"ip netns exec %s %s "+
 			"-disable-seccomp "+
-			"-D /tmp/templates/%s-%s.log "+
 			"-machine virt,gic-version=3,dump-guest-core=off,mem-share=on "+
 			"-accel kvm "+
 			"-smp %d,cores=%d,threads=1 "+
@@ -193,12 +197,10 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 			"-device virtio-gpu-pci,id=gpu0,bus=pcie.0,addr=0x10,xres=720,yres=1280 "+
 			"-object rng-random,id=objrng0,filename=/dev/urandom -device virtio-rng-pci,id=rng0,rng=objrng0,bus=pcie.0,addr=0x5,max-bytes=1024,period=2000 "+
 			"-qmp unix:%s,server,nowait "+
-			"-serial file,path=%s "+
+			"-serial %s "+
 			"%s",
 		slot.NamespaceID(),
 		versions.StratoVirtPath(b.config),
-		files.BuildID,
-		files.SandboxID,
 		vcpuCount,
 		vcpuCount,
 		memoryMB,
@@ -213,7 +215,7 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 		slot.TapName(),   // netdev1 ifname = tap0
 		slot.VpeerName(), // netdev1 id = eth0 (MMDS)
 		qmpSocket,
-		serialLogPath,
+		serialBackend,
 		incomingArg,
 	)
 
@@ -236,11 +238,8 @@ func buildAndroidDiskArgs(guestDiskPaths []string) string {
 	return args.String()
 }
 
-// buildAndroidVirtconsoleArgs renders the 31 virtio-serial ports for the
-// Android HALs. Port 0 uses a null backend (a file backend blocks U-Boot's
-// AVB handshake). Port 2 captures logcat to a file; pipeByPort ports connect
-// to FIFO pairs under pipeDir for HAL host↔guest IPC; the rest are null.
-func buildAndroidVirtconsoleArgs(pipeDir string, logcatPath string) string {
+// buildAndroidVirtconsoleArgs renders the 31 virtio-serial ports for the Android HALs
+func buildAndroidVirtconsoleArgs(pipeDir string, guestConsoleLogs bool) string {
 	var args strings.Builder
 	pipeByPort := map[int]string{
 		3:  "keymaster_fifo_vm",
@@ -251,9 +250,11 @@ func buildAndroidVirtconsoleArgs(pipeDir string, logcatPath string) string {
 	for port := 0; port < 31; port++ {
 		switch port {
 		case 0:
-			fmt.Fprintf(&args, "-chardev null,id=hvc0 -device virtconsole,id=hvc0,chardev=hvc0,nr=0 ")
-		case 2:
-			fmt.Fprintf(&args, "-chardev file,id=hvc2,path=%s -device virtconsole,id=hvc2,chardev=hvc2,nr=2 ", logcatPath)
+			backend := "null"
+			if guestConsoleLogs {
+				backend = "redirect-to-log"
+			}
+			fmt.Fprintf(&args, "-chardev %s,id=hvc0 -device virtconsole,id=hvc0,chardev=hvc0,nr=0 ", backend)
 		default:
 			if name, ok := pipeByPort[port]; ok {
 				fmt.Fprintf(&args, "-chardev pipe,id=hvc%d,path=%s -device virtconsole,id=hvc%d,chardev=hvc%d,nr=%d ", port, filepath.Join(pipeDir, name), port, port, port)
@@ -277,8 +278,14 @@ func (b *CommandBuilder) buildWindowsCommand(
 	slot *network.Slot,
 	machineType string,
 	memArgs string,
+	guestConsoleLogs bool,
 	incomingArg string,
 ) *CommandResult {
+	serialBackend := "null"
+	if guestConsoleLogs {
+		serialBackend = "redirect-to-log"
+	}
+
 	cmd := fmt.Sprintf(
 		"mount --make-rprivate / &&\n"+
 			"mount -t tmpfs tmpfs %s -o X-mount.mkdir &&\n\n"+
@@ -296,6 +303,7 @@ func (b *CommandBuilder) buildWindowsCommand(
 			"-netdev tap,id=netdev,ifname=%s "+
 			"-device virtio-net-pci,netdev=netdev,id=%s,bus=pcie.0,addr=0x6,mac=%s "+
 			"-qmp unix:%s,server,nowait "+
+			"-serial %s "+
 			"%s",
 		b.config.SandboxDir,
 		hostRootfsLinkPath,
@@ -309,6 +317,7 @@ func (b *CommandBuilder) buildWindowsCommand(
 		slot.TapName(),
 		slot.VpeerName(), slot.TapMAC(),
 		qmpSocket,
+		serialBackend,
 		incomingArg,
 	)
 
@@ -332,9 +341,8 @@ func defaultKernelArgs(initScriptPath string, ipv4 string, options vmm.ProcessOp
 		"ipv6.disable":  "0",
 		"ipv6.autoconf": "1",
 
-		"panic":                               "1",
-		"systemd.journald.forward_to_console": "",
-		"reboot":                              "k",
+		"panic":  "1",
+		"reboot": "k",
 	}
 
 	if runtime.GOARCH == "amd64" || runtime.GOARCH == "386" {
@@ -343,14 +351,20 @@ func defaultKernelArgs(initScriptPath string, ipv4 string, options vmm.ProcessOp
 		args["i8042.noaux"] = ""
 		args["random.trust_cpu"] = "on"
 		args["clocksource"] = "kvm-clock"
-		args["console"] = "ttyS0"
-	} else {
-		args["console"] = "ttyAMA0"
+	}
+
+	if options.SystemdToKernelLogs {
+		args["systemd.journald.forward_to_console"] = ""
 	}
 
 	if options.KernelLogs || options.SystemdToKernelLogs {
 		delete(args, "quiet")
 		args["loglevel"] = "5"
+		if runtime.GOARCH == "amd64" || runtime.GOARCH == "386" {
+			args["console"] = "ttyS0"
+		} else {
+			args["console"] = "ttyAMA0"
+		}
 	}
 
 	return args
