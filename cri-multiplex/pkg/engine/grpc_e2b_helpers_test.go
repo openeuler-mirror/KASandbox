@@ -307,6 +307,13 @@ func TestMapE2BErrorAndNotFound(t *testing.T) {
 	if got := status.Code(mapE2BError(errors.New("plain"))); got != codes.Internal {
 		t.Fatalf("mapE2BError plain code = %v, want Internal", got)
 	}
+	// orchestrator 返回的 FailedPrecondition / InvalidArgument 须原样透传，不得降级为 Internal
+	if got := status.Code(mapE2BError(status.Error(codes.FailedPrecondition, "node capability off"))); got != codes.FailedPrecondition {
+		t.Fatalf("mapE2BError FailedPrecondition code = %v", got)
+	}
+	if got := status.Code(mapE2BError(status.Error(codes.InvalidArgument, "bad annotation"))); got != codes.InvalidArgument {
+		t.Fatalf("mapE2BError InvalidArgument code = %v", got)
+	}
 }
 
 func TestConnectBinaryEnvelopeRoundTrip(t *testing.T) {

@@ -144,6 +144,8 @@ spec:
           value: "{{ .Values.sandboxProxyPoolSize }}"
         - name: SANDBOX_PROXY_REUSED_POOL_SIZE
           value: "{{ .Values.sandboxProxyReusedPoolSize }}"
+        - name: SANDBOX_PROXY_CA_AUTO
+          value: "{{ .Values.sandboxProxyCaAuto }}"
         - name: SHARED_CHUNK_CACHE_PATH
           value: "{{ .Values.sharedChunkCachePath }}"
         - name: CLICKHOUSE_CONNECTION_STRING

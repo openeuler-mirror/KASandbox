@@ -98,6 +98,7 @@ sandboxProxyUpstream: ${SANDBOX_PROXY_UPSTREAM}
 sandboxProxyExtraArgs: ${SANDBOX_PROXY_EXTRA_ARGS}
 sandboxProxyPoolSize: ${SANDBOX_PROXY_POOL_SIZE}
 sandboxProxyReusedPoolSize: ${SANDBOX_PROXY_REUSED_POOL_SIZE}
+sandboxProxyCaAuto: ${SANDBOX_PROXY_CA_AUTO}
 sharedChunkCachePath: ${SHARED_CHUNK_CACHE_PATH}
 storageProvider: ${STORAGE_PROVIDER}
 artifactsRegistryProvider: ${ARTIFACTS_REGISTRY_PROVIDER}

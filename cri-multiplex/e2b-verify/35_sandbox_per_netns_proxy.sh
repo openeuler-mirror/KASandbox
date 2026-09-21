@@ -28,7 +28,7 @@
 #   §12  断言8  全程序覆盖：--noproxy / openssl s_client 同样被劫持；裸 IP 直连
 #               host 退化为 IP、按 internal.nets IP 级规则处理（记录在案）
 #   §13  断言9  mitm=false：TLS 端到端（issuer 非测试 CA）；domain 级 deny 命中时
-#               连接失败（fail-close 式拒绝，§7.2 降级语义）
+#               代理返回 403（§7.2 降级语义）
 #   §14  断言10 SANDBOX_PROXY_EXEMPT_CIDRS 内目的直连、代理日志无该 flow
 #   §19  断言11 kill 代理进程 → 该沙箱出向 fail-close → 监督协程拉起后恢复
 #   §15  断言12 代理上游出节点：mock 站点看到的源 IP = slot HostIP（vrt SNAT

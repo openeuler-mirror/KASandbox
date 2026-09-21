@@ -3,11 +3,13 @@ package engine
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -338,6 +340,14 @@ func TestGRPCE2BRunPodSandboxExposePortsThreeForms(t *testing.T) {
 	anns := statusResp.Status.Annotations
 	if anns["e2b.dev/host-port-9090"] != "45678" || anns["e2b.dev/access-url-49983"] != "http://192.0.2.10:38700" {
 		t.Fatalf("hostport annotations mismatch: %+v", anns)
+	}
+	var hostPortAll map[string]int
+	if err := json.Unmarshal([]byte(anns["e2b.dev/host-port"]), &hostPortAll); err != nil {
+		t.Fatalf("e2b.dev/host-port should be a JSON map of all mappings: %q err=%v", anns["e2b.dev/host-port"], err)
+	}
+	wantAll := map[string]int{"8080": 20000, "9090": 45678, "49983": 38700}
+	if !reflect.DeepEqual(hostPortAll, wantAll) {
+		t.Fatalf("e2b.dev/host-port = %v, want %v", hostPortAll, wantAll)
 	}
 }
 
