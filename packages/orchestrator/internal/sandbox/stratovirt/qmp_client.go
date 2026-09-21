@@ -70,6 +70,11 @@ func (c *qmpClient) connect(ctx context.Context) error {
 		}
 	}
 
+	if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		conn.Close()
+		return fmt.Errorf("error setting QMP greeting deadline: %w", err)
+	}
+
 	c.conn = conn
 	c.decoder = json.NewDecoder(conn)
 
@@ -92,6 +97,13 @@ func (c *qmpClient) connect(ctx context.Context) error {
 		c.conn = nil
 		c.decoder = nil
 		return fmt.Errorf("error reading QMP greeting: %w", err)
+	}
+
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		conn.Close()
+		c.conn = nil
+		c.decoder = nil
+		return fmt.Errorf("error clearing QMP greeting deadline: %w", err)
 	}
 
 	zap.L().Sugar().Infof("QMP greeting: version=%d.%d.%d, package=%s, capabilities=%v",
