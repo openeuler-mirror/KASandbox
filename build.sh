@@ -173,7 +173,7 @@ setup_mooncake() {
         "-L/usr/lib64"
         "-lmooncake_store -lmooncake_common"
         "-lstdc++ -lnuma -lglog -lgflags -libverbs -ljsoncpp -lzstd -lcurl -luring"
-        "-lurma -letcd_wrapper -lubdiag"
+        "-lurma -letcd_wrapper -lspdiag"
     )
     
     # 可选：CUDA 支持
@@ -181,13 +181,14 @@ setup_mooncake() {
         cgo_ldflags+=("-L/usr/local/cuda/lib64 -lcudart")
     fi
     
-    export CGO_CFLAGS="${cgo_cflags[*]}"
-    export CGO_LDFLAGS="${cgo_ldflags[*]}"
+    # 合并用户手动传入的 CGO flags（追加到内置 flags 之后）
+    MOONCAKE_CGO_CFLAGS="${cgo_cflags[*]} ${CGO_CFLAGS:-}"
+    MOONCAKE_CGO_LDFLAGS="${cgo_ldflags[*]} ${CGO_LDFLAGS:-}"
     export BUILD_TAGS="$BUILD_TAGS"
     
-    log_info "CGO_CFLAGS=${CGO_CFLAGS}"
-    log_info "CGO_LDFLAGS=${CGO_LDFLAGS}"
     log_info "BUILD_TAGS=${BUILD_TAGS}"
+    log_info "MOONCAKE_CGO_CFLAGS=${MOONCAKE_CGO_CFLAGS}"
+    log_info "MOONCAKE_CGO_LDFLAGS=${MOONCAKE_CGO_LDFLAGS}"
 }
 
 setup_standard_build() {
@@ -295,6 +296,19 @@ build_go_module() {
     local module_dir=$1
     local output=$2
     local build_args=${3:-.}
+    local module_tags="$BUILD_TAGS"
+    local module_cgo_cflags=""
+    local module_cgo_ldflags=""
+    
+    # Mooncake 仅 orchestrator 依赖
+    if $ENABLE_MOONCAKE; then
+        if [[ "$module_dir" == *"orchestrator"* ]]; then
+            module_cgo_cflags="$MOONCAKE_CGO_CFLAGS"
+            module_cgo_ldflags="$MOONCAKE_CGO_LDFLAGS"
+        else
+            module_tags=""
+        fi
+    fi
     
     if ! check_dir "$module_dir"; then
         return 1
@@ -303,10 +317,15 @@ build_go_module() {
     log_warn "→ 构建 $module_dir -> $output"
     (
         cd "$module_dir"
+        export CGO_CFLAGS="$module_cgo_cflags"
+        export CGO_LDFLAGS="$module_cgo_ldflags"
         # 使用 GOWORK=off：部分模块（如 e2b-webhook）不在 go.work 中，
         # 必须脱离 workspace 才能按各自 go.mod 构建
-        GOWORK=off go build $BUILD_TAGS -o "$output" $build_args
-    )
+        GOWORK=off go build $module_tags -o "$output" $build_args
+    ) || {
+        log_error "✗ $module_dir 构建失败"
+        return 1
+    }
     log_info "✓ $output 构建完成"
 }
 
@@ -331,10 +350,15 @@ build_main_binaries() {
     done
     
     # 等待所有构建完成
-    local pid
+    local pid failed=0
     for pid in "${pids[@]}"; do
-        wait "$pid" || log_error "构建进程 $pid 失败"
+        wait "$pid" || failed=$((failed + 1))
     done
+    
+    if [ "$failed" -gt 0 ]; then
+        log_error "✗ $failed 个二进制构建失败"
+        return 1
+    fi
 }
 
 # 构建数据库相关工具（并行）
@@ -351,7 +375,9 @@ build_db_tools() {
     (
         log_warn "→ 构建 $db_dir 的 migrator"
         cd "$db_dir"
-        go build $BUILD_TAGS -o "../../${BIN_DIR}/migrator" ./scripts/migrator.go
+        export CGO_CFLAGS=""
+        export CGO_LDFLAGS=""
+        go build -o "../../${BIN_DIR}/migrator" ./scripts/migrator.go
         log_info "✓ ${BIN_DIR}/migrator 构建完成"
     ) &
     pids+=($!)
@@ -360,16 +386,23 @@ build_db_tools() {
     (
         log_warn "→ 构建 $db_dir 的 seed-db"
         cd "$db_dir"
-        go build $BUILD_TAGS -o "../../${BIN_DIR}/seed-db" ./scripts/seed/postgres/seed-db.go
+        export CGO_CFLAGS=""
+        export CGO_LDFLAGS=""
+        go build -o "../../${BIN_DIR}/seed-db" ./scripts/seed/postgres/seed-db.go
         log_info "✓ ${BIN_DIR}/seed-db 构建完成"
     ) &
     pids+=($!)
     
     # 等待两个构建完成
-    local pid
+    local pid failed=0
     for pid in "${pids[@]}"; do
-        wait "$pid" || log_error "DB 工具构建进程 $pid 失败"
+        wait "$pid" || failed=$((failed + 1))
     done
+    
+    if [ "$failed" -gt 0 ]; then
+        log_error "✗ DB 工具构建失败"
+        return 1
+    fi
 }
 
 # 构建 fc-netns-exec（不需要 CGO）
@@ -436,12 +469,22 @@ build_docker_images() {
     # webhook 二进制未在主循环中构建，单独处理
     ensure_webhook_binary
     
+    # Mooncake 模式：orchestrator 改用专用 Dockerfile（集成 urma/numactl 依赖并安装 Mooncake RPM）
+    local orchestrator_task="${ORCHESTRATOR_IMAGE_NAME}|packages/orchestrator/Dockerfile|packages/orchestrator|orchestrator,fc-netns-exec"
+    if $ENABLE_MOONCAKE; then
+        if ! ls /opt/e2b-infra/bin/*.rpm >/dev/null 2>&1; then
+            log_error "✗ Mooncake 镜像构建需要 RPM 包，请先将 mooncake-*.rpm / spdiag-*.rpm 复制到 /opt/e2b-infra/bin/（见用户指南 4.5.1）"
+            return 1
+        fi
+        orchestrator_task="${ORCHESTRATOR_IMAGE_NAME}|deploy/dockerfiles/orchestrator-mooncake.Dockerfile|deploy/dockerfiles|orchestrator,fc-netns-exec"
+    fi
+    
     # 定义镜像构建任务：镜像名|Dockerfile|构建上下文|需要的二进制
     local image_tasks=(
         "${API_IMAGE_NAME}|packages/api/Dockerfile|packages/api|api"
-        "${ORCHESTRATOR_IMAGE_NAME}|packages/orchestrator/Dockerfile|packages/orchestrator|orchestrator,fc-netns-exec"
+        "$orchestrator_task"
         "${CLIENT_PROXY_IMAGE_NAME}|packages/client-proxy/Dockerfile|packages/client-proxy|client-proxy"
-        "${WEBHOOK_IMAGE_NAME}|e2b-webhook/Dockerfile.scratch|e2b-webhook|e2b-webhook"
+        "${WEBHOOK_IMAGE_NAME}|e2b-webhook/webhook.Dockerfile|e2b-webhook|e2b-webhook"
     )
     
     local pids=()
@@ -454,15 +497,20 @@ build_docker_images() {
     done
     
     # 等待所有镜像构建完成
-    local pid
+    local pid failed=0
     for pid in "${pids[@]}"; do
-        wait "$pid" || log_error "镜像构建进程 $pid 失败"
+        wait "$pid" || failed=$((failed + 1))
     done
     
-    # 显示已构建的镜像
+    # 显示已构建的镜像（按行首镜像名 + 冒号边界匹配，避免误匹配带 registry 前缀的同名镜像）
     echo -e "${CYAN}已构建镜像:${NC}"
     docker images --format "  {{.Repository}}:{{.Tag}}  ({{.Size}})" \
-        | grep -E "(${API_IMAGE_NAME}|${ORCHESTRATOR_IMAGE_NAME}|${CLIENT_PROXY_IMAGE_NAME}|${WEBHOOK_IMAGE_NAME}) " || true
+        | grep -E "^(${API_IMAGE_NAME}|${ORCHESTRATOR_IMAGE_NAME}|${CLIENT_PROXY_IMAGE_NAME}|${WEBHOOK_IMAGE_NAME}):" || true
+    
+    if [ "$failed" -gt 0 ]; then
+        log_error "✗ $failed 个镜像构建失败"
+        return 1
+    fi
 }
 
 ensure_webhook_binary() {
@@ -499,16 +547,43 @@ build_docker_image() {
     fi
     
     # 拷贝二进制到构建上下文
-    copy_binaries_to_context "$ctx" "$binaries"
+    if ! copy_binaries_to_context "$ctx" "$binaries"; then
+        log_error "✗ 拷贝二进制到 $ctx 失败，跳过 $img_name"
+        return 1
+    fi
     
-    # 执行 Docker 构建
-    docker build --platform "linux/${GOARCH}" \
+    # Mooncake orchestrator 镜像：暂存 RPM 包到构建上下文，并按目标架构传参
+    local staged_rpms=()
+    local build_args=()
+    if $ENABLE_MOONCAKE && [ "$img_name" = "$ORCHESTRATOR_IMAGE_NAME" ]; then
+        local rpm
+        for rpm in /opt/e2b-infra/bin/*.rpm; do
+            cp -f "$rpm" "$ctx/"
+            staged_rpms+=("$ctx/$(basename "$rpm")")
+        done
+        case "$GOARCH" in
+            arm64) build_args=(--build-arg oe_arch=aarch64 --build-arg probe_arch=arm64) ;;
+            *)     build_args=(--build-arg oe_arch=x86_64  --build-arg probe_arch=amd64) ;;
+        esac
+    fi
+    
+    # 执行 Docker 构建（失败也要继续走清理，避免二进制残留在构建上下文）
+    local build_failed=0
+    docker build --platform "linux/${GOARCH}" "${build_args[@]}" \
         -f "$dockerfile" \
         -t "$img_name" \
-        "$ctx"
+        "$ctx" || build_failed=1
     
-    # 清理拷贝的二进制
+    # 清理拷贝的二进制与 RPM
     cleanup_binaries_from_context "$ctx" "$binaries"
+    if [ ${#staged_rpms[@]} -gt 0 ]; then
+        rm -f "${staged_rpms[@]}"
+    fi
+    
+    if [ "$build_failed" -ne 0 ]; then
+        log_error "✗ 镜像 $img_name 构建失败"
+        return 1
+    fi
     
     log_info "✓ 镜像 $img_name 构建完成"
 }
