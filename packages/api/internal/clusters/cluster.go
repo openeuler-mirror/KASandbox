@@ -85,7 +85,7 @@ func newLocalCluster(
 		return newInstance(ctx, tel, nil, clusterID, item, fmt.Sprintf("%s:%d", item.LocalIPAddress, item.LocalInstanceApiPort), false)
 	}
 
-	storeDiscovery := discovery.NewLocalDiscovery(clusterID, nomad, k8s)
+	storeDiscovery := discovery.NewLocalDiscovery(ctx, clusterID, nomad, k8s)
 	store := instancesSyncStore{clusterID: clusterID, instances: instances, discovery: storeDiscovery, instanceCreation: instanceCreation}
 
 	c := NewCluster(

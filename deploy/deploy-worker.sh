@@ -105,7 +105,7 @@ preflight_check() {
     command -v ssh >/dev/null 2>&1 || { log_error "ssh 未安装"; ((errors++)); }
     command -v scp >/dev/null 2>&1 || { log_error "scp 未安装"; ((errors++)); }
 
-    [ -f "$SSH_KEY" ] || { log_error "SSH 私钥不存在: $SSH_KEY"; ((errors++)); }
+    # SSH 私钥缺失时由 setup_ssh_key 自动生成，此处不检查
     [ -d "$INFRA_SRC" ] || { log_error "本地 e2b-infra 目录不存在: $INFRA_SRC"; ((errors++)); }
     [ -d "$CERT_SRC" ] || { log_error "containerd 证书目录不存在: $CERT_SRC"; ((errors++)); }
     [ -f "$HARBOR_CERTS" ] || { log_error "Harbor 证书不存在: $HARBOR_CERTS"; ((errors++)); }
@@ -134,7 +134,7 @@ deploy_node() {
     setup_ssh_key "$node"
     ssh_open "${node_ip}"
 
-    local step_total=6
+    local step_total=7
 
     # ---------- 步骤 1：分发 e2b-infra 代码包 ----------
     log_step "1/${step_total}" "分发 e2b-infra 代码包到 $node ..."
@@ -180,10 +180,31 @@ deploy_node() {
         return 1
     fi
 
-    # ---------- 步骤 5：远程执行构建、重启服务 ----------
-    log_step "5/${step_total}" "远程执行部署命令..."
+    # ---------- 步骤 5：分发 orchestrator systemd 文件 ----------
+    if [ "${ORCHESTRATOR_TYPE:-k8s}" = "systemd" ]; then
+        log_step "5/${step_total}" "分发 orchestrator systemd 文件到 $node ..."
+        if [ ! -f "${DEPLOY_DIR}/bin/orchestrator-run.sh" ] || [ ! -f "${DEPLOY_DIR}/e2b-orchestrator.service" ]; then
+            log_error "Master 侧缺少 orchestrator systemd 文件，请先执行 build.sh --install"
+            ssh_close "${node_ip}"
+            return 1
+        fi
+        ssh_run "${node_ip}" "mkdir -p ${DEPLOY_DIR}/bin" 2>/dev/null || true
+        if scp_to "${node_ip}" "${DEPLOY_DIR}/bin/orchestrator-run.sh" "root@${node_ip}:${DEPLOY_DIR}/bin/orchestrator-run.sh" \
+            && scp_to "${node_ip}" "${DEPLOY_DIR}/e2b-orchestrator.service" "root@${node_ip}:${DEPLOY_DIR}/e2b-orchestrator.service"; then
+            log_info "orchestrator systemd 文件分发完成"
+        else
+            log_error "orchestrator systemd 文件分发失败"
+            ssh_close "${node_ip}"
+            return 1
+        fi
+    else
+        log_info "ORCHESTRATOR_TYPE=${ORCHESTRATOR_TYPE:-k8s}，跳过 orchestrator systemd 文件分发"
+    fi
+
+    # ---------- 步骤 6：远程执行构建、重启服务 ----------
+    log_step "6/${step_total}" "远程执行部署命令..."
     # 通过远程脚本 remote-worker-setup.sh 执行，本机配置以环境变量注入
-    if ssh_run "${node_ip}" "HTTP_PROXY='${HTTP_PROXY}' SERVER_IP='${node_ip}' DEPLOY_DIR='${DEPLOY_DIR}' REMOTE_INFRA_DIR='${REMOTE_INFRA_DIR}' CRI_MULTIPLEX_BIN='${CRI_MULTIPLEX_BIN}' CRI_MULTIPLEX_ORCHESTRATOR='${CRI_MULTIPLEX_ORCHESTRATOR}' KUBELET_FLAGS_FILE='${KUBELET_FLAGS_FILE}' REGISTRY='${REGISTRY}' IMAGE='${IMAGE}' bash -s" < "${REMOTE_SETUP_SCRIPT}"; then
+    if ssh_run "${node_ip}" "HTTP_PROXY='${HTTP_PROXY}' SERVER_IP='${node_ip}' DEPLOY_DIR='${DEPLOY_DIR}' REMOTE_INFRA_DIR='${REMOTE_INFRA_DIR}' CRI_MULTIPLEX_BIN='${CRI_MULTIPLEX_BIN}' CRI_MULTIPLEX_ORCHESTRATOR='${CRI_MULTIPLEX_ORCHESTRATOR}' KUBELET_FLAGS_FILE='${KUBELET_FLAGS_FILE}' REGISTRY='${REGISTRY}' IMAGE='${IMAGE}' ORCHESTRATOR_TYPE='${ORCHESTRATOR_TYPE:-k8s}' bash -s" < "${REMOTE_SETUP_SCRIPT}"; then
         log_info "远程命令执行成功"
     else
         log_error "远程命令执行失败"
@@ -191,10 +212,15 @@ deploy_node() {
         return 1
     fi
 
-    # ---------- 步骤 6：设置节点标签 ----------
-    log_step "6/${step_total}" "设置节点标签..."
-    kubectl label node "$node" node-role.kubernetes.io/sandbox=true --overwrite
-    kubectl label node "$node" node-role.kubernetes.io/${BUILD_NODE_POOL}= --overwrite
+    # ---------- 步骤 7：设置节点标签 ----------
+    log_step "7/${step_total}" "设置节点标签..."
+    # sandbox 标签仅 k8s/nomad 模式被 API 节点发现（k8sDiscovery）消费；
+    # systemd 模式节点池改走 E2B_STATIC_ALLOCATIONS 静态清单，跳过打标
+    if [ "${ORCHESTRATOR_TYPE:-k8s}" != "systemd" ]; then
+        kubectl label node "$node" node-role.kubernetes.io/sandbox=true --overwrite
+        kubectl label node "$node" node-role.kubernetes.io/${BUILD_NODE_POOL}= --overwrite
+    fi
+
     log_info "标签设置完成"
 
     ssh_close "${node_ip}"
@@ -207,15 +233,18 @@ deploy_parallel() {
     local pids=()
     local tmpdir
     tmpdir=$(mktemp -d)
-    local i=0
 
     for node in "${nodes[@]}"; do
         (
-            deploy_node "$node" > "${tmpdir}/${node}.log" 2>&1
-            echo "0" > "${tmpdir}/${node}.status"
+            # 显式捕获返回码：deploy_parallel 经 "|| true" 调用时函数体内 set -e 失效，
+            # 不能依赖失败中断子 shell 来兜底
+            if deploy_node "$node" > "${tmpdir}/${node}.log" 2>&1; then
+                echo "0" > "${tmpdir}/${node}.status"
+            else
+                echo "1" > "${tmpdir}/${node}.status"
+            fi
         ) &
         pids+=($!)
-        ((i++))
     done
 
     for pid in "${pids[@]}"; do
@@ -260,8 +289,9 @@ show_usage() {
   2. 复制 containerd 私有仓库证书
   3. 复制 Harbor SSL 证书
   4. 复制 E2B API Token
-  5. 远程执行构建、安装、重启服务
-  6. 设置 Kubernetes 节点标签 (sandbox, api)
+  5. 分发 orchestrator systemd 文件 (ORCHESTRATOR_TYPE=systemd 时)
+  6. 远程执行构建、安装、重启服务
+  7. 设置 Kubernetes 节点标签（sandbox + BUILD_NODE_POOL 池标签；ORCHESTRATOR_TYPE=systemd 时跳过）
 EOF
 }
 

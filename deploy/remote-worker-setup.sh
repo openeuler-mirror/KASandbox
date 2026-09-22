@@ -3,6 +3,7 @@
 # 所需配置通过环境变量注入：
 #   HTTP_PROXY SERVER_IP DEPLOY_DIR REMOTE_INFRA_DIR
 #   CRI_MULTIPLEX_BIN CRI_MULTIPLEX_ORCHESTRATOR KUBELET_FLAGS_FILE REGISTRY IMAGE
+#   ORCHESTRATOR_TYPE（可选，默认 k8s 容器化；置 systemd 时由节点 e2b-orchestrator.service 承载）
 set -euo pipefail
 : "${SERVER_IP:?SERVER_IP 未设置}"
 : "${DEPLOY_DIR:?DEPLOY_DIR 未设置}"
@@ -51,8 +52,12 @@ else
     echo "  WARN: 未找到 cri-multiplex 可执行文件: ${CRI_MULTIPLEX_BIN}，跳过部署"
 fi
 
-echo "  测试镜像拉取 ${REGISTRY}/${IMAGE} ..."
-crictl pull ${REGISTRY}/${IMAGE}
-echo "  镜像拉取成功"
+if [ "${ORCHESTRATOR_TYPE:-k8s}" != "systemd" ]; then
+    echo "  测试镜像拉取 ${REGISTRY}/${IMAGE} ..."
+    crictl pull ${REGISTRY}/${IMAGE}
+    echo "  镜像拉取成功"
+else
+    echo "  ORCHESTRATOR_TYPE=systemd，跳过镜像拉取测试"
+fi
 
 exit 0

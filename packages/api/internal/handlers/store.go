@@ -112,6 +112,9 @@ func NewAPIStore(ctx context.Context, tel *telemetry.Client, config cfg.Config) 
 
 	var kubeClient *kubernetes.Clientset
 
+	// Only k8s mode needs an in-cluster client for node-pool discovery
+	// (NewK8sDiscovery); systemd mode uses static allocations + gRPC health
+	// probing (NewStaticNodeDiscovery) and has no K8s API dependency.
 	if env.GetEnv("ORCHESTRATOR_TYPE", "nomad") == "k8s" {
 		cfg, err := rest.InClusterConfig()
 		if err != nil {

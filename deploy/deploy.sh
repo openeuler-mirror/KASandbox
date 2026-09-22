@@ -25,8 +25,8 @@ CONTAINER_RUNTIME=""
 DOCKER_CMD=""
 
 # ===================== 输出函数 =====================
-info()  { echo "==> $*"; }
-warn()  { echo "==> WARN: $*"; }
+# info/success/error/warn 来自公共库（与 deploy/build.sh 共用）
+source "$SCRIPT_DIR/common.sh"
 step()  { echo "------> $*"; }
 step2() { echo "======  $*  ======"; }
 
@@ -110,6 +110,36 @@ load_env() {
     set +a
     REGISTRY_URL="$SERVER_IP:$HARBOR_HTTPS_PORT/$REGISTRY_PROJECT"
     export REGISTRY_URL
+    # orchestrator 启动方式：默认容器化（nomad 模式=nomad job / k8s 模式=DaemonSet）
+    # 显式置 systemd 时由节点 e2b-orchestrator.service 承载
+    if [ -z "${ORCHESTRATOR_TYPE:-}" ]; then
+        if [ "$DEPLOY_TYPE" = "k8s" ]; then
+            ORCHESTRATOR_TYPE="k8s"
+        else
+            ORCHESTRATOR_TYPE="nomad"
+        fi
+    fi
+    export ORCHESTRATOR_TYPE
+    # launcher 值域校验：非法值会让 API 发现实现落入 nomad 兜底（client=nil），
+    # 运行时 GetNodes 必 panic——提前在部署期报错
+    case "$ORCHESTRATOR_TYPE" in
+        systemd|k8s|nomad) ;;
+        *) error "未知 ORCHESTRATOR_TYPE：${ORCHESTRATOR_TYPE}（支持 systemd/k8s/nomad）" ;;
+    esac
+    # 组合校验：k8s 部署下 nomad 发现会让 API 落入 nil Nomad 客户端且 template-manager 不渲染；
+    # nomad 部署下 k8s 发现无 in-cluster 环境（systemd 则由 api job 注入 E2B_STATIC_ALLOCATIONS，合法）
+    case "$DEPLOY_TYPE:$ORCHESTRATOR_TYPE" in
+        k8s:systemd|k8s:k8s|nomad:nomad|nomad:systemd) ;;
+        *) error "DEPLOY_TYPE=${DEPLOY_TYPE} 与 ORCHESTRATOR_TYPE=${ORCHESTRATOR_TYPE} 组合无效（k8s 部署支持 systemd/k8s，nomad 部署支持 nomad/systemd）" ;;
+    esac
+    # systemd 模式静态清单：k8s 注入 helm 静态 Endpoints，nomad 注入 api job E2B_STATIC_ALLOCATIONS；
+    # 空清单部署会静默成功但 API 无节点可调度——提前告警
+    if [ "$ORCHESTRATOR_TYPE" = "systemd" ]; then
+        export ORCHESTRATOR_STATIC_NODES=${ORCHESTRATOR_STATIC_NODES:-}
+        if [ -z "$ORCHESTRATOR_STATIC_NODES" ]; then
+            warn "ORCHESTRATOR_STATIC_NODES 未配置：API 静态发现按空清单运行，请在 .env 配置后重跑 deploy"
+        fi
+    fi
 }
 
 # ===================== 容器运行时 =====================
@@ -168,6 +198,11 @@ build_and_push_dockerfiles() {
         name="${dockerfile%.Dockerfile}"
         # 如果指定了镜像过滤，只构建匹配的镜像
         if [ -n "$filter" ] && [[ ",${filter}," != *,${name},* ]]; then
+            continue
+        fi
+        # K8S 模式下 orchestrator 由节点 systemd 服务承载，不再需要容器镜像
+        if [ "$DEPLOY_TYPE" = "k8s" ] && [ "${ORCHESTRATOR_TYPE:-k8s}" = "systemd" ] && [ "$name" = "orchestrator" ]; then
+            step "orchestrator 由 systemd 承载，跳过镜像构建"
             continue
         fi
         tag="${REGISTRY_URL}/${name,,}"
@@ -410,7 +445,7 @@ $CLICKHOUSE_SERVER_COUNT $CLICKHOUSE_BACKUPS_BUCKET_NAME $CLICKHOUSE_USERNAME $C
 $LOKI_BUCKET_NAME $LOGS_COLLECTOR_PUBLIC_IP $TEMPLATE_MANAGER_HOST $CLICKHOUSE_PASSWORD $OTEL_TRACING_PRINT $LOGS_COLLECTOR_ADDRESS $OTEL_COLLECTOR_GRPC_ENDPOINT $REDIS_CLUSTER_URL $OTEL_COLLECTOR_GRPC_PORT $REDIS_VERSION
 $API_PORT $EDGE_API_PORT $EDGE_PROXY_PORT $ORCHESTRATOR_PORT $ORCHESTRATOR_PROXY_PORT $ENVD_TIMEOUT $TEMPLATE_BUCKET_NAME $ALLOW_SANDBOX_INTERNET $SHARED_CHUNK_CACHE_PATH $GRAFANA_OTLP_URL $CLICKHOUSE_HOST $REGISTRY_URL
 $TEMPLATE_MANAGER_PORT $DOCKER_REVERSE_PROXY_PORT $LOKI_SERVICE_PORT $OTEL_COLLECTOR_PROXY_MAX_RESOURCES_MEMORY_MB $OTEL_COLLECTOR_PROXY_RESOURCES_MEMORY_MB $OTEL_COLLECTOR_RESOURCES_CPU_COUNT $GRAFANA_USERNAME $GRAFANA_OTEL_COLLECTOR_TOKEN
-$LOGS_PROXY_PORT $LOGS_HEALTH_PROXY_PORT $STORAGE_PROVIDER $ARTIFACTS_REGISTRY_PROVIDER $API_NODE_POOL $BUILD_NODE_POOL $LOGS_COLLECTOR_VERSION $LOKI_VERSION $OTEL_COLLECTOR_VERSION $CLICKHOUSE_SERVER_PORT $CLICKHOUSE_METRICS_PORT $API_GRPC_PORT $EDGE_HEALTH_PORT $API_GRPC_ADDRESS $DOMAIN_NAME $SANDBOX_STORAGE_BACKEND
+$LOGS_PROXY_PORT $LOGS_HEALTH_PROXY_PORT $STORAGE_PROVIDER $ARTIFACTS_REGISTRY_PROVIDER $API_NODE_POOL $BUILD_NODE_POOL $LOGS_COLLECTOR_VERSION $LOKI_VERSION $OTEL_COLLECTOR_VERSION $CLICKHOUSE_SERVER_PORT $CLICKHOUSE_METRICS_PORT $API_GRPC_PORT $EDGE_HEALTH_PORT $API_GRPC_ADDRESS $DOMAIN_NAME $SANDBOX_STORAGE_BACKEND $ORCHESTRATOR_TYPE $ORCHESTRATOR_STATIC_NODES
 $HARBOR_CERTS_DIR $NODE_ID $GLOG_logtostderr $MOONCAKE_MASTER_ADDR $MOONCAKE_METADATA_SERVER $MOONCAKE_LOCAL_BUFFER_SIZE $MOONCAKE_GLOBAL_SEGMENT_SIZE $MOONCAKE_PROTOCOL $MC_URMA_TRANS_MODE $MOONCAKE_DEVICE_NAME $MC_LOG_ENABLE $MC_LOG_DIR $MC_LOG_LEVEL $MC_STORE_LOCAL_HOT_CACHE_USE_SHM $MC_STORE_LOCAL_HOT_BLOCK_SIZE $MC_STORE_LOCAL_HOT_ADMISSION_THRESHOLD $MC_SLICE_SIZE $MC_WORKERS_PER_CTX $MC_MAX_WR $MC_URMA_BONDING_MULTIPATH_ENABLE $MC_UB_NUMA_AFFINITY_ENABLE
 $MOONCAKE_UPLOAD_PUBLIC_ENDPOINT $MOONCAKE_UPLOAD_SIGNING_SECRET $MOONCAKE_UPLOAD_MAX_BYTES
 $E2B_FC_NETNS_EXEC_HELPER $E2B_USE_FC_NETNS_EXEC_HELPER
@@ -426,7 +461,11 @@ $TEMPLATE_MANAGER_RESOURCES_CPU_COUNT $TEMPLATE_MANAGER_RESOURCES_MEMORY_MB $TEM
 }
 
 submit_nomad_jobs() {
-    local jobs=(redis template-manager edge api)
+    local jobs=(redis edge api)
+    # systemd 模式：template-manager 由节点 e2b-orchestrator.service 承载，不提交 nomad job
+    if [ "${ORCHESTRATOR_TYPE:-nomad}" != "systemd" ]; then
+        jobs=(template-manager "${jobs[@]}")
+    fi
     info "submitting nomad job..."
     local j
     for j in "${jobs[@]}"; do

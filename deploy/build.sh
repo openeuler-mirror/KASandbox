@@ -16,6 +16,8 @@ HARBOR_PASSWORD="${HARBOR_PASSWORD:-}"
 source ".env"
 # Harbor 协议: http, https, both
 HARBOR_PROTOCOL="${HARBOR_PROTOCOL:-both}"
+# orchestrator 启动方式：默认容器化（nomad job / DaemonSet）；显式置 systemd 时由节点 e2b-orchestrator.service 承载
+ORCHESTRATOR_TYPE="${ORCHESTRATOR_TYPE:-}"
 # Nomad/Consul 健康检查端口
 CONSUL_HTTP_PORT=8500
 HOST_IP="$SERVER_IPS"
@@ -86,20 +88,8 @@ set_container_runtime() {
     fi
 }
 
-# ===================== 颜色输出函数（增强可读性）=====================
-info() {
-    echo -e "\033[34mℹ️ $1\033[0m"
-}
-success() {
-    echo -e "\033[32m✅ $1\033[0m"
-}
-error() {
-    echo -e "\033[31m❌ $1\033[0m"
-    exit 1
-}
-warn() {
-    echo -e "\033[33m⚠️ $1\033[0m"
-}
+# ===================== 颜色输出函数（公共库，与 deploy.sh 共用）=====================
+source "$WORK_DIR/common.sh"
 
 # ===================== 安装函数 =====================
 install_base_packages() {
@@ -116,17 +106,20 @@ install_base_packages() {
 # --- 函数：拉取并重命名 Docker 镜像 (带存在性检查) ---
 pull_docker_images() {
 
-    local base_image_tar="$DEP_DIR/openEuler-docker.aarch64.tar.xz"
-    if [ ! -s "$base_image_tar" ]; then
-        wget https://repo.openeuler.org/openEuler-24.03-LTS-SP3/docker_img/aarch64/openEuler-docker.aarch64.tar.xz -O "$base_image_tar" \
-            || error "openEuler 基础镜像下载失败"
-    fi
+    # openEuler 基础镜像仅 ARM 架构使用，x86_64 跳过下载与解压
+    if [ "$ARCH" = "arm64" ]; then
+        local base_image_tar="$DEP_DIR/openEuler-docker.aarch64.tar.xz"
+        if [ ! -s "$base_image_tar" ]; then
+            wget https://repo.openeuler.org/openEuler-24.03-LTS-SP3/docker_img/aarch64/openEuler-docker.aarch64.tar.xz -O "$base_image_tar" \
+                || error "openEuler 基础镜像下载失败"
+        fi
 
-    # 解压 tar.xz 得到 docker load 可识别的 tar 镜像并加载（-k 保留源文件）
-    local base_image_inner_tar="$DEP_DIR/openEuler-docker.aarch64.tar"
-    if [ -s "$base_image_tar" ] && [ ! -f "$base_image_inner_tar" ]; then
-        echo "正在解压: $base_image_tar"
-        xz -dk "$base_image_tar" || error "openEuler 基础镜像解压失败"
+        # 解压 tar.xz 得到 docker load 可识别的 tar 镜像并加载（-k 保留源文件）
+        local base_image_inner_tar="$DEP_DIR/openEuler-docker.aarch64.tar"
+        if [ -s "$base_image_tar" ] && [ ! -f "$base_image_inner_tar" ]; then
+            echo "正在解压: $base_image_tar"
+            xz -dk "$base_image_tar" || error "openEuler 基础镜像解压失败"
+        fi
     fi
 
     # 加载本地镜像包（.tar / .tar.gz）
@@ -322,6 +315,13 @@ install_minio() {
 
 install_harbor() {
     info "开始安装 Harbor..."
+    # 已解压则跳过（重复执行幂等）；以官方包标志 install.sh 为准，缺失说明上次解压不完整，重新解压
+    if [ -f "$WORK_DIR/harbor/install.sh" ]; then
+        info "Harbor 已解压（$WORK_DIR/harbor），跳过解压步骤"
+        cd "$WORK_DIR/harbor" || error "进入 Harbor 目录失败"
+        return 0
+    fi
+
     # 检查安装包（按架构选择）
     local harbor_tar
     case "$ARCH" in
@@ -412,28 +412,67 @@ install_e2b() {
     pip install e2b_code_interpreter==2.4.1
     # 单机替换相关文件
     local e2b_dir="/opt/e2b-infra"
-    local files=(
-        "install-nomad.sh"
-        "install-consul.sh"
-        "uninstall-nomad.sh"
-        "start-client.sh"
-        "start-server.sh"
-        "init-client.sh"
-        "run-nomad.sh"
-        "run-consul.sh"
-        "deploy.sh"
-        "deploy-e2b-plugin.sh"
-    )
-    local f
-    for f in "${files[@]}"; do
-        cp -fv "$DEP_DIR/$f" "$e2b_dir/$f"
-    done
-    
+    # 部署脚本已平铺于 deploy/ 并随分发流程同步至 $e2b_dir，install 不再重复拷贝
     # helm 目录随 RPM 包安装到 /opt/e2b-infra/helm，无需在此拷贝
     python3 "$e2b_dir/patch_e2b.py"
     cp -fv "$e2b_dir/bin/orchestrator" /usr/bin/orchestrator
     cp -fv "$e2b_dir/bin/orchestrator" /usr/bin/template-manager
     chmod +x /usr/bin/orchestrator /usr/bin/template-manager
+}
+
+# ===================== orchestrator systemd 服务 =====================
+# 安装 unit 与 wrapper（双模式同一份；K8S 模式 unit 的 After= 去掉 nomad.service）
+# - k8s  ：安装并 enable（集群节点就绪后由 start_orchestrator_systemd 启动）
+# - nomad：仅落盘 + daemon-reload，不 enable（避免与未迁移的 nomad job 双跑，迁移步骤见
+#          docs/zh/orchestrator-systemd-deploy.md §5）
+install_orchestrator_systemd() {
+    if [ "$ORCHESTRATOR_TYPE" != "systemd" ]; then
+        info "ORCHESTRATOR_TYPE=$ORCHESTRATOR_TYPE，跳过 orchestrator systemd 安装"
+        return 0
+    fi
+    info "安装 e2b-orchestrator systemd 服务..."
+    local src_unit="$E2B_DIR/e2b-orchestrator.service"
+    local src_wrapper="$E2B_DIR/orchestrator-run.sh"
+    # install_client 场景（K8S worker）：文件由 deploy-worker.sh 分发到 $E2B_DIR，或随 RPM 落盘
+    [ -f "$src_unit" ] || src_unit="$WORK_DIR/e2b-orchestrator.service"
+    [ -f "$src_wrapper" ] || src_wrapper="$WORK_DIR/orchestrator-run.sh"
+    [ -f "$src_unit" ] || error "缺少 unit 文件：$E2B_DIR/e2b-orchestrator.service"
+    [ -f "$src_wrapper" ] || error "缺少 wrapper 脚本：$E2B_DIR/orchestrator-run.sh"
+
+    mkdir -p "$E2B_DIR/bin"
+    cp -fv "$src_wrapper" "$E2B_DIR/bin/orchestrator-run.sh"
+    chmod +x "$E2B_DIR/bin/orchestrator-run.sh"
+
+    if [ "$DEPLOY_MODE" = "k8s" ]; then
+        sed '/^After=/s/ nomad\.service//' "$src_unit" > /etc/systemd/system/e2b-orchestrator.service
+    else
+        cp -fv "$src_unit" /etc/systemd/system/e2b-orchestrator.service
+    fi
+    systemctl daemon-reload
+    if [ "$DEPLOY_MODE" = "k8s" ]; then
+        systemctl enable e2b-orchestrator
+    else
+        info "nomad 模式：unit 已落盘但未 enable，完成迁移后执行 systemctl enable --now e2b-orchestrator"
+    fi
+    success "e2b-orchestrator systemd 服务安装完成"
+}
+
+# 启动（幂等）：K8S 集群节点/单机部署完成后调用
+start_orchestrator_systemd() {
+    if [ "$ORCHESTRATOR_TYPE" != "systemd" ]; then
+        return 0
+    fi
+    systemctl daemon-reload
+    systemctl enable --now e2b-orchestrator || error "启动 e2b-orchestrator 服务失败"
+}
+
+uninstall_orchestrator_systemd() {
+    if [ -f /etc/systemd/system/e2b-orchestrator.service ]; then
+        info "卸载 e2b-orchestrator systemd 服务..."
+        systemctl disable --now e2b-orchestrator 2>/dev/null || true
+        rm -fv /etc/systemd/system/e2b-orchestrator.service
+        systemctl daemon-reload
+    fi
 }
 
 # ===================== 卸载函数 =====================
@@ -566,6 +605,7 @@ install() {
     install_base_packages
     command -v setenforce >/dev/null 2>&1 && setenforce 0
     install_e2b
+    install_orchestrator_systemd
     if [ "$DEPLOY_MODE" = "nomad" ]; then
         install_docker
         install_consul
@@ -593,8 +633,11 @@ install_client() {
     python3 $E2B_DIR/patch_e2b.py
     # 配置harbor证书
     configure_harbor_cert_trust
-    cp -fv "$DEP_DIR/init-client.sh" "$E2B_DIR/init-client.sh"
+    cp -fv "$WORK_DIR/init-client.sh" "$E2B_DIR/init-client.sh"
     bash $E2B_DIR/init-client.sh || error "初始化客户端组件失败"
+    # orchestrator systemd 化：worker 节点安装后立即启用（新部署无 DaemonSet，无 5008 端口冲突）
+    install_orchestrator_systemd
+    start_orchestrator_systemd
     success "===== 所有客户端组件安装完成 ====="
 }
 
@@ -801,6 +844,7 @@ uninstall() {
     if [ "$DEPLOY_MODE" = "k8s" ]; then
         uninstall_cri_multiplex
     fi
+    uninstall_orchestrator_systemd
     uninstall_e2b
     uninstall_fc_directories
     uninstall_harbor
@@ -1242,11 +1286,19 @@ start() {
         fi
 
         echo "当前节点名称：$node_name"
-        kubectl label node "$node_name" node-role.kubernetes.io/sandbox=true --overwrite
+        # sandbox 标签仅 k8s/nomad 模式被 API 节点发现（k8sDiscovery）消费；
+        # systemd 模式节点池改走 E2B_STATIC_ALLOCATIONS 静态清单，跳过打标
+        if [ "$ORCHESTRATOR_TYPE" != "systemd" ]; then
+            kubectl label node "$node_name" node-role.kubernetes.io/sandbox=true --overwrite
+            kubectl label node "$node_name" node-role.kubernetes.io/$BUILD_NODE_POOL= --overwrite
+        fi
         kubectl label node "$node_name" node-role.kubernetes.io/$API_NODE_POOL= --overwrite
-        kubectl label node "$node_name" node-role.kubernetes.io/$BUILD_NODE_POOL= --overwrite
+        
         kubectl label node "$node_name" node-role.kubernetes.io/postgres= --overwrite
         bash deploy.sh --type k8s || error "K8S 模式部署失败"
+        # orchestrator systemd 化：Master 节点部署完成后启动（systemd 模式下 DaemonSet 未渲染，无端口冲突）
+        install_orchestrator_systemd
+        start_orchestrator_systemd
         success "K8S 模式启动完成！"
 
     else
@@ -1272,6 +1324,9 @@ start() {
         rm -fv "$E2B_DIR/bin/orchestrator.Dockerfile"
         info "执行部署脚本..."
         bash "$E2B_DIR/deploy.sh" || error "执行部署脚本失败"
+        # systemd 模式：template-manager nomad job 已被 deploy.sh 跳过，Master 安装并启动 systemd orchestrator（无 nomad job 双跑风险）
+        install_orchestrator_systemd
+        start_orchestrator_systemd
         iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 3002
         iptables -t nat -A OUTPUT -p tcp -d 127.0.0.1 --dport 80 -j REDIRECT --to-port 3002
         success "e2b-infra 服务启动完成！所有组件健康检查通过"
@@ -1285,7 +1340,10 @@ deploy() {
 
 # Nomad 任务管理
 # 支持的任务名: redis, template-manager, edge, api, all
-NOMAD_JOBS=("redis" "template-manager" "edge" "api")
+# systemd 模式 template-manager 由 e2b-orchestrator.service 承载：systemd 时 all 不包含其任务（保持原顺序: redis, template-manager, edge, api）
+NOMAD_JOBS=("redis")
+[ "${ORCHESTRATOR_TYPE:-nomad}" != "systemd" ] && NOMAD_JOBS+=("template-manager")
+NOMAD_JOBS+=("edge" "api")
 
 nomad_get_token() {
     source /opt/e2b-infra/.env 2>/dev/null
@@ -1392,7 +1450,7 @@ deploy_plugin() {
     local namespace="$4"
     
     info "部署 E2B 插件..."
-    local plugin_script="$DEP_DIR/deploy-e2b-plugin.sh"
+    local plugin_script="$WORK_DIR/deploy-e2b-plugin.sh"
     if [ ! -f "$plugin_script" ]; then
         error "插件部署脚本不存在：$plugin_script"
     fi
@@ -1462,6 +1520,8 @@ stop() {
 
     else
         helm uninstall e2b-api -n e2b 2>/dev/null || true
+        # 停止 orchestrator systemd 服务（SIGTERM 后等待沙箱排空，TimeoutStopSec=600）
+        systemctl stop e2b-orchestrator 2>/dev/null || true
         # 清理 e2b-webhook 手动创建的 Secret（helm uninstall 不管理这些）
         info "清理 e2b-webhook Secret 资源..."
         kubectl -n e2b delete secret e2b-webhook-tls --ignore-not-found=true 2>/dev/null || true
