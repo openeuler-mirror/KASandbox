@@ -18,6 +18,25 @@ source ".env"
 HARBOR_PROTOCOL="${HARBOR_PROTOCOL:-both}"
 # orchestrator 启动方式：默认容器化（nomad job / DaemonSet）；显式置 systemd 时由节点 e2b-orchestrator.service 承载
 ORCHESTRATOR_TYPE="${ORCHESTRATOR_TYPE:-}"
+# PostgreSQL 组件开关：默认安装内置 postgres；显式置 false 时跳过（使用外部实例，POSTGRES_CONNECTION_STRING 指向外部地址）
+ENABLE_POSTGRES="${ENABLE_POSTGRES:-true}"
+# Redis 组件开关：默认安装内置 redis；显式置 false 时跳过（组件降级运行，edge 域名路由目录不可用）
+ENABLE_REDIS="${ENABLE_REDIS:-true}"
+export ENABLE_REDIS
+# ENABLE_REDIS=false 时组件注入地址置空（REDIS_URL 为空触发代码内 ErrRedisDisabled 降级），存储后端强制 memory
+if [ "$ENABLE_REDIS" = "true" ]; then
+    REDIS_ENDPOINT="${REDIS_ENDPOINT:-${REDIS_URL:-redis.service.consul}:${REDIS_PORT:-6379}}"
+else
+    REDIS_ENDPOINT=""
+    if [ "${SANDBOX_STORAGE_BACKEND:-redis}" = "redis" ]; then
+        echo "ENABLE_REDIS=false，SANDBOX_STORAGE_BACKEND 强制降级为 memory（原值 redis 需要 Redis）"
+        SANDBOX_STORAGE_BACKEND="memory"
+    fi
+fi
+export REDIS_ENDPOINT SANDBOX_STORAGE_BACKEND
+# edge（client-proxy）组件开关：默认安装；显式置 false 时跳过（沙箱域名路由 *.e2b.app 不可用，API 直连功能不受影响）
+ENABLE_EDGE="${ENABLE_EDGE:-true}"
+export ENABLE_EDGE
 # Nomad/Consul 健康检查端口
 CONSUL_HTTP_PORT=8500
 HOST_IP="$SERVER_IPS"
@@ -136,10 +155,20 @@ pull_docker_images() {
     [ "$ARCH" = "arm64" ] && arch_suffix="-linuxarm64"
 
     local images=(
-        "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/redis:7.4.4-alpine${arch_suffix}|redis:7.4.4-alpine"
         "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/debian:bookworm-slim${arch_suffix}|debian:bookworm-slim"
-        "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:latest${arch_suffix}|postgres:latest"
     )
+    # Redis 可选：ENABLE_REDIS=false 时不拉取内置 redis 镜像（组件降级运行）
+    if [ "$ENABLE_REDIS" = "true" ]; then
+        images+=(
+            "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/redis:7.4.4-alpine${arch_suffix}|redis:7.4.4-alpine"
+        )
+    fi
+    # PostgreSQL 可选：ENABLE_POSTGRES=false 时不拉取内置 postgres 镜像（使用外部实例）
+    if [ "$ENABLE_POSTGRES" = "true" ]; then
+        images+=(
+            "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/postgres:latest${arch_suffix}|postgres:latest"
+        )
+    fi
     # K8S 模式额外拉取 busybox 和 ubuntu（两种架构均需要）
     if [ "$DEPLOY_MODE" = "k8s" ]; then
         images+=(
@@ -613,7 +642,8 @@ install() {
     fi
     pull_docker_images
     # PostgreSQL：nomad 模式通过 Docker 容器启动；k8s 模式由 helm postgres.yaml 部署为 Pod
-    if [ "$DEPLOY_MODE" = "nomad" ]; then
+    # ENABLE_POSTGRES=false 时跳过（使用外部 PostgreSQL 实例）
+    if [ "$DEPLOY_MODE" = "nomad" ] && [ "$ENABLE_POSTGRES" = "true" ]; then
         install_postgres
     fi
     # install_minio
@@ -1293,8 +1323,10 @@ start() {
             kubectl label node "$node_name" node-role.kubernetes.io/$BUILD_NODE_POOL= --overwrite
         fi
         kubectl label node "$node_name" node-role.kubernetes.io/$API_NODE_POOL= --overwrite
-        
-        kubectl label node "$node_name" node-role.kubernetes.io/postgres= --overwrite
+        # ENABLE_POSTGRES=false 时无需 postgres 节点池标签（helm postgres.yaml 不渲染）
+        if [ "$ENABLE_POSTGRES" = "true" ]; then
+            kubectl label node "$node_name" node-role.kubernetes.io/postgres= --overwrite
+        fi
         bash deploy.sh --type k8s || error "K8S 模式部署失败"
         # orchestrator systemd 化：Master 节点部署完成后启动（systemd 模式下 DaemonSet 未渲染，无端口冲突）
         install_orchestrator_systemd
@@ -1302,7 +1334,10 @@ start() {
         success "K8S 模式启动完成！"
 
     else
-        start_postgres
+        # ENABLE_POSTGRES=false 时使用外部 PostgreSQL 实例，跳过内置容器启动
+        if [ "$ENABLE_POSTGRES" = "true" ]; then
+            start_postgres
+        fi
         # 检查 nomad 和 consul 是否已安装（systemd unit 文件存在）
         if [[ -f /etc/systemd/system/nomad.service && -f /etc/systemd/system/consul.service ]]; then
             info "Nomad 和 Consul 已安装，通过 systemctl 启动..."
@@ -1340,10 +1375,12 @@ deploy() {
 
 # Nomad 任务管理
 # 支持的任务名: redis, template-manager, edge, api, all
-# systemd 模式 template-manager 由 e2b-orchestrator.service 承载：systemd 时 all 不包含其任务（保持原顺序: redis, template-manager, edge, api）
-NOMAD_JOBS=("redis")
+# Redis/edge 可选、systemd 模式 template-manager 由 systemd 承载：对应组件未部署时 all 不包含其任务（保持原顺序: redis, template-manager, edge, api）
+NOMAD_JOBS=()
+[ "$ENABLE_REDIS" = "true" ] && NOMAD_JOBS+=("redis")
 [ "${ORCHESTRATOR_TYPE:-nomad}" != "systemd" ] && NOMAD_JOBS+=("template-manager")
-NOMAD_JOBS+=("edge" "api")
+[ "$ENABLE_EDGE" = "true" ] && NOMAD_JOBS+=("edge")
+NOMAD_JOBS+=("api")
 
 nomad_get_token() {
     source /opt/e2b-infra/.env 2>/dev/null

@@ -126,13 +126,20 @@ func NewAPIStore(ctx context.Context, tel *telemetry.Client, config cfg.Config) 
 		}
 	}
 
+	// Redis 为可选依赖：未配置（ErrRedisDisabled）时降级为内存实现继续运行，
+	// 其余错误（如配置了但连不通）仍然致命，与 client-proxy/orchestrator 的语义对齐。
 	redisClient, err := factories.NewRedisClient(ctx, factories.RedisConfig{
 		RedisURL:         config.RedisURL,
 		RedisClusterURL:  config.RedisClusterURL,
 		RedisTLSCABase64: config.RedisTLSCABase64,
 	})
 	if err != nil {
-		logger.L().Fatal(ctx, "Initializing Redis client", zap.Error(err))
+		if !errors.Is(err, factories.ErrRedisDisabled) {
+			logger.L().Fatal(ctx, "Initializing Redis client", zap.Error(err))
+		}
+
+		logger.L().Warn(ctx, "Redis 未配置，路由目录/sandbox 影子存储/模板缓存降级为内存或直连 DB（仅适用于单实例部署）")
+		redisClient = nil
 	}
 
 	queryLogsProvider, err := loki.NewLokiQueryProvider(config.LokiURL, config.LokiUser, config.LokiPassword)

@@ -95,7 +95,7 @@ job "api" {
         LOGS_COLLECTOR_ADDRESS         = "${LOGS_COLLECTOR_ADDRESS}"
         OTEL_COLLECTOR_GRPC_ENDPOINT   = "${OTEL_COLLECTOR_GRPC_ENDPOINT}"
 
-        REDIS_URL                      = "${REDIS_URL}:${REDIS_PORT}"
+        REDIS_URL                      = "${REDIS_ENDPOINT}"
         REDIS_CLUSTER_URL              = ""
         REDIS_TLS_CA_BASE64            = ""
 

@@ -148,16 +148,25 @@ func New(
 
 	var reservationStorage sandbox.ReservationStorage
 	var sandboxStorage sandbox.Storage
-	redisStorage := redisbackend.NewStorage(redisClient)
 
 	switch config.SandboxStorageBackend {
 	case cfg.SandboxStorageBackendMemory:
 		reservationStorage = reservations.NewReservationStorage()
-		sandboxStorage = populate_redis.NewStorage(memory.NewStorage(), redisStorage)
-		logger.L().Info(ctx, "Using populate_redis sandbox storage backend")
+		memoryStorage := memory.NewStorage()
+		if redisClient != nil {
+			sandboxStorage = populate_redis.NewStorage(memoryStorage, redisbackend.NewStorage(redisClient))
+			logger.L().Info(ctx, "Using populate_redis sandbox storage backend")
+		} else {
+			// 无 Redis 时跳过影子写，纯内存存储（仅适用于单实例部署）
+			sandboxStorage = memoryStorage
+			logger.L().Info(ctx, "Using memory sandbox storage backend (redis disabled)")
+		}
 	case cfg.SandboxStorageBackendRedis:
+		if redisClient == nil {
+			return nil, fmt.Errorf("sandbox storage backend %q requires redis (set REDIS_URL or REDIS_CLUSTER_URL)", config.SandboxStorageBackend)
+		}
 		reservationStorage = redisreservations.NewReservationStorage(redisClient)
-		sandboxStorage = redisStorage
+		sandboxStorage = redisbackend.NewStorage(redisClient)
 		logger.L().Info(ctx, "Using redis sandbox storage backend")
 	default:
 		return nil, fmt.Errorf("invalid sandbox storage backend: %s", config.SandboxStorageBackend)

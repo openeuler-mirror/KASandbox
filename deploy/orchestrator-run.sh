@@ -58,8 +58,15 @@ export HOST_IP="$LOCAL_IP"
 export LOCAL_IP="$LOCAL_IP"
 
 # ---- 与 Nomad job / K8S DaemonSet 对齐的兼容变量映射（.env 显式配置优先）----
+# Redis 可选：ENABLE_REDIS=false 时清空注入地址（触发代码内 ErrRedisDisabled 降级），存储后端强制 memory
+if [ "${ENABLE_REDIS:-true}" != "true" ]; then
+    unset REDIS_URL REDIS_CLUSTER_URL REDIS_ENDPOINT
+    if [ "${SANDBOX_STORAGE_BACKEND:-redis}" = "redis" ]; then
+        SANDBOX_STORAGE_BACKEND="memory"
+    fi
+    export SANDBOX_STORAGE_BACKEND
 # K8S 模式 redis 走集群内 Service（.env 的 *.service.consul 为 nomad/consul 寻址，K8S 节点不可解析）
-if [ "${DEPLOY_MODE:-nomad}" = "k8s" ]; then
+elif [ "${DEPLOY_MODE:-nomad}" = "k8s" ]; then
     case "${REDIS_URL:-}" in
         ""|*.service.consul|*.service.consul:*)
             # 集群 DNS（*.svc.cluster.local）对宿主机不可见，且 redis Service 为 headless（无 ClusterIP），

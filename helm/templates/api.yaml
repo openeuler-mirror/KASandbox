@@ -29,6 +29,7 @@ spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       initContainers:
+      {{- if .Values.redisEnabled }}
       - name: wait-redis
         image: "{{ .Values.registry }}/{{ .Values.image.busybox }}"
         imagePullPolicy: IfNotPresent
@@ -40,6 +41,7 @@ spec:
             echo waiting for redis...
             sleep 1
           done
+      {{- end }}
       {{- if .Values.postgresEnabled }}
       # postgresEnabled=false 时不渲染内置 postgres（使用外部实例），无需等待其 Service
       - name: wait-postgres
@@ -88,10 +90,12 @@ spec:
           value: "{{ .Values.otelCollectorGrpcEndpoint }}"
         - name: ADMIN_TOKEN
           value: "{{ .Values.apiAdminToken }}"
+        {{- if .Values.redisEnabled }}
         - name: REDIS_URL
           value: "{{ .Values.redisUrl }}:{{ .Values.redisPort | int }}"
         - name: REDIS_CLUSTER_URL
           value: "{{ .Values.redisClusterUrl }}"
+        {{- end }}
         - name: DNS_PORT
           value: "{{ .Values.dnsPort }}"
         - name: SANDBOX_ACCESS_TOKEN_HASH_SEED
@@ -155,10 +159,12 @@ spec:
           value: "{{ .Values.otelCollectorGrpcEndpoint }}"
         - name: ADMIN_TOKEN
           value: "{{ .Values.apiAdminToken }}"
+        {{- if .Values.redisEnabled }}
         - name: REDIS_URL
           value: "{{ .Values.redisUrl }}:{{ .Values.redisPort | int }}"
         - name: REDIS_CLUSTER_URL
           value: "{{ .Values.redisClusterUrl }}"
+        {{- end }}
         - name: SANDBOX_ACCESS_TOKEN_HASH_SEED
           value: "{{ .Values.sandboxAccessTokenHashSeed }}"
         - name: TEMPLATE_BUCKET_NAME
