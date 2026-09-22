@@ -49,6 +49,7 @@ apiResourcesCpuCount: ${API_RESOURCES_CPU_COUNT}
 apiResourcesMemoryMb: ${API_RESOURCES_MEMORY_MB}
 apiLimitsCpuCount: ${API_LIMITS_CPU_COUNT}
 apiLimitsMemoryMb: ${API_LIMITS_MEMORY_MB}
+useHugePages: "${E2B_USE_HUGE_PAGES}"
 
 # --- Loki / Logs collector ---
 logsCollectorPublicIp: ${LOGS_COLLECTOR_PUBLIC_IP}
