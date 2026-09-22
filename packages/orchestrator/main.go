@@ -446,6 +446,41 @@ func run(config cfg.Config) (success bool) {
 	})
 	closers = append(closers, closer{"network pool", networkPool.Close})
 
+	// 运行时 CA 轮转（§7.5，仅 CA 自动生成 + per-sandbox 模式时启用，与
+	// ValidateEgressProxy 只在 per-sandbox 下走 ensureProxyCA 对齐）：先显式
+	// GC 一次旧代际（重启后进程内引用清零，在跑代理只在 spawn 时读一次 CA 入
+	// 内存、不读盘，安全），然后起 ROTATE 触发文件轮询 watcher（主）+ SIGHUP
+	// handler（兜底）。SIGHUP 必须在本进程内拦截（默认动作是 terminate），
+	// 且不并入上面的优雅关停 NotifyContext。
+	if config.NetworkConfig.ProxyCAAutoEnabled() &&
+		config.NetworkConfig.SandboxEgressProxyMode == network.EgressProxyModePerSandbox {
+		confdir := config.NetworkConfig.SandboxProxyConfDir
+		network.GCProxyCAGenerations(confdir)
+		network.StartProxyCARotationWatcher(sig, confdir)
+
+		sighupCh := make(chan os.Signal, 1)
+		signal.Notify(sighupCh, syscall.SIGHUP)
+		defer signal.Stop(sighupCh)
+		go func() {
+			for {
+				select {
+				case <-sig.Done():
+					return
+				case <-sighupCh:
+					logger.L().Info(ctx, "received SIGHUP, rotating egress proxy CA")
+					if err := network.RotateProxyCA(confdir); err != nil {
+						logger.L().Error(ctx, "egress proxy CA rotation failed", zap.Error(err))
+					} else if snap := network.CurrentProxyCA(); snap != nil {
+						logger.L().Info(ctx, "egress proxy CA rotated",
+							zap.String("gen", snap.Gen),
+							zap.String("fingerprint", snap.Fingerprint),
+						)
+					}
+				}
+			}
+		}()
+	}
+
 	// sandbox factory
 	sandboxFactory := sandbox.NewFactory(config.BuilderConfig, networkPool, devicePool, featureFlags, hostStatsDelivery, cgroupManager)
 	closers = append(closers, closer{"sandbox factory", sandboxFactory.Close})

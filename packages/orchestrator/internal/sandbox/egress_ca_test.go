@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -226,6 +228,43 @@ func TestInjectEgressProxyCAChangedFingerprintReinjects(t *testing.T) {
 	fake.mu.Unlock()
 	assert.Equal(t, testCAPEM, stored, "指纹不一致（CA 轮换）时必须重写并刷新信任库")
 	assert.Len(t, fake.proc.ranCommands(), 2)
+}
+
+// TestEgressProxyCACertPEM 覆盖 §7.5.4 代际绑定下注入 cert 的取数来源。
+func TestEgressProxyCACertPEM(t *testing.T) {
+	t.Parallel()
+
+	t.Run("caSnap 非 nil 时用快照字节、不读文件", func(t *testing.T) {
+		t.Parallel()
+
+		// confdir 指向不存在路径：若实现读文件必然报错。
+		netCfg := network.Config{SandboxProxyConfDir: filepath.Join(t.TempDir(), "nonexistent")}
+		snapPEM := []byte("snapshot-ca-bytes")
+
+		certPEM, err := egressProxyCACertPEM(netCfg, &network.ProxyCASnapshot{CertPEM: snapPEM})
+		require.NoError(t, err)
+		assert.Equal(t, snapPEM, certPEM, "快照在场时必须直接使用快照字节")
+	})
+
+	t.Run("caSnap 为 nil 时维持现状读 confdir cert 文件", func(t *testing.T) {
+		t.Parallel()
+
+		confdir := t.TempDir()
+		require.NoError(t, os.WriteFile(network.ProxyCACertPath(confdir), testCAPEM, 0o644))
+		netCfg := network.Config{SandboxProxyConfDir: confdir}
+
+		certPEM, err := egressProxyCACertPEM(netCfg, nil)
+		require.NoError(t, err)
+		assert.Equal(t, testCAPEM, certPEM)
+	})
+
+	t.Run("caSnap 为 nil 且文件缺失时报错", func(t *testing.T) {
+		t.Parallel()
+
+		netCfg := network.Config{SandboxProxyConfDir: t.TempDir()}
+		_, err := egressProxyCACertPEM(netCfg, nil)
+		require.Error(t, err)
+	})
 }
 
 func TestEgressProxyCANeedsInjection(t *testing.T) {

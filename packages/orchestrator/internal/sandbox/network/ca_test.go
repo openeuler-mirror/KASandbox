@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,11 +16,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// parseProxyCACert 从 confdir 的纯 cert 文件解析出 X509 证书。
+// parseProxyCACert 解析 confdir 当前代际的纯 cert 文件为 X509 证书
+// （current symlink 存在时跟随到 gen 目录，否则读顶层散文件）。
 func parseProxyCACert(t *testing.T, confdir string) *x509.Certificate {
 	t.Helper()
 
-	data, err := os.ReadFile(filepath.Join(confdir, proxyCACertFile))
+	data, err := os.ReadFile(filepath.Join(proxyCACurrentGenDir(t, confdir), proxyCACertFile))
 	require.NoError(t, err)
 	block, _ := pem.Decode(data)
 	require.NotNil(t, block, "cert file must be PEM")
@@ -30,14 +32,39 @@ func parseProxyCACert(t *testing.T, confdir string) *x509.Certificate {
 	return cert
 }
 
+// proxyCACurrentGenDir 返回 confdir 内当前 CA 材料所在目录：current symlink
+// 存在时解析其目标（gen 目录），否则为 confdir 本身（老布局散文件）。
+func proxyCACurrentGenDir(t *testing.T, confdir string) string {
+	t.Helper()
+
+	if target, err := os.Readlink(filepath.Join(confdir, proxyCACurrentLink)); err == nil {
+		return filepath.Join(confdir, target)
+	}
+
+	return confdir
+}
+
 func TestEnsureProxyCAGeneratesOnEmptyConfdir(t *testing.T) {
 	t.Parallel()
 
 	confdir := t.TempDir()
 	require.NoError(t, ensureProxyCA(confdir))
 
-	certPath := filepath.Join(confdir, proxyCACertFile)
-	combinedPath := filepath.Join(confdir, proxyCACombinedFile)
+	// 代际化布局：current symlink 指向 gen-<ts>/，两 PEM 落在代际目录内。
+	genDir := proxyCACurrentGenDir(t, confdir)
+	require.NotEqual(t, confdir, genDir, "CA_AUTO=true 必须生成代际目录 + current symlink")
+	require.True(t, strings.HasPrefix(filepath.Base(genDir), proxyCAGenPrefix))
+	certPath := filepath.Join(genDir, proxyCACertFile)
+	combinedPath := filepath.Join(genDir, proxyCACombinedFile)
+
+	entries, err := os.ReadDir(confdir)
+	require.NoError(t, err)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	assert.ElementsMatch(t, []string{proxyCACurrentLink, filepath.Base(genDir)}, names,
+		"confdir 顶层只允许 current symlink 与代际目录")
 
 	cert := parseProxyCACert(t, confdir)
 	assert.Equal(t, proxyCACN, cert.Subject.CommonName)
@@ -88,19 +115,21 @@ func TestEnsureProxyCAIdempotentSkips(t *testing.T) {
 
 	confdir := t.TempDir()
 	require.NoError(t, ensureProxyCA(confdir))
+	genDir := proxyCACurrentGenDir(t, confdir)
 
-	certBefore, err := os.ReadFile(filepath.Join(confdir, proxyCACertFile))
+	certBefore, err := os.ReadFile(filepath.Join(genDir, proxyCACertFile))
 	require.NoError(t, err)
-	combinedBefore, err := os.ReadFile(filepath.Join(confdir, proxyCACombinedFile))
+	combinedBefore, err := os.ReadFile(filepath.Join(genDir, proxyCACombinedFile))
 	require.NoError(t, err)
 
 	require.NoError(t, ensureProxyCA(confdir))
 
-	certAfter, err := os.ReadFile(filepath.Join(confdir, proxyCACertFile))
+	certAfter, err := os.ReadFile(filepath.Join(genDir, proxyCACertFile))
 	require.NoError(t, err)
-	combinedAfter, err := os.ReadFile(filepath.Join(confdir, proxyCACombinedFile))
+	combinedAfter, err := os.ReadFile(filepath.Join(genDir, proxyCACombinedFile))
 	require.NoError(t, err)
 
+	assert.Equal(t, genDir, proxyCACurrentGenDir(t, confdir), "second run must not switch the generation")
 	assert.Equal(t, certBefore, certAfter, "second run must not regenerate the cert")
 	assert.Equal(t, combinedBefore, combinedAfter, "second run must not regenerate the key")
 }
@@ -110,19 +139,20 @@ func TestEnsureProxyCAHalfStateCombinedOnly(t *testing.T) {
 
 	confdir := t.TempDir()
 	require.NoError(t, ensureProxyCA(confdir))
+	genDir := proxyCACurrentGenDir(t, confdir)
 
-	combined, err := os.ReadFile(filepath.Join(confdir, proxyCACombinedFile))
+	combined, err := os.ReadFile(filepath.Join(genDir, proxyCACombinedFile))
 	require.NoError(t, err)
-	require.NoError(t, os.Remove(filepath.Join(confdir, proxyCACertFile)))
+	require.NoError(t, os.Remove(filepath.Join(genDir, proxyCACertFile)))
 
 	// 半文件（只有 cert+key 合并 PEM）：cert 从合并 PEM 重导出，不重生成 key。
 	require.NoError(t, ensureProxyCA(confdir))
 
-	certData, err := os.ReadFile(filepath.Join(confdir, proxyCACertFile))
+	certData, err := os.ReadFile(filepath.Join(genDir, proxyCACertFile))
 	require.NoError(t, err)
 	assert.Equal(t, proxyCACertBlock(combined), certData, "cert must be re-exported from the combined PEM")
 
-	combinedAfter, err := os.ReadFile(filepath.Join(confdir, proxyCACombinedFile))
+	combinedAfter, err := os.ReadFile(filepath.Join(genDir, proxyCACombinedFile))
 	require.NoError(t, err)
 	assert.Equal(t, combined, combinedAfter, "combined file (key) must be untouched")
 }
@@ -132,17 +162,19 @@ func TestEnsureProxyCAHalfStateCertOnlyRegenerates(t *testing.T) {
 
 	confdir := t.TempDir()
 	require.NoError(t, ensureProxyCA(confdir))
-	oldCert, err := os.ReadFile(filepath.Join(confdir, proxyCACertFile))
+	genDir := proxyCACurrentGenDir(t, confdir)
+	oldCert, err := os.ReadFile(filepath.Join(genDir, proxyCACertFile))
 	require.NoError(t, err)
 
 	// 只剩纯 cert：私钥不可恢复，整套重生成（cert 与 key 必须同源）。
-	require.NoError(t, os.Remove(filepath.Join(confdir, proxyCACombinedFile)))
+	require.NoError(t, os.Remove(filepath.Join(genDir, proxyCACombinedFile)))
 	require.NoError(t, ensureProxyCA(confdir))
 
-	combined, err := os.ReadFile(filepath.Join(confdir, proxyCACombinedFile))
+	newGenDir := proxyCACurrentGenDir(t, confdir)
+	combined, err := os.ReadFile(filepath.Join(newGenDir, proxyCACombinedFile))
 	require.NoError(t, err)
 	assert.True(t, proxyCACombinedValid(combined))
-	newCert, err := os.ReadFile(filepath.Join(confdir, proxyCACertFile))
+	newCert, err := os.ReadFile(filepath.Join(newGenDir, proxyCACertFile))
 	require.NoError(t, err)
 	assert.True(t, bytes.HasPrefix(combined, newCert), "cert file and combined file must be the same CA")
 	assert.NotEqual(t, oldCert, newCert, "cert-only half state cannot recover the key and must regenerate")

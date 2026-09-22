@@ -11,11 +11,14 @@
 #    不注册进 run_all.sh，需单独执行：
 #        bash 37_ca_auto_inject.sh
 #
-# 断言清单（§7.4 逐条对应，机读 PASS/FAIL）：
-#   §5  断言1  删除宿主 confdir CA + SANDBOX_PROXY_CA_AUTO=true 滚动重启后，
-#              orchestrator 启动路径自动生成 CA（mitmproxy-ca.pem /
-#              mitmproxy-ca-cert.pem 存在、openssl 可解析、CN=e2b-egress-auto-ca、
-#              cert 0644 / 合并 0600）；二次滚动幂等（产物不变）
+# 断言清单（§7.4 逐条对应，机读 PASS/FAIL；CA 布局已升级为 §7.5.1 代际化
+# confdir：`current -> gen-<ts>/` symlink + gen 目录内两 PEM，断言经 current/
+# 解析，不绑定具体 gen 目录名）：
+#   §5  断言1  清空宿主 confdir + SANDBOX_PROXY_CA_AUTO=true 滚动重启后，
+#              orchestrator 启动路径自动生成 CA（current symlink 指向 gen-<ts>/，
+#              目录内 mitmproxy-ca.pem / mitmproxy-ca-cert.pem 存在、openssl
+#              可解析、CN=e2b-egress-auto-ca、cert 0644 / 合并 0600，顶层无
+#              遗留扁平散文件）；二次滚动幂等（current 指向与产物均不变）
 #   §6  断言2  默认沙箱（egress-mitm 缺省=true）：guest 内
 #              /etc/ssl/certs/e2b-egress-ca.pem 存在且 subject=自动 CA；
 #              /usr/local/share/ca-certificates/e2b-egress-ca.crt 的 SHA256
@@ -83,6 +86,9 @@ ORCH_TOUCHED=0
 MUX_RESTARTED=0
 SITES_PID=""
 CA_BACKED_UP=0
+CONFDIR_TOUCHED=0        # confdir 已被本脚本改动标记：备份完成且即将清空前置位；
+                         # cleanup 仅在置位后才碰 confdir（trap 注册后、备份完成前
+                         # 任何 exit 都不会误删 confdir 里的 CA 私钥）
 BASE_CNI_ENABLED="${BASE_CNI_ENABLED:-1}"
 BASE_CNI_POOL_ENABLED="${BASE_CNI_POOL_ENABLED:-1}"
 BASE_CNI_POOL_SIZE="${BASE_CNI_POOL_SIZE:-200}"
@@ -103,6 +109,17 @@ inject_annotations() { # <json-file> <extra-annotations-json>
     jq --argjson extra "$2" \
         '.annotations = ((.annotations // {}) + $extra)' "$1" > "${tmp}" \
         && mv "${tmp}" "$1"
+}
+
+# 解析 current symlink 指向的 gen 目录（宿主视角；失败返回空串）
+ca_gen_dir() {
+    readlink -f "${CA_DIR_HOST}/current" 2>/dev/null || true
+}
+
+# 清空 confdir 全部内容（gen-* 目录 / current / ROTATE / rotate-status.json /
+# 扁平散文件 / MITMPROXY_CONFIG 等一并清掉）
+ca_confdir_clear() {
+    find "${CA_DIR_HOST}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
 }
 
 #==================== orchestrator DaemonSet 管理 ====================#
@@ -188,13 +205,20 @@ cleanup_37() {
     ip netns del "${MOCK_NS}" >/dev/null 2>&1 || true
     ip link del "${LINK_H}" >/dev/null 2>&1 || true
     rm -f /tmp/e2b-pod-e2b37*.json
-    rm -f "${CA_DIR_HOST}/${MITM_JSON_NAME}" 2>/dev/null || true
-    # 恢复 confdir 基线：有备份则还原，无备份（原本为空）则删除自动生成的 CA，
-    # 避免基线 env 恢复后（CA_AUTO 关闭）残留自动生成产物混淆后续手工验证
-    if [ "${CA_BACKED_UP}" = "1" ]; then
-        cp -f "${WORK}/ca-backup/"* "${CA_DIR_HOST}/" 2>/dev/null || true
-    else
-        rm -f "${CA_DIR_HOST}/mitmproxy-ca.pem" "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" 2>/dev/null || true
+    # 恢复 confdir 基线：仅在本脚本改动过 confdir（CONFDIR_TOUCHED 置位）后执行；
+    # 有备份则整体还原，无备份（原本为空）则清空自动生成产物，避免基线 env 恢复后
+    # （CA_AUTO 关闭）残留自动生成产物混淆后续手工验证
+    if [ "${CONFDIR_TOUCHED}" = "1" ]; then
+        if [ "${CA_BACKED_UP}" = "1" ]; then
+            ca_confdir_clear
+            if cp -a "${WORK}/ca-backup/." "${CA_DIR_HOST}/" 2>/dev/null; then
+                log_info "confdir 基线已还原"
+            else
+                log_fail "confdir 基线还原失败，请手工检查 ${CA_DIR_HOST}（备份在 ${WORK}/ca-backup）"
+            fi
+        else
+            ca_confdir_clear
+        fi
     fi
     if [ "${ORCH_TOUCHED}" = "1" ]; then
         orch_restore_baseline && log_info "orchestrator 基线 env 已恢复" \
@@ -232,18 +256,23 @@ log_step "1.1 切换 cri-multiplex 到非 CNI（原生）模式"
 start_non_cni_multiplex "启动 cri-multiplex 非 CNI runtime 模式" || exit 1
 MUX_RESTARTED=1
 
-#==================== 2. 备份并删除宿主 confdir CA，开启 CA_AUTO ====================#
-log_step "2.1 备份并清空宿主 confdir CA（${CA_DIR_HOST}）"
+#==================== 2. 备份并清空宿主 confdir，开启 CA_AUTO ====================#
+log_step "2.1 备份并清空宿主 confdir（${CA_DIR_HOST}，代际化布局：gen-* / current / 扁平散文件）"
 mkdir -p "${CA_DIR_HOST}" "${WORK}/ca-backup"
-if [ -s "${CA_DIR_HOST}/mitmproxy-ca.pem" ] || [ -s "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" ]; then
-    cp -f "${CA_DIR_HOST}/mitmproxy-ca.pem" "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" \
-        "${CA_DIR_HOST}/mitmproxy-ca.key" "${WORK}/ca-backup/" 2>/dev/null || true
-    CA_BACKED_UP=1
-    log_info "已备份既有 CA 到 ${WORK}/ca-backup"
+if [ -n "$(ls -A "${CA_DIR_HOST}" 2>/dev/null)" ]; then
+    # 备份失败必须直接退出：不能置 CA_BACKED_UP 继续清空（否则无备份删私钥）
+    if cp -a "${CA_DIR_HOST}/." "${WORK}/ca-backup/"; then
+        CA_BACKED_UP=1
+        log_info "已备份既有 confdir 内容到 ${WORK}/ca-backup"
+    else
+        log_fail "confdir 备份失败，拒绝继续（避免无备份清空 ${CA_DIR_HOST}）"
+        exit 1
+    fi
 fi
-rm -f "${CA_DIR_HOST}/mitmproxy-ca.pem" "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" "${CA_DIR_HOST}/mitmproxy-ca.key"
-[ ! -e "${CA_DIR_HOST}/mitmproxy-ca.pem" ] && [ ! -e "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" ] \
-    && log_pass "宿主 confdir CA 已清空" || { log_fail "宿主 confdir CA 清空失败"; exit 1; }
+CONFDIR_TOUCHED=1
+ca_confdir_clear
+[ -z "$(ls -A "${CA_DIR_HOST}" 2>/dev/null)" ] \
+    && log_pass "宿主 confdir 已清空" || { log_fail "宿主 confdir 清空失败: $(ls -la "${CA_DIR_HOST}")"; exit 1; }
 
 log_step "2.2 写入 MITMPROXY_CONFIG（header_whitelist=${DOM_EXT}）"
 cat > "${CA_DIR_HOST}/${MITM_JSON_NAME}" <<EOF
@@ -262,42 +291,52 @@ orch_apply_env \
     "SANDBOX_PROXY_APPLY=ready" \
     "SANDBOX_PROXY_CONFDIR=${CA_DIR_POD}" \
     "SANDBOX_PROXY_LOG_DIR=${LOG_DIR_POD}" \
-    "SANDBOX_PROXY_EXTRA_ARGS=--set ssl_verify_upstream_trusted_ca=${CA_DIR_POD}/mitmproxy-ca-cert.pem" \
+    "SANDBOX_PROXY_EXTRA_ARGS=--set ssl_verify_upstream_trusted_ca=${CA_DIR_POD}/current/mitmproxy-ca-cert.pem" \
     "MITMPROXY_CONFIG=${CA_DIR_POD}/${MITM_JSON_NAME}" || exit 1
 
-#==================== 5. 断言1：CA 自动生成 ====================#
-log_step "5.1 [断言1] 滚动后宿主 confdir CA 已由 orchestrator 自动生成"
+#==================== 5. 断言1：CA 自动生成（代际化布局） ====================#
+log_step "5.1 [断言1] 滚动后宿主 confdir 已由 orchestrator 自动生成代际化 CA"
 AUTO_CA_OK=1
-if [ -s "${CA_DIR_HOST}/mitmproxy-ca.pem" ] && [ -s "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" ]; then
-    log_pass "mitmproxy-ca.pem 与 mitmproxy-ca-cert.pem 均已生成"
+GEN_DIR=$(ca_gen_dir)
+if [ -n "${GEN_DIR}" ] && [ -d "${GEN_DIR}" ] && [[ "$(basename "${GEN_DIR}")" == gen-* ]] \
+    && [ -s "${GEN_DIR}/mitmproxy-ca.pem" ] && [ -s "${GEN_DIR}/mitmproxy-ca-cert.pem" ]; then
+    log_pass "current -> $(basename "${GEN_DIR}")/ 已建立，两 PEM 齐备"
 else
-    log_fail "confdir CA 未自动生成（${CA_DIR_HOST}）"
+    log_fail "confdir 代际化 CA 未自动生成（${CA_DIR_HOST}）: $(ls -la "${CA_DIR_HOST}" 2>&1 | tr '\n' ' ')"
     AUTO_CA_OK=0
 fi
 if [ "${AUTO_CA_OK}" = "1" ]; then
-    if openssl x509 -in "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" -noout -subject 2>/dev/null \
+    if [ ! -e "${CA_DIR_HOST}/mitmproxy-ca.pem" ] && [ ! -e "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" ]; then
+        log_pass "confdir 顶层无遗留扁平散文件（全部收编进 gen 目录）"
+    else
+        log_fail "confdir 顶层存在扁平散文件残留: $(ls -la "${CA_DIR_HOST}" | tr '\n' ' ')"
+    fi
+    if openssl x509 -in "${GEN_DIR}/mitmproxy-ca-cert.pem" -noout -subject 2>/dev/null \
         | grep -q "e2b-egress-auto-ca"; then
         log_pass "自动 CA openssl 可解析且 CN=e2b-egress-auto-ca"
     else
-        log_fail "自动 CA 解析失败或 CN 不符: $(openssl x509 -in "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" -noout -subject 2>&1)"
+        log_fail "自动 CA 解析失败或 CN 不符: $(openssl x509 -in "${GEN_DIR}/mitmproxy-ca-cert.pem" -noout -subject 2>&1)"
     fi
-    grep -q "PRIVATE KEY" "${CA_DIR_HOST}/mitmproxy-ca.pem" \
+    grep -q "PRIVATE KEY" "${GEN_DIR}/mitmproxy-ca.pem" \
         && log_pass "合并 PEM 内含私钥（mitmproxy confdir 约定格式）" \
         || log_fail "合并 PEM 不含私钥"
-    P_CERT=$(stat -c '%a' "${CA_DIR_HOST}/mitmproxy-ca-cert.pem")
-    P_COMB=$(stat -c '%a' "${CA_DIR_HOST}/mitmproxy-ca.pem")
+    P_CERT=$(stat -c '%a' "${GEN_DIR}/mitmproxy-ca-cert.pem")
+    P_COMB=$(stat -c '%a' "${GEN_DIR}/mitmproxy-ca.pem")
     [ "${P_CERT}" = "644" ] && [ "${P_COMB}" = "600" ] \
         && log_pass "文件权限正确（cert=${P_CERT} combined=${P_COMB}）" \
         || log_fail "文件权限不符（cert=${P_CERT} 期望 644，combined=${P_COMB} 期望 600）"
 fi
 
-log_step "5.2 [断言1] 幂等：再次滚动重启后 CA 产物不变"
-FP_BEFORE=$(sha256sum "${CA_DIR_HOST}/mitmproxy-ca.pem" "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" 2>/dev/null || true)
+log_step "5.2 [断言1] 幂等：再次滚动重启后 current 指向与 CA 产物均不变"
+FP_BEFORE=$(sha256sum "${GEN_DIR}/mitmproxy-ca.pem" "${GEN_DIR}/mitmproxy-ca-cert.pem" 2>/dev/null || true)
+GEN_BEFORE=$(basename "${GEN_DIR}")
 orch_apply_env "SANDBOX_PROXY_CA_AUTO=true" || exit 1   # 同值 set env 触发新一轮滚动
-FP_AFTER=$(sha256sum "${CA_DIR_HOST}/mitmproxy-ca.pem" "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" 2>/dev/null || true)
-[ -n "${FP_BEFORE}" ] && [ "${FP_BEFORE}" = "${FP_AFTER}" ] \
-    && log_pass "二次滚动后 CA 逐字节不变（幂等跳过）" \
-    || log_fail "二次滚动后 CA 发生变化（幂等被破坏）"
+GEN_DIR_AFTER=$(ca_gen_dir)
+FP_AFTER=$(sha256sum "${GEN_DIR_AFTER}/mitmproxy-ca.pem" "${GEN_DIR_AFTER}/mitmproxy-ca-cert.pem" 2>/dev/null || true)
+GEN_AFTER=$(basename "${GEN_DIR_AFTER:-none}")
+[ -n "${FP_BEFORE}" ] && [ "${FP_BEFORE}" = "${FP_AFTER}" ] && [ "${GEN_BEFORE}" = "${GEN_AFTER}" ] \
+    && log_pass "二次滚动后 current 指向（${GEN_AFTER}）与 CA 逐字节不变（幂等跳过）" \
+    || log_fail "二次滚动后 CA 发生变化（幂等被破坏）：gen ${GEN_BEFORE} -> ${GEN_AFTER}"
 
 #==================== 3. mock 站点（证书由自动 CA 签发） ====================#
 log_step "3.1 创建 mock 外部 netns（${MOCK_NS}：${MOCK_HOST_IP} <-> ${SITE_IP}）"
@@ -325,7 +364,7 @@ openssl req -newkey rsa:2048 -nodes \
     -keyout "${WORK}/mock-site.key" -out "${WORK}/mock-site.csr" \
     -subj "/CN=e2b37-mock-site" >/dev/null 2>&1 \
     && openssl x509 -req -in "${WORK}/mock-site.csr" -days 30 \
-        -CA "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" -CAkey "${CA_DIR_HOST}/mitmproxy-ca.pem" \
+        -CA "${CA_DIR_HOST}/current/mitmproxy-ca-cert.pem" -CAkey "${CA_DIR_HOST}/current/mitmproxy-ca.pem" \
         -CAcreateserial -extfile "${WORK}/mock-site.ext" \
         -out "${WORK}/mock-site.crt" >/dev/null 2>&1 \
     || { log_fail "mock 站点证书签发失败"; exit 1; }
@@ -403,7 +442,7 @@ else
 fi
 
 log_step "6.3 [断言2] guest 内 cert 指纹与宿主 confdir cert 一致"
-HOST_FP=$(sha256sum "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" | awk '{print $1}')
+HOST_FP=$(sha256sum "${CA_DIR_HOST}/current/mitmproxy-ca-cert.pem" | awk '{print $1}')
 GUEST_FP=$(guest_exec "${CID_A}" "sha256sum /usr/local/share/ca-certificates/e2b-egress-ca.crt 2>/dev/null | awk '{print \$1}'" | grep -oE '^[0-9a-f]{64}' | head -1)
 if [ -n "${HOST_FP}" ] && [ "${HOST_FP}" = "${GUEST_FP}" ]; then
     log_pass "指纹一致（${HOST_FP:0:16}…）"
@@ -461,4 +500,11 @@ else
     log_fail "对端证书 subject 非 mock 站点原始证书（疑被 MITM）: ${OUT}"
 fi
 
+#==================== 收尾（35 同款：显式 cleanup 后按 FAIL_COUNT 决定退出码） ====================#
+trap - EXIT
+cleanup_37
 print_summary
+if [ "${FAIL_COUNT}" -eq 0 ]; then
+    exit 0
+fi
+exit 1

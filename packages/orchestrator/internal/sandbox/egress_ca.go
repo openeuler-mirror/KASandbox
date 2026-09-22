@@ -52,7 +52,7 @@ func egressProxyCANeedsInjection(netCfg network.Config, egressMode network.Egres
 		identity[network.MetadataKeyEgressMitm] != "false"
 }
 
-// injectEgressProxyCA 把 confdir 的 CA cert 注入 guest 系统信任库
+// injectEgressProxyCA 把代理 CA cert 注入 guest 系统信任库
 // （§7.4.2 注入序列，以沙箱的 envd 为通道）：
 //  1. 读 guest 内既有 cert 计算 SHA256 指纹，与宿主 cert 一致则跳过写入与
 //     update-ca-certificates（快照恢复/重试幂等）；
@@ -61,10 +61,10 @@ func egressProxyCANeedsInjection(netCfg network.Config, egressMode network.Egres
 //  4. 校验 openssl x509 -in /etc/ssl/certs/e2b-egress-ca.pem -noout -subject。
 //
 // 任一步失败即返回错误，由创建路径回滚。
-func (s *Sandbox) injectEgressProxyCA(ctx context.Context, netCfg network.Config) error {
-	certPEM, err := os.ReadFile(network.ProxyCACertPath(netCfg.SandboxProxyConfDir))
+func (s *Sandbox) injectEgressProxyCA(ctx context.Context, netCfg network.Config, caSnap *network.ProxyCASnapshot) error {
+	certPEM, err := egressProxyCACertPEM(netCfg, caSnap)
 	if err != nil {
-		return fmt.Errorf("read proxy CA cert from confdir: %w", err)
+		return err
 	}
 
 	baseURL := fmt.Sprintf("http://%s:%d", s.Slot.HostIPString(), consts.DefaultEnvdServerPort)
@@ -74,6 +74,22 @@ func (s *Sandbox) injectEgressProxyCA(ctx context.Context, netCfg network.Config
 	defer cancel()
 
 	return injectEgressProxyCA(injectCtx, baseURL, accessToken, certPEM)
+}
+
+// egressProxyCACertPEM 取注入用的 CA cert：代际快照在场（§7.5.4 代际绑定）时
+// 直接用快照字节、不读文件（保证与该沙箱 spawn 的 confdir 同代际）；快照为 nil
+// 时维持现状读 confdir 顶层 cert 文件（CA_AUTO=false 手工扁平布局）。
+func egressProxyCACertPEM(netCfg network.Config, caSnap *network.ProxyCASnapshot) ([]byte, error) {
+	if caSnap != nil {
+		return caSnap.CertPEM, nil
+	}
+
+	certPEM, err := os.ReadFile(network.ProxyCACertPath(netCfg.SandboxProxyConfDir))
+	if err != nil {
+		return nil, fmt.Errorf("read proxy CA cert from confdir: %w", err)
+	}
+
+	return certPEM, nil
 }
 
 // injectEgressProxyCA 是注入序列的纯函数实现（envd 地址直连形态），与 Sandbox

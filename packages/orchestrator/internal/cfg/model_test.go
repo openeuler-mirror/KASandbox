@@ -94,8 +94,11 @@ func TestParse(t *testing.T) {
 		_, err := Parse()
 		require.NoError(t, err)
 
+		// §7.5.1 代际化布局：两 PEM 落在 current symlink 指向的 gen 目录内。
+		current, err := os.Readlink(filepath.Join(confdir, "current"))
+		require.NoError(t, err)
 		for _, name := range []string{"mitmproxy-ca.pem", "mitmproxy-ca-cert.pem"} {
-			assert.FileExists(t, filepath.Join(confdir, name))
+			assert.FileExists(t, filepath.Join(confdir, current, name))
 		}
 	})
 }

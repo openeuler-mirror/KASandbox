@@ -14,10 +14,19 @@ import (
 	"time"
 )
 
-// mitmproxy confdir 布局（§7.4.1，与 §7.3 手动产物同构）：
-//   - proxyCACertFile 纯 cert（0644），guest 注入的输入；
-//   - proxyCACombinedFile cert+key 合并（0600，mitmproxy confdir 约定格式），
-//     代理进程签发落叶证书的输入。
+// mitmproxy confdir 代际化布局（§7.5.1）：
+//
+//	confdir/
+//	├── current -> gen-<UTC时间戳>/    # tmp symlink + rename 原子切换
+//	├── previous -> gen-<UTC时间戳>/   # 上一次被替换的代际（回滚余地 + GC 保留）
+//	├── mitmproxy-ca.pem -> current/mitmproxy-ca.pem            # 回退兼容 symlink
+//	├── mitmproxy-ca-cert.pem -> current/mitmproxy-ca-cert.pem  #（仅老布局收编后建）
+//	└── gen-<UTC时间戳>/
+//	    ├── mitmproxy-ca.pem          # cert+key 合并（0600，mitmproxy confdir
+//	    │                             # 约定格式），代理进程签发落叶证书的输入
+//	    └── mitmproxy-ca-cert.pem     # 纯 cert（0644），guest 注入的输入
+//
+// CA_AUTO=false 的手工布局仍是 confdir 顶层同名散文件（ProxyCACertPath 不变）。
 const (
 	proxyCACertFile     = "mitmproxy-ca-cert.pem"
 	proxyCACombinedFile = "mitmproxy-ca.pem"
@@ -35,41 +44,76 @@ func ProxyCACertPath(confdir string) string {
 	return filepath.Join(confdir, proxyCACertFile)
 }
 
-// ensureProxyCA 保证 confdir 内存在可用的代理 CA 材料（SANDBOX_PROXY_CA_AUTO=true
-// 时由 ParseConfig 调用）。幂等：两文件均存在、可解析且 cert 未过期即跳过；
-// 半文件状态可补全（cert 文件缺失时从合并 PEM 重导出）；其余缺失/损坏/过期
-// 一律重新生成。任何写入失败 fail-fast（可预见的 MITM 全断比启动失败更难排查）。
+// ensureProxyCA 保证 confdir 内存在可用的代理 CA 材料并加载进程内代际快照
+// （SANDBOX_PROXY_CA_AUTO=true 时由 ParseConfig 调用）。幂等：current 指向的
+// 代际两文件齐备、可解析且 cert 未过期即加载快照跳过（不重新生成）；current
+// 缺失但顶层存在 §7.4.1 老布局散文件时收编为 gen-<ts>/（内容逐字节保留，
+// 不重新生成，存量沙箱信任关系不变）；代际内半文件状态可补全（cert 缺失时
+// 从合并 PEM 重导出）；全空/损坏/过期生成新代际并切换 current。任何写入
+// 失败 fail-fast（可预见的 MITM 全断比启动失败更难排查）。
 //
-// 单实例前提：一个节点只有一个 orchestrator 实例，本函数只运行在 ParseConfig
-// 启动路径（单线程），无多进程竞争，不需要文件锁；tmp+rename 原子写仅为防
-// 进程崩溃留下半文件。不自动轮换：轮换 = 运维删除 confdir 文件 + 滚动重启
-// （存量沙箱信任的是旧 CA，重生成会导致存量 MITM 全断）。
+// 并发前提：单实例 orchestrator，本函数（启动路径）与 RotateProxyCA（轮转
+// 协程）共用 proxyCAMu 串行化，无多进程竞争，不需要文件锁；tmp+rename 原子
+// 写仅为防进程崩溃留下半文件。
+//
+// 本函数不做旧代际 GC：create-build 工具也走本路径，它没有 daemon 的引用计数
+// 上下文，共用 confdir 时会误删 daemon 正在引用的代际。GC 只在两处显式发生：
+// daemon 启动时 main.go 调 GCProxyCAGenerations（彼时安全的原因：重启后进程内
+// 引用清零，而在跑代理只在 spawn 时读一次 CA 入内存、之后不读盘——孤儿
+// mitmproxy 不在 hostservice.KillOrphanedProcesses 的清理范围内，它只杀
+// Android 辅助进程，但同样不读盘），以及 rotateProxyCA 切换成功后。
 func ensureProxyCA(confdir string) error {
-	combinedPath := filepath.Join(confdir, proxyCACombinedFile)
-	certPath := filepath.Join(confdir, proxyCACertFile)
+	proxyCAMu.Lock()
+	defer proxyCAMu.Unlock()
 
-	combinedPEM, combinedErr := os.ReadFile(combinedPath)
-	combinedOK := combinedErr == nil && proxyCACombinedValid(combinedPEM)
-	certPEM, certErr := os.ReadFile(certPath)
-	certOK := certErr == nil && proxyCACertValid(certPEM)
-
-	switch {
-	case combinedOK && certOK:
-		// 幂等跳过：重启/滚动不重生成。
-		return nil
-	case combinedOK:
-		// 半文件：合并 PEM 在、纯 cert 缺失/损坏——cert 可从合并 PEM 重导出。
-		return writeFileAtomic(certPath, proxyCACertBlock(combinedPEM), 0o644)
-	default:
-		// 全缺、损坏、过期、或只有纯 cert（key 不可恢复）——重新生成整套。
-		return generateProxyCA(confdir)
+	gen, err := currentProxyCAGen(confdir)
+	if err != nil {
+		return fmt.Errorf("resolve current proxy CA generation: %w", err)
 	}
+
+	if gen != "" {
+		snap, state := loadProxyCAGen(confdir, gen)
+		switch state {
+		case proxyCAGenValid:
+			// 幂等跳过：重启/滚动不重生成。
+			currentProxyCA.Store(snap)
+
+			return nil
+		case proxyCAGenHalf:
+			// 半文件：合并 PEM 在、纯 cert 缺失/损坏——cert 从合并 PEM 重导出。
+			combinedPEM, err := os.ReadFile(filepath.Join(snap.GenDir, proxyCACombinedFile))
+			if err != nil {
+				return fmt.Errorf("read proxy CA combined PEM from %s: %w", snap.GenDir, err)
+			}
+			if err := writeFileAtomic(filepath.Join(snap.GenDir, proxyCACertFile), proxyCACertBlock(combinedPEM), 0o644); err != nil {
+				return err
+			}
+			snap, _ = loadProxyCAGen(confdir, gen)
+			currentProxyCA.Store(snap)
+
+			return nil
+		}
+		// 损坏/过期：落到下方生成新代际（current 原子切换，旧代际由 previous
+		// symlink 与显式 GC 管理）。
+	} else {
+		// current 缺失：顶层老布局（§7.4.1 扁平散文件）收编进新代际目录。
+		combinedPath := filepath.Join(confdir, proxyCACombinedFile)
+		if combinedPEM, err := os.ReadFile(combinedPath); err == nil && proxyCACombinedValid(combinedPEM) {
+			return adoptLegacyProxyCA(confdir, combinedPEM)
+		}
+	}
+
+	// 全空、损坏或过期——生成新代际并切换 current。
+	_, err = renewProxyCA(confdir)
+
+	return err
 }
 
-// generateProxyCA 生成 RSA 2048 自签根 CA 并原子写入 confdir 的两个约定文件。
-func generateProxyCA(confdir string) error {
-	if err := os.MkdirAll(confdir, 0o755); err != nil {
-		return fmt.Errorf("create proxy CA confdir %s: %w", confdir, err)
+// generateProxyCA 生成 RSA 2048 自签根 CA 并原子写入 dir 的两个约定文件
+// （dir 为代际目录，或 CA_AUTO=false 手工布局下直接是 confdir）。
+func generateProxyCA(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create proxy CA dir %s: %w", dir, err)
 	}
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -111,10 +155,10 @@ func generateProxyCA(confdir string) error {
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 	combinedPEM := append(certPEM, keyPEM...)
 
-	if err := writeFileAtomic(filepath.Join(confdir, proxyCACombinedFile), combinedPEM, 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(dir, proxyCACombinedFile), combinedPEM, 0o600); err != nil {
 		return err
 	}
-	if err := writeFileAtomic(filepath.Join(confdir, proxyCACertFile), certPEM, 0o644); err != nil {
+	if err := writeFileAtomic(filepath.Join(dir, proxyCACertFile), certPEM, 0o644); err != nil {
 		return err
 	}
 
