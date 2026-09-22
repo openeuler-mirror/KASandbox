@@ -75,7 +75,8 @@ func NewRedisCache[V any](config RedisConfig[V]) *RedisCache[V] {
 	}
 
 	var locker redis_utils.Locker = redis_utils.NoopLocker{}
-	if config.LockTTL != RedisLockOff {
+	// RedisClient 为 nil（未配置 Redis）时禁用分布式锁，避免 redislock.New(nil) 后使用时 panic
+	if config.LockTTL != RedisLockOff && config.RedisClient != nil {
 		if config.LockRetryInterval == 0 {
 			config.LockRetryInterval = defaultLockRetryInterval
 		}
@@ -93,10 +94,25 @@ func NewRedisCache[V any](config RedisConfig[V]) *RedisCache[V] {
 	return rc
 }
 
+// hasRedis 报告缓存是否配置了 Redis 客户端；未配置时所有 Redis 操作短路，直接回源
+func (rc *RedisCache[V]) hasRedis() bool { return rc.config.RedisClient != nil }
+
 // GetOrSet retrieves a value from Redis, falling back to dataCallback on miss.
 // On callback hit, the value is backfilled into Redis.
 // Singleflight deduplicates concurrent misses for the same key.
 func (rc *RedisCache[V]) GetOrSet(ctx context.Context, key string, dataCallback DataCallback[V]) (V, error) {
+	// 无 Redis：跳过缓存层，singleflight 去重后直接回源
+	if !rc.hasRedis() {
+		r, err, _ := rc.fetchGroup.Do(key, func() (any, error) {
+			return dataCallback(ctx, key)
+		})
+		if err != nil {
+			var zero V
+			return zero, err
+		}
+		return r.(V), nil
+	}
+
 	// Fast path: try Redis outside singleflight
 	value, remainingTTL, err := rc.getFromRedis(ctx, key)
 	if err == nil {
@@ -159,11 +175,17 @@ func (rc *RedisCache[V]) GetOrSet(ctx context.Context, key string, dataCallback 
 
 // Set stores a value in Redis.
 func (rc *RedisCache[V]) Set(ctx context.Context, key string, value V) {
+	if !rc.hasRedis() {
+		return
+	}
 	rc.setInRedis(ctx, key, value)
 }
 
 // Delete removes a value from Redis.
 func (rc *RedisCache[V]) Delete(ctx context.Context, key string) {
+	if !rc.hasRedis() {
+		return
+	}
 	lock, err := rc.acquireLock(ctx, key, redislock.LinearBackoff(rc.config.LockRetryInterval))
 	if err != nil {
 		logger.L().Warn(ctx, "RedisCache - Delete: failed to acquire lock", zap.String("key", key))
@@ -189,6 +211,9 @@ func (rc *RedisCache[V]) Delete(ctx context.Context, key string) {
 // the keyspace is not mutated during cursor iteration.
 // Returns the list of deleted cache keys (without the Redis prefix).
 func (rc *RedisCache[V]) DeleteByPrefix(ctx context.Context, prefix string) []string {
+	if !rc.hasRedis() {
+		return nil
+	}
 	redisPattern := fmt.Sprintf("%s:%s*", rc.config.RedisPrefix, prefix)
 
 	// Phase 1: collect all matching keys without mutating the keyspace.

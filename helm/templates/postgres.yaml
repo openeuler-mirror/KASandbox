@@ -1,3 +1,4 @@
+{{- if .Values.postgresEnabled }}
 # PostgreSQL Deployment
 apiVersion: apps/v1
 kind: Deployment
@@ -99,3 +100,4 @@ spec:
     name: db
   selector:
     app: postgres
+{{- end }}

@@ -1,3 +1,4 @@
+{{- if .Values.redisEnabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,3 +50,4 @@ spec:
   - port: {{ .Values.redisPort | int }}
     targetPort: redis
   selector: { app: redis }
+{{- end }}

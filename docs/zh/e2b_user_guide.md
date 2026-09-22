@@ -576,17 +576,17 @@ PostgreSQL / Redis / edge（Client Proxy）三个组件支持按需裁剪，通�
 | 变量 | 默认值 | 关闭后的行为 |
 |------|--------|--------------|
 | `ENABLE_POSTGRES` | `true` | 不部署内置 PostgreSQL，改用外部实例（`POSTGRES_CONNECTION_STRING` 指向外部地址；K8S 模式另需将 `POSTGRES_URL` 改为外部实例地址） |
-| `ENABLE_REDIS` | `false` | 不部署内置 Redis：`REDIS_ENDPOINT` 自动置空，API 降级为内存模式运行；`SANDBOX_STORAGE_BACKEND` 强制降级为 `memory` |
+| `ENABLE_REDIS` | `true` | 不部署内置 Redis：`REDIS_ENDPOINT` 自动置空，API 降级为内存模式运行；`SANDBOX_STORAGE_BACKEND` 强制降级为 `memory` |
 | `ENABLE_EDGE` | `true` | 不部署 edge（Client Proxy）：沙箱域名路由（`*.e2b.app`）不可用，SDK 通过域名连接沙箱受影响，API 直连（创建/管理沙箱）不受影响 |
 
 ```bash
 # .env 示例
 export ENABLE_POSTGRES=true
-export ENABLE_REDIS=${ENABLE_REDIS:-false}
-export ENABLE_EDGE=${ENABLE_EDGE:-true}
+export ENABLE_REDIS=true
+export ENABLE_EDGE=true
 ```
 
-> **说明**：`ENABLE_REDIS` / `ENABLE_EDGE` 使用 `${VAR:-默认值}` 写法，允许通过外部环境变量覆盖；`ENABLE_POSTGRES` 为固定赋值，如需关闭请直接改为 `false`。
+> **说明**：三个开关均为固定赋值，如需关闭某组件请直接改为 `false`（source `.env` 时会覆盖外部环境变量）。
 
 关闭后部署脚本自动完成联动裁剪：
 
@@ -995,7 +995,7 @@ kubectl get pods -n e2b -o wide
 | Pod | 说明 |
 |-----|------|
 | `postgres-*` | 元数据存储（teams / users / templates / 沙箱配额）；`ENABLE_POSTGRES=false` 时不部署 |
-| `redis-*` | 缓存 / 会话存储；`ENABLE_REDIS=false`（`.env` 默认）时不部署，见 [4.6 组件开关（可选）](#46-组件开关可选) |
+| `redis-*` | 缓存 / 会话存储；`ENABLE_REDIS=false` 时不部署，见 [4.6 组件开关（可选）](#46-组件开关可选) |
 | `api-*` | API 服务（端口 3000），运行在控制节点池 |
 | `edge-*` | 客户端代理（端口 3002），运行在控制节点池；`ENABLE_EDGE=false` 时不部署 |
 | `template-manager-*` | 模板构建（gRPC 5008），DaemonSet，运行在构建节点池（`.env` 中 `BUILD_NODE_POOL` 指定的节点池）；`ORCHESTRATOR_TYPE=systemd` 时不渲染 |
@@ -1955,7 +1955,7 @@ kubectl get svc ingress-nginx-controller -n ingress-nginx
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `ENABLE_POSTGRES` | 是否部署内置 PostgreSQL（`false` 时使用外部实例） | `true` |
-| `ENABLE_REDIS` | 是否部署内置 Redis（`false` 时组件降级运行） | `false` |
+| `ENABLE_REDIS` | 是否部署内置 Redis（`false` 时组件降级运行） | `true` |
 | `ENABLE_EDGE` | 是否部署 edge / Client Proxy（`false` 时 `*.e2b.app` 域名路由不可用） | `true` |
 
 **Orchestrator 承载**（见 [4.7 Orchestrator 承载方式（可选）](#47-orchestrator-承载方式可选)）

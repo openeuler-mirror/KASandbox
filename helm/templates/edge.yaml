@@ -1,3 +1,4 @@
+{{- if .Values.edgeEnabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,6 +22,7 @@ spec:
               - key: node-role.kubernetes.io/{{ .Values.api.pool }}
                 operator: Exists
       initContainers:
+      {{- if .Values.redisEnabled }}
       - name: wait-redis
         image: "{{ .Values.registry }}/{{ .Values.image.busybox }}"
         imagePullPolicy: IfNotPresent
@@ -32,6 +34,7 @@ spec:
             echo waiting for redis...
             sleep 1
           done
+      {{- end }}
       containers:
       - name: edge
         image: "{{ .Values.registry }}/{{ .Values.image.edge }}"
@@ -80,10 +83,12 @@ spec:
           value: "{{ .Values.otelCollectorGrpcEndpoint }}"
         - name: LOGS_COLLECTOR_ADDRESS
           value: "{{ .Values.logsCollectorAddress }}"
+        {{- if .Values.redisEnabled }}
         - name: REDIS_URL
           value: "{{ .Values.redisUrl }}:{{ .Values.redisPort | int }}"
         - name: REDIS_CLUSTER_URL
           value: ""
+        {{- end }}
         - name: LOKI_URL
           value: "{{ .Values.lokiUrl }}"
         - name: API_GRPC_ADDRESS
@@ -121,3 +126,4 @@ spec:
     targetPort: proxy
     name: proxy
   selector: { app: edge }
+{{- end }}
