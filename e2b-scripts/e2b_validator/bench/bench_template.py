@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -38,9 +39,34 @@ def local_artifacts_ready(build_id: str | None) -> bool:
         return False
     artifact_dir = _local_artifacts_root() / build_id
     try:
-        return artifact_dir.is_dir() and any(artifact_dir.iterdir())
+        if not (artifact_dir.is_dir() and any(artifact_dir.iterdir())):
+            return False
     except OSError:
         return False
+    # diff 链模板：最终 build 只存增量块，基础层数据在 base build 目录；
+    # 只查最终目录会漏掉 base 被清理的情况（rootfs 深层块读取 EIO）
+    base_id = _base_build_id(artifact_dir)
+    if base_id and base_id != build_id:
+        base_dir = _local_artifacts_root() / base_id
+        try:
+            if not (base_dir.is_dir() and any(base_dir.iterdir())):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _base_build_id(artifact_dir: Path) -> str | None:
+    """从 rootfs.ext4.header 二进制头解析 BaseBuildId（固定偏移 0x30，16 字节 UUID）。"""
+    header = artifact_dir / "rootfs.ext4.header"
+    try:
+        with header.open("rb") as stream:
+            data = stream.read(0x40)
+        if len(data) < 0x40:
+            return None
+        return str(uuid.UUID(bytes=data[0x30:0x40]))
+    except (OSError, ValueError):
+        return None
 
 
 def _template_names(template: dict[str, Any]) -> list[str]:

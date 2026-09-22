@@ -1,4 +1,4 @@
-"""bench 子命令路由：create / kill-all / scale / density / snapshot-* / rollback / clone / pause-resume / replay / replay-mixgen / all."""
+"""bench 子命令路由：create / kill-all / scale / density / snapshot-* / rollback / clone / pause-resume / replay / replay-nolifecycle / replay-matrix / replay-mixgen / all."""
 
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ from . import (
     density,
     pause_resume,
     replay,
+    replay_matrix,
     replay_mixgen,
+    replay_nolifecycle,
     rollback,
     runner,
     scale,
@@ -62,5 +64,7 @@ def register_subcommand(subparsers) -> None:
     clone.register(bench_subparsers)
     pause_resume.register(bench_subparsers)
     replay.register(bench_subparsers)
+    replay_nolifecycle.register(bench_subparsers)
+    replay_matrix.register(bench_subparsers)
     replay_mixgen.register(bench_subparsers)
     runner.register(bench_subparsers)

@@ -1,0 +1,542 @@
+[
+  {
+    "name": "crawler-commons-crawler-commons-228",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-crawler-commons-crawler-commons:228-6d3bbd2",
+    "language": "java",
+    "workdir": "/crawler-commons",
+    "instance_id": "crawler-commons__crawler-commons-228",
+    "replay_file": "crawler-commons__crawler-commons-228.replay.json",
+    "steps": 83
+  },
+  {
+    "name": "crawler-commons-crawler-commons-424",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-crawler-commons-crawler-commons:424-0eb2c74",
+    "language": "java",
+    "workdir": "/crawler-commons",
+    "instance_id": "crawler-commons__crawler-commons-424",
+    "replay_file": "crawler-commons__crawler-commons-424.replay.json",
+    "steps": 57
+  },
+  {
+    "name": "eclipse-microprofile-lra-271",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-eclipse-microprofile-lra:271-78f064c",
+    "language": "java",
+    "workdir": "/microprofile-lra",
+    "instance_id": "eclipse__microprofile-lra-271",
+    "replay_file": "eclipse__microprofile-lra-271.replay.json",
+    "steps": 41
+  },
+  {
+    "name": "kestra-io-kestra-2445",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-kestra-io-kestra:2445-3f34d58",
+    "language": "java",
+    "workdir": "/kestra",
+    "instance_id": "kestra-io__kestra-2445",
+    "replay_file": "kestra-io__kestra-2445.replay.json",
+    "steps": 80
+  },
+  {
+    "name": "kestra-io-kestra-3429",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-kestra-io-kestra:3429-cc7ef72",
+    "language": "java",
+    "workdir": "/kestra",
+    "instance_id": "kestra-io__kestra-3429",
+    "replay_file": "kestra-io__kestra-3429.replay.json",
+    "steps": 164
+  },
+  {
+    "name": "kestra-io-kestra-5478",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-kestra-io-kestra:5478-1719879",
+    "language": "java",
+    "workdir": "/kestra",
+    "instance_id": "kestra-io__kestra-5478",
+    "replay_file": "kestra-io__kestra-5478.replay.json",
+    "steps": 49
+  },
+  {
+    "name": "knowm-xchart-409",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-knowm-xchart:409-b800f66",
+    "language": "java",
+    "workdir": "/XChart",
+    "instance_id": "knowm__xchart-409",
+    "replay_file": "knowm__xchart-409.replay.json",
+    "steps": 92
+  },
+  {
+    "name": "microsoft-mssql-jdbc-1838",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-microsoft-mssql-jdbc:1838-7ffc2f0",
+    "language": "java",
+    "workdir": "/mssql-jdbc",
+    "instance_id": "microsoft__mssql-jdbc-1838",
+    "replay_file": "microsoft__mssql-jdbc-1838.replay.json",
+    "steps": 57
+  },
+  {
+    "name": "ontodev-robot-1225",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-ontodev-robot:1225-27d5fd3",
+    "language": "java",
+    "workdir": "/robot",
+    "instance_id": "ontodev__robot-1225",
+    "replay_file": "ontodev__robot-1225.replay.json",
+    "steps": 49
+  },
+  {
+    "name": "ontodev-robot-322",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-ontodev-robot:322-e69ef9d",
+    "language": "java",
+    "workdir": "/robot",
+    "instance_id": "ontodev__robot-322",
+    "replay_file": "ontodev__robot-322.replay.json",
+    "steps": 61
+  },
+  {
+    "name": "openrefine-openrefine-6161",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-openrefine-openrefine:6161-307d8bf",
+    "language": "java",
+    "workdir": "/OpenRefine",
+    "instance_id": "openrefine__openrefine-6161",
+    "replay_file": "openrefine__openrefine-6161.replay.json",
+    "steps": 50
+  },
+  {
+    "name": "openrefine-openrefine-6862",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-openrefine-openrefine:6862-58d3e44",
+    "language": "java",
+    "workdir": "/OpenRefine",
+    "instance_id": "openrefine__openrefine-6862",
+    "replay_file": "openrefine__openrefine-6862.replay.json",
+    "steps": 54
+  },
+  {
+    "name": "openrefine-openrefine-7176",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-openrefine-openrefine:7176-d92d8e5",
+    "language": "java",
+    "workdir": "/OpenRefine",
+    "instance_id": "openrefine__openrefine-7176",
+    "replay_file": "openrefine__openrefine-7176.replay.json",
+    "steps": 34
+  },
+  {
+    "name": "pebbletemplates-pebble-368",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-pebbletemplates-pebble:368-b3ab7b8",
+    "language": "java",
+    "workdir": "/pebble",
+    "instance_id": "pebbletemplates__pebble-368",
+    "replay_file": "pebbletemplates__pebble-368.replay.json",
+    "steps": 67
+  },
+  {
+    "name": "primefaces-primefaces-8980",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-primefaces-primefaces:8980-d09ef48",
+    "language": "java",
+    "workdir": "/primefaces",
+    "instance_id": "primefaces__primefaces-8980",
+    "replay_file": "primefaces__primefaces-8980.replay.json",
+    "steps": 56
+  },
+  {
+    "name": "redis-lettuce-2953",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-redis-lettuce:2953-28a4154",
+    "language": "java",
+    "workdir": "/lettuce",
+    "instance_id": "redis__lettuce-2953",
+    "replay_file": "redis__lettuce-2953.replay.json",
+    "steps": 58
+  },
+  {
+    "name": "softwaremill-jox-77",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-softwaremill-jox:77-c7fb12d",
+    "language": "java",
+    "workdir": "/jox",
+    "instance_id": "softwaremill__jox-77",
+    "replay_file": "softwaremill__jox-77.replay.json",
+    "steps": 87
+  },
+  {
+    "name": "softwaremill-jox-85",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-softwaremill-jox:85-7700513",
+    "language": "java",
+    "workdir": "/jox",
+    "instance_id": "softwaremill__jox-85",
+    "replay_file": "softwaremill__jox-85.replay.json",
+    "steps": 80
+  },
+  {
+    "name": "strimzi-strimzi-kafka-bridge-134",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-strimzi-strimzi-kafka-bridge:134-63f6664",
+    "language": "java",
+    "workdir": "/strimzi-kafka-bridge",
+    "instance_id": "strimzi__strimzi-kafka-bridge-134",
+    "replay_file": "strimzi__strimzi-kafka-bridge-134.replay.json",
+    "steps": 60
+  },
+  {
+    "name": "urlaubsverwaltung-urlaubsverwaltung-4266",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-urlaubsverwaltung-urlaubsverwaltung:4266-880bd8b",
+    "language": "java",
+    "workdir": "/urlaubsverwaltung",
+    "instance_id": "urlaubsverwaltung__urlaubsverwaltung-4266",
+    "replay_file": "urlaubsverwaltung__urlaubsverwaltung-4266.replay.json",
+    "steps": 72
+  },
+  {
+    "name": "victools-jsonschema-generator-399",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-victools-jsonschema-generator:399-836d144",
+    "language": "java",
+    "workdir": "/jsonschema-generator",
+    "instance_id": "victools__jsonschema-generator-399",
+    "replay_file": "victools__jsonschema-generator-399.replay.json",
+    "steps": 79
+  },
+  {
+    "name": "wikidata-wikidata-toolkit-717",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-wikidata-wikidata-toolkit:717-e99f196",
+    "language": "java",
+    "workdir": "/Wikidata-Toolkit",
+    "instance_id": "wikidata__wikidata-toolkit-717",
+    "replay_file": "wikidata__wikidata-toolkit-717.replay.json",
+    "steps": 101
+  },
+  {
+    "name": "arabold-docs-mcp-server-78",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-arabold-docs-mcp-server:78-ddecb1a",
+    "language": "ts",
+    "workdir": "/docs-mcp-server",
+    "instance_id": "arabold__docs-mcp-server-78",
+    "replay_file": "arabold__docs-mcp-server-78.replay.json",
+    "steps": 54
+  },
+  {
+    "name": "auth0-auth0-spa-js-341",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-auth0-auth0-spa-js:341-6192758",
+    "language": "ts",
+    "workdir": "/auth0-spa-js",
+    "instance_id": "auth0__auth0-spa-js-341",
+    "replay_file": "auth0__auth0-spa-js-341.replay.json",
+    "steps": 48
+  },
+  {
+    "name": "capricorn86-happy-dom-539",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-capricorn86-happy-dom:539-aae151b",
+    "language": "ts",
+    "workdir": "/happy-dom",
+    "instance_id": "capricorn86__happy-dom-539",
+    "replay_file": "capricorn86__happy-dom-539.replay.json",
+    "steps": 78
+  },
+  {
+    "name": "capricorn86-happy-dom-824",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-capricorn86-happy-dom:824-fdbfc53",
+    "language": "ts",
+    "workdir": "/happy-dom",
+    "instance_id": "capricorn86__happy-dom-824",
+    "replay_file": "capricorn86__happy-dom-824.replay.json",
+    "steps": 47
+  },
+  {
+    "name": "fontoxml-fontoxpath-638",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-fontoxml-fontoxpath:638-93d53cc",
+    "language": "ts",
+    "workdir": "/fontoxpath",
+    "instance_id": "fontoxml__fontoxpath-638",
+    "replay_file": "fontoxml__fontoxpath-638.replay.json",
+    "steps": 56
+  },
+  {
+    "name": "formidablelabs-urql-410",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-formidablelabs-urql:410-f7e207b",
+    "language": "ts",
+    "workdir": "/urql",
+    "instance_id": "formidablelabs__urql-410",
+    "replay_file": "formidablelabs__urql-410.replay.json",
+    "steps": 50
+  },
+  {
+    "name": "getsentry-sentry-electron-1049",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-getsentry-sentry-electron:1049-69333d2",
+    "language": "ts",
+    "workdir": "/sentry-electron",
+    "instance_id": "getsentry__sentry-electron-1049",
+    "replay_file": "getsentry__sentry-electron-1049.replay.json",
+    "steps": 41
+  },
+  {
+    "name": "joshuakgoldberg-create-typescript-app-2050",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-joshuakgoldberg-create-typescript-app:2050-47acb5f",
+    "language": "ts",
+    "workdir": "/create-typescript-app",
+    "instance_id": "joshuakgoldberg__create-typescript-app-2050",
+    "replay_file": "joshuakgoldberg__create-typescript-app-2050.replay.json",
+    "steps": 71
+  },
+  {
+    "name": "ktsn-vuex-smart-module-243",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-ktsn-vuex-smart-module:243-4edbc13",
+    "language": "ts",
+    "workdir": "/vuex-smart-module",
+    "instance_id": "ktsn__vuex-smart-module-243",
+    "replay_file": "ktsn__vuex-smart-module-243.replay.json",
+    "steps": 78
+  },
+  {
+    "name": "obsidian-tasks-group-obsidian-tasks-1734",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-obsidian-tasks-group-obsidian-tasks:1734-94d4f69",
+    "language": "ts",
+    "workdir": "/obsidian-tasks",
+    "instance_id": "obsidian-tasks-group__obsidian-tasks-1734",
+    "replay_file": "obsidian-tasks-group__obsidian-tasks-1734.replay.json",
+    "steps": 65
+  },
+  {
+    "name": "opossum-tool-opossumui-2503",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-opossum-tool-opossumui:2503-0da6d46",
+    "language": "ts",
+    "workdir": "/OpossumUI",
+    "instance_id": "opossum-tool__opossumui-2503",
+    "replay_file": "opossum-tool__opossumui-2503.replay.json",
+    "steps": 60
+  },
+  {
+    "name": "ota-meshi-eslint-plugin-regexp-285",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-ota-meshi-eslint-plugin-regexp:285-0eced9d",
+    "language": "ts",
+    "workdir": "/eslint-plugin-regexp",
+    "instance_id": "ota-meshi__eslint-plugin-regexp-285",
+    "replay_file": "ota-meshi__eslint-plugin-regexp-285.replay.json",
+    "steps": 83
+  },
+  {
+    "name": "prettier-plugin-pug-448",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-prettier-plugin-pug:448-2d9f897",
+    "language": "ts",
+    "workdir": "/plugin-pug",
+    "instance_id": "prettier__plugin-pug-448",
+    "replay_file": "prettier__plugin-pug-448.replay.json",
+    "steps": 52
+  },
+  {
+    "name": "sql-formatter-org-sql-formatter-603",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-sql-formatter-org-sql-formatter:603-8b76638",
+    "language": "ts",
+    "workdir": "/sql-formatter",
+    "instance_id": "sql-formatter-org__sql-formatter-603",
+    "replay_file": "sql-formatter-org__sql-formatter-603.replay.json",
+    "steps": 36
+  },
+  {
+    "name": "stoplightio-spectral-914",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-stoplightio-spectral:914-d8c3aba",
+    "language": "ts",
+    "workdir": "/spectral",
+    "instance_id": "stoplightio__spectral-914",
+    "replay_file": "stoplightio__spectral-914.replay.json",
+    "steps": 84
+  },
+  {
+    "name": "syuilo-aiscript-329",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-syuilo-aiscript:329-87fe3d0",
+    "language": "ts",
+    "workdir": "/aiscript",
+    "instance_id": "syuilo__aiscript-329",
+    "replay_file": "syuilo__aiscript-329.replay.json",
+    "steps": 67
+  },
+  {
+    "name": "teleporthq-teleport-code-generators-262",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-teleporthq-teleport-code-generators:262-c5be56f",
+    "language": "ts",
+    "workdir": "/teleport-code-generators",
+    "instance_id": "teleporthq__teleport-code-generators-262",
+    "replay_file": "teleporthq__teleport-code-generators-262.replay.json",
+    "steps": 57
+  },
+  {
+    "name": "appvia-kev-617",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-appvia-kev:617-6c81685",
+    "language": "go",
+    "workdir": "/kev",
+    "instance_id": "appvia__kev-617",
+    "replay_file": "appvia__kev-617.replay.json",
+    "steps": 78
+  },
+  {
+    "name": "bombsimon-wsl-108",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-bombsimon-wsl:108-bbddf87",
+    "language": "go",
+    "workdir": "/wsl",
+    "instance_id": "bombsimon__wsl-108",
+    "replay_file": "bombsimon__wsl-108.replay.json",
+    "steps": 85
+  },
+  {
+    "name": "bombsimon-wsl-173",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-bombsimon-wsl:173-9bcfb87",
+    "language": "go",
+    "workdir": "/wsl",
+    "instance_id": "bombsimon__wsl-173",
+    "replay_file": "bombsimon__wsl-173.replay.json",
+    "steps": 93
+  },
+  {
+    "name": "casbin-casbin-331",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-casbin-casbin:331-d708484",
+    "language": "go",
+    "workdir": "/casbin",
+    "instance_id": "casbin__casbin-331",
+    "replay_file": "casbin__casbin-331.replay.json",
+    "steps": 104
+  },
+  {
+    "name": "celestiaorg-nmt-182",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-celestiaorg-nmt:182-21c6427",
+    "language": "go",
+    "workdir": "/nmt",
+    "instance_id": "celestiaorg__nmt-182",
+    "replay_file": "celestiaorg__nmt-182.replay.json",
+    "steps": 54
+  },
+  {
+    "name": "ceph-go-ceph-889",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-ceph-go-ceph:889-4787861",
+    "language": "go",
+    "workdir": "/go-ceph",
+    "instance_id": "ceph__go-ceph-889",
+    "replay_file": "ceph__go-ceph-889.replay.json",
+    "steps": 34
+  },
+  {
+    "name": "containrrr-watchtower-1784",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-containrrr-watchtower:1784-9180e95",
+    "language": "go",
+    "workdir": "/watchtower",
+    "instance_id": "containrrr__watchtower-1784",
+    "replay_file": "containrrr__watchtower-1784.replay.json",
+    "steps": 74
+  },
+  {
+    "name": "d5-tengo-399",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-d5-tengo:399-2edd39e",
+    "language": "go",
+    "workdir": "/tengo",
+    "instance_id": "d5__tengo-399",
+    "replay_file": "d5__tengo-399.replay.json",
+    "steps": 62
+  },
+  {
+    "name": "go-sprout-sprout-75",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-go-sprout-sprout:75-1c34c3a",
+    "language": "go",
+    "workdir": "/sprout",
+    "instance_id": "go-sprout__sprout-75",
+    "replay_file": "go-sprout__sprout-75.replay.json",
+    "steps": 43
+  },
+  {
+    "name": "goadesign-goa-3125",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-goadesign-goa:3125-7a03643",
+    "language": "go",
+    "workdir": "/goa",
+    "instance_id": "goadesign__goa-3125",
+    "replay_file": "goadesign__goa-3125.replay.json",
+    "steps": 51
+  },
+  {
+    "name": "gphotosuploader-gphotos-uploader-cli-153",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-gphotosuploader-gphotos-uploader-cli:153-89c97d4",
+    "language": "go",
+    "workdir": "/gphotos-uploader-cli",
+    "instance_id": "gphotosuploader__gphotos-uploader-cli-153",
+    "replay_file": "gphotosuploader__gphotos-uploader-cli-153.replay.json",
+    "steps": 57
+  },
+  {
+    "name": "knative-sandbox-kn-plugin-func-1185",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-knative-sandbox-kn-plugin-func:1185-f4a410a",
+    "language": "go",
+    "workdir": "/kn-plugin-func",
+    "instance_id": "knative-sandbox__kn-plugin-func-1185",
+    "replay_file": "knative-sandbox__kn-plugin-func-1185.replay.json",
+    "steps": 85
+  },
+  {
+    "name": "mmcdole-gofeed-259",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-mmcdole-gofeed:259-6e8dddc",
+    "language": "go",
+    "workdir": "/gofeed",
+    "instance_id": "mmcdole__gofeed-259",
+    "replay_file": "mmcdole__gofeed-259.replay.json",
+    "steps": 73
+  },
+  {
+    "name": "moov-io-customers-275",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-moov-io-customers:275-fce1954",
+    "language": "go",
+    "workdir": "/customers",
+    "instance_id": "moov-io__customers-275",
+    "replay_file": "moov-io__customers-275.replay.json",
+    "steps": 47
+  },
+  {
+    "name": "open-telemetry-opentelemetry-operator-3962",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-open-telemetry-opentelemetry-operator:3962-fbb7c11",
+    "language": "go",
+    "workdir": "/opentelemetry-operator",
+    "instance_id": "open-telemetry__opentelemetry-operator-3962",
+    "replay_file": "open-telemetry__opentelemetry-operator-3962.replay.json",
+    "steps": 43
+  },
+  {
+    "name": "tikv-pd-7087",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-tikv-pd:7087-f1107b2",
+    "language": "go",
+    "workdir": "/pd",
+    "instance_id": "tikv__pd-7087",
+    "replay_file": "tikv__pd-7087.replay.json",
+    "steps": 73
+  },
+  {
+    "name": "triggermesh-aws-event-sources-152",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-triggermesh-aws-event-sources:152-12fb626",
+    "language": "go",
+    "workdir": "/aws-event-sources",
+    "instance_id": "triggermesh__aws-event-sources-152",
+    "replay_file": "triggermesh__aws-event-sources-152.replay.json",
+    "steps": 32
+  },
+  {
+    "name": "vaskoz-dailycodingproblem-go-546",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-vaskoz-dailycodingproblem-go:546-0e78b9c",
+    "language": "go",
+    "workdir": "/dailycodingproblem-go",
+    "instance_id": "vaskoz__dailycodingproblem-go-546",
+    "replay_file": "vaskoz__dailycodingproblem-go-546.replay.json",
+    "steps": 37
+  },
+  {
+    "name": "vaskoz-dailycodingproblem-go-653",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-vaskoz-dailycodingproblem-go:653-6dd851b",
+    "language": "go",
+    "workdir": "/dailycodingproblem-go",
+    "instance_id": "vaskoz__dailycodingproblem-go-653",
+    "replay_file": "vaskoz__dailycodingproblem-go-653.replay.json",
+    "steps": 43
+  },
+  {
+    "name": "vaskoz-dailycodingproblem-go-763",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-vaskoz-dailycodingproblem-go:763-75b96f3",
+    "language": "go",
+    "workdir": "/dailycodingproblem-go",
+    "instance_id": "vaskoz__dailycodingproblem-go-763",
+    "replay_file": "vaskoz__dailycodingproblem-go-763.replay.json",
+    "steps": 33
+  },
+  {
+    "name": "vaskoz-dailycodingproblem-go-808",
+    "image": "swr.cn-north-4.myhuaweicloud.com/kunpeng-ai/swerebench-arm64-vaskoz-dailycodingproblem-go:808-f88eee6",
+    "language": "go",
+    "workdir": "/dailycodingproblem-go",
+    "instance_id": "vaskoz__dailycodingproblem-go-808",
+    "replay_file": "vaskoz__dailycodingproblem-go-808.replay.json",
+    "steps": 38
+  }
+]
