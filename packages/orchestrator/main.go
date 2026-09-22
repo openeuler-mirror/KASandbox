@@ -582,7 +582,12 @@ func run(config cfg.Config) (success bool) {
 	}
 
 	httpServer := factories.NewHTTPServer()
-	httpServer.Handler = healthcheck.CreateHandler()
+	mux := http.NewServeMux()
+	mux.Handle("/health", healthcheck.CreateHandler())
+	if tmpl != nil {
+		mux.Handle(storage.SignedUploadPath, tmpl.SignedUploadHandler())
+	}
+	httpServer.Handler = mux
 
 	startService("http server", func() error {
 		err := httpServer.Serve(httpListener)
