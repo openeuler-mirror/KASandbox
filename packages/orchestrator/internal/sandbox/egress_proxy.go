@@ -95,6 +95,7 @@ func (f *Factory) startEgressProxy(
 	sandboxDir string,
 	egressMode network.EgressMode,
 	deferRules bool,
+	caSnap *network.ProxyCASnapshot,
 ) error {
 	if egressMode != network.EgressModePerSandbox {
 		return nil
@@ -104,13 +105,21 @@ func (f *Factory) startEgressProxy(
 	// 不允许「规则已装、CA 未注入」的半配置沙箱运行。
 	failFast := deferRules || netCfg.SandboxProxyApply == network.EgressProxyApplyImmediate
 
+	// §7.5.4 代际绑定：快照在场时 spawn 用已解析的代际目录（不经 current
+	// symlink 二次寻址——spawn 时刻 symlink 可能已切换），保证与 guest 注入的
+	// cert 同代际；快照为 nil 时维持 confdir 现状（CA_AUTO=false 手工布局）。
+	confDir := netCfg.SandboxProxyConfDir
+	if caSnap != nil {
+		confDir = caSnap.GenDir
+	}
+
 	start := time.Now()
 
 	svc, err := hostservice.BuildEgressProxyService(
 		hostservice.EgressProxyConfig{
 			Binary:     netCfg.SandboxProxyBinary,
 			Addon:      netCfg.SandboxProxyAddon,
-			ConfDir:    netCfg.SandboxProxyConfDir,
+			ConfDir:    confDir,
 			Port:       netCfg.SandboxProxyListenPort,
 			Restart:    netCfg.SandboxProxyRestart,
 			LogDir:     netCfg.SandboxProxyLogDir,
@@ -225,9 +234,10 @@ func (f *Factory) injectEgressProxyCAAndInstallRules(
 	netCfg network.Config,
 	slot *network.Slot,
 	runtime RuntimeMetadata,
+	caSnap *network.ProxyCASnapshot,
 ) error {
 	injectStart := time.Now()
-	if err := sbx.injectEgressProxyCA(ctx, netCfg); err != nil {
+	if err := sbx.injectEgressProxyCA(ctx, netCfg, caSnap); err != nil {
 		return fmt.Errorf("inject egress proxy CA into guest: %w", err)
 	}
 

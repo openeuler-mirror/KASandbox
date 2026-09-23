@@ -312,6 +312,22 @@ func (f *Factory) CreateSandbox(
 	// 成功之后安装（强制 immediate 语义，与 SANDBOX_PROXY_APPLY 无关）。
 	caInject := egressProxyCANeedsInjection(netCfg, egressMode, config.EgressIdentity)
 
+	// §7.5.4 代际绑定：per-sandbox 沙箱在创建开始持有当前 CA 代际引用，
+	// spawn 的 confdir 与 guest 注入的 cert 恒为同一代际（轮转窗口不撕裂）；
+	// 引用随 cleanup 栈在沙箱销毁时释放（旧代际 GC 以引用计数为准）。
+	// 快照为 nil（CA_AUTO 关闭/未加载）时不计数、不注册释放。
+	var caSnap *network.ProxyCASnapshot
+	if egressMode == network.EgressModePerSandbox {
+		caSnap = network.AcquireProxyCA()
+		if caSnap != nil {
+			cleanup.Add(ctx, func(context.Context) error {
+				network.ReleaseProxyCA(caSnap.Gen)
+
+				return nil
+			})
+		}
+	}
+
 	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork, egressMode)
 
 	sandboxFiles := template.Files().NewSandboxFiles(runtime.SandboxID)
@@ -375,7 +391,7 @@ func (f *Factory) CreateSandbox(
 	// (LIFO), so the proxy process is killed before the netns is removed. When
 	// the guest CA injection is pending (caInject), rule installation is
 	// deferred until after the injection below.
-	err = f.startEgressProxy(ctx, cleanup, netCfg, ips, config, runtime, sandboxFiles.SandboxHostDir(), egressMode, caInject)
+	err = f.startEgressProxy(ctx, cleanup, netCfg, ips, config, runtime, sandboxFiles.SandboxHostDir(), egressMode, caInject, caSnap)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start egress proxy: %w", err)
 	}
@@ -509,7 +525,7 @@ func (f *Factory) CreateSandbox(
 		if err := sbx.WaitForEnvd(ctx, f.config.EnvdTimeout); err != nil {
 			return nil, fmt.Errorf("failed to wait for envd before egress CA injection: %w", err)
 		}
-		if err := f.injectEgressProxyCAAndInstallRules(ctx, sbx, netCfg, ips, runtime); err != nil {
+		if err := f.injectEgressProxyCAAndInstallRules(ctx, sbx, netCfg, ips, runtime, caSnap); err != nil {
 			return nil, err
 		}
 	}
@@ -655,6 +671,20 @@ func (f *Factory) ResumeSandbox(
 	// 成功之后安装（强制 immediate 语义，与 SANDBOX_PROXY_APPLY 无关）。
 	caInject := egressProxyCANeedsInjection(netCfg, egressMode, config.EgressIdentity)
 
+	// §7.5.4 代际绑定（与 CreateSandbox 对称）：per-sandbox 沙箱持有当前 CA
+	// 代际引用，spawn 与注入同代际；引用随 cleanup 栈在沙箱销毁时释放。
+	var caSnap *network.ProxyCASnapshot
+	if egressMode == network.EgressModePerSandbox {
+		caSnap = network.AcquireProxyCA()
+		if caSnap != nil {
+			cleanup.Add(ctx, func(context.Context) error {
+				network.ReleaseProxyCA(caSnap.Gen)
+
+				return nil
+			})
+		}
+	}
+
 	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, config.RuntimeNetwork, egressMode)
 
 	// Rootfs initialization
@@ -732,7 +762,7 @@ func (f *Factory) ResumeSandbox(
 	// wiring as CreateSandbox: spawn + redirect rules before the VMM resumes.
 	// When the guest CA injection is pending (caInject), rule installation is
 	// deferred until after the injection below.
-	err = f.startEgressProxy(ctx, cleanup, netCfg, ips, config, runtime, sandboxFiles.SandboxHostDir(), egressMode, caInject)
+	err = f.startEgressProxy(ctx, cleanup, netCfg, ips, config, runtime, sandboxFiles.SandboxHostDir(), egressMode, caInject, caSnap)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start egress proxy: %w", err)
 	}
@@ -989,7 +1019,7 @@ func (f *Factory) ResumeSandbox(
 	// 恢复路径靠指纹幂等兜底不重复执行 update-ca-certificates；注入成功后
 	// 才安装延后的 REDIRECT 规则，失败即恢复失败并回滚。
 	if caInject {
-		if err := f.injectEgressProxyCAAndInstallRules(ctx, sbx, netCfg, ips, runtime); err != nil {
+		if err := f.injectEgressProxyCAAndInstallRules(ctx, sbx, netCfg, ips, runtime, caSnap); err != nil {
 			return nil, fmt.Errorf("failed to inject egress proxy CA: %w", err)
 		}
 	}
