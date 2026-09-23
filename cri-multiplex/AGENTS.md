@@ -47,7 +47,7 @@ pkg/engine/engine.go        — RuntimeEngine interface (all CRI methods)
 pkg/engine/container.go     — ContainerEngine: real gRPC client to containerd
 pkg/engine/e2b.go           — E2BEngine interface + factory
 pkg/engine/grpc_e2b.go      — gRPC backend: orchestrator SandboxService client
-pkg/engine/sandbox_create.go — createE2BSandbox: shared sandbox-create lifecycle (CNI/HostPort/tracker/stateStore) used by RunPodSandbox and AdminCreate; 全程持有 per-sandbox 操作锁，与同 ID 清理路径互斥
+pkg/engine/sandbox_create.go — createE2BSandbox: shared sandbox-create lifecycle (CNI/HostPort/tracker/stateStore) used by RunPodSandbox and AdminCreate; 入口按 sandboxID 做 singleflight 去重（并发重复请求复用首个请求结果），主体全程持有 per-sandbox 操作锁，与同 ID 清理路径互斥
 pkg/engine/admin_ops.go     — AdminPause/AdminCheckpoint/AdminGetRuntime + sandbox operation lock (tryLockSandbox / blocking lockSandbox；createE2BSandbox 与 cleanupSandboxResources 也经此锁互斥)
 pkg/engine/admin_sandbox.go — AdminCreate/AdminUpdate/AdminList/AdminDelete/AdminListCachedBuilds (E2BSandboxService engine impl)
 pkg/orchestrator/           — generated proto types + gRPC client for SandboxService
