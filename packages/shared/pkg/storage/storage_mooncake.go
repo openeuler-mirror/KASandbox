@@ -54,6 +54,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
 	"runtime"
@@ -976,6 +977,7 @@ func Shutdown() {
 type mooncakeStorage struct {
 	store      *mooncakestore.Store
 	bucketName string // used as a key-prefix / namespace
+	upload     *mooncakeUploadConfig
 }
 
 var _ StorageProvider = (*mooncakeStorage)(nil)
@@ -995,9 +997,15 @@ func NewMooncakeStorageProvider(_ context.Context, bucketName string) (*mooncake
 		return nil, err
 	}
 
+	uploadCfg, err := newMooncakeUploadConfig()
+	if err != nil {
+		return nil, err
+	}
+
 	instance := &mooncakeStorage{
 		store:      factory.store,
 		bucketName: bucketName,
+		upload:     uploadCfg,
 	}
 	mooncakeInstances[bucketName] = instance
 	return instance, nil
@@ -1029,8 +1037,21 @@ func (s *mooncakeStorage) DeleteObjectsWithPrefix(ctx context.Context, prefix st
 	return nil
 }
 
-func (s *mooncakeStorage) UploadSignedURL(_ context.Context, _ string, _ time.Duration) (string, error) {
-	return "", fmt.Errorf("mooncake storage does not support signed URLs")
+func (s *mooncakeStorage) UploadSignedURL(_ context.Context, path string, ttl time.Duration) (string, error) {
+	if s.upload == nil {
+		return "", fmt.Errorf("mooncake signed upload is not configured: set MOONCAKE_UPLOAD_PUBLIC_ENDPOINT")
+	}
+
+	expires := time.Now().Add(ttl).Unix()
+	v := url.Values{}
+	// Use the path without the bucket prefix: the handler resolves it through the
+	// provider's OpenBlob, so the bucket name is never leaked and the handler does
+	// not need to know about the key layout.
+	v.Set("path", path)
+	v.Set("expires", strconv.FormatInt(expires, 10))
+	v.Set("sig", s.upload.sign(path, expires))
+
+	return s.upload.publicURL + SignedUploadPath + "?" + v.Encode(), nil
 }
 
 func (s *mooncakeStorage) OpenSeekable(_ context.Context, path string, _ SeekableObjectType) (Seekable, error) {
@@ -1110,6 +1131,79 @@ func (o *mooncakeBlob) Put(ctx context.Context, data []byte) error {
 		return fmt.Errorf("failed to write metadata: %w", err)
 	}
 	storeCachedMetadata(o.path, meta)
+	return nil
+}
+
+// StoreReader implements the StreamStorer interface: it reads r sequentially and
+// uploads MemoryChunkSize chunks concurrently, writing the metadata last. The
+// produced layout is identical to Put/StoreFile, so readers need no changes.
+// Memory use is bounded by mooncakeUploadConcurrency x MemoryChunkSize (~64MB).
+func (o *mooncakeBlob) StoreReader(ctx context.Context, r io.Reader) error {
+	invalidateCachedMetadata(o.path)
+
+	g, groupCtx := errgroup.WithContext(ctx)
+	g.SetLimit(mooncakeUploadConcurrency)
+
+	var size int64
+	for {
+		buf, release, err := getChunkBuffer(ctx)
+		if err != nil {
+			return err
+		}
+
+		n, readErr := io.ReadFull(r, buf)
+		last := errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF)
+		if n == 0 && last {
+			release()
+
+			break
+		}
+		if readErr != nil && !last {
+			release()
+
+			return fmt.Errorf("failed to read upload stream: %w", readErr)
+		}
+
+		off := size
+		size += int64(n)
+		chunk := buf[:n]
+		g.Go(func() error {
+			defer release()
+			if err := groupCtx.Err(); err != nil {
+				return err
+			}
+
+			cChunk := C.CBytes(chunk)
+			defer C.free(cChunk)
+
+			return o.store.Put(o.chunkKey(off), unsafe.Slice((*byte)(cChunk), len(chunk)), nil)
+		})
+
+		if last {
+			break
+		}
+	}
+
+	if err := g.Wait(); err != nil {
+		// Clean up the half-written chunks; the metadata was not written, so the
+		// object stays "absent" from the reader's point of view.
+		_ = o.deleteObjectAndChunks()
+
+		return fmt.Errorf("failed to upload chunks: %w", err)
+	}
+
+	// Write the metadata last, same as StoreFile: readers only see a consistent
+	// object once the whole upload finished.
+	meta := &mooncakeObjectMeta{Size: size, ChunkSize: MemoryChunkSize}
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	if err := o.store.Put(o.path, metaBytes, nil); err != nil {
+		return fmt.Errorf("failed to write metadata: %w", err)
+	}
+	storeCachedMetadata(o.path, meta)
+
 	return nil
 }
 
