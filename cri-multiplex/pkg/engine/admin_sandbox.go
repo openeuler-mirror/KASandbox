@@ -87,7 +87,7 @@ func (e *grpcE2BEngine) AdminCreate(ctx context.Context, req *orchestrator.Sandb
 
 // AdminDelete 是 Stop+Remove 合一的完整清理：阻塞式获取 sandbox 操作锁
 // （等待进行中的 Pause/Checkpoint 结束，随 ctx 取消）后执行
-// cleanupSandboxResources 的完整序列（orchestrator Delete / HostPort 释放 /
+// cleanupSandboxResourcesLocked 的完整序列（orchestrator Delete / HostPort 释放 /
 // CNI DEL / stateStore / podRoutes / tracker 摘除）。幂等：sandbox 不存在返回 OK。
 func (e *grpcE2BEngine) AdminDelete(ctx context.Context, req *orchestrator.SandboxDeleteRequest) (*emptypb.Empty, error) {
 	sandboxID := req.GetSandboxId()
@@ -99,7 +99,7 @@ func (e *grpcE2BEngine) AdminDelete(ctx context.Context, req *orchestrator.Sandb
 		return nil, err
 	}
 	defer mu.Unlock()
-	if err := e.cleanupSandboxResources(ctx, sandboxID); err != nil {
+	if err := e.cleanupSandboxResourcesLocked(ctx, sandboxID); err != nil {
 		return nil, mapE2BError(err)
 	}
 	log.Printf("[GrpcE2BEngine] AdminDelete succeeded: sandbox=%s", sandboxID)

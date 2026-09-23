@@ -36,10 +36,18 @@ type e2bCreateParams struct {
 // → orchestrator Create（失败 CNI DEL 回滚）→ HostPort 分配（失败即创建失败并回滚
 // orchestrator Delete + CNI DEL）与 iptables 批量安装 → tracker + stateStore 登记。
 // 由 RunPodSandbox（CRI 面）与 AdminCreate（admin 面）共用；幂等重试检查与 inflight
-// 计数保留在各适配层。
+// 计数保留在各适配层。全程持有 per-sandbox 操作锁，与同 ID 的清理路径
+// （cleanupSandboxResources）互斥，防止清理方的 netns DeleteNamed 拆掉创建
+// 刚建好的同名 netns（orchestrator setns 报 EINVAL/ENOENT）。
 func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams) (*orchestrator.SandboxCreateResponse, error) {
 	sandboxID := p.sandboxID
 	cfg := p.cfg
+
+	mu, err := e.lockSandbox(ctx, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer mu.Unlock()
 
 	// expose-ports 提前解析（设计文档 4.4.2.6）：malformed 直接 InvalidArgument
 	// fail-fast，不进入 CNI/orchestrator，避免"声明被静默丢弃但业务以为已暴露"。

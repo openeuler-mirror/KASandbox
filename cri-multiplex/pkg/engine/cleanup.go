@@ -268,7 +268,21 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
+// cleanupSandboxResources 经 per-sandbox 操作锁执行清理：与 createE2BSandbox
+// 互斥，否则并发的 CNI DEL（netns DeleteNamed）会把同 ID 创建刚重建的同名
+// netns umount 掉，orchestrator 打开/setns 时报 EINVAL 或 ENOENT。
 func (e *grpcE2BEngine) cleanupSandboxResources(ctx context.Context, sandboxID string) error {
+	mu, err := e.lockSandbox(ctx, sandboxID)
+	if err != nil {
+		return err
+	}
+	defer mu.Unlock()
+	return e.cleanupSandboxResourcesLocked(ctx, sandboxID)
+}
+
+// cleanupSandboxResourcesLocked 是清理主体，调用方必须已持有该 sandbox 的
+// 操作锁（如 AdminDelete 自身持锁，直接调用本函数）。
+func (e *grpcE2BEngine) cleanupSandboxResourcesLocked(ctx context.Context, sandboxID string) error {
 	pod, ok := e.tracker.Get(sandboxID)
 	if !ok && e.stateStore != nil {
 		states, err := e.stateStore.LoadE2BPods()

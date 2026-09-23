@@ -305,3 +305,33 @@ func TestUnknownOwnerDirectoryIsNotDeleted(t *testing.T) {
 		t.Fatalf("unknown owner directory was removed: %v", err)
 	}
 }
+
+func TestCleanupSandboxResourcesWaitsForSandboxOpLock(t *testing.T) {
+	e := &grpcE2BEngine{}
+	mu, locked := e.tryLockSandbox("sb-oplock")
+	if !locked {
+		t.Fatal("failed to pre-acquire sandbox op lock")
+	}
+	defer mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := e.cleanupSandboxResources(ctx, "sb-oplock"); status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("cleanupSandboxResources err = %v, want DeadlineExceeded while op lock is held", err)
+	}
+}
+
+func TestCreateE2BSandboxTakesSandboxOpLock(t *testing.T) {
+	e := &grpcE2BEngine{}
+	mu, locked := e.tryLockSandbox("sb-oplock")
+	if !locked {
+		t.Fatal("failed to pre-acquire sandbox op lock")
+	}
+	defer mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := e.createE2BSandbox(ctx, e2bCreateParams{sandboxID: "sb-oplock"}); status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("createE2BSandbox err = %v, want DeadlineExceeded while op lock is held", err)
+	}
+}
