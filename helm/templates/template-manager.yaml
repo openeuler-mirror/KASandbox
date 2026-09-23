@@ -153,6 +153,12 @@ spec:
           value: "{{ .Values.mcUrmaBondingMultipathEnable }}"
         - name: MC_UB_NUMA_AFFINITY_ENABLE
           value: "{{ .Values.mcUbNumaAffinityEnable }}"
+        - name: MOONCAKE_UPLOAD_PUBLIC_ENDPOINT
+          value: "{{ .Values.mooncakeUploadPublicEndpoint }}"
+        - name: MOONCAKE_UPLOAD_SIGNING_SECRET
+          value: "{{ .Values.mooncakeUploadSigningSecret }}"
+        - name: MOONCAKE_UPLOAD_MAX_BYTES
+          value: "{{ .Values.mooncakeUploadMaxBytes }}"
         resources:
           requests:
             cpu: {{ .Values.templateManagerResourcesCpuCount }}m

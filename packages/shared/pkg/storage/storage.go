@@ -125,6 +125,24 @@ type Seekable interface {
 	StreamingReader
 }
 
+// StreamStorer is optionally implemented by Blobs that support streaming writes
+// (e.g. the chunked Mooncake blob). Callers probe for it with a type assertion
+// and either fall back or report an error when it is not implemented.
+type StreamStorer interface {
+	StoreReader(ctx context.Context, r io.Reader) error
+}
+
+// SignedUploadVerifier is optionally implemented by providers that mint their own
+// signed upload URLs (e.g. Mooncake). The HTTP upload endpoint uses it to verify
+// the URL signature.
+type SignedUploadVerifier interface {
+	VerifySignedUpload(path string, expires int64, sig string) error
+}
+
+// SignedUploadPath is the upload route served on the orchestrator HTTP channel
+// (the port shared with gRPC through cmux).
+const SignedUploadPath = "/v1/storage/signed-upload"
+
 func GetTemplateStorageProvider(ctx context.Context, limiter *limit.Limiter) (StorageProvider, error) {
 	provider := Provider(env.GetEnv(storageProviderEnv, string(DefaultStorageProvider)))
 

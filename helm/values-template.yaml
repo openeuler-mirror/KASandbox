@@ -137,6 +137,9 @@ mcWorkersPerCtx: "${MC_WORKERS_PER_CTX}"
 mcMaxWr: "${MC_MAX_WR}"
 mcUrmaBondingMultipathEnable: "${MC_URMA_BONDING_MULTIPATH_ENABLE}"
 mcUbNumaAffinityEnable: "${MC_UB_NUMA_AFFINITY_ENABLE}"
+mooncakeUploadPublicEndpoint: "${MOONCAKE_UPLOAD_PUBLIC_ENDPOINT}"
+mooncakeUploadSigningSecret: "${MOONCAKE_UPLOAD_SIGNING_SECRET}"
+mooncakeUploadMaxBytes: "${MOONCAKE_UPLOAD_MAX_BYTES}"
 
 # --- Ports ---
 apiPort: ${API_PORT}
