@@ -105,10 +105,12 @@ spec:
           value: "{{ .Values.sharedChunkCachePath }}"
         - name: CLICKHOUSE_CONNECTION_STRING
           value: "clickhouse://{{ .Values.clickhouseUsername }}:{{ .Values.clickhousePassword }}@127.0.0.1:{{ .Values.clickhouseServerPort | int }}/{{ .Values.clickhouseDatabase }}"
+        {{- if .Values.redisEnabled }}
         - name: REDIS_URL
           value: "{{ .Values.redisUrl }}:{{ .Values.redisPort | int }}"
         - name: REDIS_CLUSTER_URL
           value: "{{ .Values.redisClusterUrl }}"
+        {{- end }}
         - name: STORAGE_PROVIDER
           value: "{{ .Values.storageProvider }}"
         - name: ARTIFACTS_REGISTRY_PROVIDER

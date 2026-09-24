@@ -208,12 +208,14 @@ check_start() {
         fi
     else
         info "----- Nomad 模式检查 -----"
-        # postgres 容器（start_postgres 依赖）
-        local pg_name
-        pg_name=$("$rt" ps -a --format '{{.Names}}' 2>/dev/null | grep -x postgres || true)
-        check "PostgreSQL 容器存在（postgres）" \
-            "$([ -n "$pg_name" ]; echo $?)" \
-            "install 阶段应创建 postgres 容器，请先执行 ./build.sh --install"
+        # postgres 容器（start_postgres 依赖）；ENABLE_POSTGRES=false 时使用外部实例，跳过检查
+        if [ "${ENABLE_POSTGRES:-true}" = "true" ]; then
+            local pg_name
+            pg_name=$("$rt" ps -a --format '{{.Names}}' 2>/dev/null | grep -x postgres || true)
+            check "PostgreSQL 容器存在（postgres）" \
+                "$([ -n "$pg_name" ]; echo $?)" \
+                "install 阶段应创建 postgres 容器，请先执行 ./build.sh --install"
+        fi
 
         # nomad/consul systemd 服务
         check "Nomad 服务可用（systemd 或二进制）" \
