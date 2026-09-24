@@ -74,6 +74,10 @@ type Slot struct {
 	NetNSPath     string
 	PodIP         net.IP
 	IfName        string
+	// gateway 是 CNI IPAM 分配的子网网关（cri-multiplex 经 runtime_network
+	// 透传），用于给 external netns 补 default 路由；为空表示上游未提供，
+	// 保持现状（依赖 CNI 配置自带 routes 段）。
+	gateway net.IP
 
 	Firewall *Firewall
 
@@ -204,6 +208,14 @@ func NewExternalNetNSSlot(key string, runtimeNet *orchestrator.SandboxRuntimeNet
 		ifName = "eth0"
 	}
 
+	var gateway net.IP
+	if gw := runtimeNet.GetGateway(); gw != "" {
+		gateway = net.ParseIP(gw)
+		if gateway == nil {
+			return nil, fmt.Errorf("runtime network gateway is invalid: %q", gw)
+		}
+	}
+
 	hostCIDR := fmt.Sprintf("%s/%d", podIP.String(), hostMask)
 	_, hostNet, err := net.ParseCIDR(hostCIDR)
 	if err != nil {
@@ -229,6 +241,7 @@ func NewExternalNetNSSlot(key string, runtimeNet *orchestrator.SandboxRuntimeNet
 		NetNSPath:     runtimeNet.GetNetnsPath(),
 		PodIP:         podIP,
 		IfName:        ifName,
+		gateway:       gateway,
 
 		tapIp:   tapIp,
 		tapMask: tapNet.Mask,

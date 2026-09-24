@@ -486,6 +486,15 @@ func (s *Slot) CreateExternalNetNSNetwork(ctx context.Context) error {
 		return fmt.Errorf("error finding lo: %w", err)
 	}
 
+	// CNI 配置未带 routes 段时 netns 里只有直连路由，VM 出向（含 DNS）全部
+	// 被路由查找丢弃；按 CNI 透传的网关补 default 路由。CNI 已装（IPAM
+	// routes 段）时 RouteAdd 撞 EEXIST，视为成功。
+	if s.gateway != nil {
+		if err := netlink.RouteAdd(&netlink.Route{Scope: netlink.SCOPE_UNIVERSE, Gw: s.gateway}); err != nil && !errors.Is(err, syscall.EEXIST) {
+			return fmt.Errorf("error adding external netns default route via %s: %w", s.gateway, err)
+		}
+	}
+
 	if err := createTap(tapOpts{
 		Name:    s.TapName(),
 		Address: &net.IPNet{IP: s.TapIP(), Mask: s.TapCIDR()},

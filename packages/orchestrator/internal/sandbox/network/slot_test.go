@@ -34,6 +34,46 @@ func TestNewExternalNetNSSlotUsesCvdTapLayout(t *testing.T) {
 	if got := slot.ExtraTapCIDR(); !bytes.Equal(got, []byte{255, 255, 255, 252}) {
 		t.Fatalf("ExtraTapCIDR = %v, want %v", got, []byte{255, 255, 255, 252})
 	}
+	if slot.gateway != nil {
+		t.Fatalf("gateway = %v, want nil when runtime network omits it", slot.gateway)
+	}
+}
+
+func TestNewExternalNetNSSlotGateway(t *testing.T) {
+	t.Parallel()
+
+	slot, err := NewExternalNetNSSlot(
+		"e2b",
+		&orchestrator.SandboxRuntimeNetworkConfig{
+			Mode:      orchestrator.SandboxRuntimeNetworkConfig_CNI_EXTERNAL_NETNS,
+			NetnsPath: "/var/run/netns/e2b-abc123",
+			IfName:    "eth0",
+			PodIp:     "172.31.100.56",
+			Gateway:   "172.31.100.1",
+		},
+		Config{},
+	)
+	if err != nil {
+		t.Fatalf("NewExternalNetNSSlot: %v", err)
+	}
+	if got := slot.gateway.String(); got != "172.31.100.1" {
+		t.Fatalf("gateway = %q, want %q", got, "172.31.100.1")
+	}
+
+	_, err = NewExternalNetNSSlot(
+		"e2b",
+		&orchestrator.SandboxRuntimeNetworkConfig{
+			Mode:      orchestrator.SandboxRuntimeNetworkConfig_CNI_EXTERNAL_NETNS,
+			NetnsPath: "/var/run/netns/e2b-abc123",
+			IfName:    "eth0",
+			PodIp:     "172.31.100.56",
+			Gateway:   "not-an-ip",
+		},
+		Config{},
+	)
+	if err == nil {
+		t.Fatal("NewExternalNetNSSlot with invalid gateway should fail")
+	}
 }
 
 // Per-sandbox egress proxy slots (native mode): no host tcpProxy redirect,

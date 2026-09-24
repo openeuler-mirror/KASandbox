@@ -72,6 +72,7 @@ SCRIPTS=(
     "21|cri-multiplex 多 Runtime 路由验证|${SCRIPT_DIR}/21_mux_multi_runtime_routing.sh"
     "22|Pause Checkpoint Resume 全流程端到端验证|${SCRIPT_DIR}/22_pause_checkpoint_resume.sh"
     "23|重启 cri-multiplex 并隐藏 direct sandbox|${SCRIPT_DIR}/23_restart_multiplex_hide_direct.sh"
+    "34|E2B CNI 沙箱出公网（default 路由）验证|${SCRIPT_DIR}/34_cni_public_egress.sh"
 )
 
 #==================== 执行 ====================#
@@ -158,7 +159,7 @@ for entry in "${SCRIPTS[@]}"; do
                     continue
                 fi
                 ;;
-            07|08|09|10|11|12|13|14|15|16|17|21|22)
+            07|08|09|10|11|12|13|14|15|16|17|21|22|34)
                 log_info "切换 cri-multiplex 到 CNI+Android runtime 模式，用于 07 及之后用例 ..."
                 switch_log="${LOG_DIR}/e2b-verify-switch-cni-android.log"
                 if ! run_streamed "${switch_log}" start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式"; then
