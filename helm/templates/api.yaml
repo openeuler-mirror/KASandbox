@@ -1,3 +1,4 @@
+{{- if .Values.apiEnabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -220,3 +221,4 @@ spec:
     targetPort: dns
     name: dns
     protocol: UDP
+{{- end }}

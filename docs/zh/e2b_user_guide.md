@@ -578,12 +578,14 @@ PostgreSQL / Redis / edge（Client Proxy）三个组件支持按需裁剪，通�
 | `ENABLE_POSTGRES` | `true` | 不部署内置 PostgreSQL，改用外部实例（`POSTGRES_CONNECTION_STRING` 指向外部地址；K8S 模式另需将 `POSTGRES_URL` 改为外部实例地址） |
 | `ENABLE_REDIS` | `true` | 不部署内置 Redis：`REDIS_ENDPOINT` 自动置空，API 降级为内存模式运行；`SANDBOX_STORAGE_BACKEND` 强制降级为 `memory` |
 | `ENABLE_EDGE` | `true` | 不部署 edge（Client Proxy）：沙箱域名路由（`*.e2b.app`）不可用，SDK 通过域名连接沙箱受影响，API 直连（创建/管理沙箱）不受影响 |
+| `ENABLE_API` | `true` | 不部署内置 api（仅 K8S 模式）：API 由外部承载；注意 edge（`api.e2b.svc` 上游）与 e2b-webhook 依赖内置 api Service，关闭 api 时需一并关闭 edge 或自行处理依赖 |
 
 ```bash
 # .env 示例
 export ENABLE_POSTGRES=true
 export ENABLE_REDIS=true
 export ENABLE_EDGE=true
+export ENABLE_API=true
 ```
 
 > **说明**：三个开关均为固定赋值，如需关闭某组件请直接改为 `false`（source `.env` 时会覆盖外部环境变量）。
@@ -595,6 +597,7 @@ export ENABLE_EDGE=true
 | `ENABLE_POSTGRES=false` | 不启动 postgres 容器 | Helm 不渲染 postgres 资源，不注入 postgresUrl、不创建 wait-postgres initContainer，不打 postgres 节点标签 |
 | `ENABLE_REDIS=false` | 不提交 redis job，跳过 redis 镜像拉取/推送 | Helm 不渲染 redis 资源，不注入 `REDIS_URL`，不创建 wait-redis initContainer |
 | `ENABLE_EDGE=false` | 不提交 edge job | Helm 不渲染 edge Deployment 与 edge-api Service；`./k8s-deploy.sh configure-domain` 整体跳过（CoreDNS rewrite 与 wildcard Ingress 均指向 edge-api） |
+| `ENABLE_API=false` | —（仅 K8S 模式生效） | Helm 不渲染 api Deployment 与 api Service |
 
 ### 4.7 Orchestrator 承载方式（可选）
 
@@ -1957,6 +1960,7 @@ kubectl get svc ingress-nginx-controller -n ingress-nginx
 | `ENABLE_POSTGRES` | 是否部署内置 PostgreSQL（`false` 时使用外部实例） | `true` |
 | `ENABLE_REDIS` | 是否部署内置 Redis（`false` 时组件降级运行） | `true` |
 | `ENABLE_EDGE` | 是否部署 edge / Client Proxy（`false` 时 `*.e2b.app` 域名路由不可用） | `true` |
+| `ENABLE_API` | 是否部署内置 api（仅 K8S 模式；`false` 时 API 由外部承载） | `true` |
 
 **Orchestrator 承载**（见 [4.7 Orchestrator 承载方式（可选）](#47-orchestrator-承载方式可选)）
 
