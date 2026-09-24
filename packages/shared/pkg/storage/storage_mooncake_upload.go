@@ -8,11 +8,16 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"strings"
+	"net"
+	"strconv"
 	"time"
 
 	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 )
+
+// defaultMooncakeUploadPort matches the default orchestrator gRPC port, on which
+// the signed-upload HTTP route is multiplexed through cmux.
+const defaultMooncakeUploadPort = 5008
 
 // mooncakeUploadConfig holds the configuration of the self-signed HTTP upload
 // endpoint used by Mooncake storage.
@@ -21,13 +26,19 @@ type mooncakeUploadConfig struct {
 	publicURL string
 }
 
-// newMooncakeUploadConfig reads the upload endpoint configuration. When
-// MOONCAKE_UPLOAD_PUBLIC_ENDPOINT is not set it returns (nil, nil), which keeps
-// UploadSignedURL returning an error.
+// newMooncakeUploadConfig builds the upload endpoint from the node host used by
+// Mooncake (MOONCAKE_LOCAL_HOSTNAME) and the orchestrator gRPC port (GRPC_PORT),
+// which also serves the signed-upload HTTP route through cmux. Reusing the node
+// address means the URL is already reachable by clients without a dedicated
+// public endpoint configuration.
 func newMooncakeUploadConfig() (*mooncakeUploadConfig, error) {
-	publicURL := env.GetEnv("MOONCAKE_UPLOAD_PUBLIC_ENDPOINT", "")
-	if publicURL == "" {
-		return nil, nil
+	host := env.GetEnv("MOONCAKE_LOCAL_HOSTNAME", "localhost")
+	port, err := env.GetEnvAsInt("GRPC_PORT", defaultMooncakeUploadPort)
+	if err != nil {
+		return nil, fmt.Errorf("invalid GRPC_PORT: %w", err)
+	}
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("GRPC_PORT must be between 1 and 65535, got %d", port)
 	}
 
 	secret := []byte(env.GetEnv("MOONCAKE_UPLOAD_SIGNING_SECRET", ""))
@@ -44,7 +55,7 @@ func newMooncakeUploadConfig() (*mooncakeUploadConfig, error) {
 
 	return &mooncakeUploadConfig{
 		secret:    secret,
-		publicURL: strings.TrimSuffix(publicURL, "/"),
+		publicURL: "http://" + net.JoinHostPort(host, strconv.Itoa(port)),
 	}, nil
 }
 

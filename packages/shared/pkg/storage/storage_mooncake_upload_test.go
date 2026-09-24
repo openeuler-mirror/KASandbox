@@ -3,6 +3,9 @@
 package storage
 
 import (
+	"context"
+	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -76,35 +79,75 @@ func TestMooncakeUploadSignature_NotConfigured(t *testing.T) {
 	assert.Error(t, storageProvider.VerifySignedUpload("path", time.Now().Add(time.Minute).Unix(), "sig"))
 }
 
-func TestNewMooncakeUploadConfig_DisabledWithoutEndpoint(t *testing.T) {
-	t.Setenv("MOONCAKE_UPLOAD_PUBLIC_ENDPOINT", "")
-
-	cfg, err := newMooncakeUploadConfig()
-	require.NoError(t, err)
-	assert.Nil(t, cfg)
-}
-
-func TestNewMooncakeUploadConfig_Defaults(t *testing.T) {
-	t.Setenv("MOONCAKE_UPLOAD_PUBLIC_ENDPOINT", "http://10.0.0.12:5008/")
+func TestNewMooncakeUploadConfig_FromLocalHostnameAndPort(t *testing.T) {
+	t.Setenv("MOONCAKE_LOCAL_HOSTNAME", "10.0.0.12")
+	t.Setenv("GRPC_PORT", "5008")
 	t.Setenv("MOONCAKE_UPLOAD_SIGNING_SECRET", "")
 
 	cfg, err := newMooncakeUploadConfig()
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 
-	// Trailing slash is trimmed so URLs never contain a double slash.
+	// The endpoint reuses the node address and gRPC port, no separate public
+	// endpoint configuration is needed.
 	assert.Equal(t, "http://10.0.0.12:5008", cfg.publicURL)
 	// Without an explicit secret a random 32 byte process-scoped key is used.
 	assert.Len(t, cfg.secret, 32)
 }
 
+func TestNewMooncakeUploadConfig_Defaults(t *testing.T) {
+	t.Setenv("MOONCAKE_LOCAL_HOSTNAME", "")
+	t.Setenv("GRPC_PORT", "")
+
+	cfg, err := newMooncakeUploadConfig()
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	assert.Equal(t, "http://localhost:5008", cfg.publicURL)
+}
+
 func TestNewMooncakeUploadConfig_ExplicitSecret(t *testing.T) {
-	t.Setenv("MOONCAKE_UPLOAD_PUBLIC_ENDPOINT", "http://10.0.0.12:5008")
+	t.Setenv("MOONCAKE_LOCAL_HOSTNAME", "10.0.0.12")
+	t.Setenv("GRPC_PORT", "6000")
 	t.Setenv("MOONCAKE_UPLOAD_SIGNING_SECRET", "shared-secret")
 
 	cfg, err := newMooncakeUploadConfig()
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 
+	assert.Equal(t, "http://10.0.0.12:6000", cfg.publicURL)
 	assert.Equal(t, []byte("shared-secret"), cfg.secret)
+}
+
+func TestNewMooncakeUploadConfig_InvalidPort(t *testing.T) {
+	t.Setenv("MOONCAKE_LOCAL_HOSTNAME", "10.0.0.12")
+	t.Setenv("GRPC_PORT", "not-a-port")
+
+	_, err := newMooncakeUploadConfig()
+	assert.Error(t, err)
+}
+
+func TestMooncakeUploadSignedURL(t *testing.T) {
+	cfg := &mooncakeUploadConfig{
+		secret:    []byte("test-signing-secret"),
+		publicURL: "http://10.0.0.12:5008",
+	}
+	provider := &mooncakeStorage{upload: cfg}
+
+	raw, err := provider.UploadSignedURL(context.Background(), "team-id/files/9f2c1e.tar", 30*time.Minute)
+	require.NoError(t, err)
+
+	parsed, err := url.Parse(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "http://10.0.0.12:5008", parsed.Scheme+"://"+parsed.Host)
+	assert.Equal(t, SignedUploadPath, parsed.Path)
+
+	query := parsed.Query()
+	assert.Equal(t, "team-id/files/9f2c1e.tar", query.Get("path"))
+
+	expires, err := strconv.ParseInt(query.Get("expires"), 10, 64)
+	require.NoError(t, err)
+	assert.Greater(t, expires, time.Now().Unix())
+
+	require.NoError(t, provider.VerifySignedUpload(query.Get("path"), expires, query.Get("sig")))
 }
