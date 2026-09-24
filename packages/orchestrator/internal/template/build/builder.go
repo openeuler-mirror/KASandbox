@@ -396,7 +396,7 @@ func runBuild(
 	logger.L().Info(ctx, "rootfs size", zap.Uint64("size", rootfsSize))
 
 	resultEnvdVersion := bc.EnvdVersion
-	if bc.Config.UsesRawImage() && bc.Config.IsWindows() && lastLayerResult.Metadata.Template.EnvdVersion != "" {
+	if bc.Config.UsesRawImage() && (bc.Config.IsWindows() || bc.Config.IsAndroid()) && lastLayerResult.Metadata.Template.EnvdVersion != "" {
 		resultEnvdVersion = lastLayerResult.Metadata.Template.EnvdVersion
 	}
 

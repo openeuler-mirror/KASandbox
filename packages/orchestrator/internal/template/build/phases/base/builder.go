@@ -394,11 +394,12 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 	// by finalize (not resumed from memory), so an un-flushed filesystem can
 	// leave the bootloader/filesystem inconsistent on the next boot.
 	actionExecutor := layer.NewFunctionAction(func(ctx context.Context, sbx *sandbox.Sandbox, meta metadata.Template) (metadata.Template, error) {
-		if bb.Config.IsWindows() {
-			guestEnvdVersion, err := sandboxtools.GetWindowsEnvdVersion(
+		if bb.Config.IsWindows() || bb.Config.IsAndroid() {
+			guestEnvdVersion, err := sandboxtools.GetGuestEnvdVersion(
 				ctx,
 				bb.proxy,
 				sbx.Runtime.SandboxID,
+				bb.Config.GuestOS(),
 			)
 			if err != nil {
 				return metadata.Template{}, fmt.Errorf("error getting guest envd version: %w", err)
@@ -713,8 +714,8 @@ func (bb *BaseBuilder) Layer(
 			return notCachedResult, nil
 		}
 
-		if bb.Config.UsesRawImage() && bb.Config.IsWindows() && meta.Template.EnvdVersion == "" {
-			logger.L().Info(ctx, "raw Windows base layer metadata missing guest envd version, building new base layer", zap.String("hash", hash))
+		if bb.Config.UsesRawImage() && (bb.Config.IsWindows() || bb.Config.IsAndroid()) && meta.Template.EnvdVersion == "" {
+			logger.L().Info(ctx, "raw base layer metadata missing guest envd version, building new base layer", zap.String("hash", hash))
 
 			return notCachedResult, nil
 		}
