@@ -119,6 +119,8 @@ grafanaOtlpUrl: "${GRAFANA_OTLP_URL}"
 postgresEnabled: ${ENABLE_POSTGRES}
 # redis 组件开关：true 部署内置 redis（默认），false 不渲染 redis 资源且不向组件注入 REDIS_URL
 redisEnabled: ${ENABLE_REDIS}
+# api 组件开关：true 部署内置 api（默认），false 不渲染 api 资源（API 由外部承载）
+apiEnabled: ${ENABLE_API}
 # edge（client-proxy）组件开关：true 部署（默认），false 不渲染 edge 资源（沙箱域名路由不可用）
 edgeEnabled: ${ENABLE_EDGE}
 postgresImage: ${POSTGRES_DOCKER_IMAGE}

@@ -37,6 +37,9 @@ export REDIS_ENDPOINT SANDBOX_STORAGE_BACKEND
 # edge（client-proxy）组件开关：默认安装；显式置 false 时跳过（沙箱域名路由 *.e2b.app 不可用，API 直连功能不受影响）
 ENABLE_EDGE="${ENABLE_EDGE:-true}"
 export ENABLE_EDGE
+# api 组件开关：默认部署内置 api；显式置 false 时 helm 不渲染 api Deployment/Service（API 由外部承载，仅 k8s 模式生效）
+ENABLE_API="${ENABLE_API:-true}"
+export ENABLE_API
 # Nomad/Consul 健康检查端口
 CONSUL_HTTP_PORT=8500
 HOST_IP="$SERVER_IPS"

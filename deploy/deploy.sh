@@ -159,6 +159,11 @@ load_env() {
         ENABLE_EDGE="true"
     fi
     export ENABLE_EDGE
+    # api 组件开关：默认部署内置 api；显式置 false 时 helm 不渲染 api 资源（API 由外部承载，仅 k8s 模式生效）
+    if [ -z "${ENABLE_API:-}" ]; then
+        ENABLE_API="true"
+    fi
+    export ENABLE_API
     # systemd 模式静态清单：k8s 注入 helm 静态 Endpoints，nomad 注入 api job E2B_STATIC_ALLOCATIONS；
     # 空清单部署会静默成功但 API 无节点可调度——提前告警
     if [ "$ORCHESTRATOR_TYPE" = "systemd" ]; then
