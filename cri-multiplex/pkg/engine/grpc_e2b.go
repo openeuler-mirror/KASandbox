@@ -109,7 +109,7 @@ type grpcE2BEngine struct {
 	stateStore            StateStore
 	mu                    sync.Mutex
 	pendingNetNSMu        sync.RWMutex
-	pendingNetNS          map[string]struct{}
+	pendingNetNS          map[string]int
 	conn                  *grpc.ClientConn
 	client                orchestrator.SandboxServiceClient
 	tracker               *podTracker
@@ -119,6 +119,10 @@ type grpcE2BEngine struct {
 
 	// sandbox 级 operation lock（key = CRI sandboxID），TryLock 语义
 	opLocks sync.Map
+
+	// 同 ID 在途创建去重（key = CRI sandboxID）：并发重复 create 等待并复用
+	// 首个请求的结果，见 createE2BSandbox
+	inflightCreates sync.Map
 
 	streamingListener net.Listener
 	streamingReqs     map[string]*execStreamRequest
@@ -165,7 +169,7 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName 
 		nodeName:              nodeName,
 		hostPortOps:           defaultHostPortMappingOps(),
 		stateStore:            store,
-		pendingNetNS:          make(map[string]struct{}),
+		pendingNetNS:          make(map[string]int),
 		cniConfig:             cniConfig,
 		tracker:               newPodTracker(),
 		imageCache:            make(map[string]*e2bImageMeta),
@@ -229,9 +233,9 @@ func (e *grpcE2BEngine) markPendingNetNS(name string) {
 	}
 	e.pendingNetNSMu.Lock()
 	if e.pendingNetNS == nil {
-		e.pendingNetNS = make(map[string]struct{})
+		e.pendingNetNS = make(map[string]int)
 	}
-	e.pendingNetNS[name] = struct{}{}
+	e.pendingNetNS[name]++
 	e.pendingNetNSMu.Unlock()
 }
 
@@ -240,7 +244,13 @@ func (e *grpcE2BEngine) unmarkPendingNetNS(name string) {
 		return
 	}
 	e.pendingNetNSMu.Lock()
-	delete(e.pendingNetNS, name)
+	// 引用计数：同名 mark 可能交叠（如同 ID 的并发创建），计数归零才摘除保护，
+	// 否则先返回者的 unmark 会让仍在途的创建暴露在 orphan netns 扫描下。
+	if n := e.pendingNetNS[name]; n > 1 {
+		e.pendingNetNS[name] = n - 1
+	} else {
+		delete(e.pendingNetNS, name)
+	}
 	e.pendingNetNSMu.Unlock()
 }
 

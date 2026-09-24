@@ -31,15 +31,60 @@ type e2bCreateParams struct {
 	cniConfig *runtime.PodSandboxConfig // CRI=req.Config；admin=合成最小 config
 }
 
-// createE2BSandbox 是沙箱创建的完整生命周期主体：expose-ports 解析（malformed 即
+// inflightCreate 记录一次在途创建的结果，供同 ID 的并发重复请求等待复用。
+type inflightCreate struct {
+	done chan struct{}
+	resp *orchestrator.SandboxCreateResponse
+	err  error
+}
+
+// createE2BSandbox 在 createE2BSandboxExclusive 之外做同 ID 在途去重
+// （per-key singleflight）：并发到达的重复创建（kubelet 运行时请求超时重试、
+// 客户端断连重发）等待首个请求结束并复用其结果，而不是再跑一次完整新建
+// 路径撞同名 netns 的 EEXIST（"file exists"）。不同 ID 互不阻塞，批量并发
+// （每沙箱 UID 唯一）不受影响。首个请求结束（含持久化）后到达的重复请求由
+// 各适配层的幂等分支处理（tracker 命中），不会进入本函数。
+func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams) (*orchestrator.SandboxCreateResponse, error) {
+	if p.sandboxID == "" {
+		return e.createE2BSandboxExclusive(ctx, p)
+	}
+	ic := &inflightCreate{done: make(chan struct{})}
+	if actual, loaded := e.inflightCreates.LoadOrStore(p.sandboxID, ic); loaded {
+		other := actual.(*inflightCreate)
+		select {
+		case <-other.done:
+			return other.resp, other.err
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, status.Errorf(codes.DeadlineExceeded, "timed out waiting for in-flight create of sandbox %s", p.sandboxID)
+			}
+			return nil, status.Errorf(codes.Canceled, "canceled while waiting for in-flight create of sandbox %s", p.sandboxID)
+		}
+	}
+	resp, err := e.createE2BSandboxExclusive(ctx, p)
+	ic.resp, ic.err = resp, err
+	close(ic.done)
+	e.inflightCreates.Delete(p.sandboxID)
+	return resp, err
+}
+
+// createE2BSandboxExclusive 是沙箱创建的完整生命周期主体：expose-ports 解析（malformed 即
 // InvalidArgument fail-fast）→ CNI（预热池优先 / pending 标记 / RuntimeNetwork 注入）
 // → orchestrator Create（失败 CNI DEL 回滚）→ HostPort 分配（失败即创建失败并回滚
 // orchestrator Delete + CNI DEL）与 iptables 批量安装 → tracker + stateStore 登记。
-// 由 RunPodSandbox（CRI 面）与 AdminCreate（admin 面）共用；幂等重试检查与 inflight
-// 计数保留在各适配层。
-func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams) (*orchestrator.SandboxCreateResponse, error) {
+// 由 createE2BSandbox（singleflight 去重）调用；幂等重试检查与 inflight
+// 计数保留在各适配层。全程持有 per-sandbox 操作锁，与同 ID 的清理路径
+// （cleanupSandboxResources）互斥，防止清理方的 netns DeleteNamed 拆掉创建
+// 刚建好的同名 netns（orchestrator setns 报 EINVAL/ENOENT）。
+func (e *grpcE2BEngine) createE2BSandboxExclusive(ctx context.Context, p e2bCreateParams) (*orchestrator.SandboxCreateResponse, error) {
 	sandboxID := p.sandboxID
 	cfg := p.cfg
+
+	mu, err := e.lockSandbox(ctx, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer mu.Unlock()
 
 	// expose-ports 提前解析（设计文档 4.4.2.6）：malformed 直接 InvalidArgument
 	// fail-fast，不进入 CNI/orchestrator，避免"声明被静默丢弃但业务以为已暴露"。
