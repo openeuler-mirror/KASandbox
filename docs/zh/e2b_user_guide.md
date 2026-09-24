@@ -368,9 +368,8 @@ export STORAGE_PROVIDER=MooncakeBucket
 |------|------|------|
 | `MOONCAKE_MASTER_ADDR` | 集群 Master 地址（固定节点） | `141.61.17.196:50055` |
 | `MOONCAKE_METADATA_SERVER` | 元数据服务地址（固定节点） | `http://141.61.17.196:8015` |
-| `MOONCAKE_UPLOAD_PUBLIC_ENDPOINT` | 层文件（`COPY`）上传端点，客户端直连 template-manager 的 HTTP 通道（与 gRPC 同端口，需对客户端可达） | `http://10.0.0.12:5008` |
 
-> 外部客户端直连上传的完整配置、验证与排错流程见 [Mooncake 层文件上传：外部直连 Orchestrator 配置指南](mooncake_upload_config.md)。
+> 层文件（`COPY`）上传端点由 `MOONCAKE_LOCAL_HOSTNAME`（节点 IP）与 `GRPC_PORT`（template-manager 端口）自动拼接，客户端直连 template-manager 的 HTTP 通道（与 gRPC 同端口），无需单独配置。
 
 **自动获取（无需手动配置）**
 
@@ -414,12 +413,11 @@ vi .env
 # --- Mooncake ---
 export MOONCAKE_MASTER_ADDR="10.10.10.10:50055"             # 改为 Master 节点 IP
 export MOONCAKE_METADATA_SERVER="http://10.10.10.10:8015"   # 改为元数据服务地址
-export MOONCAKE_UPLOAD_PUBLIC_ENDPOINT="http://$SERVER_IP:5008"  # 须为客户端可达的 template-manager 地址，端口同 TEMPLATE_MANAGER_PORT
 ```
 
 > **注意**：`MOONCAKE_LOCAL_HOSTNAME` 和 `MC_TCP_BIND_ADDRESS` 在 Nomad 模式下通过 Nomad 属性自动获取节点 IP，在 K8S 模式下通过 Downward API 获取 `status.hostIP`，均无需手动配置。
 
-> **注意**：`MOONCAKE_UPLOAD_PUBLIC_ENDPOINT` 会被签进上传 URL 并返回给 `e2b` CLI，由 CLI 直接请求，因此必须是 CLI 所在机器可达的 template-manager 地址。构建节点池为多节点时，需按节点配置各自可达的地址，或统一指向一个入口并同时显式配置各节点一致的 `MOONCAKE_UPLOAD_SIGNING_SECRET`。
+> **注意**：层文件上传 URL 由 `MOONCAKE_LOCAL_HOSTNAME`（节点 IP）与 `GRPC_PORT`（template-manager 端口）自动拼接后返回给 `e2b` CLI，由 CLI 直接请求，因此该节点地址必须是 CLI 所在机器可达的。构建节点池为多节点时，每个节点会签出各自可达的地址，无需额外配置；仅当多节点共用同一入口时才需显式配置各节点一致的 `MOONCAKE_UPLOAD_SIGNING_SECRET`。
 
 #### 3.5.1 K8S 模式：orchestrator 镜像构建前置（复制 RPM 包）
 
@@ -1778,7 +1776,6 @@ kubectl get svc ingress-nginx-controller -n ingress-nginx
 | `MC_SLICE_SIZE` | 分片大小 | `1048576`（1MB） |
 | `MC_WORKERS_PER_CTX` | 每上下文工作线程数 | `8` |
 | `MC_MAX_WR` | 最大写并发 | `4` |
-| `MOONCAKE_UPLOAD_PUBLIC_ENDPOINT` | 层文件上传端点（须为客户端可达的 template-manager 地址） | 无（必填，仅在 `COPY` 等需要上传层文件时用到） |
 | `MOONCAKE_UPLOAD_SIGNING_SECRET` | 上传 URL 的 HMAC 密钥（多副本共用同一入口时必填） | 空（进程内随机生成） |
 | `MOONCAKE_UPLOAD_MAX_BYTES` | 单次上传体积上限（字节） | `10737418240`（10GiB） |
 
