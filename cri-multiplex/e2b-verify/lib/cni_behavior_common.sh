@@ -279,6 +279,52 @@ client_dns_lookup() {
     kubectl exec "${client_pod}" -- sh -c "nslookup ${name} 2>/dev/null || getent hosts ${name} 2>/dev/null || true" 2>&1
 }
 
+# e2b_netns_name <pod> — 解析 cri-multiplex CNI netns 名
+# 优先从 cri-multiplex state 文件读取 cni_record.NetNSName（预热池命中时
+# netns 保持 e2b-pool* 命名，无法从 UID 推导）；state 不可用时回退到
+# 直建路径的推导规则：prefix("e2b-") + shortID(裸 Pod UID)，
+# 长度 >12 时 shortID = uid[:6] + sha256(uid)[:6]（cni_manager.go）
+e2b_netns_name() {
+    local pod="$1"
+    local pod_uid
+    pod_uid=$(kubectl get pod "${pod}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+    if [ -z "${pod_uid}" ]; then
+        return 1
+    fi
+
+    local state_file="${CRI_MULTIPLEX_STATE:-/var/lib/cri-multiplex/state/state.json}"
+    local from_state
+    if [ -f "${state_file}" ]; then
+        from_state=$(python3 - "${state_file}" "${pod_uid}" <<'EOF'
+import json, sys
+state_path, uid = sys.argv[1], sys.argv[2]
+try:
+    with open(state_path) as f:
+        d = json.load(f)
+    for p in (d.get("e2b") or {}).get("pods") or []:
+        if uid in (p.get("pod_uid"), p.get("sandbox_id")):
+            name = (p.get("cni_record") or {}).get("NetNSName") or ""
+            if name:
+                print(name)
+                sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+EOF
+) || true
+        if [ -n "${from_state}" ]; then
+            echo "${from_state}"
+            return 0
+        fi
+    fi
+
+    if [ "${#pod_uid}" -le 12 ]; then
+        echo "e2b-${pod_uid}"
+    else
+        echo "e2b-${pod_uid:0:6}$(printf '%s' "${pod_uid}" | sha256sum | cut -c1-6)"
+    fi
+}
+
 cleanup_names() {
     kubectl delete networkpolicy "$@" --ignore-not-found >/dev/null 2>&1 || true
     kubectl delete service "$@" --ignore-not-found >/dev/null 2>&1 || true
