@@ -8,7 +8,7 @@ set -euo pipefail
 
 #==================== 配置 ====================#
 SCRIPT_DIR_COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOCKET="${SOCKET:-/tmp/cri-multiplex.sock}"
+SOCKET="${SOCKET:-/run/cri-multiplex.sock}"
 CRICTL="crictl --runtime-endpoint unix://${SOCKET}"
 PROTO_DIR="${PROTO_DIR:-/tmp/cri-proto}"
 PROTO_FILE="${PROTO_DIR}/api.proto"
@@ -135,11 +135,13 @@ cri_multiplex_cmdline() {
 }
 
 cri_multiplex_cni_enabled() {
-    cri_multiplex_cmdline | grep -q -- "-cni-enabled"
+    # 不用 cri_multiplex_cmdline | grep -q：wrapper 进程在场时 cmdline 有多行
+    # 输出，grep -q 提前退出会让上游 tr 吃 SIGPIPE(141)，pipefail 误判为未启用。
+    [[ "$(cri_multiplex_cmdline)" == *"-cni-enabled"* ]]
 }
 
 cri_multiplex_android_cni_enabled() {
-    cri_multiplex_cni_enabled && cri_multiplex_cmdline | grep -q -- "-android-enabled"
+    cri_multiplex_cni_enabled && [[ "$(cri_multiplex_cmdline)" == *"-android-enabled"* ]]
 }
 
 require_cri_multiplex_ready() {
@@ -477,6 +479,12 @@ refresh_or_reuse_e2b_yaml() {
     local count_yaml="${E2B_YAML_COUNT:-1}"
 
     if [ "${E2B_SKIP_BUILD:-0}" = "1" ]; then
+        # 复用目标不存在时，优先从共享 fixture（run_all 的 E2B_BASE_POD_YAML）复制兜底，
+        # 避免全新节点上 run_all 全量模式因 E2B_SKIP_BUILD=1 而误判失败
+        if [ ! -f "${yaml}" ] && [ -n "${E2B_BASE_POD_YAML:-}" ] && [ -f "${E2B_BASE_POD_YAML}" ]; then
+            cp "${E2B_BASE_POD_YAML}" "${yaml}"
+            log_info "复用目标 ${yaml} 不存在，已从共享 fixture ${E2B_BASE_POD_YAML} 复制"
+        fi
         log_info "E2B_SKIP_BUILD=1，跳过 build_id 刷新并复用已有 Pod YAML"
         if [ "${count_yaml}" = "0" ]; then
             validate_reusable_e2b_yaml_quiet "${yaml}" || return 1

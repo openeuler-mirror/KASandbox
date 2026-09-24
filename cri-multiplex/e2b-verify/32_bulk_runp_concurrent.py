@@ -27,7 +27,7 @@ RunPodSandbox。不含任何 CNI/PerfTrace 日志采集与统计。
   COUNT                并发沙箱数（位置参数，必填）
   --pod-json PATH      基础 Pod JSON 模板（默认 /tmp/e2b-pod.json，含 e2b.dev/*
                        注解，可从已跑过 00/01 用例的机器复制）
-  --socket PATH        cri-multiplex socket（默认 /tmp/cri-multiplex.sock；
+  --socket PATH        cri-multiplex socket（默认 /run/cri-multiplex.sock；
                        8 节点环境为 /run/cri-multiplex.sock）
   --prefix STR         本批次沙箱名前缀（默认 c<COUNT>-<时分秒>）
   --start-at-ms MS     并发栅栏绝对时刻（epoch 毫秒）。设置后所有沙箱等到
@@ -149,7 +149,7 @@ def main():
     ap = argparse.ArgumentParser(description="并发启动 N 个 direct sandbox（仅创建，不采集）")
     ap.add_argument("count", type=int, help="并发沙箱数")
     ap.add_argument("--pod-json", default="/tmp/e2b-pod.json")
-    ap.add_argument("--socket", default="/tmp/cri-multiplex.sock")
+    ap.add_argument("--socket", default="/run/cri-multiplex.sock")
     ap.add_argument("--prefix", default=None)
     ap.add_argument("--start-at-ms", type=int, default=0)
     ap.add_argument("--mode", choices=["thread", "process"], default="process",

@@ -110,6 +110,23 @@ EOF
     log_info "e2b-pod.json 创建成功"
 fi
 
+# 自愈：base pod json 若被历史手工测试写入 direct 隐藏标签（mux 带
+# -hide-sandbox-label 时会导致 02 等用例 ListPodSandbox 看不到自建 Pod），剥除之
+if [ -f "${POD_JSON}" ] && grep -q '"flux-sandbox.io/direct"' "${POD_JSON}"; then
+    python3 - "${POD_JSON}" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    pod = json.load(f)
+labels = pod.get("labels") or {}
+if labels.pop("flux-sandbox.io/direct", None) is not None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(pod, f, indent=2, ensure_ascii=False)
+    print("stripped")
+PY
+    log_info "已从 ${POD_JSON} 剥除 flux-sandbox.io/direct 隐藏标签"
+fi
+
 #==================== 5. 检查 kubectl ====================#
 log_step "1.5 检查 kubectl"
 if command -v kubectl &> /dev/null; then
@@ -137,6 +154,30 @@ if [ -f "${SCRIPT_DIR}/.env" ]; then
     log_info ".env 已存在: ${SCRIPT_DIR}/.env"
 else
     log_info ".env 不存在（build_prod.py 和 test.py 需要）"
+fi
+
+#==================== 8. 看护 busybox 本地镜像 ====================#
+# 14/15/16/19/21 号用例的 client/target Pod 使用 docker.io/library/busybox:latest
+# （yaml 均为 imagePullPolicy: IfNotPresent）。镜像一旦被 containerd GC 回收，
+# 在 docker.io 不可达的节点上会 ErrImagePull 且 kubelet Events 极具迷惑性，
+# 这里显式看护：缺失时尝试拉回，拉不回则 fail-fast 给出指引。
+log_step "1.8 看护 busybox 本地镜像"
+BUSYBOX_IMAGE="${BUSYBOX_IMAGE:-docker.io/library/busybox:latest}"
+BUSYBOX_IMAGE_MIRROR="${BUSYBOX_IMAGE_MIRROR:-}"
+if crictl inspecti "${BUSYBOX_IMAGE}" >/dev/null 2>&1; then
+    log_info "busybox 镜像已在本地: ${BUSYBOX_IMAGE}"
+else
+    log_info "busybox 镜像缺失，尝试拉取: ${BUSYBOX_IMAGE}"
+    if crictl pull "${BUSYBOX_IMAGE}" >/dev/null 2>&1; then
+        log_info "busybox 镜像拉取成功"
+    elif [ -n "${BUSYBOX_IMAGE_MIRROR}" ] && crictl pull "${BUSYBOX_IMAGE_MIRROR}" >/dev/null 2>&1 \
+        && ctr -n k8s.io images tag "${BUSYBOX_IMAGE_MIRROR}" "${BUSYBOX_IMAGE}" >/dev/null 2>&1; then
+        log_info "busybox 镜像已从镜像源拉取并重打 tag: ${BUSYBOX_IMAGE_MIRROR}"
+    else
+        echo "ERROR: 无法获取 ${BUSYBOX_IMAGE}（docker.io 不可达且本地缺失）。"
+        echo "  请手工 ctr -n k8s.io images import 或用 BUSYBOX_IMAGE_MIRROR=<可达镜像> 重跑本脚本。"
+        exit 1
+    fi
 fi
 
 echo ""
