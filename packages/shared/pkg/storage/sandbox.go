@@ -79,14 +79,6 @@ func (s *SandboxFiles) SandboxCacheDiskLinkPath(config Config, diskName string) 
 	return filepath.Join(config.SandboxCacheDir, fmt.Sprintf("%s-%s-%s.link", diskName, s.SandboxID, s.randomID))
 }
 
-func (s *SandboxFiles) SandboxSerialLogPath() string {
-	return filepath.Join(s.tmpDir, fmt.Sprintf("serial-%s-%s.log", s.SandboxID, s.randomID))
-}
-
-func (s *SandboxFiles) SandboxAndroidLogcatPath() string {
-	return filepath.Join(s.tmpDir, fmt.Sprintf("logcat-%s-%s.log", s.SandboxID, s.randomID))
-}
-
 // SandboxHostDir returns a per-sandbox directory on the host for sandbox-specific
 // auxiliary files (e.g. cuttlefish_config.json for Android host services).
 // The directory is created on demand by callers via os.MkdirAll and removed

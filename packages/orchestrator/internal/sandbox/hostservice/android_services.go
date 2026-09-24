@@ -15,6 +15,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/cfg"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
+	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
 )
 
 type cleanupRegistrar interface {
@@ -34,6 +35,7 @@ type AndroidServicesParams struct {
 	Mux     *VsockMux
 
 	SandboxID      string
+	LoggerMetadata sbxlogger.SandboxMetadata
 	SandboxDir     string
 	NetNSName      string
 	MobileTap      string
@@ -184,7 +186,7 @@ func StartAndroidServices(ctx context.Context, params AndroidServicesParams) (_ 
 		serviceList = append(serviceList, secureEnv)
 	}
 
-	manager := NewManager(serviceList, params.Config.ReadyCheckTimeout)
+	manager := NewManager(serviceList, params.Config.ReadyCheckTimeout, params.LoggerMetadata)
 	if err := manager.StartAll(ctx); err != nil {
 		return nil, fmt.Errorf("start Android host services: %w", err)
 	}

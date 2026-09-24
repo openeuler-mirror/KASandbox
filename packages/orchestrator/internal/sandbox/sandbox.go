@@ -427,6 +427,11 @@ func (f *Factory) CreateSandbox(
 			Process:        vmmHandle,
 			Cleanup:        cleanup,
 			Mux:            f.vsockMux,
+			LoggerMetadata: sbxlogger.SandboxMetadata{
+				SandboxID:  runtime.SandboxID,
+				TemplateID: runtime.TemplateID,
+				TeamID:     runtime.TeamID,
+			},
 			SandboxID:      runtime.SandboxID,
 			SandboxDir:     sandboxFiles.SandboxHostDir(),
 			NetNSName:      ips.NamespaceID(),
@@ -867,6 +872,11 @@ func (f *Factory) ResumeSandbox(
 			Process:        vmmHandle,
 			Cleanup:        cleanup,
 			Mux:            f.vsockMux,
+			LoggerMetadata: sbxlogger.SandboxMetadata{
+				SandboxID:  runtime.SandboxID,
+				TemplateID: runtime.TemplateID,
+				TeamID:     runtime.TeamID,
+			},
 			SandboxID:      runtime.SandboxID,
 			SandboxDir:     sandboxFiles.SandboxHostDir(),
 			NetNSName:      ips.NamespaceID(),

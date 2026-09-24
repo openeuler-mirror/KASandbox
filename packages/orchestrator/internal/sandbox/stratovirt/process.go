@@ -23,6 +23,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/socket"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
+	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
@@ -55,8 +56,7 @@ type Process struct {
 	rootfsPath      string
 	kernelPath      string
 	files           *storage.SandboxFiles
-
-	vsockGuestCID int64
+	vsockGuestCID   int64
 
 	exitOnce *utils.ErrorOnce
 	execCtx  context.Context
@@ -170,6 +170,7 @@ func (p *Process) Create(
 		p.files,
 		p.slot,
 		kernelArgsStr,
+		env.IsDebug(),
 		memoryMB,
 		vcpuCount,
 		hugePages,
@@ -258,6 +259,7 @@ func (p *Process) Resume(
 		p.files,
 		p.slot,
 		"",
+		env.IsDebug(),
 		memoryMB,
 		vcpuCount,
 		hugePages,

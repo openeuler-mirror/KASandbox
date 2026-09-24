@@ -13,6 +13,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/hostservice"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
+	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
 
@@ -147,7 +148,11 @@ func (f *Factory) startEgressProxy(
 	timing := &timingReadyCheck{inner: svc.ReadyCheck, start: start}
 	svc.ReadyCheck = timing
 
-	manager := hostservice.NewManager([]hostservice.Service{svc}, f.config.ReadyCheckTimeout)
+	manager := hostservice.NewManager([]hostservice.Service{svc}, f.config.ReadyCheckTimeout, sbxlogger.SandboxMetadata{
+		SandboxID:  runtime.SandboxID,
+		TemplateID: runtime.TemplateID,
+		TeamID:     runtime.TeamID,
+	})
 	cleanup.Add(ctx, manager.StopAll)
 
 	runStartup := func(ctx context.Context, installRules bool) error {

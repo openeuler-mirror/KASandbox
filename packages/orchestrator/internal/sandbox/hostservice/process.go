@@ -20,6 +20,7 @@ import (
 	"go.uber.org/zap/zapio"
 
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
+	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
 
@@ -40,7 +41,7 @@ type procEntry struct {
 	waitErr error
 }
 
-func startService(ctx context.Context, svc Service) (*procEntry, error) {
+func startService(ctx context.Context, svc Service, metadata sbxlogger.SandboxMetadata) (*procEntry, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("start service %s: %w", svc.Name, err)
 	}
@@ -60,7 +61,7 @@ func startService(ctx context.Context, svc Service) (*procEntry, error) {
 	cmd.ExtraFiles = svc.ExtraFiles
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	svcLogger := logger.L().Detach(ctx).With(zap.String("service", svc.Name))
+	svcLogger := sbxlogger.I(metadata).Logger.Detach(ctx).With(zap.String("service", svc.Name))
 	var stdoutW, stderrW io.Writer
 	closeWriters := func() {}
 	if svc.LogWriter != nil {
