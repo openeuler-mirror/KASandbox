@@ -15,57 +15,92 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/oci/auth"
 )
 
-func downloadRegistryRawImage(ctx context.Context, source Source, destPath string, authProvider auth.RegistryAuthProvider) (e error) {
-	layerDesc, layer, err := pullRawLayer(ctx, source, authProvider)
+type ResolvedSource struct {
+	RequestedRef   string
+	ResolvedRef    string
+	ManifestDigest string
+	LayerDigest    string
+}
+
+func Resolve(ctx context.Context, source Source, authProvider auth.RegistryAuthProvider) (ResolvedSource, error) {
+	desc, err := getRegistryDescriptor(ctx, source, authProvider)
+	if err != nil {
+		return ResolvedSource{}, err
+	}
+	img, err := desc.Image()
+	if err != nil {
+		return ResolvedSource{}, fmt.Errorf("error reading raw image from registry: %w", err)
+	}
+	manifestDigest, err := img.Digest()
+	if err != nil {
+		return ResolvedSource{}, err
+	}
+	layer, err := selectRawLayer(img)
+	if err != nil {
+		return ResolvedSource{}, err
+	}
+	if manifestDigest.Algorithm != "sha256" || layer.Digest.Algorithm != "sha256" {
+		return ResolvedSource{}, fmt.Errorf("raw image requires SHA-256 manifest and layer digests")
+	}
+	ref, err := parseRegistryReference(source)
+	if err != nil {
+		return ResolvedSource{}, err
+	}
+	return ResolvedSource{
+		RequestedRef:   source.Ref,
+		ResolvedRef:    ref.Context().Digest(manifestDigest.String()).Name(),
+		ManifestDigest: manifestDigest.String(),
+		LayerDigest:    layer.Digest.String(),
+	}, nil
+}
+
+func FetchResolved(ctx context.Context, resolved ResolvedSource, destPath string, authProvider auth.RegistryAuthProvider) (e error) {
+	ref, err := name.NewDigest(resolved.ResolvedRef, name.StrictValidation)
+	if err != nil {
+		return fmt.Errorf("invalid resolved raw reference: %w", err)
+	}
+	if ref.DigestStr() != resolved.ManifestDigest {
+		return fmt.Errorf("resolved raw manifest digest does not match reference")
+	}
+	desc, err := getRegistryDescriptor(ctx, Source{Ref: ref.Name()}, authProvider)
 	if err != nil {
 		return err
 	}
-
+	img, err := desc.Image()
+	if err != nil {
+		return fmt.Errorf("error reading resolved raw image: %w", err)
+	}
+	layerDesc, err := selectRawLayer(img)
+	if err != nil {
+		return err
+	}
+	if layerDesc.Digest.String() != resolved.LayerDigest {
+		return fmt.Errorf("raw layer digest mismatch: expected %s, got %s", resolved.LayerDigest, layerDesc.Digest)
+	}
+	layer, err := img.LayerByDigest(layerDesc.Digest)
+	if err != nil {
+		return err
+	}
 	rc, err := layer.Compressed()
 	if err != nil {
 		return fmt.Errorf("error opening raw image layer %s: %w", layerDesc.Digest, err)
 	}
-	defer func() {
-		e = errors.Join(e, rc.Close())
-	}()
-
+	defer func() { e = errors.Join(e, rc.Close()) }()
 	f, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("error creating raw image file: %w", err)
 	}
 	defer func() {
 		e = errors.Join(e, f.Close())
+		if e != nil {
+			e = errors.Join(e, os.Remove(destPath))
+		}
 	}()
-
+	// The registry reader verifies the layer digest when read to EOF.
 	if _, err := io.Copy(f, rc); err != nil {
-		return fmt.Errorf("error writing raw image layer: %w", err)
+		return fmt.Errorf("error downloading raw image layer: %w", err)
 	}
-
 	return nil
-}
-
-func pullRawLayer(ctx context.Context, source Source, authProvider auth.RegistryAuthProvider) (v1.Descriptor, v1.Layer, error) {
-	desc, err := getRegistryDescriptor(ctx, source, authProvider)
-	if err != nil {
-		return v1.Descriptor{}, nil, err
-	}
-
-	img, err := desc.Image()
-	if err != nil {
-		return v1.Descriptor{}, nil, fmt.Errorf("error reading raw image from registry: %w", err)
-	}
-
-	layerDesc, err := selectRawLayer(img)
-	if err != nil {
-		return v1.Descriptor{}, nil, err
-	}
-
-	layer, err := img.LayerByDigest(layerDesc.Digest)
-	if err != nil {
-		return v1.Descriptor{}, nil, fmt.Errorf("error locating raw image layer %s: %w", layerDesc.Digest, err)
-	}
-
-	return layerDesc, layer, nil
 }
 
 func getRegistryDescriptor(ctx context.Context, source Source, authProvider auth.RegistryAuthProvider) (*remote.Descriptor, error) {

@@ -43,7 +43,7 @@ func constructLayerFilesFromAndroidRaw(
 	userLogger logger.Logger,
 	buildContext buildcontext.BuildContext,
 	baseBuildID string,
-	rawImageURL string,
+	resolved coreraw.ResolvedSource,
 	persistentSourcePath string,
 	persistentDigest string,
 	newfsMsdosPath string,
@@ -61,7 +61,7 @@ func constructLayerFilesFromAndroidRaw(
 		prepare func(string) error
 	}{
 		{storage.RootfsName, build.Rootfs, func(path string) error {
-			return fetchRawImage(ctx, userLogger, rawImageURL, path, authProvider)
+			return fetchRawImage(ctx, userLogger, resolved, path, authProvider)
 		}},
 		{storage.PersistentName, build.RootfsPersistent, func(path string) error {
 			return copyPersistentImage(persistentSourcePath, path, persistentDigest)
@@ -113,14 +113,14 @@ func constructLayerFilesFromWindowsRaw(
 	buildContext buildcontext.BuildContext,
 	// The base build ID can be different from the final requested template build ID.
 	baseBuildID string,
-	rawImageURL string,
+	resolved coreraw.ResolvedSource,
 	rootfsPath string,
 	authProvider auth.RegistryAuthProvider,
 ) (r *block.Local, m block.ReadonlyDevice, c containerregistry.Config, e error) {
 	ctx, span := tracer.Start(ctx, "construct-layer-files-from-windows-raw")
 	defer span.End()
 
-	if err := fetchRawImage(ctx, userLogger, rawImageURL, rootfsPath, authProvider); err != nil {
+	if err := fetchRawImage(ctx, userLogger, resolved, rootfsPath, authProvider); err != nil {
 		return nil, nil, containerregistry.Config{}, fmt.Errorf("error fetching raw image: %w", err)
 	}
 
@@ -153,15 +153,9 @@ func constructLayerFilesFromWindowsRaw(
 	return rootfs, memfile, containerregistry.Config{}, nil
 }
 
-// fetchRawImage downloads the raw disk image at url to destPath.
-func fetchRawImage(ctx context.Context, userLogger logger.Logger, url, destPath string, authProvider auth.RegistryAuthProvider) error {
-	source, err := coreraw.ParseSource(url)
-	if err != nil {
-		return err
-	}
-
+func fetchRawImage(ctx context.Context, userLogger logger.Logger, resolved coreraw.ResolvedSource, destPath string, authProvider auth.RegistryAuthProvider) error {
 	userLogger.Info(ctx, "Downloading raw disk image")
-	return coreraw.Fetch(ctx, source, destPath, authProvider)
+	return coreraw.FetchResolved(ctx, resolved, destPath, authProvider)
 }
 
 // alignFileToBlockSize pads the file at path with zeros so its size is a whole
@@ -225,6 +219,9 @@ func validateExecutableFile(path string) error {
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%q is not a regular file", path)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("%q is empty", path)
 	}
 	if info.Mode().Perm()&0o111 == 0 {
 		return fmt.Errorf("%q is not executable", path)

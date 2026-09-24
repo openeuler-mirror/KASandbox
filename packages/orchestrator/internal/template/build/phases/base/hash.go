@@ -8,24 +8,23 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
+	coreraw "github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/raw"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/phases"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/storage/cache"
 	featureflags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 )
 
-func rawImageBaseSource(osType vmm.OsType, url, androidVersion, persistentDigest string, sdcardSizeMB int64, generatorVersion string) (string, error) {
+func rawImageBaseSource(osType vmm.OsType, resolved coreraw.ResolvedSource, androidVersion, persistentDigest, newfsDigest string, sdcardSizeMB int64, generatorVersion string) (string, error) {
+	keys := []string{"raw-cache", string(osType), resolved.ManifestDigest, resolved.LayerDigest}
 	switch osType {
 	case vmm.OsWindows:
-		return fmt.Sprintf("raw:windows:%s", url), nil
 	case vmm.OsAndroid:
-		// androidVersion is part of the cache identity so that rebuilding the
-		// same image for a different Android major version (14/15/16) invalidates
-		// the base layer cache instead of reusing a layer built for another version.
-		return fmt.Sprintf("raw:android:%s:%s:%s:%d:%s", androidVersion, url, persistentDigest, sdcardSizeMB, generatorVersion), nil
+		keys = append(keys, androidVersion, persistentDigest, strconv.FormatInt(sdcardSizeMB, 10), newfsDigest, generatorVersion)
 	default:
 		return "", fmt.Errorf("unsupported raw-image guest OS %q", osType)
 	}
+	return cache.HashKeys(keys[0], keys[1:]...), nil
 }
 
 func (bb *BaseBuilder) Hash(ctx context.Context, _ phases.LayerResult) (string, error) {
@@ -39,14 +38,10 @@ func (bb *BaseBuilder) Hash(ctx context.Context, _ phases.LayerResult) (string, 
 		// When building from template, use the base template metadata
 		baseSource = fmt.Sprintf("template:%s", bb.Config.FromTemplate.GetBuildID())
 	case bb.Config.UsesRawImage():
-		persistentDigest := ""
-		if bb.Config.IsAndroid() {
-			persistentDigest, err = bb.androidPersistentDigest(ctx)
-			if err != nil {
-				return "", err
-			}
+		if err := bb.resolveRawInputs(ctx); err != nil {
+			return "", err
 		}
-		baseSource, err = rawImageBaseSource(bb.Config.GuestOS(), bb.Config.FromImageRaw, string(bb.Config.AndroidVersion), persistentDigest, androidSDCardImageSizeMB, androidSDCardGeneratorVersion)
+		baseSource, err = rawImageBaseSource(bb.Config.GuestOS(), *bb.resolvedSource, string(bb.Config.AndroidVersion), bb.persistentDigest, bb.newfsDigest, androidSDCardImageSizeMB, androidSDCardGeneratorVersion)
 		if err != nil {
 			return "", err
 		}
