@@ -1,3 +1,4 @@
+{{- if eq (.Values.orchestratorType | default "k8s") "k8s" }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -314,6 +315,11 @@ spec:
         configMap:
           name: harbor-ca-cert
           defaultMode: 0444
+{{- end }}
+# Service 仅 k8s 模式渲染（selector 指向 DaemonSet pod）；
+# systemd 模式无 template-manager pod，API 经 StaticDiscovery 节点直连 5008，
+# 无任何组件消费 template-manager.e2b.svc DNS（已删 Endpoints 实验验证），不再渲染
+{{- if eq (.Values.orchestratorType | default "k8s") "k8s" }}
 ---
 apiVersion: v1
 kind: Service
@@ -327,3 +333,4 @@ spec:
     targetPort: grpc
     name: grpc
   selector: { app: template-manager }
+{{- end }}

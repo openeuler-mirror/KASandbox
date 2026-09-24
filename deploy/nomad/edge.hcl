@@ -87,7 +87,7 @@ job "client-proxy" {
         OTEL_COLLECTOR_GRPC_ENDPOINT = "${OTEL_COLLECTOR_GRPC_ENDPOINT}"
         LOGS_COLLECTOR_ADDRESS       = "${LOGS_COLLECTOR_ADDRESS}"
 
-        REDIS_URL           = "${REDIS_URL}:${REDIS_PORT}"
+        REDIS_URL           = "${REDIS_ENDPOINT}"
         REDIS_CLUSTER_URL   = ""
         REDIS_TLS_CA_BASE64 = "${redis_tls_ca_base64}"
 

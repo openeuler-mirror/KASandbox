@@ -11,6 +11,8 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/cri-multiplex/pkg/orchestrator"
 )
 
 func newCleanupTestStore(t *testing.T) *JSONStateStore {
@@ -135,7 +137,7 @@ func TestPendingE2BNetNSIsProtectedFromOrphanScan(t *testing.T) {
 	}
 	e := &grpcE2BEngine{
 		cniConfig:    CNIConfig{Enabled: true, NetNSDir: root, NetNSPrefix: "e2b-"},
-		pendingNetNS: map[string]struct{}{"e2b-pending": {}},
+		pendingNetNS: map[string]int{"e2b-pending": 1},
 	}
 	var deleted []string
 	m := &CleanupManager{e2b: e, hostOps: hostResourceOps{
@@ -303,5 +305,107 @@ func TestUnknownOwnerDirectoryIsNotDeleted(t *testing.T) {
 	}
 	if _, err := os.Stat(unknown); err != nil {
 		t.Fatalf("unknown owner directory was removed: %v", err)
+	}
+}
+
+func TestCleanupSandboxResourcesWaitsForSandboxOpLock(t *testing.T) {
+	e := &grpcE2BEngine{}
+	mu, locked := e.tryLockSandbox("sb-oplock")
+	if !locked {
+		t.Fatal("failed to pre-acquire sandbox op lock")
+	}
+	defer mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := e.cleanupSandboxResources(ctx, "sb-oplock"); status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("cleanupSandboxResources err = %v, want DeadlineExceeded while op lock is held", err)
+	}
+}
+
+func TestCreateE2BSandboxTakesSandboxOpLock(t *testing.T) {
+	e := &grpcE2BEngine{}
+	mu, locked := e.tryLockSandbox("sb-oplock")
+	if !locked {
+		t.Fatal("failed to pre-acquire sandbox op lock")
+	}
+	defer mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := e.createE2BSandbox(ctx, e2bCreateParams{sandboxID: "sb-oplock"}); status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("createE2BSandbox err = %v, want DeadlineExceeded while op lock is held", err)
+	}
+}
+
+func TestPendingNetNSMarkRefcount(t *testing.T) {
+	e := &grpcE2BEngine{}
+	e.markPendingNetNS("e2b-refcount")
+	e.markPendingNetNS("e2b-refcount")
+	e.unmarkPendingNetNS("e2b-refcount")
+	if !e.isPendingNetNS("e2b-refcount") {
+		t.Fatal("pending mark lost while another same-name mark is still held")
+	}
+	e.unmarkPendingNetNS("e2b-refcount")
+	if e.isPendingNetNS("e2b-refcount") {
+		t.Fatal("pending mark should be removed after refcount reaches zero")
+	}
+}
+
+func TestCreateE2BSandboxReusesInflightResult(t *testing.T) {
+	e := &grpcE2BEngine{}
+	want := &orchestrator.SandboxCreateResponse{ClientId: "client-1"}
+	ic := &inflightCreate{done: make(chan struct{}), resp: want}
+	close(ic.done)
+	e.inflightCreates.Store("sb-dedup", ic)
+
+	got, err := e.createE2BSandbox(context.Background(), e2bCreateParams{sandboxID: "sb-dedup"})
+	if err != nil || got != want {
+		t.Fatalf("createE2BSandbox = (%v, %v), want reused in-flight result (%v, nil)", got, err, want)
+	}
+}
+
+func TestCreateE2BSandboxDuplicateWaitsForLeader(t *testing.T) {
+	e := &grpcE2BEngine{}
+	// 占住 op lock：leader 会在 lockSandbox 等到自己的 ctx 超时；follower 应在
+	// singleflight 上等 leader 并复用其结果，而不是自己也去抢锁。
+	mu, locked := e.tryLockSandbox("sb-dedup")
+	if !locked {
+		t.Fatal("failed to pre-acquire sandbox op lock")
+	}
+	defer mu.Unlock()
+
+	leaderCtx, cancelLeader := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelLeader()
+	leaderErr := make(chan error, 1)
+	go func() {
+		_, err := e.createE2BSandbox(leaderCtx, e2bCreateParams{sandboxID: "sb-dedup"})
+		leaderErr <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok := e.inflightCreates.Load("sb-dedup"); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("leader did not register in-flight create")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	followerCtx, cancelFollower := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelFollower()
+	start := time.Now()
+	_, err := e.createE2BSandbox(followerCtx, e2bCreateParams{sandboxID: "sb-dedup"})
+	elapsed := time.Since(start)
+
+	if lErr := <-leaderErr; status.Code(lErr) != codes.DeadlineExceeded {
+		t.Fatalf("leader err = %v, want DeadlineExceeded", lErr)
+	}
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("follower err = %v, want leader's DeadlineExceeded reused", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("follower did not reuse leader result, blocked for %v", elapsed)
 	}
 }

@@ -1,6 +1,8 @@
 # --- Basic variables ---
 environment: "${ENVIRONMENT}"
-orchestratorType: "k8s"
+# orchestrator 启动方式：systemd（节点 e2b-orchestrator.service 承载，不渲染 DaemonSet，
+# 由部署脚本渲染静态 Endpoints 提供 template-manager 后端）| k8s（K8S DaemonSet 承载）| nomad
+orchestratorType: "${ORCHESTRATOR_TYPE}"
 # --- Database / Redis / Harbor ---
 registry: "${REGISTRY_URL}"
 image:
@@ -13,7 +15,8 @@ image:
 webhook:
   enabled: ${ENABLE_WEBHOOK}
 pullPolicy: IfNotPresent
-postgresUrl: postgres.e2b.svc.cluster.local
+# postgres 访问地址：默认内置 Service；ENABLE_POSTGRES=false 时由 POSTGRES_URL 环境变量指向外部实例
+postgresUrl: ${POSTGRES_URL}
 sandboxStorageBackend: ${SANDBOX_STORAGE_BACKEND}
 redisUrl: redis.e2b.svc.cluster.local
 redisClusterUrl: 
@@ -112,6 +115,14 @@ grafanaOtelCollectorToken: "${GRAFANA_OTEL_COLLECTOR_TOKEN}"
 grafanaOtlpUrl: "${GRAFANA_OTLP_URL}"
 
 # --- postgres ---
+# postgres 组件开关：true 部署内置 postgres（默认），false 使用外部实例
+postgresEnabled: ${ENABLE_POSTGRES}
+# redis 组件开关：true 部署内置 redis（默认），false 不渲染 redis 资源且不向组件注入 REDIS_URL
+redisEnabled: ${ENABLE_REDIS}
+# api 组件开关：true 部署内置 api（默认），false 不渲染 api 资源（API 由外部承载）
+apiEnabled: ${ENABLE_API}
+# edge（client-proxy）组件开关：true 部署（默认），false 不渲染 edge 资源（沙箱域名路由不可用）
+edgeEnabled: ${ENABLE_EDGE}
 postgresImage: ${POSTGRES_DOCKER_IMAGE}
 postgresPort: ${POSTGRES_PORT}
 postgresResourcesCpuCount: ${POSTGRES_RESOURCES_CPU_COUNT}
@@ -173,6 +184,10 @@ otelCollectorGrpcPort: ${OTEL_COLLECTOR_GRPC_PORT}
 clickhouseServerPort: ${CLICKHOUSE_SERVER_PORT}
 clickhouseMetricPort: ${CLICKHOUSE_METRICS_PORT}
 dnsPort: ${DNS_PORT}
+
+# API 静态发现清单（ORCHESTRATOR_TYPE=systemd 时生效）："node1=ip1,node2=ip2"，
+# 由 .env ORCHESTRATOR_STATIC_NODES 手动注入；为空时不注入 E2B_STATIC_ALLOCATIONS
+orchestratorStaticNodes: "${ORCHESTRATOR_STATIC_NODES}"
 
 api:
   pool: ${API_NODE_POOL}
