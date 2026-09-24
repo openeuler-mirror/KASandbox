@@ -94,7 +94,8 @@ func NewBuilder(
 }
 
 type Result struct {
-	EnvdVersion  string
+	EnvdVersion string
+	// RootfsSizeMB includes all three disks for Android templates.
 	RootfsSizeMB int64
 }
 
@@ -382,10 +383,13 @@ func runBuild(
 		return nil, fmt.Errorf("error waiting for layers upload: %w", err)
 	}
 
-	// Get the base rootfs size from the template files
-	// This is the size of the rootfs after provisioning and before building the layers
-	// (as they don't change the rootfs size)
-	rootfsSize, err := getRootfsSize(ctx, builder.templateStorage, storage.TemplateFiles{BuildID: lastLayerResult.Metadata.Template.BuildID})
+	// Layers do not change disk capacity. Android reports the combined capacity
+	// of its three disks through the existing rootfs size field.
+	diskNames := []string{storage.RootfsName}
+	if bc.Config.IsAndroid() {
+		diskNames = append(diskNames, storage.PersistentName, storage.SDCardName)
+	}
+	rootfsSize, err := getRootfsSize(ctx, builder.templateStorage, storage.TemplateFiles{BuildID: lastLayerResult.Metadata.Template.BuildID}, diskNames)
 	if err != nil {
 		return nil, fmt.Errorf("error getting rootfs size: %w", err)
 	}
@@ -426,16 +430,21 @@ func getRootfsSize(
 	ctx context.Context,
 	s storage.StorageProvider,
 	metadata storage.TemplateFiles,
+	diskNames []string,
 ) (uint64, error) {
-	obj, err := s.OpenBlob(ctx, metadata.StorageRootfsHeaderPath(), storage.RootFSHeaderObjectType)
-	if err != nil {
-		return 0, fmt.Errorf("error opening rootfs header object: %w", err)
+	var totalSize uint64
+	for _, name := range diskNames {
+		obj, err := s.OpenBlob(ctx, metadata.StorageDiskHeaderPath(name), storage.RootFSHeaderObjectType)
+		if err != nil {
+			return 0, fmt.Errorf("error opening %s header object: %w", name, err)
+		}
+
+		h, err := header.Deserialize(ctx, obj)
+		if err != nil {
+			return 0, fmt.Errorf("error deserializing %s header: %w", name, err)
+		}
+		totalSize += h.Metadata.Size
 	}
 
-	h, err := header.Deserialize(ctx, obj)
-	if err != nil {
-		return 0, fmt.Errorf("error deserializing rootfs header: %w", err)
-	}
-
-	return h.Metadata.Size, nil
+	return totalSize, nil
 }
