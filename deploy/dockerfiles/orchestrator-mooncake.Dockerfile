@@ -23,8 +23,8 @@ RUN update-alternatives --set iptables /usr/sbin/iptables-nft || true
 COPY orchestrator /usr/bin/orchestrator
 RUN chmod +x /usr/bin/orchestrator
 RUN mkdir -p /opt/e2b-infra/bin/
-COPY fc-netns-exec /opt/e2b-infra/bin/
-RUN chmod +x /opt/e2b-infra/bin/fc-netns-exec
+COPY fc-netns-exec stratovirt-netns-exec /opt/e2b-infra/bin/
+RUN chmod +x /opt/e2b-infra/bin/fc-netns-exec /opt/e2b-infra/bin/stratovirt-netns-exec
 
 #将/opt/e2b-infra/bin下mooncake相关安装到系统路径下
 COPY *.rpm /opt/e2b-infra/bin/

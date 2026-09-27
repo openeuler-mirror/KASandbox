@@ -186,7 +186,7 @@ func (p *Process) Create(
 		Setsid: true,
 	}
 
-	err = p.startProcess(ctx, metadata, options.Stdout, options.Stderr, cmd)
+	err = p.startProcess(ctx, metadata, options.Stdout, options.Stderr, cmd, func() {})
 	if err != nil {
 		stopErr := p.Stop(ctx)
 		return errors.Join(fmt.Errorf("error starting stratovirt process: %w", err), stopErr)
@@ -246,7 +246,7 @@ func (p *Process) Resume(
 	zap.L().Sugar().Infof("[ResumeSandbox] get rootfs path cost: %.3f ms, traceID=%s", time.Since(phaseStart).Seconds()*1000, traceID)
 
 	phaseStart = time.Now()
-	if err := socket.Wait(ctx, uffdSocketPath); err != nil {
+	if err := waitForUffdSocket(ctx, uffdSocketPath, p.Versions.OsType.OrDefault() == vmm.OsAndroid); err != nil {
 		return fmt.Errorf("error waiting for uffd socket: %w", err)
 	}
 	telemetry.ReportEvent(ctx, "uffd socket ready")
@@ -267,7 +267,8 @@ func (p *Process) Resume(
 		p.vsockGuestCID,
 	)
 
-	cmd := exec.CommandContext(p.execCtx, "unshare", "-m", "--", "bash", "-c", cmdResult.Value)
+	cmd, closeNetnsFD := buildStartCommand(ctx, p.execCtx, p.config, cmdResult.Value, p.slot,
+		p.Versions.OsType.OrDefault() == vmm.OsAndroid, cmdResult.PrepareArgv)
 	sysProcAttr := &syscall.SysProcAttr{Setsid: true}
 	// if cgroupFD >= 0 {
 	// 	sysProcAttr.UseCgroupFD = true
@@ -276,7 +277,7 @@ func (p *Process) Resume(
 	cmd.SysProcAttr = sysProcAttr
 
 	phaseStart = time.Now()
-	if err := p.startProcess(ctx, metadata.LoggerMetadata(), nil, nil, cmd); err != nil {
+	if err := p.startProcess(ctx, metadata.LoggerMetadata(), nil, nil, cmd, closeNetnsFD); err != nil {
 		_ = p.Stop(ctx)
 		return fmt.Errorf("error starting stratovirt: %w", err)
 	}
@@ -317,6 +318,7 @@ func (p *Process) startProcess(
 	stdoutExternal io.Writer,
 	stderrExternal io.Writer,
 	cmd *exec.Cmd,
+	closeNetnsFD func(),
 ) error {
 	ctx, childSpan := tracer.Start(ctx, "start-stratovirt-process")
 	defer childSpan.End()
@@ -338,6 +340,7 @@ func (p *Process) startProcess(
 	p.cmd = cmd
 
 	err := cmd.Start()
+	closeNetnsFD()
 	if err != nil {
 		return fmt.Errorf("error starting stratovirt process: %w", err)
 	}
@@ -506,4 +509,18 @@ func (p *Process) Pid() (int, error) {
 
 func (p *Process) Exit() *utils.ErrorOnce {
 	return p.exitOnce
+}
+
+// serveMemory has normally created the listener before Resume reaches this point.
+// Android restores check it immediately; otherwise use the existing wait.
+func waitForUffdSocket(ctx context.Context, path string, fast bool) error {
+	if fast {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+	}
+	return socket.Wait(ctx, path)
 }

@@ -2151,7 +2151,8 @@ deploy/
 │   ├── e2b-webhook           # Webhook 二进制
 │   ├── migrator              # 数据库迁移工具
 │   ├── seed-db               # 数据库种子工具
-│   ├── fc-netns-exec         # 网络命名空间工具
+│   ├── fc-netns-exec         # Firecracker 网络命名空间工具
+│   ├── stratovirt-netns-exec # StratoVirt 网络命名空间与 Android 准备工具
 │   └── cri-multiplex         # CRI 多路复用器二进制
 ├── dep/                      # 部署依赖脚本（原始副本，build.sh 引用）
 │   ├── deploy.sh / main.py / nginx.conf / init-client.sh

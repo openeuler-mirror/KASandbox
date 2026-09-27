@@ -51,6 +51,7 @@ job "template-manager" {
         ALLOW_SANDBOX_INTERNET        = "${ALLOW_SANDBOX_INTERNET}"
         SHARED_CHUNK_CACHE_PATH       = "${SHARED_CHUNK_CACHE_PATH}"
         E2B_FC_NETNS_EXEC_HELPER      = "${E2B_FC_NETNS_EXEC_HELPER}"
+        E2B_STRATOVIRT_NETNS_EXEC_HELPER = "${E2B_STRATOVIRT_NETNS_EXEC_HELPER}"
         E2B_USE_FC_NETNS_EXEC_HELPER  = "${E2B_USE_FC_NETNS_EXEC_HELPER}"
         GRPC_PORT                     = "${TEMPLATE_MANAGER_PORT}"
         GIN_MODE                      = "release"

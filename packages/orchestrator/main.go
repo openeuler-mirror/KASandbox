@@ -450,6 +450,7 @@ func run(config cfg.Config) (success bool) {
 	// 已清理（newStorage）之后、网络池开始填充之前创建，这样其冻结的挂载表
 	// 最小且不引用任何 netns；失败仅记录日志并回退原 unshare -m 路径
 	fc.WarmupPinnedMountNS(ctx, config.BuilderConfig)
+	stratovirt.WarmupPinnedMountNS(ctx, config.BuilderConfig)
 
 	startService("network pool", func() error {
 		networkPool.Populate(ctx)

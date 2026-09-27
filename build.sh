@@ -410,6 +410,24 @@ build_fc_netns_exec() {
     log_info "✓ ${BIN_DIR}/fc-netns-exec 构建完成"
 }
 
+# 构建 stratovirt-netns-exec（不需要 CGO）
+build_stratovirt_netns_exec() {
+    local orch_dir="packages/orchestrator"
+    local exec_dir="$orch_dir/cmd/stratovirt-netns-exec"
+
+    if [ ! -d "$exec_dir" ]; then
+        log_error "✗ 目录不存在: $exec_dir"
+        return
+    fi
+
+    log_warn "→ 构建 $orch_dir 的 stratovirt-netns-exec"
+    (
+        cd "$orch_dir"
+        CGO_ENABLED=0 GOOS=linux go build -o "../../${BIN_DIR}/stratovirt-netns-exec" ./cmd/stratovirt-netns-exec
+    )
+    log_info "✓ ${BIN_DIR}/stratovirt-netns-exec 构建完成"
+}
+
 # 构建 CRI 多路复用器
 build_cri_multiplex() {
     if ! $ENABLE_CRI_MUX; then
@@ -459,7 +477,7 @@ build_docker_images() {
     # 定义镜像构建任务：镜像名|Dockerfile|构建上下文|需要的二进制
     local image_tasks=(
         "${API_IMAGE_NAME}|packages/api/Dockerfile|packages/api|api"
-        "${ORCHESTRATOR_IMAGE_NAME}|packages/orchestrator/Dockerfile|packages/orchestrator|orchestrator,fc-netns-exec"
+        "${ORCHESTRATOR_IMAGE_NAME}|packages/orchestrator/Dockerfile|packages/orchestrator|orchestrator,fc-netns-exec,stratovirt-netns-exec"
         "${CLIENT_PROXY_IMAGE_NAME}|packages/client-proxy/Dockerfile|packages/client-proxy|client-proxy"
         "${WEBHOOK_IMAGE_NAME}|e2b-webhook/Dockerfile.scratch|e2b-webhook|e2b-webhook"
     )
@@ -881,6 +899,7 @@ else
     build_main_binaries
     build_db_tools
     build_fc_netns_exec
+    build_stratovirt_netns_exec
 fi
 
 # ============================================================================
