@@ -812,7 +812,14 @@ func (f *Factory) ResumeSandbox(
 
 	tCgroup := time.Now()
 	// Create cgroup for sandbox resource accounting
-	cgroupHandle, cgroupFD := createCgroup(ctx, f.cgroupManager, runtime.SandboxID, cleanup)
+	manager := f.cgroupManager
+	// Android sandboxes run on StratoVirt, which keeps the VMM in the Pod
+	// cgroup (UseCgroupFD is disabled), so the per-sandbox accounting cgroup
+	// would stay empty. Restore its creation if per-VM cgroup placement is enabled.
+	if meta.Template.OsType == string(vmm.OsAndroid) {
+		manager = nil
+	}
+	cgroupHandle, cgroupFD := createCgroup(ctx, manager, runtime.SandboxID, cleanup)
 	zap.L().Sugar().Infof("[ResumeSandbox] create cgroup cost: %.3f ms, traceID=%s", time.Since(tCgroup).Seconds()*1000, traceID)
 
 	tParse := time.Now()
