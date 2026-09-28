@@ -78,12 +78,16 @@ func PollVsockProxyReady(ctx context.Context, proxyAddr string, timeout time.Dur
 	var lastErr error
 	for {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return context.Cause(ctx)
 		}
 		if !time.Now().Before(deadline) {
 			return fmt.Errorf("timeout waiting for guest adbd via vsock proxy at %s after %s: %w", proxyAddr, timeout, lastErr)
 		}
-		if err := probeADBPath(ctx, proxyAddr); err == nil {
+		err := probeADBPath(ctx, proxyAddr)
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		if err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -91,8 +95,8 @@ func PollVsockProxyReady(ctx context.Context, proxyAddr string, timeout time.Dur
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+			return context.Cause(ctx)
+		case <-time.After(time.Second):
 		}
 	}
 }
@@ -104,6 +108,9 @@ func probeADBPath(ctx context.Context, proxyAddr string) error {
 		return fmt.Errorf("connect vsock proxy: %w", err)
 	}
 	defer conn.Close()
+	// Interrupt a blocked handshake when the proxy can no longer restart.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 
 	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return fmt.Errorf("set ADB handshake deadline: %w", err)

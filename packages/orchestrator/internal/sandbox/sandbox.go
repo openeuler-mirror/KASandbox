@@ -512,9 +512,8 @@ func (f *Factory) CreateSandbox(
 	// modem readiness fails, the normal stop path waits for the VMM to exit
 	// before the disk providers are released.
 	if androidServices != nil {
-		proxyAddr := androidServices.ADBAddress
-		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, f.config.ReadyCheckTimeout); err != nil {
-			return nil, fmt.Errorf("vsock proxy not ready: %w", err)
+		if err := androidServices.WaitForADBReady(ctx, f.config.ReadyCheckTimeout); err != nil {
+			return nil, fmt.Errorf("vsock proxy readiness check failed (sandbox_id=%s): %w", runtime.SandboxID, err)
 		}
 
 		rilCtx, cancelRIL := context.WithTimeout(ctx, f.config.ReadyCheckTimeout)

@@ -216,18 +216,19 @@ const (
 	successResetInterval = 60 * time.Second
 )
 
-func monitorAndRestart(ctx context.Context, entry *procEntry, restart func(context.Context, *procEntry) (*procEntry, error)) {
+func monitorAndRestart(ctx context.Context, entry *procEntry, restart func(context.Context, *procEntry) (*procEntry, error)) error {
 	restartCount := 0
 	lastStart := time.Now()
+	var lastRestartErr error
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-entry.done:
 			waitErr := entry.getWaitErr()
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
 
 			if waitErr != nil {
@@ -239,11 +240,11 @@ func monitorAndRestart(ctx context.Context, entry *procEntry, restart func(conte
 				logger.L().Info(ctx, "host service exited cleanly",
 					zap.String("service", entry.service.Name),
 				)
-				return
+				return fmt.Errorf("host service %s exited cleanly and will not restart", entry.service.Name)
 			}
 
 			if entry.service.RestartPolicy != RestartOnCrash {
-				return
+				return fmt.Errorf("host service %s exited: %w", entry.service.Name, waitErr)
 			}
 
 			if time.Since(lastStart) > successResetInterval {
@@ -256,7 +257,7 @@ func monitorAndRestart(ctx context.Context, entry *procEntry, restart func(conte
 					zap.String("service", entry.service.Name),
 					zap.Int("max_restarts", maxRestarts),
 				)
-				return
+				return fmt.Errorf("host service %s exceeded max restarts (%d): %w", entry.service.Name, maxRestarts, errors.Join(waitErr, lastRestartErr))
 			}
 
 			backoff := restartBackoffStart << (restartCount - 1)
@@ -280,12 +281,13 @@ func monitorAndRestart(ctx context.Context, entry *procEntry, restart func(conte
 					default:
 					}
 				}
-				return
+				return nil
 			case <-timer.C:
 			}
 
 			newEntry, err := restart(ctx, entry)
 			if err != nil {
+				lastRestartErr = err
 				logger.L().Error(ctx, "failed to restart host service",
 					zap.String("service", entry.service.Name),
 					zap.Error(err),
@@ -293,6 +295,7 @@ func monitorAndRestart(ctx context.Context, entry *procEntry, restart func(conte
 				continue
 			}
 			entry = newEntry
+			lastRestartErr = nil
 			lastStart = time.Now()
 		}
 	}

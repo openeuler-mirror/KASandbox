@@ -28,6 +28,7 @@ type Manager struct {
 	metadata          sbxlogger.SandboxMetadata
 	readyCheckTimeout time.Duration
 	entries           []*procEntry
+	serviceFailures   map[string]context.Context
 	cancel            context.CancelFunc
 	monitorWG         sync.WaitGroup
 	stopping          bool
@@ -110,13 +111,16 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	}
 
 	m.entries = entries
+	m.serviceFailures = make(map[string]context.Context, len(entries))
 
 	for _, entry := range entries {
 		entry := entry
+		failureCtx, cancelFailure := context.WithCancelCause(svcCtx)
+		m.serviceFailures[entry.service.Name] = failureCtx
 		m.monitorWG.Add(1)
 		go func() {
 			defer m.monitorWG.Done()
-			monitorAndRestart(svcCtx, entry, func(ctx context.Context, old *procEntry) (*procEntry, error) {
+			err := monitorAndRestart(svcCtx, entry, func(ctx context.Context, old *procEntry) (*procEntry, error) {
 				m.mu.Lock()
 				defer m.mu.Unlock()
 
@@ -145,10 +149,18 @@ func (m *Manager) StartAll(ctx context.Context) error {
 				m.entries[entryIndex] = newEntry
 				return newEntry, nil
 			})
+			cancelFailure(err)
 		}()
 	}
 
 	return nil
+}
+
+// serviceFailure is cancelled only when monitoring ends, not on recoverable crashes.
+func (m *Manager) serviceFailure(name string) context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.serviceFailures[name]
 }
 
 // StopAll stops all services in reverse slice order (dependents before deps),
