@@ -422,6 +422,13 @@ wait_for_pods() {
 
 deploy_k8s() {
     render_helm_values
+    # 组件全部关闭（ENABLE_API/ENABLE_EDGE/ENABLE_REDIS/ENABLE_POSTGRES/ENABLE_WEBHOOK 均 false
+    # 且 orchestrator 非 DaemonSet 承载）时 helm 不渲染任何工作负载，整步跳过：
+    # 不安装 release、不配置 webhook 证书、不等待 pod，避免无谓资源与等待
+    if ! helm template e2b-api "$SCRIPT_DIR/helm" 2>/dev/null | grep -qE '^kind: (Deployment|DaemonSet|StatefulSet)$'; then
+        info "no workload resources rendered (all components disabled), skipping k8s deploy"
+        return 0
+    fi
     install_helm_chart
     setup_webhook_certificates
     wait_for_pods
@@ -685,6 +692,11 @@ EOF
 
 # 根据 DEPLOY_TYPE 或 --db-mode 参数选择初始化方式
 init_database() {
+    # k8s 模式下 api 组件关闭（ENABLE_API=false）时没有 api pod 消费 api key/tiers，无需初始化
+    if [ "$DEPLOY_TYPE" = "k8s" ] && [ "${ENABLE_API:-true}" != "true" ]; then
+        warn "ENABLE_API=false，不部署 api pod，跳过数据库初始化"
+        return 0
+    fi
     # ENABLE_POSTGRES=false 时使用外部 PostgreSQL，内置初始化（seed-db/tiers 调整）不适用，跳过
     if [ "$ENABLE_POSTGRES" != "true" ]; then
         warn "ENABLE_POSTGRES=false，跳过内置数据库初始化（请确保外部 PostgreSQL 已完成 seed-db 导入与 tiers 配置）"
