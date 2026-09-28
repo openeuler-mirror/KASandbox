@@ -516,11 +516,18 @@ func (f *Factory) CreateSandbox(
 		if err := hostservice.PollVsockProxyReady(ctx, proxyAddr, f.config.ReadyCheckTimeout); err != nil {
 			return nil, fmt.Errorf("vsock proxy not ready: %w", err)
 		}
+
 		rilCtx, cancelRIL := context.WithTimeout(ctx, f.config.ReadyCheckTimeout)
 		defer cancelRIL()
-		if err := androidServices.WaitForModemConnection(rilCtx); err != nil {
-			return nil, fmt.Errorf("guest RIL did not reconnect to modem simulator: %w", err)
+		err := androidServices.WaitForModemConnection(rilCtx)
+		if err != nil {
+			return nil, fmt.Errorf("guest RIL did not reconnect to modem simulator (sandbox_id=%s): %w", runtime.SandboxID, err)
 		}
+
+		if err := hostservice.WaitForGuestMobileIP(ctx, sbx.Slot.HostIPString(), config.Envd.AccessToken, f.config.ReadyCheckTimeout); err != nil {
+			return nil, fmt.Errorf("guest mobile IP check failed (sandbox_id=%s): %w", runtime.SandboxID, err)
+		}
+		logger.L().Info(ctx, "guest mobile IP check succeeded", logger.WithSandboxID(runtime.SandboxID))
 	}
 
 	// §7.4.2 guest CA 注入（仅 CA 自动生成开启时的 per-sandbox mitm 沙箱）：
@@ -957,7 +964,7 @@ func (f *Factory) ResumeSandbox(
 		}
 		return nil, errors.Join(fmt.Errorf("failed to start VMM: %w", vmmStartErr), vmmExitErr)
 	}
-	
+
 	zap.L().Sugar().Infof("[ResumeSandbox] resume VM cost: %d ms, traceID=%s", time.Since(phaseStart).Milliseconds(), traceID)
 	telemetry.ReportEvent(ctx, "initialized VMM")
 
@@ -1034,6 +1041,11 @@ func (f *Factory) ResumeSandbox(
 		}
 	}
 
+	if config.VMMConfig.OsType.OrDefault() == vmm.OsAndroid {
+		if err := hostservice.RestartGuestRild(ctx, sbx.Slot.HostIPString(), config.Envd.AccessToken, runtime.SandboxID, f.config.ReadyCheckTimeout); err != nil {
+			return nil, fmt.Errorf("failed to restart guest RIL: %w", err)
+		}
+	}
 
 	if f.featureFlags.BoolFlag(execCtx, featureflags.HostStatsEnabled) {
 		samplingInterval := time.Duration(f.featureFlags.IntFlag(execCtx, featureflags.HostStatsSamplingInterval)) * time.Millisecond
