@@ -158,9 +158,11 @@ unzip aosp_cf_arm64_only_phone-img-eng.android-build.zip
 tar -xzvf cvd-host_package.tar.gz
 ```
 
-解压完成后，目录中应包含 bin/launch_cvd、bin/adb、etc/bootloader_aarch64/bootloader.qemu 等 Cuttlefish 文件。
+解压完成后，目录中应包含 bin/launch_cvd、etc/bootloader_aarch64/bootloader.qemu 等 Cuttlefish 文件。
 
 注意需要从[u_boot_product - AtomGit](https://atomgit.com/super55/u_boot_product) 获取对应安卓版本的bootloader.stratovirt 放到 /\$CF_DIR/etc/bootloader_aarch64/ 目录下
+
+**关于 adb：** android-15/16 的 cvd-host_package.tar.gz 已移除 bin/adb（bin/adb_connector 等其余文件保持不变）。需要使用 adb 时，请统一使用 android-14 包中的 bin/adb（如 /cvd-host-packages/android-14/bin/adb），已验证其可正常连接 android-15/16 沙箱。
 
 ## 4. 使用 Cuttlefish 和 QEMU 、stratovirt初始化验证 Android
 
@@ -179,14 +181,20 @@ ps aux|grep "$CF_DIR"
 bash run_stratovirt2.sh
 ```
 
-新开终端，连接设备并检查 Android 状态：
+新开终端，连接设备并检查 Android 状态。android-15/16 的包中不含 bin/adb，请使用 android-14 的 adb（见第 3 节关于 adb 的说明）：
 
 ```bash
 cd "$CF_DIR"
 
+## android-14：直接使用包内自带的 adb
 ./bin/adb connect 127.0.0.1:6520
 ./bin/adb devices
 ./bin/adb shell
+
+## android-15/16：包内已无 bin/adb，使用 android-14 的 adb
+/cvd-host-packages/android-14/bin/adb connect 127.0.0.1:6520
+/cvd-host-packages/android-14/bin/adb devices
+/cvd-host-packages/android-14/bin/adb shell
 ```
 
 如果devices显示该设备offline，则通过'cat \${CF_DIR}/cuttlefish/instances/cvd-1/internal/kernel-log-file' 查看下kernel的状态
