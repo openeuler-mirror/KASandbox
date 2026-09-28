@@ -350,6 +350,7 @@ func (p *Process) startProcess(
 		defer stdoutWriter.Close()
 
 		waitErr := cmd.Wait()
+		p.qmpClient.close()
 		if waitErr != nil {
 			var exitErr *exec.ExitError
 			if errors.As(waitErr, &exitErr) {
