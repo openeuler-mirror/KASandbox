@@ -103,6 +103,18 @@ class CatalogEntry:
     instance_id: str
     replay_file: str
     trajectory_path: Path | None
+    # 可选：该 workload 每条命令额外注入的环境变量（如 vitest 需 CI=true 以跳过 watch 模式）
+    env: tuple[tuple[str, str], ...] = ()
+
+
+def _parse_env(value: Any, field: str) -> tuple[tuple[str, str], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, dict) or not all(
+        isinstance(k, str) and k and isinstance(v, str) for k, v in value.items()
+    ):
+        raise ValueError(f"{field}.env 必须是 {{字符串: 字符串}} 的 JSON object")
+    return tuple(sorted(value.items()))
 
 
 def load_catalog(
@@ -145,6 +157,7 @@ def load_catalog(
                 instance_id=item["instance_id"].strip(),
                 replay_file=item["replay_file"].strip(),
                 trajectory_path=trajectory_path,
+                env=_parse_env(item.get("env"), field),
             )
         )
     return entries
@@ -184,6 +197,7 @@ class NoLifecycleTask:
     steps: tuple[ReplayStep, ...]
     has_terminal: bool
     cycle: int  # 该 workload 内第几次复用（1 起）
+    env: tuple[tuple[str, str], ...] = ()  # 来自 catalog 的额外命令环境变量
 
 
 def _entry_steps(entry: CatalogEntry) -> tuple[tuple[ReplayStep, ...], bool]:
@@ -234,6 +248,7 @@ def build_tier_tasks(
                 steps=steps,
                 has_terminal=has_terminal,
                 cycle=emitted[selected],
+                env=entry.env,
             )
         )
     return tasks
@@ -405,6 +420,7 @@ def run_tier(
                     wrap_action(step.action, task.workdir),
                     timeout=command_timeout_sec,
                     user="root",
+                    envs=dict(task.env) or None,
                 )
             detail["exit_code"] = completed.exit_code
         except CommandExitException as exc:
@@ -430,6 +446,7 @@ def run_tier(
             "template": task.template,
             "trajectory": task.trajectory,
             "cycle": task.cycle,
+            "env": dict(task.env),
             "sandbox_id": None,
             "create_key": create_key,
             "ok": False,

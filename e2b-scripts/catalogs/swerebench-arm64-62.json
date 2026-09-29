@@ -267,7 +267,10 @@
     "workdir": "/create-typescript-app",
     "replay_file": "joshuakgoldberg__create-typescript-app-2050__03191598-d187-4752-8cbe-46fb1f9f1e4f.replay.json",
     "instance_id": "joshuakgoldberg__create-typescript-app-2050",
-    "steps": 89
+    "steps": 89,
+    "env": {
+      "CI": "true"
+    }
   },
   {
     "name": "ktsn-vuex-smart-module-243",
@@ -321,7 +324,10 @@
     "workdir": "/plugin-pug",
     "replay_file": "prettier__plugin-pug-448__1e9229c4-6411-4bea-a7b8-107b85fd0a20.replay.json",
     "instance_id": "prettier__plugin-pug-448",
-    "steps": 101
+    "steps": 101,
+    "env": {
+      "CI": "true"
+    }
   },
   {
     "name": "sql-formatter-org-sql-formatter-603",
