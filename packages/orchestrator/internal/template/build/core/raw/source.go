@@ -1,11 +1,8 @@
 package raw
 
 import (
-	"context"
 	"fmt"
 	"strings"
-
-	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/oci/auth"
 )
 
 const RawLayerMediaType = "application/vnd.e2b.raw.image"
@@ -29,8 +26,4 @@ func ParseSource(rawURL string) (Source, error) {
 	}
 
 	return source, nil
-}
-
-func Fetch(ctx context.Context, source Source, destPath string, authProvider auth.RegistryAuthProvider) error {
-	return downloadRegistryRawImage(ctx, source, destPath, authProvider)
 }

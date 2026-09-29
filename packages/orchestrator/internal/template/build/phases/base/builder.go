@@ -70,6 +70,8 @@ type BaseBuilder struct {
 	metrics       *metrics.BuildMetrics
 
 	persistentDigest string
+	newfsDigest      string
+	resolvedSource   *coreraw.ResolvedSource
 }
 
 func (bb *BaseBuilder) androidPersistentPath() string {
@@ -100,6 +102,41 @@ func (bb *BaseBuilder) androidPersistentDigest(ctx context.Context) (string, err
 	)
 
 	return digest, nil
+}
+
+func (bb *BaseBuilder) resolveRawInputs(ctx context.Context) error {
+	if bb.resolvedSource != nil {
+		return nil
+	}
+	source, err := coreraw.ParseSource(bb.Config.FromImageRaw)
+	if err != nil {
+		return err
+	}
+	resolved, err := coreraw.Resolve(ctx, source, bb.Config.RegistryAuthProvider)
+	if err != nil {
+		return fmt.Errorf("failed to resolve raw source: %w", err)
+	}
+	if bb.Config.IsAndroid() {
+		if _, err := bb.androidPersistentDigest(ctx); err != nil {
+			return err
+		}
+		if err := validateExecutableFile(bb.androidNewfsMsdosPath()); err != nil {
+			return err
+		}
+		bb.newfsDigest, err = sha256File(bb.androidNewfsMsdosPath())
+		if err != nil {
+			return err
+		}
+	}
+	bb.resolvedSource = &resolved
+	bb.logger.Info(ctx, "resolved raw build inputs",
+		zap.String("requested_ref", resolved.RequestedRef),
+		zap.String("resolved_ref", resolved.ResolvedRef),
+		zap.String("manifest_digest", resolved.ManifestDigest),
+		zap.String("layer_digest", resolved.LayerDigest),
+		zap.String("newfs_msdos_digest", bb.newfsDigest),
+	)
+	return nil
 }
 
 func New(
@@ -244,6 +281,9 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 	baseMetadata metadata.Template,
 	hash string,
 ) (metadata.Template, error) {
+	if err := bb.resolveRawInputs(ctx); err != nil {
+		return metadata.Template{}, err
+	}
 	templateBuildDir := filepath.Join(bb.BuilderConfig.TemplatesDir, baseMetadata.Template.BuildID)
 	err := os.MkdirAll(templateBuildDir, 0o777)
 	if err != nil {
@@ -273,7 +313,7 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 				userLogger,
 				bb.BuildContext,
 				baseMetadata.Template.BuildID,
-				bb.Config.FromImageRaw,
+				*bb.resolvedSource,
 				bb.androidPersistentPath(),
 				persistentDigest,
 				bb.androidNewfsMsdosPath(),
@@ -292,7 +332,7 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 			directDiskPaths = localDiskPaths(templateBuildDir, disks)
 		}
 	} else {
-		rootfs, memfile, _, err = constructLayerFilesFromWindowsRaw(ctx, userLogger, bb.BuildContext, baseMetadata.Template.BuildID, bb.Config.FromImageRaw, rootfsPath, bb.Config.RegistryAuthProvider)
+		rootfs, memfile, _, err = constructLayerFilesFromWindowsRaw(ctx, userLogger, bb.BuildContext, baseMetadata.Template.BuildID, *bb.resolvedSource, rootfsPath, bb.Config.RegistryAuthProvider)
 	}
 	if err != nil {
 		err = errors.Join(err, closeRawLayerFiles(rootfs, disks, memfile))
@@ -354,11 +394,12 @@ func (bb *BaseBuilder) buildLayerFromRaw(
 	// by finalize (not resumed from memory), so an un-flushed filesystem can
 	// leave the bootloader/filesystem inconsistent on the next boot.
 	actionExecutor := layer.NewFunctionAction(func(ctx context.Context, sbx *sandbox.Sandbox, meta metadata.Template) (metadata.Template, error) {
-		if bb.Config.IsWindows() {
-			guestEnvdVersion, err := sandboxtools.GetWindowsEnvdVersion(
+		if bb.Config.IsWindows() || bb.Config.IsAndroid() {
+			guestEnvdVersion, err := sandboxtools.GetGuestEnvdVersion(
 				ctx,
 				bb.proxy,
 				sbx.Runtime.SandboxID,
+				bb.Config.GuestOS(),
 			)
 			if err != nil {
 				return metadata.Template{}, fmt.Errorf("error getting guest envd version: %w", err)
@@ -673,8 +714,8 @@ func (bb *BaseBuilder) Layer(
 			return notCachedResult, nil
 		}
 
-		if bb.Config.UsesRawImage() && bb.Config.IsWindows() && meta.Template.EnvdVersion == "" {
-			logger.L().Info(ctx, "raw Windows base layer metadata missing guest envd version, building new base layer", zap.String("hash", hash))
+		if bb.Config.UsesRawImage() && (bb.Config.IsWindows() || bb.Config.IsAndroid()) && meta.Template.EnvdVersion == "" {
+			logger.L().Info(ctx, "raw base layer metadata missing guest envd version, building new base layer", zap.String("hash", hash))
 
 			return notCachedResult, nil
 		}
