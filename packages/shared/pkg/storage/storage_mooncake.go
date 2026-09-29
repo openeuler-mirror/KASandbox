@@ -1039,7 +1039,7 @@ func (s *mooncakeStorage) DeleteObjectsWithPrefix(ctx context.Context, prefix st
 
 func (s *mooncakeStorage) UploadSignedURL(_ context.Context, path string, ttl time.Duration) (string, error) {
 	if s.upload == nil {
-		return "", fmt.Errorf("mooncake signed upload is not configured: set MOONCAKE_UPLOAD_PUBLIC_ENDPOINT")
+		return "", fmt.Errorf("mooncake signed upload is not configured")
 	}
 
 	expires := time.Now().Add(ttl).Unix()
@@ -1141,12 +1141,31 @@ func (o *mooncakeBlob) Put(ctx context.Context, data []byte) error {
 func (o *mooncakeBlob) StoreReader(ctx context.Context, r io.Reader) error {
 	invalidateCachedMetadata(o.path)
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	g, groupCtx := errgroup.WithContext(ctx)
 	g.SetLimit(mooncakeUploadConcurrency)
 
 	var size int64
+	// A failed upload must not leave a partially written object behind: cancel any
+	// in-flight chunk uploads, wait for them, then delete everything written so
+	// far. Metadata is written only at the very end, so a successful return never
+	// triggers the cleanup.
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		cancel()
+		_ = g.Wait()
+		if size > 0 {
+			_ = o.deleteObjectAndChunks()
+		}
+	}()
+
 	for {
-		buf, release, err := getChunkBuffer(ctx)
+		buf, release, err := getChunkBuffer(groupCtx)
 		if err != nil {
 			return err
 		}
@@ -1185,10 +1204,6 @@ func (o *mooncakeBlob) StoreReader(ctx context.Context, r io.Reader) error {
 	}
 
 	if err := g.Wait(); err != nil {
-		// Clean up the half-written chunks; the metadata was not written, so the
-		// object stays "absent" from the reader's point of view.
-		_ = o.deleteObjectAndChunks()
-
 		return fmt.Errorf("failed to upload chunks: %w", err)
 	}
 
@@ -1204,6 +1219,7 @@ func (o *mooncakeBlob) StoreReader(ctx context.Context, r io.Reader) error {
 	}
 	storeCachedMetadata(o.path, meta)
 
+	completed = true
 	return nil
 }
 
