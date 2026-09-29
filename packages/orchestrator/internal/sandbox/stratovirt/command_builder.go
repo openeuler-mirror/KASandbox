@@ -196,6 +196,7 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 			"-netdev tap,id=netdev1,ifname=%s -device virtio-net-pci,netdev=netdev1,id=%s,bus=pcie.0,addr=0x9,mac=00:1a:11:e1:cf:00 "+
 			"-device virtio-gpu-pci,id=gpu0,bus=pcie.0,addr=0x10,xres=720,yres=1280 "+
 			"-object rng-random,id=objrng0,filename=/dev/urandom -device virtio-rng-pci,id=rng0,rng=objrng0,bus=pcie.0,addr=0x5,max-bytes=1024,period=2000 "+
+			"-device virtio-balloon-pci,id=balloon0,bus=pcie.0,addr=0x7,free-page-reporting=true "+
 			"-qmp unix:%s,server,nowait "+
 			"-serial %s "+
 			"%s",
