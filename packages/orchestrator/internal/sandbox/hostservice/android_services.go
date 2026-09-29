@@ -44,6 +44,7 @@ type AndroidServicesParams struct {
 
 type AndroidServices struct {
 	ADBAddress string
+	adbFailure context.Context
 
 	cid     uint32
 	manager *Manager
@@ -193,6 +194,7 @@ func StartAndroidServices(ctx context.Context, params AndroidServicesParams) (_ 
 
 	services := &AndroidServices{
 		ADBAddress:     adbAddress,
+		adbFailure:     manager.serviceFailure(adbProxy.Name),
 		cid:            uint32(allocatedCID),
 		manager:        manager,
 		mux:            params.Mux,
@@ -237,6 +239,19 @@ func (s *AndroidServices) WaitForADBReady(ctx context.Context, timeout time.Dura
 
 	readyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	if s.adbFailure != nil {
+		if err := context.Cause(s.adbFailure); err != nil {
+			return fmt.Errorf("ADB proxy unavailable: %w", err)
+		}
+		var cancelFailure context.CancelCauseFunc
+		readyCtx, cancelFailure = context.WithCancelCause(readyCtx)
+		defer cancelFailure(nil)
+		stop := context.AfterFunc(s.adbFailure, func() {
+			cancelFailure(context.Cause(s.adbFailure))
+		})
+		defer stop()
+	}
 
 	if err := PollVsockProxyReady(readyCtx, s.ADBAddress, timeout); err != nil {
 		return fmt.Errorf("ADB path through socket_vsock_proxy is not ready: %w", err)

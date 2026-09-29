@@ -25,6 +25,7 @@ type Service struct {
 	Env        []string
 	NetNSName  string
 	ExtraFiles []*os.File
+	WorkDir    string
 	// ParentFiles are retained only by the orchestrator. They keep socketpair
 	// and pipe peers alive but are not inherited by the child process.
 	ParentFiles []*os.File
