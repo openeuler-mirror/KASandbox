@@ -152,7 +152,11 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 	// mounts a tmpfs over SandboxDir, which would hide FIFOs from secure_env
 	// in the orchestrator namespace.
 	pipeDir := filepath.Join(files.SandboxHostDir(), "android-pipes")
-	fmt.Fprintf(&preamble, "mkdir -p %s &&\n", pipeDir)
+	// The FIFO block is wrapped in a brace group so its "|| true" tolerances
+	// only apply to mkfifo. Left bare, the trailing "|| true" would bind to
+	// the whole "mount && ln && ..." chain and swallow mount/disk-link
+	// failures, letting the VM launch with missing disks.
+	fmt.Fprintf(&preamble, "mkdir -p %s &&\n{ ", pipeDir)
 	// Create all FIFOs referenced by pipeByPort: stratovirt's -chardev pipe
 	// opens <name>.in/.out at startup and aborts if they're missing. Port<->FIFO
 	// assignment is e2b-defined (matches upstream cuttlefish only for the stable
@@ -163,7 +167,7 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 		path := filepath.Join(pipeDir, name)
 		fmt.Fprintf(&preamble, "mkfifo -m 600 %s.in %s.out 2>/dev/null || true; ", path, path)
 	}
-	preamble.WriteString("\n")
+	preamble.WriteString("} &&\n\n")
 
 	diskArgs := buildAndroidDiskArgs(guestDiskPaths)
 	virtconsoleArgs := buildAndroidVirtconsoleArgs(pipeDir, guestConsoleLogs)
