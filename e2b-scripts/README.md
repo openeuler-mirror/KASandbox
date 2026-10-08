@@ -601,33 +601,164 @@ Template 删除失败不会影响测试结果判定，清理状态会写入 `res
 
 ### 5.1 执行方式
 
+性能测试入口为 `bash bench.sh <测试项> [参数]`，等价于 `bash start.sh bench <测试项> [参数]`。
+
+**档位规则**：
+
+- 不带档位参数时，按 `bench.toml` 中该测试项的全部档位逐档执行；
+- 带任意一个档位参数（如 `-c`、`-n`、`--sizes`、`-d`）时，只执行这一档，未指定的档位参数取下文各表中的"单档默认值"，不读取配置文件中的档位。
+
+例如 `bash bench.sh create -c 50` 只执行一档：并发 50、请求数 20。
+
+> `-n` 在不同测试项中含义不同：`create` 中为请求总数；`snapshot-concurrency`、`snapshot-dirty`、`create-from-snapshot`、`rollback`、`pause-resume` 中为轮数；`clone` 中为每轮派生的 Sandbox 数（轮数使用 `--rounds`）。
+
+#### 5.1.1 通用参数
+
+以下参数适用于 9 个测试项与 `bench all`（个别例外已在表中注明）：
+
+| 参数 | 含义 | 默认值 |
+| --- | --- | --- |
+| `-t, --template <ID>` | 被测模板 ID | 按 5.2 的顺序确定 |
+| `-w, --warmup <N>` | 热身轮数，热身结果不计入统计（`density`、`bench all` 不支持命令行指定） | `[global].warmup`（0） |
+| `--sandbox-timeout <秒>` | Sandbox 生命周期，测试异常退出时由服务端到期回收 | `[global].sandbox_timeout`（600） |
+| `-o, --output <路径>` | 将该测试项的 JSON 结果额外复制到指定路径（`bench all` 不支持） | 不复制 |
+| `--config <路径>` | 指定配置文件 | `e2b-scripts/bench.toml` |
+| `--force` | 删除残留的互斥锁后继续执行，仅在确认没有其他测试运行时使用 | 不启用 |
+
+#### 5.1.2 全量执行（all）
+
 ```bash
-# 查看合并后的生效配置，不执行测试
+# 查看合并后的生效配置（TOML 格式），不执行测试
 bash bench.sh all --print-config --profile full
 
-# 冒烟：单并发创建 3 次，确认链路可用
-bash bench.sh create -c 1 -n 3
-
-# 全量执行：quick 为小规模自检（默认），full 为完整档位
+# 小规模自检，确认全部测试项链路可用
 bash bench.sh all --profile quick
-bash bench.sh all --profile full
 
-# 单项执行：未指定档位时按配置逐档执行，命令行指定档位时只执行该档
-bash bench.sh create -c 50 -n 500
-bash bench.sh scale --sizes 1,100,200 --rounds 3
-bash bench.sh density --batch-size 50 --max-sandboxes 500
-bash bench.sh snapshot-dirty -d 512 -n 3
+# 完整档位执行
+bash bench.sh all --profile full
 ```
 
-`bench all` 依次执行 9 个测试项，单个测试项失败不影响后续测试项。各测试项通用参数：
+| 参数 | 含义 | 默认值 |
+| --- | --- | --- |
+| `--profile {quick,full}` | 档位规模：`quick` 为小规模自检，`full` 为完整档位 | `quick` |
+| `--print-config` | 打印合并后的生效配置后退出，不执行测试 | 不启用 |
 
-| 参数 | 说明 |
-| --- | --- |
-| `-t/--template` | 被测模板 ID |
-| `-w/--warmup` | 热身轮数，结果丢弃；默认 0 |
-| `--config` | 指定配置文件，默认 `e2b-scripts/bench.toml` |
-| `--sandbox-timeout` | Sandbox 生命周期秒数，异常退出时由服务端兜底回收 |
-| `--force` | 绕过 test-e2e / bench 互斥锁 |
+#### 5.1.3 并发创建（create）
+
+```bash
+# 冒烟：单并发创建 3 次，确认创建与销毁链路可用
+bash bench.sh create -c 1 -n 3
+
+# 50 并发共创建 500 个，测完即删
+bash bench.sh create -c 50 -n 500
+
+# 创建后保留存活，用于观察运行态或配合其他测试
+bash bench.sh create -c 10 -n 100 -m create-only
+```
+
+| 参数 | 含义 | 单档默认值 |
+| --- | --- | --- |
+| `-c, --concurrency <N>` | 同时发出的创建请求数 | 1 |
+| `-n, --requests <N>` | 本档创建请求总数 | 20 |
+| `-m, --mode {create-kill,create-only}` | `create-kill` 创建完成后统一销毁；`create-only` 保留存活，由服务端生命周期回收 | `create-kill` |
+
+#### 5.1.4 规模拉起（scale）
+
+```bash
+# 依次拉起 1、100、200 个，每档 3 轮
+bash bench.sh scale --sizes 1,100,200 --rounds 3
+```
+
+| 参数 | 含义 | 默认值 |
+| --- | --- | --- |
+| `--sizes <N1,N2,...>` | 规模档位，逗号分隔的正整数；每档一次性并发拉起 N 个 Sandbox | 配置中的 `[[scale.tiers]]` |
+| `--rounds <N>` | 每档测量轮数，多轮取平均 | `[scale].rounds`（3） |
+
+`scale` 仅指定 `--rounds` 时，档位仍取自配置文件。
+
+#### 5.1.5 单机密度（density）
+
+```bash
+# 每批 50 个，累积到 500 个或触发内存安全阈值为止
+bash bench.sh density --batch-size 50 --max-sandboxes 500
+
+# 降低单批并发，并将内存安全阈值调整为 20%
+bash bench.sh density -c 20 --batch-size 20 --max-sandboxes 300 --mem-threshold-pct 20
+```
+
+| 参数 | 含义 | 默认值 |
+| --- | --- | --- |
+| `-c, --concurrency <N>` | 每批创建时的并发数 | 50 |
+| `--batch-size <N>` | 每批创建的 Sandbox 数量 | `[density].batch_size`（50） |
+| `--max-sandboxes <N>` | 累积存活的上限 | `[density].max_sandboxes`（500） |
+| `--mem-threshold-pct <百分比>` | 宿主 MemAvailable 低于总内存的该百分比时停止加压 | `[global].mem_threshold_pct`（15） |
+| `--keep-sandboxes` | 测试结束后保留全部 Sandbox，由服务端生命周期回收 | 不启用（结束后清理） |
+
+#### 5.1.6 快照类测试（snapshot-concurrency、snapshot-dirty、create-from-snapshot）
+
+```bash
+# 10 个 Sandbox 并发创建快照，测 5 轮
+bash bench.sh snapshot-concurrency -c 10 -n 5
+
+# 写入 512 MB 脏页后快照并恢复，测 3 轮
+bash bench.sh snapshot-dirty -d 512 -n 3
+
+# 从同一快照 20 并发恢复，测 3 轮
+bash bench.sh create-from-snapshot -c 20 -n 3
+```
+
+| 测试项 | 参数 | 含义 | 单档默认值 |
+| --- | --- | --- | --- |
+| `snapshot-concurrency` | `-c, --concurrency <N>` | 每轮创建并同时打快照的 Sandbox 数 | 5 |
+| | `-n, --rounds <N>` | 测量轮数 | 5 |
+| `snapshot-dirty` | `-d, --dirty-mb <MB>` | 快照前在 Sandbox 内写入的脏页大小，`0` 表示不写入 | 0 |
+| | `-n, --rounds <N>` | 测量轮数 | 3 |
+| `create-from-snapshot` | `-c, --concurrency <N>` | 每轮从快照并发恢复的 Sandbox 数 | 10 |
+| | `-n, --rounds <N>` | 测量轮数 | 3 |
+
+#### 5.1.7 回滚、克隆与暂停恢复（rollback、clone、pause-resume）
+
+```bash
+# 10 个 Sandbox 并发回滚，测 5 轮
+bash bench.sh rollback -c 10 -n 5
+
+# 每轮从源 Sandbox 派生 100 个，20 并发，测 2 轮
+bash bench.sh clone -n 100 -c 20 --rounds 2
+
+# 10 个 Sandbox 并发 pause 后并发 resume，测 5 轮
+bash bench.sh pause-resume -c 10 -n 5
+```
+
+| 测试项 | 参数 | 含义 | 单档默认值 |
+| --- | --- | --- | --- |
+| `rollback` | `-c, --concurrency <N>` | 同时执行回滚的 Sandbox 数 | 5 |
+| | `-n, --rounds <N>` | 测量轮数 | 5 |
+| `clone` | `-n <N>` | 每轮从源 Sandbox 派生的新 Sandbox 数 | 10 |
+| | `-c, --concurrency <N>` | 派生请求的并发数 | 10 |
+| | `--rounds <N>` | 测量轮数 | 2 |
+| `pause-resume` | `-c, --concurrency <N>` | 同时执行 pause / resume 的 Sandbox 数 | 5 |
+| | `-n, --rounds <N>` | 测量轮数 | 5 |
+
+#### 5.1.8 清理命令（kill-all、clean-host）
+
+```bash
+# 删除所有 bench 轮次遗留的、带 bench 标记的 Sandbox
+bash bench.sh kill-all
+
+# 只删除指定轮次的 Sandbox
+bash bench.sh kill-all --run-id <run-id>
+
+# 查看宿主网络残留规模，不执行删除
+bash bench.sh clean-host --dry-run
+```
+
+| 命令 | 参数 | 含义 |
+| --- | --- | --- |
+| `kill-all` | 无参数 | 删除带 bench 标记的 Sandbox，不影响其他 Sandbox |
+| | `--run-id <run-id>` | 只删除指定轮次的 Sandbox |
+| | `--all` | 删除全部 Sandbox（包括非 bench 创建的），仅在专用测试环境使用 |
+| `clean-host` | 无参数 | 清理宿主残留的网络命名空间、veth 与 iptables 规则；存在运行中的 Sandbox 时拒绝执行，执行后需重启 template-manager |
+| | `--dry-run` | 只打印待清理数量，不执行删除 |
 
 ### 5.2 被测模板与配置
 
@@ -754,7 +885,7 @@ bash bench.sh snapshot-dirty -d 512 -n 3
 - **同步起跑**：同一批请求在 barrier 处统一放行，计时从放行时刻开始，排除线程池启动抖动。
 - **档间清理**：每档结束后删除本轮 Sandbox，并等待宿主 Firecracker、jailer、NBD 资源回到基线后再进入下一档；配置了 `pre_wait` 的档位先静置再开始，静置时间不计入测量。
 - **内存安全阈值**：宿主 MemAvailable 低于阈值时停止加压，保护宿主稳定性。
-- **清理命令**：`bash bench.sh kill-all` 删除带 bench 标记的 Sandbox；`bash bench.sh clean-host` 在两次大规模压测之间清理宿主残留的网络命名空间、veth 与 iptables 规则，执行后需重启 template-manager。
+- **清理命令**：`kill-all` 与 `clean-host` 的用法见 5.1.8。
 
 ## 6. 退出码
 
