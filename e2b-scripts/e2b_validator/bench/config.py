@@ -23,7 +23,6 @@ BENCH_SECTIONS = (
     "rollback",
     "clone",
     "pause_resume",
-    "replay",
 )
 
 BUILTIN: dict[str, Any] = {
@@ -94,19 +93,6 @@ BUILTIN: dict[str, Any] = {
             {"concurrency": 5, "rounds": 5},
             {"concurrency": 10, "rounds": 5},
         ],
-    },
-    "replay": {
-        "target_count": 60,
-        "concurrency": 20,
-        "running_concurrency": 10,
-        "launch_interval_sec": 0.3,
-        "control_plane_qps": 100,
-        "action_timeout": 300,
-        "synthetic_steps": 10,
-        "task_template_name": "django-money-task-2c2g",
-        "task_template_image": "193.30.8.2:30443/e2b-orchestration/django-money:poc_v2",
-        "task_template_cpu": 2,
-        "task_template_memory_mb": 2048,
     },
     "profiles": {
         "quick": {

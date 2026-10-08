@@ -1,10 +1,9 @@
 # E2B 自托管环境测试脚本
 
-`e2b-scripts` 是面向自托管 E2B（KASandbox）的测试工具集，通过统一入口提供三类测试：
+`e2b-scripts` 是面向自托管 E2B（KASandbox）的测试工具集，通过统一入口提供两类测试：
 
 - **功能验收**：116 个真实 E2E 用例，验证控制面、数据面与 Python SDK 链路，用于版本上线验收与升级回归；
-- **性能测试**：创建、规模、密度、快照、回滚、克隆、暂停恢复等基准测试，输出耗时分布、吞吐与成功率；
-- **密度测试**：回放真实 agent 轨迹，模拟真实负载节奏，按并发档位加压寻找宿主机密度拐点。
+- **性能测试**：创建、规模、密度、快照、回滚、克隆、暂停恢复等基准测试，输出耗时分布、吞吐与成功率。
 
 每轮运行生成唯一 `run_id`，创建的 Sandbox、Template、Snapshot、后台进程等均以此隔离；清理只处理本轮资源，不影响运行前已存在的对象。
 
@@ -15,9 +14,8 @@
 - [1. 环境准备](#1-环境准备)
 - [2. 功能验收（test-e2e）](#2-功能验收test-e2e)
 - [3. 性能测试（bench）](#3-性能测试bench)
-- [4. 密度测试（轨迹回放）](#4-密度测试轨迹回放)
-- [5. 故障排查](#5-故障排查)
-- [6. 退出码](#6-退出码)
+- [4. 故障排查](#4-故障排查)
+- [5. 退出码](#5-退出码)
 
 ## 测试方式一览
 
@@ -25,9 +23,8 @@
 | --- | --- | --- | --- |
 | 功能验收 | `bash start.sh test-e2e --all` | 接口行为是否正确：参数、生命周期、文件、命令、快照、暂停恢复等 116 个用例 | `test-results/<run_id>/` |
 | 性能测试 | `bash bench.sh <子命令>` | 单项操作的耗时分布、吞吐、成功率，以及空载单机密度 | `test-results/<run_id>-bench/` |
-| 密度测试 | `bash bench.sh replay` / `replay-matrix` | 真实负载节奏下宿主机能稳定承载多少沙箱、何时出现性能拐点 | `test-results/<run_id>-bench/` |
 
-三类测试互斥执行：运行前会原子获取 `test-results/.run.lock`，避免同时运行互相干扰。
+两类测试互斥执行：运行前会原子获取 `test-results/.run.lock`，避免同时运行互相干扰。
 
 ## 目录结构
 
@@ -35,12 +32,11 @@
 e2b-scripts/
 ├── start.sh                     # 统一入口（Linux）
 ├── start.py                     # 环境初始化、SDK 依赖安装与子命令转发
-├── bench.sh                     # 性能 / 密度测试入口，等价于 start.sh bench
+├── bench.sh                     # 性能测试入口，等价于 start.sh bench
 ├── bench.toml                   # bench 全部参数的单一配置来源
 ├── e2b-self-hosted.env.example  # .env 配置模板
-├── prepare-replay-image.sh      # 构建 bench replay 默认任务镜像
 └── e2b_validator/               # 实现代码，由入口统一加载
-    ├── bench/                   # 性能测试与轨迹回放
+    ├── bench/                   # 性能测试
     ├── e2e_*.py                 # E2E 用例、处理器、资源账本、诊断与报告
     └── create_*.py / run_command.py / ...  # 单项资源操作
 ```
@@ -280,125 +276,7 @@ bash bench.sh kill-all
 - **内存安全闸**：`scale`、`density` 等在 MemAvailable 低于总内存的 `mem_threshold_pct`（默认 15%）时停止加压。
 - **池恢复等待**：档位可配置 `pre_wait`（秒），用于高并发档前等待网络池恢复，不计入测量。
 
-## 4. 密度测试（轨迹回放）
-
-### 4.1 测试模型
-
-密度测试回放真实 agent 轨迹：每条轨迹是一串命令及其间隔（`delay`，对应 agent 思考时间），在任务镜像中按原始节奏执行，从而复现真实负载的资源占用与时间分布。提供两种模型：
-
-| 子命令 | 生命周期 | 测什么 |
-| --- | --- | --- |
-| `replay` | 创建后立即 pause；每步 resume → 执行命令 → pause；RUNNING 名额受 `--running-concurrency` 限制 | paused 与 running 混合形态下的承载能力 |
-| `replay-nolifecycle` | 创建 → 按 delay 逐条执行命令 → 删除，全程保持运行 | 沙箱常驻运行时单档位的命令延迟与资源占用 |
-| `replay-matrix` | 按档位逐档驱动 `replay-nolifecycle` | 并发逐档升高时的延迟变化，自动定位拐点 |
-
-### 4.2 准备工作
-
-| 项目 | 说明 |
-| --- | --- |
-| 轨迹 | 每条轨迹一个 JSON 文件，包含命令序列与 delay |
-| 任务镜像 | 轨迹对应的运行环境。应预先内置轨迹所需的依赖（语言模块缓存、构建工具等），避免运行时下载外网依赖失败或超时，扭曲测试结果 |
-| Catalog | `replay-nolifecycle` / `replay-matrix` 使用的 workload 清单，通过 `--catalog` 指定，格式见 4.4 |
-| 网络池 | `NETWORK_POOL_REUSED_SLOTS_SIZE` 不小于目标档位，并在测试前预热；冷池直接跑大档位会导致创建排队超时 |
-
-### 4.3 replay：带 pause / resume 的回放
-
-```bash
-# 合成轨迹自检（不传 --trajectory-dir 时用通用只读命令合成）
-bash bench.sh replay --target-count 5 -c 5 --running-concurrency 2
-
-# 真实轨迹回放
-bash bench.sh replay --trajectory-dir <轨迹目录> --target-count 60 -c 20 --running-concurrency 10
-
-# 只校验配置与轨迹、打印调度预览，不创建沙箱
-bash bench.sh replay --dry-run --target-count 5
-
-# 多模板混合回放
-bash bench.sh replay --mix-config ./mix-config.json --running-concurrency 30
-```
-
-| 参数 | 默认 | 说明 |
-| --- | --- | --- |
-| `--target-count` | 60 | 总回放次数；超过轨迹数时循环复用 |
-| `-c/--concurrency` | 20 | 同时进行的轨迹数（paused 常驻规模） |
-| `--running-concurrency` | 10 | 同一时刻处于 running 的沙箱上限 |
-| `--control-plane-qps` | 100 | 控制面请求（create / pause / resume / command）统一限速 |
-| `--action-timeout` | 300 | 单条命令超时秒数 |
-| `--mix-config` | 无 | 多模板混合配置（JSON），各负载按 `vm_count` 交错发射 |
-| `--snapshot-mode` | `none` | `same-sandbox` / `chain`：测连续快照或链式恢复开销 |
-
-未指定模板时，真实轨迹模式使用 `bench.toml [replay]` 中配置的任务模板，不存在则按 `task_template_image` 自动构建；该镜像可用 `prepare-replay-image.sh <registry前缀>` 构建推送。
-
-### 4.4 replay-nolifecycle / replay-matrix：常驻运行的梯度加压
-
-Catalog 为 JSON 数组，每项描述一个 workload：
-
-```json
-[
-  {
-    "name": "prettier-plugin-pug-448",
-    "image": "<registry>/swerebench-arm64-prettier-plugin-pug:448-2d9f897",
-    "workdir": "/plugin-pug",
-    "instance_id": "prettier__plugin-pug-448",
-    "replay_file": "prettier__plugin-pug-448__<uuid>.replay.json",
-    "env": {"CI": "true"}
-  }
-]
-```
-
-| 字段 | 说明 |
-| --- | --- |
-| `name` | workload 名称，派生模板名 `swr60-<name>`（规格 2 vCPU / 4 GiB） |
-| `image` | 任务镜像 |
-| `workdir` | 命令执行目录 |
-| `instance_id` / `replay_file` | 轨迹标识与轨迹文件名（位于 `--trajectory-root` 下） |
-| `env` | 可选，为该 workload 的每条命令注入环境变量，如 `CI=true` 让 vitest 以单次模式运行 |
-
-```bash
-CATALOG=<catalog.json>
-TRAJ=<轨迹目录>
-
-# 1. 按 catalog 检查 / 构建全部任务模板
-bash bench.sh replay-provision --catalog $CATALOG
-
-# 2. 单档位：预览与执行
-bash bench.sh replay-nolifecycle --catalog $CATALOG --trajectory-root $TRAJ --dry-run
-bash bench.sh replay-nolifecycle --catalog $CATALOG --trajectory-root $TRAJ \
-  --target-count 124 --concurrency 124 --command-timeout-continue
-
-# 3. 梯度矩阵：逐档加压，到达拐点自动停止
-bash bench.sh replay-matrix --catalog $CATALOG --trajectory-root $TRAJ \
-  --tiers 124,372,496,744 --baseline-p95-ms <基线p95> --command-timeout-continue
-```
-
-执行规则：
-
-- 每档 `并发数 = 任务数 = 档位值`，各 workload 按平滑加权轮询交错发射。
-- 命令以 `root` 在 workdir 下执行，超时可选 10 / 30 / 300 秒（默认 300）。非零退出码是负载本身的结果，只记录不中断；超时默认终止该任务，加 `--command-timeout-continue` 则记录后继续。
-- 任务结束后删除沙箱，并逐个查询确认已删除（清理核验）。
-
-| `replay-matrix` 参数 | 默认 | 说明 |
-| --- | --- | --- |
-| `--tiers` 或 `--start` / `--step` | 120 / 60 | 显式档位列表，或按起点和步长递推 |
-| `--max-tier` | 600 | 档位上限保护 |
-| `--cooldown` | 180 | 档间冷却秒数 |
-| `--baseline-p95-ms` | 第一档实测 | 注入基线 command p95，注入后第一档也参与拐点判定 |
-| `--degradation-multiplier` | 3.0 | 某档 command p95 超过基线的倍数即判定为拐点（0 为禁用） |
-| `--min-success-rate` | 1.0 | 档位有效所需的最低任务成功率 |
-| `--sandbox-timeout` | 3600 | 沙箱生命周期，须大于最长任务耗时 |
-
-执行失败、成功率不足、清理核验失败或到达拐点，任一发生即终止矩阵，原因记录在 `matrix.json`。
-
-### 4.5 结果解读
-
-输出目录 `test-results/<run_id>-bench/`：`report.md`（中文汇总）、`matrix.json`（档位汇总与终止原因）、`tier-<N>/replay-result.json`（逐任务、逐命令明细）。
-
-- **以 command p95 和单任务耗时分布为主要指标**。墙钟时间等于最慢任务的耗时，易受个别长尾 workload 影响，不适合跨档比较。
-- **基线**应在负载较低、没有超时伪影的档位上实测，并在环境或镜像变化后重新测定。
-- **拐点先看尾部**：密度升高时 p95 通常先于 p50 劣化，是更早的预警指标。
-- SWE 轨迹中存在一定比例的非零退出（测试失败、编译报错），属于负载固有特征，只要各档占比稳定即不影响判断。
-
-## 5. 故障排查
+## 4. 故障排查
 
 | 现象 | 排查方向 | 参考命令 |
 | --- | --- | --- |
@@ -406,11 +284,10 @@ bash bench.sh replay-matrix --catalog $CATALOG --trajectory-root $TRAJ \
 | `500 Failed to place sandbox` | Nomad allocation、template-manager、Firecracker / cgroup 资源 | `nomad job status`；`nomad alloc status <id>` |
 | `template builder not found` | template-manager 服务注册、Registry 镜像是否可拉取 | `consul catalog services \| grep template` |
 | 命令退出码 124 / 126、文件摘要不一致 | Template 默认用户、Shell、目录权限、client-proxy 数据面 | `run-command --command 'id; command -v sh; stat -c "%U:%G %a %n" /tmp'` |
-| 回放中某类命令稳定卡满超时 | 沙箱内在线下载依赖被网络阻断，或测试进入 watch 等交互模式 | 在沙箱内对比联网与离线执行耗时；检查是否需要 `CI=true` |
 
 **SDK 兼容处理**：安装的 SDK 缺少同步 `pause()` / Snapshot API，或 `Sandbox.connect()` 引用了未定义的 `envd_version` 时，脚本启用内置兼容实现（`beta_pause`、`AsyncSandbox` 桥接），并在 stderr 输出 `E2B SDK compatibility fallback active`。不修改已安装的 SDK，也不吞掉鉴权、网络与服务端异常。
 
-## 6. 退出码
+## 5. 退出码
 
 | 退出码 | 含义 |
 | ---: | --- |
