@@ -1,0 +1,31 @@
+# e2b-orchestrator systemd unit
+# 安装位置：/etc/systemd/system/e2b-orchestrator.service（由 build.sh install_orchestrator_systemd 安装）
+# 说明：K8S 模式安装时会去掉 After= 中的 nomad.service（节点无该单元）
+[Unit]
+Description=E2B Orchestrator (Firecracker sandbox orchestration)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/e2b-infra/bin/orchestrator-run.sh
+Restart=always
+RestartSec=3
+
+# 对齐原 Nomad kill_timeout=10m：SIGTERM 后留 10 分钟排空沙箱
+# （同时修复 K8S DaemonSet 默认 30s 强杀的缺陷）
+KillSignal=SIGTERM
+TimeoutStopSec=600
+
+# orchestrator 为每个沙箱创建 cgroup，必须委托子树（cgroup v2 单写者规则）
+Delegate=yes
+LimitNOFILE=1048576
+LimitMEMLOCK=infinity
+TasksMax=infinity
+OOMScoreAdjust=-500
+SyslogIdentifier=e2b-orchestrator
+
+[Install]
+WantedBy=multi-user.target

@@ -75,6 +75,9 @@ job "api" {
         NODE_ID                        = "$${node.unique.id}"
         NOMAD_TOKEN                    = "${NOMAD_ACL_TOKEN}"
         ORCHESTRATOR_PORT              = "${ORCHESTRATOR_PORT}"
+        ORCHESTRATOR_TYPE              = "${ORCHESTRATOR_TYPE}"
+        # systemd 模式静态节点清单（仅 ORCHESTRATOR_TYPE=systemd 时生效，其余模式为空）
+        E2B_STATIC_ALLOCATIONS         = "${ORCHESTRATOR_STATIC_NODES}"
         API_GRPC_PORT                  = "${API_GRPC_PORT}"
         ADMIN_TOKEN                    = "${API_ADMIN_TOKEN}"
         SANDBOX_ACCESS_TOKEN_HASH_SEED = "${SANDBOX_ACCESS_TOKEN_HASH_SEED}"
@@ -92,7 +95,7 @@ job "api" {
         LOGS_COLLECTOR_ADDRESS         = "${LOGS_COLLECTOR_ADDRESS}"
         OTEL_COLLECTOR_GRPC_ENDPOINT   = "${OTEL_COLLECTOR_GRPC_ENDPOINT}"
 
-        REDIS_URL                      = "${REDIS_URL}:${REDIS_PORT}"
+        REDIS_URL                      = "${REDIS_ENDPOINT}"
         REDIS_CLUSTER_URL              = ""
         REDIS_TLS_CA_BASE64            = ""
 

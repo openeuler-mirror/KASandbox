@@ -26,6 +26,8 @@
   - [4.3 关闭 SELinux](#43-关闭-selinux)
   - [4.4 组件下载](#44-组件下载)
   - [4.5 Mooncake 配置（可选）](#45-mooncake-配置可选)
+  - [4.6 组件开关（可选）](#46-组件开关可选)
+  - [4.7 Orchestrator 承载方式（可选）](#47-orchestrator-承载方式可选)
 - [5. 部署：Nomad 模式（单机）](#5-部署nomad-模式单机)
   - [5.1 下载组件](#51-下载组件)
   - [5.2 安装](#52-安装)
@@ -345,6 +347,19 @@ python3 create_sandbox.py --server-ip <SERVER_IP>
 
 > **提示**：安装前建议先运行 `./check-env.sh` 检查前置条件（支持 `--install` / `--start` 分别检查），任何 FAIL 项均会给出修复提示。
 
+**安装 RPM 包（第一步）**
+
+部署所有组件前，必须先安装 RPM 包，组件落地到 `/opt/e2b-infra/`：
+
+```bash
+# 从发布页下载对应架构的 RPM 包
+# https://gitcode.com/src-openeuler/KASandbox/releases
+rpm -ivh KASandbox-*.rpm
+
+# 后续所有命令均在 /opt/e2b-infra/ 下执行
+cd /opt/e2b-infra
+```
+
 ### 4.2 修改配置文件
 
 编辑 `.env`，将 `SERVER_IP` 修改为本机 IP 地址：
@@ -563,6 +578,61 @@ cp mooncake-*.rpm spdiag-*.rpm /opt/e2b-infra/bin/
 > - RPM 包版本需与编排二进制编译时链接的库一致（`build.sh -m` 链接 `-lmooncake_store -lmooncake_common -lspdiag`，见 [4.5 Mooncake 配置（可选）](#45-mooncake-配置可选)）；版本不匹配会导致容器内 orchestrator 启动失败。
 > - 若 `/opt/e2b-infra/bin` 下没有任何 `.rpm`，Dockerfile 会打印 `No RPM packages found, skipping` 跳过安装——镜像可构建成功，但容器启动时会因缺少 `libmooncake_store.so` / `libspdiag.so` 等库而失败，务必确认包已就位再构建。
 
+### 4.6 组件开关（可选）
+
+PostgreSQL / Redis / edge（Client Proxy）三个组件支持按需裁剪，通过 `.env` 中的开关控制：
+
+| 变量 | 默认值 | 关闭后的行为 |
+|------|--------|--------------|
+| `ENABLE_POSTGRES` | `true` | 不部署内置 PostgreSQL，改用外部实例（`POSTGRES_CONNECTION_STRING` 指向外部地址；K8S 模式另需将 `POSTGRES_URL` 改为外部实例地址） |
+| `ENABLE_REDIS` | `true` | 不部署内置 Redis：`REDIS_ENDPOINT` 自动置空，API 降级为内存模式运行；`SANDBOX_STORAGE_BACKEND` 强制降级为 `memory` |
+| `ENABLE_EDGE` | `true` | 不部署 edge（Client Proxy）：沙箱域名路由（`*.e2b.app`）不可用，SDK 通过域名连接沙箱受影响，API 直连（创建/管理沙箱）不受影响 |
+| `ENABLE_API` | `true` | 不部署内置 api（仅 K8S 模式）：API 由外部承载；注意 edge（`api.e2b.svc` 上游）与 e2b-webhook 依赖内置 api Service，关闭 api 时需一并关闭 edge 或自行处理依赖 |
+
+```bash
+# .env 示例
+export ENABLE_POSTGRES=true
+export ENABLE_REDIS=true
+export ENABLE_EDGE=true
+export ENABLE_API=true
+```
+
+> **说明**：三个开关均为固定赋值，如需关闭某组件请直接改为 `false`（source `.env` 时会覆盖外部环境变量）。
+
+关闭后部署脚本自动完成联动裁剪：
+
+| 开关 | Nomad 模式 | K8S 模式 |
+|------|-----------|----------|
+| `ENABLE_POSTGRES=false` | 不启动 postgres 容器 | Helm 不渲染 postgres 资源，不注入 postgresUrl、不创建 wait-postgres initContainer，不打 postgres 节点标签 |
+| `ENABLE_REDIS=false` | 不提交 redis job，跳过 redis 镜像拉取/推送 | Helm 不渲染 redis 资源，不注入 `REDIS_URL`，不创建 wait-redis initContainer |
+| `ENABLE_EDGE=false` | 不提交 edge job | Helm 不渲染 edge Deployment 与 edge-api Service；`./k8s-deploy.sh configure-domain` 整体跳过（CoreDNS rewrite 与 wildcard Ingress 均指向 edge-api） |
+| `ENABLE_API=false` | —（仅 K8S 模式生效） | Helm 不渲染 api Deployment 与 api Service |
+
+### 4.7 Orchestrator 承载方式（可选）
+
+Orchestrator（与 Template Manager 同一二进制）默认容器化承载，也可改由节点 systemd 直接管理，通过 `.env` 的 `ORCHESTRATOR_TYPE` 控制：
+
+| 取值 | 承载方式 | API 节点发现 |
+|------|----------|--------------|
+| `nomad`（Nomad 模式默认） | Nomad system job（raw_exec） | Nomad Nodes API |
+| `k8s`（K8S 模式默认） | DaemonSet hostNetwork 容器 | K8S API 按 `app=template-manager` 列 Pod |
+| `systemd` | 节点 `e2b-orchestrator.service` 直跑二进制 | StaticDiscovery（静态清单 + gRPC 探活） |
+
+```bash
+# .env 示例：启用 systemd 承载
+export ORCHESTRATOR_TYPE=systemd
+# API 静态发现清单（systemd 模式必填）：
+# 格式 "nodeName1=InternalIP1,nodeName2=InternalIP2"，nodeName 必须与节点名一致
+export ORCHESTRATOR_STATIC_NODES="node1=10.0.0.11,node2=10.0.0.12"
+```
+
+要点：
+
+- 未设置 `ORCHESTRATOR_TYPE` 时按部署模式取默认值（`nomad` / `k8s`）；合法取值仅 `systemd` / `k8s` / `nomad`，部署启动即校验，非法值直接报错退出。
+- `DEPLOY_MODE` 与 `ORCHESTRATOR_TYPE` 组合受白名单约束：`k8s:systemd`、`k8s:k8s`、`nomad:nomad`、`nomad:systemd`，其余组合报错退出。
+- systemd 模式下 K8S 不渲染 template-manager DaemonSet、Nomad 不提交 template-manager job，改由 `build.sh` 在节点安装并启动 `e2b-orchestrator.service`（崩溃自动拉起、SIGTERM 后 10 分钟排空沙箱、日志进 journald）。
+- systemd 模式必须配置 `ORCHESTRATOR_STATIC_NODES`，清单即节点真相；新增/下线节点后需手动更新该项并重跑 `./build.sh --deploy`。StaticDiscovery 默认周期 gRPC 探活（连续 2 次失败摘除、1 次成功加回，周期可通过 API 侧 `E2B_STATIC_DISCOVERY_INTERVAL` 调整；`E2B_STATIC_DISCOVERY_HEALTHCHECK=false` 时退化为纯静态模式不探活）。
+
 ---
 
 ## 5. 部署：Nomad 模式（单机）
@@ -600,12 +670,13 @@ cp mooncake-*.rpm spdiag-*.rpm /opt/e2b-infra/bin/
 启动过程包括：
 
 - 客户端初始化
-- PostgreSQL 启动
+- PostgreSQL 启动（`ENABLE_POSTGRES=false` 时跳过）
 - Harbor 启动并等待健康检查
 - Harbor 登录并创建项目
 - Nomad Server 启动
 - Nomad 客户端配置追加
-- E2B 业务服务部署（API, Template Manager, Redis 等）
+- E2B 业务服务部署（API, Template Manager, Redis 等；按 [4.6 组件开关](#46-组件开关可选) 裁剪，redis/edge 关闭时不提交对应 job）
+- `ORCHESTRATOR_TYPE=systemd` 时：不提交 template-manager job，改为安装并启动 `e2b-orchestrator.service`（见 [4.7 Orchestrator 承载方式](#47-orchestrator-承载方式可选)）
 
 ### 5.4 Harbor 协议配置
 
@@ -793,8 +864,9 @@ kubectl get pods -A
 - Harbor 根据 `HARBOR_PROTOCOL` 配置协议（默认 both）
 - HTTPS 启用时配置 containerd 证书和仓库
 - Kubelet 重启应用大页配置
-- 节点标签设置（如 `sandbox=true`）
+- 节点标签设置（如 `sandbox=true`；`ORCHESTRATOR_TYPE=systemd` 时跳过 sandbox/build 标签，节点池改走静态清单；`ENABLE_POSTGRES=false` 时不打 postgres 标签）
 - K8S Deployment 部署
+- `ORCHESTRATOR_TYPE=systemd` 时：不渲染 template-manager DaemonSet，改为安装并启动 `e2b-orchestrator.service`（见 [4.7 Orchestrator 承载方式](#47-orchestrator-承载方式可选)）
 
 ### 6.4 Worker 节点部署
 
@@ -833,6 +905,8 @@ Worker 节点部署内容：
 ### 6.5 配置域名访问
 
 通过 E2B SDK 执行沙箱命令时，需配置三层域名解析，确保宿主机和集群内部 Pod 均可通过 `*.e2b.app` 访问沙箱。可选自动或手动两种方式。
+
+> **前提**：本节依赖 edge（Client Proxy）组件。若 `.env` 中 `ENABLE_EDGE=false`，`configure-domain` 会自动整体跳过，且 `*.e2b.app` 域名路由不可用（见 [4.6 组件开关（可选）](#46-组件开关可选)）。
 
 **前置步骤：部署 Nginx Ingress Controller**
 
@@ -932,11 +1006,13 @@ kubectl get pods -n e2b -o wide
 
 | Pod | 说明 |
 |-----|------|
-| `postgres-*` | 元数据存储（teams / users / templates / 沙箱配额） |
-| `redis-*` | 缓存 / 会话存储 |
+| `postgres-*` | 元数据存储（teams / users / templates / 沙箱配额）；`ENABLE_POSTGRES=false` 时不部署 |
+| `redis-*` | 缓存 / 会话存储；`ENABLE_REDIS=false` 时不部署，见 [4.6 组件开关（可选）](#46-组件开关可选) |
 | `api-*` | API 服务（端口 3000），运行在控制节点池 |
-| `edge-*` | 客户端代理（端口 3002），运行在控制节点池 |
-| `template-manager-*` | 模板构建（gRPC 5008），DaemonSet，运行在构建节点池（`.env` 中 `BUILD_NODE_POOL` 指定的节点池） |
+| `edge-*` | 客户端代理（端口 3002），运行在控制节点池；`ENABLE_EDGE=false` 时不部署 |
+| `template-manager-*` | 模板构建（gRPC 5008），DaemonSet，运行在构建节点池（`.env` 中 `BUILD_NODE_POOL` 指定的节点池）；`ORCHESTRATOR_TYPE=systemd` 时不渲染 |
+
+> `ORCHESTRATOR_TYPE=systemd` 时 template-manager/orchestrator 由节点 systemd 承载，验证命令：`systemctl status e2b-orchestrator`、`journalctl -u e2b-orchestrator -f`（见 [4.7 Orchestrator 承载方式（可选）](#47-orchestrator-承载方式可选)）。
 
 
 **可选组件（按需启用/部署）**
@@ -1567,6 +1643,7 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 ### 10.2 单独部署组件
 
 ```bash
+./build.sh --deploy docker      # 安装 Docker & Docker Compose（需先 --download，版本以下载的组件包为准）
 ./build.sh --deploy nomad       # 重新部署 Nomad
 ./build.sh --deploy consul      # 重新部署 Consul
 ./build.sh --deploy postgres    # 重新部署 PostgreSQL
@@ -1629,6 +1706,8 @@ kubectl get pod -l batch-sandbox.sandbox.opensandbox.io/pod-index \
 | `list` | 查看所有任务 | `nomad job status` |
 
 支持的任务名：`redis`、`template-manager`、`edge`、`api`、`all`（默认）
+
+> **说明**：`all` 按组件开关动态裁剪——`ENABLE_REDIS=false` 时不含 redis、`ENABLE_EDGE=false` 时不含 edge、`ORCHESTRATOR_TYPE=systemd` 时不含 template-manager（由 `e2b-orchestrator.service` 承载，见 [4.6](#46-组件开关可选) / [4.7](#47-orchestrator-承载方式可选)）。
 
 ### 10.6 修改沙箱配置
 
@@ -1874,12 +1953,30 @@ kubectl get svc ingress-nginx-controller -n ingress-nginx
 | `POSTGRES_PASSWORD` | 数据库密码 | `local` |
 | `POSTGRES_DOCKER_IMAGE` | 镜像名 | `postgres` |
 | `POSTGRES_CONNECTION_STRING` | 连接串 | `postgresql://postgres:local@<IP>:5432/mydatabase?sslmode=disable` |
+| `POSTGRES_URL` | K8S 模式下 API/迁移器访问 postgres 的地址（`ENABLE_POSTGRES=false` 时改为外部实例地址） | `postgres.e2b.svc.cluster.local` |
 
 **存储后端**
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `STORAGE_PROVIDER` | 存储后端（`MooncakeBucket` 时需配置 Mooncake，见 [4.5 Mooncake 配置（可选）](#45-mooncake-配置可选)） | `Local` |
+| `SANDBOX_STORAGE_BACKEND` | 沙箱元数据存储后端（`redis` / `memory`）；`ENABLE_REDIS=false` 时强制降为 `memory` | `redis` |
+
+**组件开关**（见 [4.6 组件开关（可选）](#46-组件开关可选)）
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `ENABLE_POSTGRES` | 是否部署内置 PostgreSQL（`false` 时使用外部实例） | `true` |
+| `ENABLE_REDIS` | 是否部署内置 Redis（`false` 时组件降级运行） | `true` |
+| `ENABLE_EDGE` | 是否部署 edge / Client Proxy（`false` 时 `*.e2b.app` 域名路由不可用） | `true` |
+| `ENABLE_API` | 是否部署内置 api（仅 K8S 模式；`false` 时 API 由外部承载） | `true` |
+
+**Orchestrator 承载**（见 [4.7 Orchestrator 承载方式（可选）](#47-orchestrator-承载方式可选)）
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `ORCHESTRATOR_TYPE` | Orchestrator 承载方式（`systemd` / `k8s` / `nomad`），与 `DEPLOY_MODE` 组合受白名单约束 | 按部署模式：Nomad 模式为 `nomad`，K8S 模式为 `k8s` |
+| `ORCHESTRATOR_STATIC_NODES` | systemd 模式静态发现清单，格式 `node1=ip1,node2=ip2` | 空（systemd 模式必填） |
 
 **Mooncake（仅 `STORAGE_PROVIDER=MooncakeBucket` 时需要）**
 
@@ -1980,8 +2077,9 @@ deploy/
 ├── create_template.py        # 模板创建脚本
 ├── patch_e2b.py              # E2B SDK 兼容性补丁
 ├── README.md                 # 项目说明
-├── USAGE.md                  # 使用文档（本文件）
 ├── DEPLOY_DESIGN.md          # 部署设计文档
+├── e2b-orchestrator.service  # Orchestrator systemd unit（ORCHESTRATOR_TYPE=systemd 时安装）
+├── orchestrator-run.sh       # Orchestrator systemd wrapper 脚本
 ├── test-build.sh             # build.sh 单元测试
 ├── test-deploy.sh            # deploy.sh 测试
 ├── test-deploy-worker.sh     # deploy-worker.sh 测试
@@ -2019,23 +2117,25 @@ deploy/
 ├── .env                      # 环境变量配置（必须修改 SERVER_IP）
 ├── build.sh                  # 主部署脚本
 ├── k8s-deploy.sh             # K8S 集群部署脚本
-├── deploy.sh                 # K8S 部署执行脚本（dep/deploy.sh 副本）
+├── deploy.sh                 # K8S 部署执行脚本
 ├── deploy-worker.sh          # Worker 节点部署脚本
-├── deploy-e2b-plugin.sh      # E2B 插件部署脚本（dep/ 副本）
+├── deploy-e2b-plugin.sh      # E2B 插件部署脚本
 ├── remote-worker-setup.sh    # Worker 远程初始化脚本
 ├── check-env.sh              # 环境检查脚本
 ├── create_sandbox.py         # 沙箱创建脚本
 ├── create_template.py        # 模板创建脚本
 ├── patch_e2b.py              # E2B SDK 补丁
-├── init-client.sh            # 客户端初始化脚本（dep/ 副本）
-├── install-nomad.sh          # Nomad 安装脚本（dep/ 副本）
-├── install-consul.sh         # Consul 安装脚本（dep/ 副本）
-├── uninstall-nomad.sh        # Nomad 卸载脚本（dep/ 副本）
-├── uninstall-consul.sh       # Consul 卸载脚本（dep/ 副本）
-├── start-server.sh           # Nomad Server 启动脚本（dep/ 副本）
-├── start-client.sh           # Nomad Client 启动脚本（dep/ 副本）
-├── run-nomad.sh              # Nomad 运行脚本（dep/ 副本）
-├── run-consul.sh             # Consul 运行脚本（dep/ 副本）
+├── init-client.sh            # 客户端初始化脚本
+├── install-nomad.sh          # Nomad 安装脚本
+├── install-consul.sh         # Consul 安装脚本
+├── uninstall-nomad.sh        # Nomad 卸载脚本
+├── uninstall-consul.sh       # Consul 卸载脚本
+├── start-server.sh           # Nomad Server 启动脚本
+├── start-client.sh           # Nomad Client 启动脚本
+├── run-nomad.sh              # Nomad 运行脚本
+├── run-consul.sh             # Consul 运行脚本
+├── e2b-orchestrator.service  # Orchestrator systemd unit（ORCHESTRATOR_TYPE=systemd 时安装）
+├── orchestrator-run.sh       # Orchestrator wrapper（安装后复制到 bin/）
 ├── harbor.cnf                # Harbor SSL 证书配置模板（dep/ 副本）
 ├── openclaw.yaml             # OpenClaw 配置（dep/ 副本）
 ├── ingress-nginx.yaml        # Ingress Controller 清单（dep/ 副本）

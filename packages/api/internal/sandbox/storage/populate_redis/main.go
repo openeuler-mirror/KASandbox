@@ -22,15 +22,20 @@ type PopulateRedisStorage struct {
 
 func (m *PopulateRedisStorage) Name() string { return sandbox.StorageNamePopulateRedis }
 
+// hasRedis 是否启用了 Redis 影子写（无 Redis 部署时 redisBackend 为 nil，直接短路）
+func (m *PopulateRedisStorage) hasRedis() bool { return m.redisBackend != nil }
+
 func (m *PopulateRedisStorage) Add(ctx context.Context, sandbox sandbox.Sandbox) error {
 	err := m.memoryBackend.Add(ctx, sandbox)
 	if err != nil {
 		return err
 	}
 
-	err = m.redisBackend.Add(ctx, sandbox)
-	if err != nil {
-		logger.L().Error(ctx, "failed to add sandbox to redis", zap.Error(err))
+	if m.hasRedis() {
+		err = m.redisBackend.Add(ctx, sandbox)
+		if err != nil {
+			logger.L().Error(ctx, "failed to add sandbox to redis", zap.Error(err))
+		}
 	}
 
 	return nil
@@ -46,9 +51,11 @@ func (m *PopulateRedisStorage) Remove(ctx context.Context, teamID uuid.UUID, san
 		return err
 	}
 
-	err = m.redisBackend.Remove(ctx, teamID, sandboxID)
-	if err != nil {
-		logger.L().Error(ctx, "failed to remove sandbox from redis", zap.Error(err), logger.WithSandboxID(sandboxID))
+	if m.hasRedis() {
+		err = m.redisBackend.Remove(ctx, teamID, sandboxID)
+		if err != nil {
+			logger.L().Error(ctx, "failed to remove sandbox from redis", zap.Error(err), logger.WithSandboxID(sandboxID))
+		}
 	}
 
 	return nil
@@ -72,10 +79,12 @@ func (m *PopulateRedisStorage) Update(ctx context.Context, teamID uuid.UUID, san
 		return sandbox.Sandbox{}, err
 	}
 
-	_, err = m.redisBackend.Update(ctx, teamID, sandboxID, updateFunc)
-	if err != nil {
-		if !errors.Is(err, sandbox.ErrCannotShortenTTL) {
-			logger.L().Error(ctx, "failed to update sandbox in redis", zap.Error(err), logger.WithSandboxID(sandboxID))
+	if m.hasRedis() {
+		_, err = m.redisBackend.Update(ctx, teamID, sandboxID, updateFunc)
+		if err != nil {
+			if !errors.Is(err, sandbox.ErrCannotShortenTTL) {
+				logger.L().Error(ctx, "failed to update sandbox in redis", zap.Error(err), logger.WithSandboxID(sandboxID))
+			}
 		}
 	}
 

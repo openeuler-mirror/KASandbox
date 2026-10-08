@@ -113,30 +113,29 @@ E2B Infra 是一个基于沙箱（Sandbox）的代码执行平台，支持在隔
 /root/e2b-deploy/                    # 脚本工作目录
 ├── build.sh                         # 主管理脚本
 ├── deploy-worker.sh                 # K8S Worker 节点部署脚本
+├── deploy.sh                        # K8S 部署执行脚本
+├── common.sh                        # 公共函数（日志输出等）
+├── install-nomad.sh                 # Nomad 安装脚本
+├── install-consul.sh                # Consul 安装脚本
+├── uninstall-nomad.sh               # Nomad 卸载脚本
+├── start-server.sh                  # 服务端启动脚本
+├── start-client.sh                  # 客户端启动脚本
+├── init-client.sh                   # 客户端初始化脚本
+├── run-nomad.sh                     # Nomad 运行脚本
+├── run-consul.sh                    # Consul 运行脚本
+├── deploy-e2b-plugin.sh             # E2B 插件部署脚本
+├── orchestrator-run.sh              # orchestrator systemd wrapper
+├── e2b-orchestrator.service         # orchestrator systemd unit
 ├── template-ubuntu.py               # Ubuntu 模板制作
 ├── create_sandbox.py                # 沙箱创建工具
 ├── create_template.py               # 模板创建工具
 ├── build_prod.py                    # 生产镜像构建
 ├── test_build.sh                    # 测试用例
-└── dep/                             # 依赖文件目录
-    ├── .env                         # 环境变量配置
-    ├── install-nomad.sh             # Nomad 安装脚本
-    ├── install-consul.sh            # Consul 安装脚本
-    ├── uninstall-nomad.sh           # Nomad 卸载脚本
-    ├── start-server.sh              # 服务端启动脚本
-    ├── start-client.sh              # 客户端启动脚本
-    ├── init-client.sh               # 客户端初始化脚本
-    ├── run-nomad.sh                 # Nomad 运行脚本
-    ├── run-consul.sh                # Consul 运行脚本
-    ├── deploy.sh                    # 部署脚本
-    ├── deploy-e2b-plugin.sh         # E2B 插件部署脚本
-    ├── nginx.conf                   # Nginx 配置
+├── .env                             # 环境变量配置
+└── dep/                             # 依赖资源目录（镜像包/证书/配置）
     ├── harbor.cnf                   # Harbor SSL 证书配置
-    ├── daemon.json                  # Docker daemon 配置
-    ├── default.hcl                  # Nomad 默认配置
-    ├── template-manager.hcl         # Nomad Job 配置
-    ├── template-manager.yaml        # K8S Deployment 配置
-    ├── wildcard-ingress.yaml        # K8S Ingress 配置
+    ├── ingress-nginx.yaml           # Ingress-NGINX 部署清单
+    ├── wildcard-ingress.yaml        # K8S 通配 Ingress 配置
     ├── openclaw.yaml                # OpenClaw 部署配置
     ├── *.tar / *.tar.gz             # 离线镜像包
     └── *.rpm                        # RPM 安装包
@@ -175,7 +174,7 @@ E2B Infra 是一个基于沙箱（Sandbox）的代码执行平台，支持在隔
 
 ## 4. 环境变量
 
-配置文件：`dep/.env`
+配置文件：`.env`（deploy 工作目录根）
 
 ### 4.1 核心变量
 
@@ -454,7 +453,7 @@ deploy-worker.sh worker1 worker2 ...
     │
     ▼
 [6/6] 设置节点标签
-    ├── node-role.kubernetes.io/sandbox=true
+    ├── node-role.kubernetes.io/sandbox=true   # 仅 k8s/nomad；systemd 模式跳过（节点池走静态清单）
     └── node-role.kubernetes.io/api=
 ```
 

@@ -266,6 +266,11 @@ deploy_ingress() {
 # ② CoreDNS rewrite 规则：*.e2b.app -> edge-api.e2b.svc.cluster.local
 # ③ 创建 wildcard Ingress（依赖 e2b 命名空间，未部署则跳过）
 configure_domain_access() {
+    # ENABLE_EDGE=false 时不部署 edge（client-proxy），CoreDNS rewrite 与 wildcard Ingress 均指向 edge-api，整体跳过
+    if [ "${ENABLE_EDGE:-true}" != "true" ]; then
+        info "ENABLE_EDGE=false，跳过 *.e2b.app 域名访问配置（edge 未部署）"
+        return
+    fi
     if ! command -v kubectl >/dev/null 2>&1; then
         warn "kubectl 未安装，跳过域名访问配置"
         return

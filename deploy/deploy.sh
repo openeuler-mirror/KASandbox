@@ -25,8 +25,8 @@ CONTAINER_RUNTIME=""
 DOCKER_CMD=""
 
 # ===================== 输出函数 =====================
-info()  { echo "==> $*"; }
-warn()  { echo "==> WARN: $*"; }
+# info/success/error/warn 来自公共库（与 deploy/build.sh 共用）
+source "$SCRIPT_DIR/common.sh"
 step()  { echo "------> $*"; }
 step2() { echo "======  $*  ======"; }
 
@@ -110,6 +110,68 @@ load_env() {
     set +a
     REGISTRY_URL="$SERVER_IP:$HARBOR_HTTPS_PORT/$REGISTRY_PROJECT"
     export REGISTRY_URL
+    # orchestrator 启动方式：默认容器化（nomad 模式=nomad job / k8s 模式=DaemonSet）
+    # 显式置 systemd 时由节点 e2b-orchestrator.service 承载
+    if [ -z "${ORCHESTRATOR_TYPE:-}" ]; then
+        if [ "$DEPLOY_TYPE" = "k8s" ]; then
+            ORCHESTRATOR_TYPE="k8s"
+        else
+            ORCHESTRATOR_TYPE="nomad"
+        fi
+    fi
+    export ORCHESTRATOR_TYPE
+    # launcher 值域校验：非法值会让 API 发现实现落入 nomad 兜底（client=nil），
+    # 运行时 GetNodes 必 panic——提前在部署期报错
+    case "$ORCHESTRATOR_TYPE" in
+        systemd|k8s|nomad) ;;
+        *) error "未知 ORCHESTRATOR_TYPE：${ORCHESTRATOR_TYPE}（支持 systemd/k8s/nomad）" ;;
+    esac
+    # 组合校验：k8s 部署下 nomad 发现会让 API 落入 nil Nomad 客户端且 template-manager 不渲染；
+    # nomad 部署下 k8s 发现无 in-cluster 环境（systemd 则由 api job 注入 E2B_STATIC_ALLOCATIONS，合法）
+    case "$DEPLOY_TYPE:$ORCHESTRATOR_TYPE" in
+        k8s:systemd|k8s:k8s|nomad:nomad|nomad:systemd) ;;
+        *) error "DEPLOY_TYPE=${DEPLOY_TYPE} 与 ORCHESTRATOR_TYPE=${ORCHESTRATOR_TYPE} 组合无效（k8s 部署支持 systemd/k8s，nomad 部署支持 nomad/systemd）" ;;
+    esac
+    # PostgreSQL 组件开关：默认部署内置 postgres；显式置 false 时使用外部实例（POSTGRES_CONNECTION_STRING 指向外部地址）
+    if [ -z "${ENABLE_POSTGRES:-}" ]; then
+        ENABLE_POSTGRES="true"
+    fi
+    export ENABLE_POSTGRES
+    # Redis 组件开关：默认部署内置 redis；显式置 false 时跳过部署，组件降级运行（REDIS_URL 置空触发代码内 ErrRedisDisabled 降级）
+    if [ -z "${ENABLE_REDIS:-}" ]; then
+        ENABLE_REDIS="true"
+    fi
+    export ENABLE_REDIS
+    if [ "$ENABLE_REDIS" = "true" ]; then
+        # 兼容旧 .env：未定义 REDIS_ENDPOINT 时按 host:port 组合
+        REDIS_ENDPOINT="${REDIS_ENDPOINT:-${REDIS_URL:-redis.service.consul}:${REDIS_PORT:-6379}}"
+    else
+        REDIS_ENDPOINT=""
+        # redis 存储后端依赖 Redis，无 Redis 时强制降级为 memory
+        if [ "${SANDBOX_STORAGE_BACKEND:-redis}" = "redis" ]; then
+            warn "ENABLE_REDIS=false，SANDBOX_STORAGE_BACKEND 强制降级为 memory（原值 redis 需要 Redis）"
+            SANDBOX_STORAGE_BACKEND="memory"
+        fi
+    fi
+    export REDIS_ENDPOINT SANDBOX_STORAGE_BACKEND
+    # edge（client-proxy）组件开关：默认部署；显式置 false 时跳过（沙箱域名路由不可用，API 直连功能不受影响）
+    if [ -z "${ENABLE_EDGE:-}" ]; then
+        ENABLE_EDGE="true"
+    fi
+    export ENABLE_EDGE
+    # api 组件开关：默认部署内置 api；显式置 false 时 helm 不渲染 api 资源（API 由外部承载，仅 k8s 模式生效）
+    if [ -z "${ENABLE_API:-}" ]; then
+        ENABLE_API="true"
+    fi
+    export ENABLE_API
+    # systemd 模式静态清单：k8s 注入 helm 静态 Endpoints，nomad 注入 api job E2B_STATIC_ALLOCATIONS；
+    # 空清单部署会静默成功但 API 无节点可调度——提前告警
+    if [ "$ORCHESTRATOR_TYPE" = "systemd" ]; then
+        export ORCHESTRATOR_STATIC_NODES=${ORCHESTRATOR_STATIC_NODES:-}
+        if [ -z "$ORCHESTRATOR_STATIC_NODES" ]; then
+            warn "ORCHESTRATOR_STATIC_NODES 未配置：API 静态发现按空清单运行，请在 .env 配置后重跑 deploy"
+        fi
+    fi
 }
 
 # ===================== 容器运行时 =====================
@@ -170,6 +232,11 @@ build_and_push_dockerfiles() {
         if [ -n "$filter" ] && [[ ",${filter}," != *,${name},* ]]; then
             continue
         fi
+        # K8S 模式下 orchestrator 由节点 systemd 服务承载，不再需要容器镜像
+        if [ "$DEPLOY_TYPE" = "k8s" ] && [ "${ORCHESTRATOR_TYPE:-k8s}" = "systemd" ] && [ "$name" = "orchestrator" ]; then
+            step "orchestrator 由 systemd 承载，跳过镜像构建"
+            continue
+        fi
         tag="${REGISTRY_URL}/${name,,}"
         step "检查镜像 $tag 是否存在"
         if $DOCKER_CMD image inspect "$name" >/dev/null 2>&1; then
@@ -200,6 +267,14 @@ push_prebuilt_images() {
         # [otel]="otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}"
         # [clickhouse]="clickhouse/clickhouse-server:${CLICKHOUSE_VERSION}"
     )
+    # PostgreSQL 可选：ENABLE_POSTGRES=false 时不推送内置 postgres 镜像（使用外部实例）
+    if [ "$ENABLE_POSTGRES" != "true" ]; then
+        unset 'imgs[postgres]'
+    fi
+    # Redis 可选：ENABLE_REDIS=false 时不推送内置 redis 镜像（组件降级运行）
+    if [ "$ENABLE_REDIS" != "true" ]; then
+        unset 'imgs[redis]'
+    fi
     # busybox 为 K8S 专属镜像（helm api init 容器使用），仅 K8S 模式推送
     if [ "$DEPLOY_TYPE" = "k8s" ]; then
         imgs[busybox]="busybox:latest"
@@ -403,14 +478,14 @@ render_hcl_files() {
     mkdir -p "$SCRIPT_DIR/rendered"
     info "rendering hcl ..."
     local env_vars='$ENVIRONMENT $DOMAIN_NAME $GCP_ZONE $CONSUL_ACL_TOKEN $NOMAD_ACL_TOKEN $EDGE_SECRET $LOKI_URL $CLIENT_PROXY_DOCKER_IMAGE $LOKI_SERVICE_PORT_NAME $LOKI_PROXY_MAX_RESOURCES_MEMORY_MB $LOKI_PROXY_RESOURCES_MEMORY_MB $LOKI_RESOURCES_CPU_COUNT
-$POSTGRES_CONNECTION_STRING $REDIS_URL $REDIS_PORT $CLIENT_PROXY_COUNT $EDGE_PROXY_PORT_NAME $EDGE_API_PORT_NAME $CLIENT_PROXY_MAX_RESOURCES_MEMORY_MB $CLIENT_PROXY_RESOURCES_MEMORY_MB $CLIENT_PROXY_RESOURCES_CPU_COUNT
+$POSTGRES_CONNECTION_STRING $REDIS_URL $REDIS_PORT $REDIS_ENDPOINT $CLIENT_PROXY_COUNT $EDGE_PROXY_PORT_NAME $EDGE_API_PORT_NAME $CLIENT_PROXY_MAX_RESOURCES_MEMORY_MB $CLIENT_PROXY_RESOURCES_MEMORY_MB $CLIENT_PROXY_RESOURCES_CPU_COUNT
 $SUPABASE_JWT_SECRETS $POSTHOG_API_KEY $ANALYTICS_COLLECTOR_HOST $ANALYTICS_COLLECTOR_API_TOKEN $HARBOR_HOST $HARBOR_PROJECT $HARBOR_USERNAME $HARBOR_PASSWORD $DOCKER_REVERSE_PROXY_DOCKER_IMAGE $DOCKER_REVERSE_PROXY_PORT_NAME
 $LAUNCH_DARKLY_API_KEY $API_ADMIN_TOKEN $EDGE_API_SECRET $SANDBOX_ACCESS_TOKEN_HASH_SEED $CLICKHOUSE_RESOURCES_CPU_COUNT $CLICKHOUSE_RESOURCES_MEMORY_MB $CLICKHOUSE_SERVER_SECRET $REDIS_PORT_NAME $BUILD_CACHE_BUCKET_NAME
 $CLICKHOUSE_SERVER_COUNT $CLICKHOUSE_BACKUPS_BUCKET_NAME $CLICKHOUSE_USERNAME $CLICKHOUSE_DATABASE $DNS_PORT $LOCAL_CLUSTER_ENDPOINT $API_DOCKER_IMAGE $API_PORT_NAME $DB_MIGRATOR_DOCKER_IMAGE $CLICKHOUSE_NODE_POOL $CLICKHOUSE_VERSION $MINIO_ENDPOINT $MINIO_ACCESS_KEY $MINIO_SECRET_KEY
 $LOKI_BUCKET_NAME $LOGS_COLLECTOR_PUBLIC_IP $TEMPLATE_MANAGER_HOST $CLICKHOUSE_PASSWORD $OTEL_TRACING_PRINT $LOGS_COLLECTOR_ADDRESS $OTEL_COLLECTOR_GRPC_ENDPOINT $REDIS_CLUSTER_URL $OTEL_COLLECTOR_GRPC_PORT $REDIS_VERSION
 $API_PORT $EDGE_API_PORT $EDGE_PROXY_PORT $ORCHESTRATOR_PORT $ORCHESTRATOR_PROXY_PORT $ENVD_TIMEOUT $TEMPLATE_BUCKET_NAME $ALLOW_SANDBOX_INTERNET $SHARED_CHUNK_CACHE_PATH $GRAFANA_OTLP_URL $CLICKHOUSE_HOST $REGISTRY_URL
 $TEMPLATE_MANAGER_PORT $DOCKER_REVERSE_PROXY_PORT $LOKI_SERVICE_PORT $OTEL_COLLECTOR_PROXY_MAX_RESOURCES_MEMORY_MB $OTEL_COLLECTOR_PROXY_RESOURCES_MEMORY_MB $OTEL_COLLECTOR_RESOURCES_CPU_COUNT $GRAFANA_USERNAME $GRAFANA_OTEL_COLLECTOR_TOKEN
-$LOGS_PROXY_PORT $LOGS_HEALTH_PROXY_PORT $STORAGE_PROVIDER $ARTIFACTS_REGISTRY_PROVIDER $API_NODE_POOL $BUILD_NODE_POOL $LOGS_COLLECTOR_VERSION $LOKI_VERSION $OTEL_COLLECTOR_VERSION $CLICKHOUSE_SERVER_PORT $CLICKHOUSE_METRICS_PORT $API_GRPC_PORT $EDGE_HEALTH_PORT $API_GRPC_ADDRESS $DOMAIN_NAME $SANDBOX_STORAGE_BACKEND
+$LOGS_PROXY_PORT $LOGS_HEALTH_PROXY_PORT $STORAGE_PROVIDER $ARTIFACTS_REGISTRY_PROVIDER $API_NODE_POOL $BUILD_NODE_POOL $LOGS_COLLECTOR_VERSION $LOKI_VERSION $OTEL_COLLECTOR_VERSION $CLICKHOUSE_SERVER_PORT $CLICKHOUSE_METRICS_PORT $API_GRPC_PORT $EDGE_HEALTH_PORT $API_GRPC_ADDRESS $DOMAIN_NAME $SANDBOX_STORAGE_BACKEND $ORCHESTRATOR_TYPE $ORCHESTRATOR_STATIC_NODES
 $HARBOR_CERTS_DIR $NODE_ID $GLOG_logtostderr $MOONCAKE_MASTER_ADDR $MOONCAKE_METADATA_SERVER $MOONCAKE_LOCAL_BUFFER_SIZE $MOONCAKE_GLOBAL_SEGMENT_SIZE $MOONCAKE_PROTOCOL $MC_URMA_TRANS_MODE $MOONCAKE_DEVICE_NAME $MC_LOG_ENABLE $MC_LOG_DIR $MC_LOG_LEVEL $MC_STORE_LOCAL_HOT_CACHE_USE_SHM $MC_STORE_LOCAL_HOT_BLOCK_SIZE $MC_STORE_LOCAL_HOT_ADMISSION_THRESHOLD $MC_SLICE_SIZE $MC_WORKERS_PER_CTX $MC_MAX_WR $MC_URMA_BONDING_MULTIPATH_ENABLE $MC_UB_NUMA_AFFINITY_ENABLE
 $MOONCAKE_UPLOAD_SIGNING_SECRET $MOONCAKE_UPLOAD_MAX_BYTES
 $E2B_FC_NETNS_EXEC_HELPER $E2B_USE_FC_NETNS_EXEC_HELPER
@@ -426,7 +501,23 @@ $TEMPLATE_MANAGER_RESOURCES_CPU_COUNT $TEMPLATE_MANAGER_RESOURCES_MEMORY_MB $TEM
 }
 
 submit_nomad_jobs() {
-    local jobs=(redis template-manager edge api)
+    # Redis 可选：ENABLE_REDIS=false 时不提交内置 redis job（组件降级运行）
+    local jobs=(edge api)
+    # systemd 模式：template-manager 由节点 e2b-orchestrator.service 承载，不提交 nomad job
+    if [ "${ORCHESTRATOR_TYPE:-nomad}" != "systemd" ]; then
+        jobs=(template-manager "${jobs[@]}")
+    fi
+    if [ "$ENABLE_REDIS" = "true" ]; then
+        jobs=(redis "${jobs[@]}")
+    fi
+    # edge 可选：ENABLE_EDGE=false 时不提交 client-proxy job（沙箱域名路由不可用）
+    if [ "$ENABLE_EDGE" != "true" ]; then
+        local filtered=() j
+        for j in "${jobs[@]}"; do
+            [ "$j" = "edge" ] || filtered+=("$j")
+        done
+        jobs=("${filtered[@]}")
+    fi
     info "submitting nomad job..."
     local j
     for j in "${jobs[@]}"; do
@@ -594,6 +685,11 @@ EOF
 
 # 根据 DEPLOY_TYPE 或 --db-mode 参数选择初始化方式
 init_database() {
+    # ENABLE_POSTGRES=false 时使用外部 PostgreSQL，内置初始化（seed-db/tiers 调整）不适用，跳过
+    if [ "$ENABLE_POSTGRES" != "true" ]; then
+        warn "ENABLE_POSTGRES=false，跳过内置数据库初始化（请确保外部 PostgreSQL 已完成 seed-db 导入与 tiers 配置）"
+        return 0
+    fi
     case "$DB_MODE" in
         container)
             init_database_container

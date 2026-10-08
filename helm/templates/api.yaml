@@ -1,3 +1,4 @@
+{{- if .Values.apiEnabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,6 +8,9 @@ metadata:
     app: api
 spec:
   replicas: 1
+  # 单副本 + hostNetwork：滚动更新新旧 Pod 必抢宿主机端口死锁，Recreate 先杀旧再起新
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: api
@@ -26,6 +30,7 @@ spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       initContainers:
+      {{- if .Values.redisEnabled }}
       - name: wait-redis
         image: "{{ .Values.registry }}/{{ .Values.image.busybox }}"
         imagePullPolicy: IfNotPresent
@@ -37,6 +42,9 @@ spec:
             echo waiting for redis...
             sleep 1
           done
+      {{- end }}
+      {{- if .Values.postgresEnabled }}
+      # postgresEnabled=false 时不渲染内置 postgres（使用外部实例），无需等待其 Service
       - name: wait-postgres
         image: "{{ .Values.registry }}/{{ .Values.image.busybox }}"
         imagePullPolicy: IfNotPresent
@@ -48,6 +56,7 @@ spec:
             echo waiting for postgres...
             sleep 1
           done
+      {{- end }}
       - name: db-migrator
         image: "{{ .Values.registry }}/{{ .Values.image.migrator }}"
         imagePullPolicy: {{ .Values.pullPolicy }}
@@ -82,10 +91,12 @@ spec:
           value: "{{ .Values.otelCollectorGrpcEndpoint }}"
         - name: ADMIN_TOKEN
           value: "{{ .Values.apiAdminToken }}"
+        {{- if .Values.redisEnabled }}
         - name: REDIS_URL
           value: "{{ .Values.redisUrl }}:{{ .Values.redisPort | int }}"
         - name: REDIS_CLUSTER_URL
           value: "{{ .Values.redisClusterUrl }}"
+        {{- end }}
         - name: DNS_PORT
           value: "{{ .Values.dnsPort }}"
         - name: SANDBOX_ACCESS_TOKEN_HASH_SEED
@@ -119,6 +130,10 @@ spec:
           valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
         - name: ORCHESTRATOR_TYPE
           value: "{{ .Values.orchestratorType }}"
+        {{- if .Values.orchestratorStaticNodes }}
+        - name: E2B_STATIC_ALLOCATIONS
+          value: "{{ .Values.orchestratorStaticNodes }}"
+        {{- end }}
         - name: ORCHESTRATOR_PORT
           value: "{{ .Values.orchestratorPort }}"
         - name: API_GRPC_PORT
@@ -145,10 +160,12 @@ spec:
           value: "{{ .Values.otelCollectorGrpcEndpoint }}"
         - name: ADMIN_TOKEN
           value: "{{ .Values.apiAdminToken }}"
+        {{- if .Values.redisEnabled }}
         - name: REDIS_URL
           value: "{{ .Values.redisUrl }}:{{ .Values.redisPort | int }}"
         - name: REDIS_CLUSTER_URL
           value: "{{ .Values.redisClusterUrl }}"
+        {{- end }}
         - name: SANDBOX_ACCESS_TOKEN_HASH_SEED
           value: "{{ .Values.sandboxAccessTokenHashSeed }}"
         - name: TEMPLATE_BUCKET_NAME
@@ -204,3 +221,4 @@ spec:
     targetPort: dns
     name: dns
     protocol: UDP
+{{- end }}

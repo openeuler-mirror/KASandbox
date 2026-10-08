@@ -25,17 +25,21 @@ type LocalServiceDiscovery struct {
 	k8s             kubernetes.Interface
 }
 
-func NewLocalDiscovery(clusterID uuid.UUID, nomad *nomadapi.Client, k8s kubernetes.Interface) Discovery {
+func NewLocalDiscovery(ctx context.Context, clusterID uuid.UUID, nomad *nomadapi.Client, k8s kubernetes.Interface) Discovery {
 	sd := &LocalServiceDiscovery{
 		clusterID: clusterID,
 		nomad:     nomad,
 		k8s:       k8s,
 	}
 
-	orchType := env.GetEnv("ORCHESTRATOR_TYPE", "nomad")
+	launcher := env.GetEnv("ORCHESTRATOR_TYPE", "nomad")
 	namespace := env.GetEnv("K8S_NAMESPACE", "e2b")
 
-	switch orchType {
+	switch launcher {
+	case "systemd":
+		// orchestrator systemd 承载：候选节点来自静态配置（E2B_STATIC_ALLOCATIONS /
+		// E2B_STATIC_ALLOCATIONS_FILE），活性由 grpc_health_v1 探测实时判定
+		sd.discoveryClient = discovery.NewStaticDiscoveryFromEnv(ctx)
 	case "k8s":
 		if k8s == nil {
 			return nil
