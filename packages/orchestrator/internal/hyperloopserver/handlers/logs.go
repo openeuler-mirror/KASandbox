@@ -12,6 +12,14 @@ import (
 )
 
 func (h *APIStore) Logs(c *gin.Context) {
+	// Log forwarding is disabled when no collector is configured: accept and
+	// drop, so guest envd neither retries nor floods error logs.
+	if h.collectorAddr == "" {
+		c.Status(http.StatusOK)
+
+		return
+	}
+
 	ctx := c.Request.Context()
 	sbx, err := h.sandboxes.GetByHostPort(c.Request.RemoteAddr)
 	if err != nil {

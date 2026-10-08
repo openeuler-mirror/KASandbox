@@ -1,6 +1,7 @@
 package env
 
 import (
+	"net/url"
 	"os"
 	"strconv"
 
@@ -53,4 +54,24 @@ func GetNodeIP() string {
 
 func LogsCollectorAddress() string {
 	return os.Getenv("LOGS_COLLECTOR_ADDRESS")
+}
+
+// ValidLogsCollectorAddress returns the sandbox log collector address only when
+// it is a usable absolute HTTP(S) URL. Sandbox log forwarding is an optional
+// feature: an empty value disables it, and a malformed value (e.g. missing
+// scheme like "host:port") is treated as unconfigured rather than producing a
+// failed request per log line. The returned bool reports whether forwarding
+// should be enabled.
+func ValidLogsCollectorAddress() (string, bool) {
+	addr := os.Getenv("LOGS_COLLECTOR_ADDRESS")
+	if addr == "" {
+		return "", false
+	}
+
+	u, err := url.Parse(addr)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", false
+	}
+
+	return addr, true
 }

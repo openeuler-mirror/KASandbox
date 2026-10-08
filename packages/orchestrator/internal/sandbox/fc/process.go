@@ -513,10 +513,17 @@ func (p *Process) Resume(
 		time.Since(phase6Start).Seconds()*1000, traceID)
 
 	phase7Start := time.Now()
+	// Always advertise the hyperloop /logs endpoint: envd's log exporter
+	// buffers every log line in memory and only starts draining once MMDS
+	// hands it a non-empty address, so a blank address would grow that
+	// buffer for the sandbox's whole lifetime. When no collector is
+	// configured the hyperloop handler accepts and drops the payload.
+	collectorProxyAddr := fmt.Sprintf("http://%s/logs", p.config.NetworkConfig.OrchestratorInSandboxIPAddress)
+
 	meta := &MmdsMetadata{
 		SandboxID:            sbxMetadata.SandboxID,
 		TemplateID:           sbxMetadata.TemplateID,
-		LogsCollectorAddress: fmt.Sprintf("http://%s/logs", p.config.NetworkConfig.OrchestratorInSandboxIPAddress),
+		LogsCollectorAddress: collectorProxyAddr,
 	}
 
 	tHash := time.Now()
