@@ -80,6 +80,10 @@ func NewCache(
 		return nil, fmt.Errorf("failed to remove old build cache directory: %w", err)
 	}
 
+	if err := cleanupPreparedSnapshots(config.StorageConfig.SandboxCacheDir); err != nil {
+		logger.L().Warn(context.Background(), "failed to cleanup abandoned prepared snapshots", zap.Error(err))
+	}
+
 	buildStore, err := build.NewDiffStore(
 		config,
 		flags,
@@ -111,6 +115,25 @@ func (c *Cache) Start(ctx context.Context) {
 func (c *Cache) Stop() {
 	c.buildStore.Close()
 	c.cache.Stop()
+	c.closePreparedSnapshots()
+}
+
+func (c *Cache) closePreparedSnapshots() {
+	for _, item := range c.cache.Items() {
+		t, ok := item.Value().(*storageTemplate)
+		if !ok {
+			continue
+		}
+		file, err := t.snapfile.Result()
+		if err != nil {
+			continue
+		}
+		if prepared, ok := file.(*PreparedFile); ok {
+			if err := prepared.Close(); err != nil {
+				logger.L().Warn(context.Background(), "failed to close prepared snapshot cache", zap.Error(err))
+			}
+		}
+	}
 }
 
 func (c *Cache) Items() map[string]*ttlcache.Item[string, Template] {

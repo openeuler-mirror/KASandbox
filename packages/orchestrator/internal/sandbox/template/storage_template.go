@@ -95,7 +95,7 @@ func (t *storageTemplate) Fetch(ctx context.Context, buildStore *build.DiffStore
 	wg.Go(func() error {
 		if t.localSnapfile != nil {
 			t1 := time.Now()
-			if err := t.snapfile.SetValue(t.localSnapfile); err != nil {
+			if err := t.setSnapfile(t.localSnapfile); err != nil {
 				return fmt.Errorf("failed to set local snapfile: %w", err)
 			}
 			zap.L().Sugar().Infof("[ResumeSandbox] storageTemplate.Fetch set local snapfile cost: %.3f ms, buildID=%s",
@@ -124,7 +124,7 @@ func (t *storageTemplate) Fetch(ctx context.Context, buildStore *build.DiffStore
 		zap.L().Sugar().Infof("[ResumeSandbox] storageTemplate.Fetch newStorageFile(snapfile) cost: %.3f ms, buildID=%s, cache=%s",
 			time.Since(tSnap).Seconds()*1000, t.files.BuildID, t.files.CacheSnapfilePath())
 
-		if err := t.snapfile.SetValue(snapfile); err != nil {
+		if err := t.setSnapfile(snapfile); err != nil {
 			return fmt.Errorf("failed to set snapfile: %w", err)
 		}
 
@@ -346,4 +346,9 @@ func (t *storageTemplate) Metadata() (metadata.Template, error) {
 	}
 
 	return metadata.FromFile(metafile.Path())
+}
+
+func (t *storageTemplate) setSnapfile(file File) error {
+	// Expansion is lazy: only Android restore requests a prepared directory.
+	return t.snapfile.SetValue(&PreparedFile{File: file})
 }

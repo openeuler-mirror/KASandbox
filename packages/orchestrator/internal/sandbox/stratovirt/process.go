@@ -235,7 +235,7 @@ func (p *Process) Resume(
 	cleanup := func() { _ = os.RemoveAll(restoreDir) }
 	defer cleanup()
 
-	if err := unpackSnapshot(snapfile.Path(), restoreDir); err != nil {
+	if err := restoreSnapshotFiles(snapfile, restoreDir, p.Versions.OsType.OrDefault() == vmm.OsAndroid); err != nil {
 		return fmt.Errorf("unpack stratovirt snapshot: %w", err)
 	}
 	telemetry.ReportEvent(ctx, "unpacked stratovirt snapshot")
