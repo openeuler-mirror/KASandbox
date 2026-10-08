@@ -1,0 +1,212 @@
+# KASandbox 性能基准测试配置
+# 优先级：命令行参数 > --config 指定文件 > 本文件 > 代码内置兜底
+# 查看合并后的生效配置：bash start.py bench all --print-config
+
+[global]
+# 模板 ID；命令行 -t/--template 与环境变量 BENCH_TEMPLATE_ID 优先于此处
+# 留空 = 自动使用标准基准模板 bench-standard-2c2g（2 vCPU / 2048 MiB，
+# 对标 CubeSandbox 文章口径）：先按名称查找 ready 且本地产物齐全的既有模板复用，
+# 没有则自动构建一次，后续运行直接复用；填入 ID 或命令行 -t 才使用指定模板
+# 可用 bash start.sh list-templates 查询 ready 状态的模板
+template = ""
+# 热身轮数：已禁用预热（0），每轮都计入正式测量
+warmup = 0
+# 沙箱生命周期秒数：到期服务端自动回收，防止泄漏（默认 600）
+sandbox_timeout = 600
+# 内存安全闸：MemAvailable 低于总内存该百分比时，density/scale 立即中止（默认 15）
+mem_threshold_pct = 15.0
+# 宿主网络残留告警阈值：测试项结束时 netns 数相比该项开始增长超过该值即在报告 notes
+# 中告警（v35 创建失败路径会泄漏 ns-* netns / veth-* / iptables 规则；默认 100）
+netns_growth_threshold = 100
+# 结果输出目录：相对路径基于 e2b-scripts/ 解析（默认 test-results）
+result_root = "test-results"
+
+# 并发创建沙箱（对标 cube-bench）
+# 单独执行 bench create 且未传 -c/-n 时，按下列 tiers 逐档串行执行
+[[create.tiers]]
+concurrency = 1   # 并发数
+requests = 20     # 该档总请求数
+
+[[create.tiers]]
+concurrency = 10
+requests = 200
+
+[[create.tiers]]
+concurrency = 20
+requests = 300
+pre_wait = 180  # 重压档开始前静置 180s，让网络池/系统资源恢复（等待不计入测量）
+
+[[create.tiers]]
+concurrency = 50
+requests = 500
+pre_wait = 180  # 同上：高并发档前等待池恢复，避免创建失败污染数据
+
+# 规模测试：同一模板一次性并发拉起 N 个沙箱，测整批 wall
+# 注意：大档位整批 wall 可能顶到 global.sandbox_timeout，
+# scale 已将单沙箱生命周期放宽到 max(global.sandbox_timeout, 1800) 秒
+# 上限从 500 降到 200：当前环境网络池容量（new 池 640 + reused 池 1000）与
+# 孤儿残留风险的实测平衡点，压更大档位前先用 bench clean-host 清理宿主
+# 向后兼容：旧的 sizes = [1, 100, 200] 写法仍可用（等价于无 pre_wait 的 tiers）
+[scale]
+rounds = 3  # 每档正式测量轮数（默认 3）
+
+[[scale.tiers]]
+size = 1    # 该档沙箱数
+
+[[scale.tiers]]
+size = 100
+
+[[scale.tiers]]
+size = 200
+pre_wait = 180  # 大档位开始前静置 180s 让网络池/系统资源恢复（等待不计入测量）
+
+# 单机密度：分批累积存活 + /proc/meminfo 采样
+[density]
+batch_size = 50     # 每批创建数量（默认 50）
+max_sandboxes = 500 # 累积存活上限（默认 500，full 可到 1000）
+
+# Snapshot 制作 × 并发：N 个沙箱各打一次快照，测整批 wall
+[[snapshot_concurrency.tiers]]
+concurrency = 1  # 并发数（每沙箱一次快照）
+rounds = 5       # 正式测量轮数
+
+[[snapshot_concurrency.tiers]]
+concurrency = 5
+rounds = 5
+
+[[snapshot_concurrency.tiers]]
+concurrency = 10
+rounds = 5
+
+# Snapshot 制作 × 脏页大小：沙箱内 dd 写 /dev/shm 控制脏页
+[[snapshot_dirty.tiers]]
+dirty_mb = 0  # 脏页写入量 MB
+rounds = 3    # 正式测量轮数
+
+[[snapshot_dirty.tiers]]
+dirty_mb = 10
+rounds = 3
+
+[[snapshot_dirty.tiers]]
+dirty_mb = 50
+rounds = 3
+
+[[snapshot_dirty.tiers]]
+dirty_mb = 100
+rounds = 3
+
+[[snapshot_dirty.tiers]]
+dirty_mb = 200
+rounds = 3
+
+[[snapshot_dirty.tiers]]
+dirty_mb = 500
+rounds = 3
+
+[[snapshot_dirty.tiers]]
+dirty_mb = 800
+rounds = 3
+
+[[snapshot_dirty.tiers]]
+dirty_mb = 1024
+rounds = 3
+
+# 基于 Snapshot 并发启动：先制一个快照，再并发创建
+[[create_from_snapshot.tiers]]
+concurrency = 1  # 每轮并发创建数
+rounds = 3
+
+[[create_from_snapshot.tiers]]
+concurrency = 10
+rounds = 3
+
+[[create_from_snapshot.tiers]]
+concurrency = 20
+rounds = 3
+
+[[create_from_snapshot.tiers]]
+concurrency = 50
+rounds = 3
+
+# Rollback：沙箱各自打 checkpoint 并恢复（只能回滚到自己创建的 checkpoint）
+[[rollback.tiers]]
+concurrency = 1  # 并发沙箱数
+rounds = 5
+
+[[rollback.tiers]]
+concurrency = 5
+rounds = 5
+
+[[rollback.tiers]]
+concurrency = 10
+rounds = 5
+
+# Clone：源沙箱打 checkpoint，并发派生 N 个新沙箱，源保持运行
+[[clone.tiers]]
+n = 1           # 每轮派生的新沙箱总数
+concurrency = 1 # 并发数
+rounds = 5      # 正式测量轮数
+
+[[clone.tiers]]
+n = 100
+concurrency = 10
+rounds = 2
+
+[[clone.tiers]]
+n = 100
+concurrency = 20
+rounds = 2
+
+[[clone.tiers]]
+n = 100
+concurrency = 50
+rounds = 2
+
+# Pause / Resume：N 沙箱并发 pause 后并发 resume，分别统计
+[[pause_resume.tiers]]
+concurrency = 1  # 并发沙箱数
+rounds = 5
+
+[[pause_resume.tiers]]
+concurrency = 5
+rounds = 5
+
+[[pause_resume.tiers]]
+concurrency = 10
+rounds = 5
+
+# profile 只覆盖各节的档位规模；quick 为小规模自检，full 对标 CubeSandbox 文章
+[profiles.quick]
+scale = { tiers = [ { size = 1 }, { size = 10 } ], rounds = 2 }
+density = { batch_size = 10, max_sandboxes = 20 }
+create = { tiers = [
+    { concurrency = 1, requests = 10 },
+    { concurrency = 10, requests = 20 },
+] }
+snapshot_concurrency = { tiers = [
+    { concurrency = 1, rounds = 3 },
+    { concurrency = 5, rounds = 3 },
+] }
+snapshot_dirty = { tiers = [
+    { dirty_mb = 0, rounds = 2 },
+    { dirty_mb = 50, rounds = 2 },
+] }
+create_from_snapshot = { tiers = [
+    { concurrency = 1, rounds = 2 },
+    { concurrency = 10, rounds = 2 },
+] }
+rollback = { tiers = [
+    { concurrency = 1, rounds = 3 },
+    { concurrency = 5, rounds = 3 },
+] }
+clone = { tiers = [
+    { n = 1, concurrency = 1, rounds = 3 },
+    { n = 5, concurrency = 5, rounds = 2 },
+] }
+pause_resume = { tiers = [
+    { concurrency = 1, rounds = 2 },
+    { concurrency = 5, rounds = 2 },
+] }
+
+# full 与基础节一致（对标 CubeSandbox 文章完整档位），显式列出便于按需调整
+[profiles.full]

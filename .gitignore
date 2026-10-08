@@ -1,2 +1,9 @@
 # 依赖目录
 **/vendor/
+
+# Python 缓存
+**/__pycache__/
+
+# e2b-scripts 本地环境配置与测试结果
+e2b-scripts/.env
+e2b-scripts/test-results/

@@ -14,6 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="action", required=True)
 
+    from .bench.cli import register_subcommand as register_bench
     from .create_sandbox import register_subcommand as register_create_sandbox
     from .create_template import register_subcommand as register_create_template
     from .download_file import register_subcommand as register_download_file
@@ -31,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_list_sandboxes(subparsers)
     register_list_templates(subparsers)
     register_e2e_tests(subparsers)
+    register_bench(subparsers)
     return parser
 
 
