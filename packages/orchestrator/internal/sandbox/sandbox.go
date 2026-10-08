@@ -1054,9 +1054,23 @@ func (f *Factory) ResumeSandbox(
 	}
 
 	if config.VMMConfig.OsType.OrDefault() == vmm.OsAndroid {
-		if err := hostservice.RestartGuestRild(ctx, sbx.Slot.HostIPString(), config.Envd.AccessToken, runtime.SandboxID, f.config.ReadyCheckTimeout); err != nil {
-			return nil, fmt.Errorf("failed to restart guest RIL: %w", err)
-		}
+		rilCtx, cancelRIL := context.WithCancel(execCtx)
+		rilDone := make(chan struct{})
+		go func() {
+			defer close(rilDone)
+			defer cancelRIL()
+			if err := hostservice.RestartGuestRild(rilCtx, sbx.Slot.HostIPString(), config.Envd.AccessToken, runtime.SandboxID, f.config.ReadyCheckTimeout); err != nil && rilCtx.Err() == nil {
+				logger.L().Warn(rilCtx, "failed to restart guest RIL",
+					logger.WithSandboxID(runtime.SandboxID),
+					zap.Error(err))
+			}
+		}()
+		// Finish the background request before stopping the VM and recycling its IP.
+		cleanup.AddPriority(ctx, func(context.Context) error {
+			cancelRIL()
+			<-rilDone
+			return nil
+		})
 	}
 
 	if f.featureFlags.BoolFlag(execCtx, featureflags.HostStatsEnabled) {
