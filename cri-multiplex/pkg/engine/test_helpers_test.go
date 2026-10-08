@@ -18,10 +18,11 @@ type fakeCNIManager struct {
 	addErr    error
 	delErr    error
 
-	addCalls int
-	delCalls int
-	addIDs   []string
-	delIDs   []string
+	addCalls  int
+	delCalls  int
+	addIDs    []string
+	delIDs    []string
+	delCtxErr error
 }
 
 func (f *fakeCNIManager) Add(ctx context.Context, sandboxID string, podCfg *runtime.PodSandboxConfig) (*CNIRecord, error) {
@@ -54,6 +55,7 @@ func (f *fakeCNIManager) NetNSName(sandboxID string) string {
 
 func (f *fakeCNIManager) Del(ctx context.Context, rec *CNIRecord, podCfg *runtime.PodSandboxConfig) error {
 	f.delCalls++
+	f.delCtxErr = ctx.Err()
 	if rec != nil {
 		f.delIDs = append(f.delIDs, rec.SandboxID)
 	}

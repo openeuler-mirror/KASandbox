@@ -203,6 +203,17 @@ type JSONStateStore struct {
 	path     string
 	state    persistedState
 	disabled bool
+	// Both fields are protected by mu. A single writer preserves snapshot
+	// order while later mutations accumulate into the next pending batch.
+	pending  *stateWriteBatch
+	flushing bool
+	// Set at construction; tests can wrap the real writer before starting calls.
+	writeSnapshot func([]byte) error
+}
+
+type stateWriteBatch struct {
+	done chan struct{}
+	err  error // published by closing done
 }
 
 func NewJSONStateStore(dir string) (*JSONStateStore, error) {
@@ -218,6 +229,7 @@ func NewJSONStateStore(dir string) (*JSONStateStore, error) {
 			Version: 1,
 		},
 	}
+	store.writeSnapshot = func(data []byte) error { return writeStateSnapshot(store.path, data) }
 	if data, err := os.ReadFile(store.path); err == nil && len(data) > 0 {
 		if err := json.Unmarshal(data, &store.state); err != nil {
 			log.Printf("[state] warning: failed to load %s: %v", store.path, err)
@@ -230,7 +242,10 @@ func NewJSONStateStore(dir string) (*JSONStateStore, error) {
 		store.state.Version = 1
 	}
 	if store.failInFlightOperationsAfterRestart() {
-		if err := store.flushLocked(); err != nil {
+		store.mu.Lock()
+		err := store.flushLocked()
+		store.mu.Unlock()
+		if err != nil {
 			return nil, fmt.Errorf("recover in-flight operations: %w", err)
 		}
 	}
@@ -460,43 +475,81 @@ func (s *JSONStateStore) LoadE2BOperations() (map[string]E2BOperation, error) {
 	return out, nil
 }
 
+// flushLocked must be called with mu held, after updating state. It releases
+// mu while waiting for the snapshot covering this mutation, then reacquires
+// it before returning. Each caller receives its own batch's write result.
+// There is no timer or asynchronous acknowledgement: calls still wait for
+// file sync, rename and directory sync; only concurrent writes are combined.
 func (s *JSONStateStore) flushLocked() error {
 	if s == nil || s.disabled {
 		return nil
 	}
-	s.state.Version = 1
-	data, err := json.MarshalIndent(s.state, "", "  ")
-	if err != nil {
-		return err
+	if s.pending == nil {
+		s.pending = &stateWriteBatch{done: make(chan struct{})}
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), "state-*.tmp")
+	batch := s.pending
+	if !s.flushing {
+		s.flushing = true
+		go s.flushBatches()
+	}
+	s.mu.Unlock()
+	<-batch.done
+	s.mu.Lock()
+	return batch.err
+}
+
+func (s *JSONStateStore) flushBatches() {
+	for {
+		s.mu.Lock()
+		batch := s.pending
+		if batch == nil {
+			s.flushing = false
+			s.mu.Unlock()
+			return
+		}
+		s.pending = nil
+		s.state.Version = 1
+		// Marshal while holding mu so later mutations cannot change this
+		// snapshot. Disk I/O uses only the resulting independent byte slice.
+		data, err := json.MarshalIndent(s.state, "", "  ")
+		s.mu.Unlock()
+		if err == nil {
+			err = s.writeSnapshot(data)
+		}
+		batch.err = err
+		close(batch.done)
+	}
+}
+
+// writeStateSnapshot replaces the JSON atomically and synchronizes both the
+// file and its directory before reporting success.
+func writeStateSnapshot(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "state-*.tmp")
 	if err != nil {
 		return err
 	}
 	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Rename(tmpPath, s.path); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
-	if dir, err := os.Open(filepath.Dir(s.path)); err == nil {
-		_ = dir.Sync()
-		_ = dir.Close()
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
 	}
-	return nil
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func upsertRouteRecord(records []RouteRecord, r RouteRecord) []RouteRecord {
