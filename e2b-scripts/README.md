@@ -600,117 +600,276 @@ Template 删除失败不会影响测试结果判定，清理状态会写入 `res
 
 ## 5. 性能测试
 
-### 5.1 测试方法
+### 5.1 执行方式
 
-| 测试项 | 测量方法 | `full` 默认档位 |
-| --- | --- | --- |
-| `create` | 按档位以固定并发提交创建请求；`create-kill`（默认）每次创建后立即删除，`create-only` 保留存活供后续测试使用 | 并发 1/10/20/50，请求数 20/200/300/500 |
-| `scale` | 同一模板一次性并发拉起 N 个 Sandbox，计时从首个请求发出到全部进入 running | N = 1/100/200，每档 3 轮 |
-| `density` | 按批次累积创建并保持存活，每批静置后采集宿主内存，直至达到上限或触发内存安全阈值 | 每批 50 个，上限 500 个 |
-| `snapshot-concurrency` | 每轮创建 N 个 Sandbox，并发对其创建快照 | 并发 1/5/10，每档 5 轮 |
-| `snapshot-dirty` | 在 Sandbox 内用 `dd` 向 `/dev/shm` 写入指定大小的数据形成脏页，再创建快照并从快照恢复，分别计时 | 脏页 0～1024 MB 共 8 档，每档 3 轮 |
-| `create-from-snapshot` | 先准备一个快照，再以指定并发从该快照恢复 Sandbox | 并发 1/10/20/50，每档 3 轮 |
-| `rollback` | 每个 Sandbox 创建 Checkpoint 后恢复到自身 Checkpoint，测往返耗时 | 并发 1/5/10，每档 5 轮 |
-| `clone` | 由运行中的源 Sandbox 创建 Checkpoint，并以指定并发派生 N 个新 Sandbox | N=1 并发 1；N=100 并发 10/20/50 |
-| `pause-resume` | 对 N 个 Sandbox 并发 pause，再并发 resume，两段分别计时 | 并发 1/5/10，每档 5 轮 |
+```bash
+# 查看合并后的生效配置，不执行测试
+bash bench.sh all --print-config --profile full
 
-档位、轮数与公共参数在 `bench.toml` 中定义；`--profile quick` 使用小规模档位用于链路自检，`--profile full` 使用上表完整档位。
+# 冒烟：单并发创建 3 次，确认创建与销毁链路可用
+bash bench.sh create -c 1 -n 3
 
-### 5.2 被测模板
+# 小规模全量自检（默认 profile 为 quick）
+bash bench.sh all --profile quick
+
+# 完整档位全量执行
+bash bench.sh all --profile full
+```
+
+`bench all` 按 `create`、`scale`、`density`、`snapshot-concurrency`、`snapshot-dirty`、`create-from-snapshot`、`rollback`、`clone`、`pause-resume` 的顺序串行执行 9 个测试项。测试项之间与档位之间都会清理本轮 Sandbox，并等待宿主运行时资源回到基线，单个测试项失败不会中断后续测试项。
+
+单独执行某个测试项时，未在命令行指定档位则按 `bench.toml` 中该测试项的全部档位逐档执行；命令行显式指定档位参数（如 `-c`、`-n`、`--sizes`、`-d`）时，只执行这一档：
+
+```bash
+# 指定模板，按配置档位执行并发创建
+bash bench.sh create -t <template-id>
+
+# 单档执行：50 并发创建 500 个并保留存活
+bash bench.sh create -c 50 -n 500 -m create-only
+
+# 规模拉起：1、100、200 三档，每档 3 轮
+bash bench.sh scale --sizes 1,100,200 --rounds 3
+
+# 单机密度：每批 50 个，累积至 500 个或触发内存安全阈值
+bash bench.sh density -c 50 --batch-size 50 --max-sandboxes 500
+
+# 脏页快照：写入 512 MB 脏页，测 3 轮
+bash bench.sh snapshot-dirty -d 512 -n 3
+
+# 克隆：每轮派生 100 个，20 并发，测 2 轮
+bash bench.sh clone -n 100 -c 20 --rounds 2
+```
+
+所有测试项支持以下通用参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `-t/--template` | 被测模板 ID |
+| `-w/--warmup` | 热身轮数，结果丢弃；默认取 `[global].warmup`（0） |
+| `--config` | 指定配置文件，默认 `e2b-scripts/bench.toml` |
+| `--sandbox-timeout` | Sandbox 生命周期秒数，异常退出时由服务端兜底回收 |
+| `-o/--output` | 额外复制一份 JSON 结果到指定路径（`bench all` 不支持） |
+| `--force` | 绕过 test-e2e / bench 互斥锁 |
+
+### 5.2 被测模板与配置
 
 被测模板按以下顺序确定：
 
 1. 命令行 `-t/--template`；
 2. `bench.toml` 中的 `[global].template`；
 3. 环境变量 `BENCH_TEMPLATE_ID`；
-4. 均未指定时，使用标准基准模板 `bench-standard-2c2g`（2 vCPU / 2048 MiB）：先查找状态为 ready 且本机构建产物完整的同名模板复用，不存在时自动构建一次。
+4. 均未指定时，使用标准基准模板 `bench-standard-2c2g`（2 vCPU / 2048 MiB）：先查找状态为 ready 且本机构建产物完整的同名模板复用，不存在时以与 fixture 相同的基础镜像发现机制自动构建一次。
 
-使用统一规格的基准模板，可保证不同环境、不同版本间的结果具有可比性。
+使用统一规格的基准模板，可保证不同环境、不同版本之间的结果具有可比性。
 
-### 5.3 配置
+`bench.toml` 定义全部测试参数与档位，参数优先级为：命令行参数 > `--config` 指定的配置文件 > `bench.toml` > 代码内置默认值。
 
-`bench.toml` 是性能测试参数与档位的配置文件：
+| 配置节 | 配置项 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `[global]` | `template` | 空 | 被测模板 ID；为空时使用标准基准模板 |
+| `[global]` | `warmup` | `0` | 热身轮数，热身结果不计入统计 |
+| `[global]` | `sandbox_timeout` | `600` | Sandbox 生命周期秒数（`scale` 至少 1800，`density` 至少 3600） |
+| `[global]` | `mem_threshold_pct` | `15.0` | 内存安全阈值：宿主 MemAvailable 低于总内存该百分比时停止加压 |
+| `[global]` | `netns_growth_threshold` | `100` | 测试项前后宿主网络命名空间增长超过该值时在报告中告警 |
+| `[global]` | `result_root` | `test-results` | 结果根目录，相对路径基于 `e2b-scripts/` 解析 |
+| `[<测试项>]` | `[[<测试项>.tiers]]` | 见 5.3 | 档位数组；每档可配置 `pre_wait`（档前静置秒数） |
+| `[profiles.quick]` / `[profiles.full]` | 各测试项档位 | 见 5.3 | `bench all --profile` 使用的档位规模 |
 
-| 配置节 | 内容 |
+### 5.3 测试项清单
+
+下表与 `e2b_validator/bench/` 中各测试项实现保持一致。耗时统计的字段含义见 5.4。
+
+#### 5.3.1 并发创建（create）
+
+| 项目 | 说明 |
 | --- | --- |
-| `[global]` | 被测模板、热身轮数、Sandbox 生命周期、内存安全阈值、网络资源残留告警阈值、结果目录 |
-| `[create]`、`[scale]` 等 | 各测试项一节，档位以 `[[<测试项>.tiers]]` 数组描述，可设置 `pre_wait` |
-| `[profiles.quick]` / `[profiles.full]` | 覆盖各测试项的档位规模 |
+| 测量对象 | 不同并发度下，从模板创建 Sandbox 的单次耗时、吞吐与成功率 |
+| 执行流程 | 通过 SDK `Sandbox.create` 按并发度分批提交请求（每批不超过 600），失败的请求在后续批次自动补充，最多补充 10 轮；`create-kill` 模式在创建完成后以 32 并发统一销毁 |
+| 计时范围 | 单次耗时为单个 `Sandbox.create` 调用返回耗时；整批耗时从 barrier 放行至最后一个请求返回；服务端耗时为 Sandbox `startedAt` 减请求发出时刻 |
+| 命令行参数 | `-c` 并发数；`-n` 请求总数；`-m create-kill`（默认）/ `create-only` |
+| `full` 档位 | 并发 1 / 10 / 20 / 50，请求数 20 / 200 / 300 / 500；并发 20、50 两档前静置 180 秒 |
+| `quick` 档位 | 并发 1 / 10，请求数 10 / 20 |
+| 输出指标 | 单次耗时 `avg/min/p95/max_ms` 与 `create_p50/p90/p99/max_ms`；`server_avg/p50/p90/p95/max_ms`、`server_batch_span_ms`；`wall_ms`、`per_ms`、`throughput_per_s`、`success_rate`；`create-kill` 模式另含 `destroy_*_ms` 与 `destroy_wall_ms` |
+| 失败判定 | 存在创建失败请求时测试项状态为 `failed` |
+| 资源回收 | `create-kill` 模式每档结束清理并等待宿主资源回到基线；`create-only` 模式保留存活 Sandbox，由服务端生命周期（3600 秒）回收 |
 
-参数优先级：命令行参数 > `--config` 指定的配置文件 > `bench.toml` > 代码内置默认值。命令行显式指定档位（如 `-c`、`-n`）时，该测试项只执行这一档。
+#### 5.3.2 规模拉起（scale）
 
-### 5.4 执行步骤
-
-```bash
-# 1. 查看合并后的生效配置，不执行测试
-bash bench.sh all --print-config --profile full
-
-# 2. 冒烟：单并发创建 3 次，确认链路可用
-bash bench.sh create -c 1 -n 3
-
-# 3. 执行单项测试（命令行参数覆盖配置档位）
-bash bench.sh create -c 50 -n 500 -m create-only
-bash bench.sh scale --sizes 1,100,200 --rounds 3
-bash bench.sh density -c 50 --batch-size 50 --max-sandboxes 500
-bash bench.sh snapshot-dirty -d 512 -n 3
-bash bench.sh clone -n 100 -c 20 --rounds 2
-
-# 4. 全量编排：quick 用于自检，full 为完整档位
-bash bench.sh all --profile quick
-bash bench.sh all --profile full
-
-# 5. 清理本工具创建的 Sandbox
-bash bench.sh kill-all
-```
-
-各测试项通用参数：
-
-| 参数 | 说明 |
+| 项目 | 说明 |
 | --- | --- |
-| `-t/--template` | 被测模板 ID |
-| `-w/--warmup` | 热身轮数，结果丢弃；默认取 `[global].warmup` |
-| `--config` | 指定配置文件 |
-| `--sandbox-timeout` | Sandbox 生命周期秒数，用于异常退出时由服务端兜底回收 |
-| `-o/--output` | JSON 结果输出路径 |
-| `--force` | 绕过 test-e2e / bench 互斥锁 |
+| 测量对象 | 一次性并发拉起 N 个 Sandbox 的整批完成时间，以及规模增大时单实例的均摊耗时 |
+| 执行流程 | 每轮以 N 并发通过 SDK 创建 N 个 Sandbox，全部完成后统一销毁；每档执行多轮后统计 |
+| 计时范围 | 整批耗时从 barrier 放行至全部 Sandbox 创建返回；多轮取平均 |
+| 命令行参数 | `--sizes` 规模档位（逗号分隔）；`--rounds` 每档轮数 |
+| `full` 档位 | N = 1 / 100 / 200，每档 3 轮；N=200 档前静置 180 秒 |
+| `quick` 档位 | N = 1 / 10，每档 2 轮 |
+| 输出指标 | `wall_ms`（多轮平均）、`per_unit_avg_ms`（`wall_ms` ÷ N）、`throughput_per_s`；单沙箱创建耗时 `avg/p50/p90/p95/max_ms`；`server_*_ms`、`server_batch_span_ms`；`destroy_*_ms`；`success_rate` |
+| 失败判定 | 任一档存在创建失败时为 `failed`；档位开始前宿主 MemAvailable 低于安全阈值时中止该档及后续档位，状态为 `aborted` |
+| 资源回收 | 每轮统一销毁；每档结束清理并等待宿主资源回到基线 |
 
-### 5.5 指标口径
+#### 5.3.3 单机密度（density）
+
+| 项目 | 说明 |
+| --- | --- |
+| 测量对象 | 分批累积存活 Sandbox 时，单个 Sandbox 的宿主内存开销与创建耗时随密度的变化 |
+| 执行流程 | 记录宿主内存基线后，按批次通过 SDK 创建并保持存活；每批完成后静置 2.5 秒，再采集宿主 MemAvailable、每个 Sandbox 的 memory cgroup 用量和 Firecracker 进程 `smaps_rollup` |
+| 终止条件 | 累积存活达到上限；宿主 MemAvailable 低于安全阈值；或整批创建全部失败 |
+| 命令行参数 | `-c` 每批并发数（默认 50）；`--batch-size` 每批数量；`--max-sandboxes` 存活上限；`--mem-threshold-pct` 内存安全阈值；`--keep-sandboxes` 结束后保留 Sandbox |
+| `full` 档位 | 每批 50 个，上限 500 个 |
+| `quick` 档位 | 每批 10 个，上限 20 个 |
+| 输出指标 | 每批记录存活数 `alive`、`available_mb`、`overhead_mb_per_sandbox`（MemAvailable 下降量 ÷ 存活数）、cgroup 用量合计、PSS 均摊、私有脏页均摊（含 `Private_Hugetlb`）、本批服务端创建耗时 `server_*_ms` |
+| 失败判定 | 未能创建任何 Sandbox 时为 `failed`；触发内存安全阈值时为 `aborted`，保留中止前的数据，退出码仍为 `0` |
+| 资源回收 | 默认测试结束后清理全部 Sandbox 并等待宿主资源回到基线；`--keep-sandboxes` 时由服务端生命周期回收 |
+
+内存口径说明：cgroup 用量的共享页记在首个访问者名下，总量准确但均摊偏差较大；PSS 将共享页按引用数均摊，单沙箱开销以 PSS 均摊为准。VM 内存使用大页时，大页池不计入 MemAvailable，`overhead_mb_per_sandbox` 会低估实际占用。
+
+#### 5.3.4 并发快照（snapshot-concurrency）
+
+| 项目 | 说明 |
+| --- | --- |
+| 测量对象 | 多个 Sandbox 同时创建快照时的整批耗时 |
+| 执行流程 | 每轮创建 N 个源 Sandbox，以 N 并发通过 SDK 对其各创建一次快照；随后删除本轮快照并销毁源 Sandbox |
+| 计时范围 | 从并发放行至全部快照请求返回；源 Sandbox 的创建不计入 |
+| 命令行参数 | `-c` 并发数；`-n` 轮数 |
+| `full` 档位 | 并发 1 / 5 / 10，每档 5 轮 |
+| `quick` 档位 | 并发 1 / 5，每档 3 轮 |
+| 输出指标 | 按轮整批耗时 `avg/min/p95/max_ms`、`per_unit_avg_ms`、`success_rate` |
+| 失败判定 | 存在快照请求失败，或无法创建源 Sandbox 时为 `failed` |
+| 资源回收 | 每轮删除快照并销毁源 Sandbox |
+
+#### 5.3.5 脏页快照（snapshot-dirty）
+
+| 项目 | 说明 |
+| --- | --- |
+| 测量对象 | Sandbox 内存脏页规模对快照耗时和快照恢复耗时的影响 |
+| 执行流程 | 每轮创建一个源 Sandbox；在 Sandbox 内挂载专用 tmpfs（`/mnt/bench-dirty`，容量为脏页量加 64 MB），用 `dd` 写入指定大小的数据形成脏页；创建快照，再从快照恢复一个新 Sandbox |
+| 计时范围 | 快照耗时为 SDK 创建快照调用的返回耗时；恢复耗时为 `POST /sandboxes`（以快照 ID 作为模板）的返回耗时；写入脏页的时间不计入 |
+| 命令行参数 | `-d` 脏页量（MB）；`-n` 轮数 |
+| `full` 档位 | 脏页 0 / 10 / 50 / 100 / 200 / 500 / 800 / 1024 MB，每档 3 轮 |
+| `quick` 档位 | 脏页 0 / 50 MB，每档 2 轮 |
+| 输出指标 | `snapshot`：快照耗时 `avg/min/p95/max_ms`；`create_from_snapshot`：恢复耗时 `avg/min/p95/max_ms` 与 `server_*_ms` |
+| 失败判定 | 计量轮次中出现快照或恢复失败时为 `failed` |
+| 资源回收 | 每轮卸载 tmpfs，销毁恢复实例与源 Sandbox，并删除快照 |
+
+使用独立 tmpfs 而不是 `/dev/shm`，是因为 `/dev/shm` 默认只有内存的一半，大脏页档位会写满。
+
+#### 5.3.6 快照恢复（create-from-snapshot）
+
+| 项目 | 说明 |
+| --- | --- |
+| 测量对象 | 从同一快照并发恢复 Sandbox 的耗时与吞吐 |
+| 执行流程 | 准备一个基准快照；每轮以 N 并发调用 `POST /sandboxes`（以快照 ID 作为模板）恢复 N 个 Sandbox，完成后销毁 |
+| 计时范围 | 从并发放行至全部恢复请求返回；服务端耗时为恢复实例 `startedAt` 减请求发出时刻 |
+| 命令行参数 | `-c` 每轮并发恢复数；`-n` 轮数 |
+| `full` 档位 | 并发 1 / 10 / 20 / 50，每档 3 轮 |
+| `quick` 档位 | 并发 1 / 10，每档 2 轮 |
+| 输出指标 | 按轮整批耗时 `avg/min/p95/max_ms`、`per_unit_avg_ms`；`server_*_ms`、`server_batch_span_ms`；`success_rate` |
+| 失败判定 | 存在恢复失败，或基准快照准备失败时为 `failed` |
+| 资源回收 | 每轮销毁恢复实例；测试项结束删除基准快照 |
+
+#### 5.3.7 回滚（rollback）
+
+| 项目 | 说明 |
+| --- | --- |
+| 测量对象 | 单个 Sandbox 创建 Checkpoint 并恢复到自身 Checkpoint 的往返耗时，以及并发回滚时的整批耗时 |
+| 执行流程 | 创建 N 个源 Sandbox；每轮对每个源 Sandbox 并发执行一次回滚：创建 Checkpoint，再以该 Checkpoint 恢复出新 Sandbox；恢复实例与 Checkpoint 随即删除 |
+| 计时范围 | 单次回滚包含 Checkpoint 与恢复两步；整批耗时从并发放行至本轮全部回滚完成，源 Sandbox 的创建不计入 |
+| 命令行参数 | `-c` 并发 Sandbox 数；`-n` 轮数 |
+| `full` 档位 | 并发 1 / 5 / 10，每档 5 轮 |
+| `quick` 档位 | 并发 1 / 5，每档 3 轮 |
+| 输出指标 | 按轮整批耗时 `avg/min/p95/max_ms`、`per_unit_avg_ms`；`server_*_ms`、`server_batch_span_ms`；`success_rate` |
+| 失败判定 | 存在回滚失败，或无法创建源 Sandbox 时为 `failed` |
+| 资源回收 | 每次回滚后删除恢复实例与 Checkpoint；测试项结束销毁源 Sandbox |
+
+#### 5.3.8 克隆（clone）
+
+| 项目 | 说明 |
+| --- | --- |
+| 测量对象 | 由一个运行中的 Sandbox 派生 N 个新 Sandbox 的整批耗时与单实例均摊耗时 |
+| 执行流程 | 创建一个源 Sandbox 并创建 Checkpoint，源 Sandbox 保持运行；每轮以指定并发从该 Checkpoint 派生 N 个新 Sandbox，完成后销毁 |
+| 计时范围 | 从并发放行至 N 个派生请求全部返回；源 Sandbox 与 Checkpoint 的准备不计入 |
+| 命令行参数 | `-n` 每轮派生数量；`-c` 并发数；`--rounds` 轮数 |
+| `full` 档位 | N=1 并发 1，5 轮；N=100 并发 10 / 20 / 50，各 2 轮 |
+| `quick` 档位 | N=1 并发 1，3 轮；N=5 并发 5，2 轮 |
+| 输出指标 | 按轮整批耗时 `avg/min/p95/max_ms`、`per_unit_avg_ms`（整批耗时 ÷ N）；`server_*_ms`、`server_batch_span_ms`；`success_rate` |
+| 失败判定 | 存在派生失败，或源 Sandbox、Checkpoint 准备失败时为 `failed` |
+| 资源回收 | 每轮销毁派生实例；测试项结束删除 Checkpoint 并销毁源 Sandbox |
+
+#### 5.3.9 暂停恢复（pause-resume）
+
+| 项目 | 说明 |
+| --- | --- |
+| 测量对象 | 多个 Sandbox 并发 pause 与并发 resume 的整批耗时，两个阶段分别统计 |
+| 执行流程 | 创建 N 个 Sandbox；每轮先并发调用 pause（`memory=true`），等待全部进入 `paused`；再并发调用 resume，等待全部恢复 `running` |
+| 计时范围 | pause 与 resume 各自从并发放行至全部请求返回；等待状态收敛的时间不计入耗时，但未在 300 秒内收敛的 Sandbox 计为失败 |
+| 命令行参数 | `-c` 并发 Sandbox 数；`-n` 轮数 |
+| `full` 档位 | 并发 1 / 5 / 10，每档 5 轮 |
+| `quick` 档位 | 并发 1 / 5，每档 2 轮 |
+| 输出指标 | `pause`、`resume` 两组按轮整批耗时 `avg/min/p95/max_ms`、`per_unit_avg_ms` 与各自的 `success_rate` |
+| 失败判定 | 存在 pause / resume 请求失败，或状态未收敛时为 `failed` |
+| 资源回收 | 测试项结束销毁全部 Sandbox |
+
+### 5.4 指标口径
 
 | 指标 | 含义 |
 | --- | --- |
-| `avg_ms` / `p50_ms` / `p90_ms` / `p95_ms` / `max_ms` | 单次操作耗时分布（客户端口径，含 SDK 与 HTTP 开销；百分位采用线性插值） |
-| `server_*_ms` | 服务端口径：Sandbox `startedAt` 减去请求发出时刻，剔除客户端开销；仅创建类测试提供，需与 API 同机运行 |
-| `wall_ms` | 整批耗时：首个请求发出至全部完成 |
-| `per_ms` / `throughput_per_s` | 整批耗时 ÷ 请求数；成功操作数 ÷ `wall_ms` |
-| 按轮统计 `avg_ms` / `min_ms` / `p95_ms` / `max_ms` | 快照、快照恢复、回滚、克隆、暂停恢复等测试按轮记录整批耗时后的统计 |
+| `avg_ms` / `p50_ms` / `p90_ms` / `p95_ms` / `max_ms` | 单次操作耗时分布，客户端口径（含 SDK 与 HTTP 开销），百分位采用线性插值 |
+| `create_p50_ms` / `create_p90_ms` / `create_p99_ms` / `create_max_ms` | `create` 的单次创建耗时百分位 |
+| `server_avg_ms` 等 `server_*_ms` | 服务端口径：Sandbox `startedAt` 减请求发出时刻，剔除客户端开销；需与 API 同机运行，否则时钟偏差会影响结果 |
+| `server_batch_span_ms` | 整批服务端跨度：最早请求发出时刻至最晚 `startedAt` |
+| `destroy_*_ms` / `destroy_wall_ms` | 销毁耗时分布与整批销毁耗时 |
+| `wall_ms` | 整批耗时：从 barrier 放行至全部完成 |
+| `per_ms` | 整批耗时 ÷ 请求数 |
+| `throughput_per_s` | 成功操作数 ÷ 整批耗时 |
+| 按轮统计 `avg_ms` / `min_ms` / `p95_ms` / `max_ms` | 快照、快照恢复、回滚、克隆、暂停恢复等以"轮"为单位的测试，对每轮整批耗时做统计 |
 | `per_unit_avg_ms` | 每轮整批平均耗时按该轮实例数均摊后的单实例耗时 |
-| `success_rate` | 成功率（%） |
-| `overhead_mb_per_sandbox` | `density`：宿主 MemAvailable 下降量 ÷ 存活 Sandbox 数 |
-| cgroup / PSS / 私有脏页 | `density`：分别来自 Sandbox memory cgroup 用量与 Firecracker 进程 `smaps_rollup`；共享页按 PSS 均摊，单沙箱开销以 PSS 均摊为准 |
+| `count` / `success` / `failed` / `success_rate` | 请求总数、成功数、失败数与成功率（%） |
 
-### 5.6 测量控制
+### 5.5 测量控制
 
-- **同步起跑**：同一批次的请求在 barrier 处统一放行，计时从放行时刻开始，排除线程池启动抖动。
-- **档间清理**：每档结束后删除本档 Sandbox，并等待宿主 Firecracker、jailer、NBD 等资源回到基线后再进入下一档，过程记录在 `cleanup.log`。
-- **内存安全阈值**：`density`、`scale` 在宿主 MemAvailable 低于总内存的 `mem_threshold_pct`（默认 15%）时停止加压，避免影响宿主稳定性。
-- **档前静置**：档位可配置 `pre_wait`（秒），用于高并发档位前等待网络资源池恢复，静置时间不计入测量。
-- **残留告警**：测试项结束时，若宿主网络命名空间数量相比开始时增长超过 `netns_growth_threshold`，在报告中给出告警。
+- **同步起跑**：同一批次的请求在 barrier 处统一放行，计时从放行时刻开始，排除线程池启动抖动；可通过环境变量 `E2B_CREATE_BARRIER=0` 关闭。
+- **共享客户端**：SDK 创建路径默认所有线程复用同一个 API client，消除每个线程构建连接配置的开销；可通过 `E2B_SDK_CLIENT_POC_MODE=` 置空关闭。
+- **档间清理**：每档结束后删除本轮 Sandbox，并等待宿主 Firecracker、jailer、NBD 进程数回到入口基线且连续稳定后，再进入下一档；过程写入 `cleanup.log`。不带 bench 标记的 Sandbox 不会被删除。
+- **档前静置**：档位配置 `pre_wait` 时，开始前先静置指定秒数，等待宿主网络资源池恢复；静置期间不创建 Sandbox，不计入测量。
+- **内存安全阈值**：`scale` 在每档开始前、`density` 在每批开始前检查宿主 MemAvailable，低于总内存的 `mem_threshold_pct` 时停止加压，避免影响宿主稳定性。
+- **残留告警**：测试项前后宿主网络命名空间数量增长超过 `netns_growth_threshold` 时，在报告中给出告警；`density` 开始前清理宿主孤儿 veth 与相关 iptables 规则。
 
-### 5.7 结果
+### 5.6 结果与判定
+
+每次运行生成独立结果目录：
 
 ```text
 test-results/<run-id>-bench/
-├── bench_<测试项>.json   # 各测试项的档位参数、指标与备注
-├── bench_all.json        # bench all 汇总（仅 bench all）
-├── report.md             # 中文汇总报告（仅 bench all）
+├── bench_<测试项>.json   # 测试项参数、各档位指标、状态与备注
+├── bench_all.json        # 各测试项状态汇总（仅 bench all）
+├── report.md             # 中文汇总报告：环境信息、测试项总览、各档位指标与备注
 └── cleanup.log           # 档间清理与宿主资源核验记录
 ```
 
-### 5.8 宿主清理
+| 状态 | 含义 |
+| --- | --- |
+| `ok` | 全部档位执行完成，无失败请求 |
+| `failed` | 存在失败请求、源资源准备失败或执行异常；已完成档位的数据仍会保留 |
+| `aborted` | 触发内存安全阈值，提前停止加压；中止前的数据有效 |
 
-`bench.sh clean-host` 用于两次大规模压测之间清理宿主上残留的网络命名空间、veth 与 iptables 规则。存在运行中的 Sandbox 或 Firecracker、jailer 进程时拒绝执行；可先用 `--dry-run` 查看待清理数量。
+单个测试项的退出码在状态为 `ok` 时为 `0`，`density` 在状态为 `aborted` 时也返回 `0`；`bench all` 仅在全部测试项为 `ok` 时返回 `0`。
 
-orchestrator 的网络资源池为进程内状态，清理后**必须重启 template-manager**，否则已删除的网络槽位仍会被分配给新 Sandbox，导致创建失败。
+### 5.7 清理命令
+
+```bash
+# 清理带 bench 标记的 Sandbox（默认全部 bench 轮次）
+bash bench.sh kill-all
+
+# 只清理指定轮次
+bash bench.sh kill-all --run-id <run-id>
+
+# 查看宿主网络残留规模，不执行删除
+bash bench.sh clean-host --dry-run
+```
+
+`kill-all` 只删除带 `bench_run_id` 标记的 Sandbox；`--all` 会删除全部 Sandbox（包括非 bench 创建的），仅在专用测试环境使用。通过 SDK 创建路径保留存活的 Sandbox（`create -m create-only`、`density --keep-sandboxes`）不带标记，由服务端生命周期回收。
+
+`clean-host` 用于两次大规模压测之间清理宿主上残留的网络命名空间、veth 与 iptables 规则。存在运行中的 Sandbox 或 Firecracker、jailer 进程时拒绝执行。orchestrator 的网络资源池为进程内状态，清理后**必须重启 template-manager**，否则已删除的网络槽位仍会被分配给新 Sandbox，导致创建失败。
 
 ## 6. 故障定位
 
