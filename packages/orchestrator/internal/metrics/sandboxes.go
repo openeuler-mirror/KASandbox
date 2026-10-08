@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/metric"
+	noopMetric "go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -62,29 +63,40 @@ type SandboxObserver struct {
 }
 
 func NewSandboxObserver(ctx context.Context, nodeID, serviceName, serviceCommit, serviceVersion, serviceInstanceID string, sandboxes *sandbox.Map) (*SandboxObserver, error) {
-	deltaTemporality := otlpmetricgrpc.WithTemporalitySelector(func(kind sdkmetric.InstrumentKind) metricdata.Temporality {
-		// Use delta temporality for gauges and cumulative for all other instrument kinds.
-		// This is used to prevent reporting sandbox metrics indefinitely.
-		if kind == sdkmetric.InstrumentKindGauge {
-			return metricdata.DeltaTemporality
+	// 未配置 collector endpoint 时走 noop provider，与 telemetry.New 的保护一致；
+	// 否则空 endpoint 会覆盖 SDK 默认地址，周期性导出必然失败刷错误日志
+	var meterProvider metric.MeterProvider
+	var externalMeterExporter sdkmetric.Exporter
+
+	if telemetry.HasCollectorEndpoint() {
+		deltaTemporality := otlpmetricgrpc.WithTemporalitySelector(func(kind sdkmetric.InstrumentKind) metricdata.Temporality {
+			// Use delta temporality for gauges and cumulative for all other instrument kinds.
+			// This is used to prevent reporting sandbox metrics indefinitely.
+			if kind == sdkmetric.InstrumentKindGauge {
+				return metricdata.DeltaTemporality
+			}
+
+			return metricdata.CumulativeTemporality
+		})
+
+		var err error
+
+		externalMeterExporter, err = telemetry.NewMeterExporter(ctx, deltaTemporality)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create external meter exporter: %w", err)
 		}
 
-		return metricdata.CumulativeTemporality
-	})
+		res, err := telemetry.GetResource(ctx, nodeID, serviceName, serviceCommit, serviceVersion, serviceInstanceID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create resource: %w", err)
+		}
 
-	externalMeterExporter, err := telemetry.NewMeterExporter(ctx, deltaTemporality)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create external meter exporter: %w", err)
-	}
-
-	res, err := telemetry.GetResource(ctx, nodeID, serviceName, serviceCommit, serviceVersion, serviceInstanceID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create resource: %w", err)
-	}
-
-	meterProvider, err := telemetry.NewMeterProvider(externalMeterExporter, sandboxMetricExportPeriod, res, sdkmetric.WithExemplarFilter(exemplar.AlwaysOffFilter))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create external metric provider: %w", err)
+		meterProvider, err = telemetry.NewMeterProvider(externalMeterExporter, sandboxMetricExportPeriod, res, sdkmetric.WithExemplarFilter(exemplar.AlwaysOffFilter))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create external metric provider: %w", err)
+		}
+	} else {
+		meterProvider = noopMetric.NewMeterProvider()
 	}
 
 	meter := meterProvider.Meter("orchestrator.sandbox.metrics")
@@ -274,7 +286,10 @@ func (so *SandboxObserver) startObserving() (metric.Registration, error) {
 	return unregister, nil
 }
 
-const meterExporterShutdownTimeout = 10 * time.Second
+// 短超时兜底：OTEL collector 不可达时 exporter 关闭会被 gRPC 重连退避阻塞
+// 且不遵守传入 ctx（实测偶发 19s+），ShutdownWithTimeout 超时即放弃等待；
+// collector 正常时 flush 为毫秒级。
+const meterExporterShutdownTimeout = 2 * time.Second
 
 func (so *SandboxObserver) Close(ctx context.Context) error {
 	if so.meterExporter == nil {
@@ -289,11 +304,7 @@ func (so *SandboxObserver) Close(ctx context.Context) error {
 		}
 	}
 
-	// Use a timeout to prevent hanging on meter exporter shutdown
-	shutdownCtx, cancel := context.WithTimeout(ctx, meterExporterShutdownTimeout)
-	defer cancel()
-
-	if err := so.meterExporter.Shutdown(shutdownCtx); err != nil {
+	if err := telemetry.ShutdownWithTimeout(meterExporterShutdownTimeout, so.meterExporter.Shutdown); err != nil {
 		errs = append(errs, fmt.Errorf("failed to shutdown sandbox observer meter provider: %w", err))
 	}
 

@@ -9,8 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/vishvananda/netlink"
@@ -20,6 +21,83 @@ import (
 
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 )
+
+// 本包直接使用 vishvananda/netlink 的包级函数，无需互斥锁：
+// pkgHandle.sockets 为 nil 时，每个请求都会临时新建 socket（绑定调用方
+// 当前 netns，用毕即关），序号由 atomic 分配（v1.3.1 nl_linux.go 的
+// NewNetlinkRequest/ExecuteIter），因此包级调用并发安全。
+// "每请求一个 socket"还保证在沙箱 netns 内执行的配置（lo/vpeer/ns 内路由）
+// 落在正确命名空间；相反，netlink.NewHandle 的 socket 在创建时绑定 netns，
+// 缓存后跨 ns 复用会写错命名空间，故本包不缓存 Handle。
+
+// tapOpts configures a TAP device created via createTap.
+//
+// VnetHdr enables IFF_VNET_HDR on the TAP so the guest can use virtio-net
+// offloads. If the kernel rejects IFF_VNET_HDR (e.g. very old kernels or
+// tap already created without the flag), createTap retries without it so
+// callers don't have to special-case the failure.
+type tapOpts struct {
+	Name    string
+	Address *net.IPNet
+	VnetHdr bool
+}
+
+// createTap creates and enables a TAP device in the current network namespace.
+// An address is optional because secondary guest interfaces may be connected to
+// a TAP without using the TAP itself as an L3 gateway.
+func createTap(o tapOpts) error {
+	if err := linkAddTuntap(o.Name, o.VnetHdr); err != nil {
+		// Fall back to a plain TAP (no IFF_VNET_HDR) when the host kernel
+		// rejects the flag. This keeps non-Android slots and older hosts
+		// working without forcing a hard failure.
+		if o.VnetHdr {
+			if retryErr := linkAddTuntap(o.Name, false); retryErr != nil {
+				return fmt.Errorf("error creating tap device %s (with vnet_hdr retry): %w (original: %v)", o.Name, retryErr, err)
+			}
+		} else {
+			return fmt.Errorf("error creating tap device %s: %w", o.Name, err)
+		}
+	}
+
+	tap, err := netlink.LinkByName(o.Name)
+	if err != nil {
+		return fmt.Errorf("error finding tap device %s: %w", o.Name, err)
+	}
+
+	if err := netlink.LinkSetUp(tap); err != nil {
+		return fmt.Errorf("error setting tap device %s up: %w", o.Name, err)
+	}
+
+	if o.Address != nil {
+		// broadcast "+" is computed by the kernel from IP/mask, so we
+		// intentionally leave Broadcast unset here.
+		if err := netlink.AddrAdd(tap, &netlink.Addr{IPNet: o.Address}); err != nil {
+			return fmt.Errorf("error setting address of tap device %s: %w", o.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// linkAddTuntap adds a TAP device with the given name. When vnetHdr is true,
+// IFF_VNET_HDR is requested so the guest can use virtio-net offloads.
+func linkAddTuntap(name string, vnetHdr bool) error {
+	tapAttrs := netlink.NewLinkAttrs()
+	tapAttrs.Name = name
+	tap := &netlink.Tuntap{
+		Mode:      netlink.TUNTAP_MODE_TAP,
+		LinkAttrs: tapAttrs,
+	}
+	if vnetHdr {
+		tap.Flags = netlink.TUNTAP_VNET_HDR
+	}
+
+	// Keep temporary TAP descriptors out of children until LinkAdd closes them.
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+
+	return netlink.LinkAdd(tap)
+}
 
 // netnsRunDir 与 vishvananda/netns 的 bindMountPath 保持一致
 const netnsRunDir = "/run/netns"
@@ -271,6 +349,18 @@ func (s *Slot) CreateNetwork(ctx context.Context) error {
 }
 
 func (s *Slot) RemoveNetwork() error {
+	return s.removeNetwork(true)
+}
+
+// RemoveNetworkSkipHostRules 与 RemoveNetwork 相同，但跳过宿主机 iptables 规则
+// 删除——调用方（Pool.Close）已通过 DeleteSlotsHostRules 做池级批量删除。
+// 注意 ExternalNetNS 槽位不受此开关影响：批量删除刻意跳过它们，其规则仍由
+// RemoveExternalNetNSNetwork 逐条删除。
+func (s *Slot) RemoveNetworkSkipHostRules() error {
+	return s.removeNetwork(false)
+}
+
+func (s *Slot) removeNetwork(deleteHostRules bool) error {
 	if s.ExternalNetNS {
 		return s.RemoveExternalNetNSNetwork()
 	}
@@ -282,39 +372,12 @@ func (s *Slot) RemoveNetwork() error {
 		errs = append(errs, fmt.Errorf("error closing firewall: %w", err))
 	}
 
-	tables, err := iptables.New()
-	if err != nil {
-		errs = append(errs, fmt.Errorf("error initializing iptables: %w", err))
-	} else {
-		// Delete host forwarding rules
-		err = tables.Delete("filter", "FORWARD", "-i", s.VethName(), "-o", defaultGateway, "-j", "ACCEPT")
-		if err != nil {
-			errs = append(errs, fmt.Errorf("error deleting host forwarding rule to default gateway: %w", err))
+	// 宿主机 filter/nat 规则合并为每表一次 iptables-restore 批量删除，
+	// 替代原先约 10 次独立的 `iptables -D`
+	if deleteHostRules {
+		if err := s.deleteHostSlotRules(); err != nil {
+			errs = append(errs, fmt.Errorf("error deleting host iptables rules: %w", err))
 		}
-
-		err = tables.Delete("filter", "FORWARD", "-i", defaultGateway, "-o", s.VethName(), "-j", "ACCEPT")
-		if err != nil {
-			errs = append(errs, fmt.Errorf("error deleting host forwarding rule from default gateway: %w", err))
-		}
-
-		// Delete host postrouting rules
-		err = tables.Delete("nat", "POSTROUTING", "-s", s.HostCIDR(), "-o", defaultGateway, "-j", "MASQUERADE")
-		if err != nil {
-			errs = append(errs, fmt.Errorf("error deleting host postrouting rule: %w", err))
-		}
-
-		// Delete hyperloop proxy redirect rule
-		err = tables.Delete(
-			"nat", "PREROUTING", "-i", s.VethName(),
-			"-p", "tcp", "-d", s.config.OrchestratorInSandboxIPAddress, "--dport", "80",
-			"-j", "REDIRECT", "--to-port", s.hyperloopPort,
-		)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("error deleting sandbox hyperloop proxy redirect rule: %w", err))
-		}
-
-		// Delete egress proxy redirect rules
-		errs = append(errs, s.tcpProxyConfig().delete(tables)...)
 	}
 
 	// Delete routing from host to FC namespace
@@ -340,34 +403,143 @@ func (s *Slot) RemoveNetwork() error {
 		}
 	}
 
-	if tables != nil {
-		// Delete NFS proxy redirect rule
-		err = tables.Delete("nat", "PREROUTING",
-			"--in-interface", s.VethName(), "--protocol", "tcp",
-			"--destination", s.config.OrchestratorInSandboxIPAddress, "--dport", "2049",
-			"--jump", "REDIRECT", "--to-port", strconv.Itoa(int(s.config.NFSProxyPort)),
-		)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("error deleting sandbox NFS proxy redirect rule: %w", err))
-		}
-
-		// Delete portmapper redirect rule
-		err = tables.Delete("nat", "PREROUTING",
-			"--in-interface", s.VethName(), "--protocol", "tcp",
-			"--destination", s.config.OrchestratorInSandboxIPAddress, "--dport", "111",
-			"--jump", "REDIRECT", "--to-port", strconv.Itoa(int(s.config.PortmapperPort)),
-		)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("error deleting sandbox portmapper redirect rule: %w", err))
-		}
-	}
-
 	err = deleteNamedNamespace(s.NamespaceID())
 	if err != nil {
 		errs = append(errs, fmt.Errorf("error deleting namespace: %w", err))
 	}
 
 	return errors.Join(errs...)
+}
+
+// iptBatchMu 串行化宿主机 iptables 的 save-过滤-restore 批量删除：该操作是
+// 整表读-改-写，若并行执行，后提交的快照会把其他 worker 已删除的规则复活。
+var iptBatchMu sync.Mutex
+
+// 槽位在宿主机上有规则的表
+var hostSlotRuleTables = []string{"filter", "nat"}
+
+// deleteHostSlotRules 用每表一次 iptables-save + iptables-restore 删除槽位在
+// 宿主机 filter/nat 表里的全部规则，替代约 10 次独立的 `iptables -D`。
+// 每次 -D 都是一次持有全局 xtables.lock 的整表替换，是 Pool.Close 并行清理的
+// 主要瓶颈；批量化后每槽位每表只剩 2 次进程调用、1 次锁内整表提交。
+//
+// 匹配方式：槽位的所有宿主规则都带有槽位唯一 token——veth 接口名或
+// host /32 CIDR——按空白分隔的字段做精确匹配后整行剔除，其余行原样回灌，
+// 因而不受 iptables-save 规范化输出（如 --to-port→--to-ports）的影响。
+// 未安装成功的规则（如创建中途失败）不会出现在 dump 里，天然跳过。
+//
+// restore 是原子整表替换；与进程外写者（如 kube-proxy 写 KUBE-* 链）之间存在
+// 极小的读-改-写窗口，语义与 kube-proxy 自身的全表 restore 相同，且对端会
+// 在下一个同步周期自愈。
+func (s *Slot) deleteHostSlotRules() error {
+	tokenSet := make(map[string]struct{}, 2)
+	tokenSet[s.VethName()] = struct{}{}
+	tokenSet[s.HostCIDR()] = struct{}{}
+
+	iptBatchMu.Lock()
+	defer iptBatchMu.Unlock()
+
+	var errs []error
+
+	for _, table := range hostSlotRuleTables {
+		if err := dropTokenRulesFromTable(table, tokenSet); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// DeleteSlotsHostRules 池级聚合删除：把全部槽位的宿主 filter/nat 规则合并为
+// 每表一次 iptables-save + 过滤 + iptables-restore，替代每槽位各 2 次的
+// 2N 次整表操作。Pool.Close 清理数百槽位时，xtables.lock 内的整表替换从
+// ~600 次降到 2 次。失败时调用方应回退为各槽位自行删除，避免规则泄漏。
+func DeleteSlotsHostRules(slots []*Slot) error {
+	tokenSet := make(map[string]struct{}, len(slots)*2)
+
+	for _, s := range slots {
+		if s.ExternalNetNS {
+			continue
+		}
+
+		tokenSet[s.VethName()] = struct{}{}
+		tokenSet[s.HostCIDR()] = struct{}{}
+	}
+
+	if len(tokenSet) == 0 {
+		return nil
+	}
+
+	iptBatchMu.Lock()
+	defer iptBatchMu.Unlock()
+
+	var errs []error
+
+	for _, table := range hostSlotRuleTables {
+		if err := dropTokenRulesFromTable(table, tokenSet); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// dropTokenRulesFromTable dump 指定表，剔除所有携带 token 的规则行后原子回灌。
+// 表内没有匹配规则时不执行 restore。
+func dropTokenRulesFromTable(table string, tokens map[string]struct{}) error {
+	// -c 保留计数器：回灌时不至于把无关规则的计数清零
+	dump, err := exec.Command("iptables-save", "-c", "-t", table).Output()
+	if err != nil {
+		return fmt.Errorf("error dumping %s table: %w", table, err)
+	}
+
+	lines := strings.Split(string(dump), "\n")
+	kept := lines[:0]
+	removed := 0
+
+	for _, line := range lines {
+		if isIPTablesSaveRuleLine(line) && ruleLineHasToken(line, tokens) {
+			removed++
+
+			continue
+		}
+
+		kept = append(kept, line)
+	}
+
+	if removed == 0 {
+		return nil
+	}
+
+	cmd := exec.Command("iptables-restore", "-c")
+	cmd.Stdin = strings.NewReader(strings.Join(kept, "\n"))
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("error restoring %s table: %w (output: %s)", table, err, strings.TrimSpace(string(out)))
+	}
+
+	return nil
+}
+
+// ruleLineHasToken 判断规则行是否有任一空白分隔字段命中 token 集合。
+// 整字段比较避免 veth-60 误匹配 veth-600 这类前缀碰撞。
+func ruleLineHasToken(line string, tokens map[string]struct{}) bool {
+	for field := range strings.FieldsSeq(line) {
+		if _, ok := tokens[field]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isIPTablesSaveRuleLine 判断 iptables-save 输出中的规则行。带 -c 时行首是
+// "[pkts:bytes] " 计数器前缀、-A 退居第二字段；不带 -c 时行首即 -A。曾经用
+// HasPrefix(line, "-A ") 判定，在 -c 格式下永远为假，导致批量删除静默失效。
+// 注意：该判定只用于过滤，保留行（含计数器前缀）原样回灌，不能改动行内容。
+func isIPTablesSaveRuleLine(line string) bool {
+	return strings.HasPrefix(line, "-A ") || strings.HasPrefix(line, "[")
 }
 
 // deleteNamedNamespace 删除命名 netns。/run 在 systemd 系统上是 shared 挂载，

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"go.opentelemetry.io/otel"
@@ -212,6 +213,26 @@ func (p *Pool) Populate(ctx context.Context) {
 		return
 	}
 
+	// 单槽创建 ~1s（netns bind mount、~15 次 netlink、~17 次 iptables 子进程），
+	// 串行预热数百槽位需数分钟。槽位之间资源完全独立：Storage.Acquire 有
+	// mutex，netlink 包级调用并发安全（每请求独立 socket，见 network.go），
+	// iptables 子进程靠 xtables.lock
+	// 排队——可安全并发，仅受这些共享点限制。CreateNetwork 内部
+	// LockOSThread，每个 worker 各自绑定线程，互不干扰。
+	var wg sync.WaitGroup
+
+	for range populateWorkers {
+		wg.Go(func() {
+			p.populateSlotLoop(ctx)
+		})
+	}
+
+	wg.Wait()
+}
+
+// populateSlotLoop 是单个预热 worker 的创建循环：满池时阻塞在 newSlots
+// 推送上，Pool.Close 排空 channel 后在下一轮看到 done 关闭而退出。
+func (p *Pool) populateSlotLoop(ctx context.Context) {
 	for {
 		select {
 		case <-p.done:
@@ -223,18 +244,31 @@ func (p *Pool) Populate(ctx context.Context) {
 			if err != nil {
 				logger.L().Error(ctx, "[network slot pool]: failed to create network", zap.Error(err))
 
+				// 持续失败（如内核资源耗尽）时避免 N 个 worker 无间隔空转
+				select {
+				case <-p.done:
+					return
+				case <-ctx.Done():
+					return
+				case <-time.After(populateFailureBackoff):
+				}
+
 				continue
 			}
 
 			newSlotsAvailableCounter.Add(ctx, 1)
 			p.newSlots <- slot
-			logger.L().Info(ctx, "[Pool Status] newSlots: %d/%d, reusedSlots: %d/%d\n",
-				zap.Int("newSlots len", len(p.newSlots)),
-				zap.Int("newSlots cap", cap(p.newSlots)),
-				zap.Int("reusedSlots len", len(p.reusedSlots)),
-				zap.Int("reusedSlots cap", cap(p.reusedSlots)))
+			p.logPoolStatus(ctx)
 		}
 	}
+}
+
+func (p *Pool) logPoolStatus(ctx context.Context) {
+	logger.L().Info(ctx, "[Pool Status]",
+		zap.Int("newSlots len", len(p.newSlots)),
+		zap.Int("newSlots cap", cap(p.newSlots)),
+		zap.Int("reusedSlots len", len(p.reusedSlots)),
+		zap.Int("reusedSlots cap", cap(p.reusedSlots)))
 }
 
 func (p *Pool) Get(ctx context.Context, network *orchestrator.SandboxNetworkConfig) (*Slot, error) {
@@ -317,9 +351,19 @@ func (p *Pool) Return(ctx context.Context, slot *Slot) error {
 }
 
 func (p *Pool) cleanup(ctx context.Context, slot *Slot) error {
+	return p.cleanupSlot(ctx, slot, true)
+}
+
+func (p *Pool) cleanupSlot(ctx context.Context, slot *Slot, deleteHostRules bool) error {
 	var errs []error
 
-	err := slot.RemoveNetwork()
+	var err error
+	if deleteHostRules {
+		err = slot.RemoveNetwork()
+	} else {
+		err = slot.RemoveNetworkSkipHostRules()
+	}
+
 	if err != nil {
 		errs = append(errs, fmt.Errorf("cannot remove network when releasing slot '%d': %w", slot.Idx, err))
 	}
@@ -334,6 +378,18 @@ func (p *Pool) cleanup(ctx context.Context, slot *Slot) error {
 	return errors.Join(errs...)
 }
 
+// closeCleanupWorkers 是 Pool.Close 并行清理槽位的 worker 数。用 var 而非
+// const，仅为了让压测（pool_close_bench_test.go）能调成 1 复现串行基线。
+var closeCleanupWorkers = 16
+
+// populateWorkers 是预热/补充槽位的并发创建数。单槽创建 ~1s，8 并发实测
+// 受 iptables xtables.lock 排队限制，有效加速 ~4-6x。
+var populateWorkers = 8
+
+// populateFailureBackoff 是创建失败后的退避间隔，避免多 worker 在持续性
+// 失败（如内核资源耗尽）时空转刷错误日志。
+const populateFailureBackoff = 500 * time.Millisecond
+
 func (p *Pool) Close(ctx context.Context) error {
 	logger.L().Info(ctx, "Closing network pool")
 
@@ -341,23 +397,74 @@ func (p *Pool) Close(ctx context.Context) error {
 		close(p.done)
 	})
 
+	// 先 drain 各 channel 收集全部槽位，做池级 iptables 批量删除后，再并行
+	// 清理各槽位剩余资源（路由/veth/netns/nftables）。
+	// 与 populate 协程配合：populate 向 *NewSlots 推送会因收集在消费而解阻塞，
+	// 随后在下一次循环看到 done 关闭并 close(*NewSlots)，collect 才能结束。
+	var all []*Slot
+
+	collect := func(ch <-chan *Slot) {
+		for slot := range ch {
+			all = append(all, slot)
+		}
+	}
+
+	// reusedSlots 系列无人 close（ReleaseSlot 的回收发送是常态路径），这里也
+	// 绝不能 close：Close 期间存活沙箱仍可能并发 ReleaseSlot，其 select 中
+	// done 与「向已关闭 channel 发送」同时 ready 时随机命中后者即 panic。
+	// 非阻塞排空即可；排空完成后才落入 channel 的槽位随进程退出丢弃。
+	drain := func(ch chan *Slot) {
+		for {
+			select {
+			case slot := <-ch:
+				all = append(all, slot)
+			default:
+				return
+			}
+		}
+	}
+
+	collect(p.newSlots)
+	drain(p.reusedSlots)
+
+	var errsMu sync.Mutex
+
 	var errs []error
 
-	for slot := range p.newSlots {
-		err := p.cleanup(ctx, slot)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("failed to cleanup slot '%d': %w", slot.Idx, err))
-		}
+	// 池级聚合：全部槽位的宿主 filter/nat 规则合并为每表一次
+	// iptables-save + restore（替代每槽位各 2 次的 2N 次整表操作，是
+	// 并行清理下 xtables.lock 的主要竞争点）。失败时回退为各槽位自行
+	// 删除，避免规则泄漏。
+	deleteHostRulesPerSlot := false
+	if err := DeleteSlotsHostRules(all); err != nil {
+		deleteHostRulesPerSlot = true
+		errs = append(errs, fmt.Errorf("failed to batch delete host iptables rules: %w", err))
 	}
 
-	close(p.reusedSlots)
+	// 槽位之间剩余资源完全独立；netlink 包级调用并发安全
+	// （每请求独立 socket，见 network.go），可安全并发。
+	slots := make(chan *Slot)
 
-	for slot := range p.reusedSlots {
-		err := p.cleanup(ctx, slot)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("failed to cleanup slot '%d': %w", slot.Idx, err))
-		}
+	var wg sync.WaitGroup
+
+	for range closeCleanupWorkers {
+		wg.Go(func() {
+			for slot := range slots {
+				if err := p.cleanupSlot(ctx, slot, deleteHostRulesPerSlot); err != nil {
+					errsMu.Lock()
+					errs = append(errs, fmt.Errorf("failed to cleanup slot '%d': %w", slot.Idx, err))
+					errsMu.Unlock()
+				}
+			}
+		})
 	}
+
+	for _, slot := range all {
+		slots <- slot
+	}
+
+	close(slots)
+	wg.Wait()
 
 	return errors.Join(errs...)
 }

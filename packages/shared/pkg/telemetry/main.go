@@ -111,6 +111,28 @@ func (t *Client) Shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// ShutdownWithTimeout 在独立协程中执行 shutdown，超时后直接放弃等待并返回
+// 错误。OTLP gRPC exporter 的 Shutdown 可能被连接重连退避阻塞、不遵守传入
+// 的 ctx（实测 collector 不可达时偶发阻塞 19s+，超出 ctx deadline 数倍）。
+// 仅用于进程退出路径：放弃等待后进程随即退出，泄漏的协程会被回收。
+func ShutdownWithTimeout(timeout time.Duration, shutdown func(ctx context.Context) error) error {
+	done := make(chan error, 1)
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		done <- shutdown(ctx)
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		return fmt.Errorf("shutdown did not finish within %s, abandoned (OTLP collector likely unreachable)", timeout)
+	}
+}
+
 func NewNoopClient() *Client {
 	return &Client{
 		MetricExporter:  &noopMetricExporter{},

@@ -71,6 +71,10 @@ type closer struct {
 
 const version = "0.1.0"
 
+// telemetryShutdownTimeout 限制进程退出时 OTEL exporter flush 的最长等待。
+// collector 正常时 flush 为毫秒级；不可达时避免 exporter 重试拖住退出。
+const telemetryShutdownTimeout = 2 * time.Second
+
 var commitSHA string
 
 func main() {
@@ -189,7 +193,10 @@ func run(config cfg.Config) (success bool) {
 		logger.L().Fatal(ctx, "failed to init telemetry", zap.Error(err))
 	}
 	defer func() {
-		err := tel.Shutdown(ctx)
+		// OTEL collector 不可达时，exporter 关闭会被 gRPC 重连退避阻塞且不
+		// 遵守传入 ctx（实测偶发 ~19s），ShutdownWithTimeout 超时即放弃等待；
+		// collector 正常时 flush 为毫秒级。
+		err := telemetry.ShutdownWithTimeout(telemetryShutdownTimeout, tel.Shutdown)
 		if err != nil {
 			log.Printf("error while shutting down telemetry: %v", err)
 			success = false
