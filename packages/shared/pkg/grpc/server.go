@@ -28,6 +28,11 @@ func NewGRPCServer(tel *telemetry.Client) *grpc.Server {
 		"/TemplateService/TemplateBuildStatus",
 		"/TemplateService/HealthStatus",
 		"/InfoService/ServiceInfo",
+		// API 每 ~0.5s 轮询沙箱列表，4 事件/次的访问日志纯属刷屏；
+		// 调用情况仍由 OTel stats handler 的 trace/metrics 覆盖
+		"/SandboxService/List",
+		// 同上：API 高频轮询模板构建缓存列表
+		"/SandboxService/ListCachedBuilds",
 	)
 
 	return grpc.NewServer(
@@ -37,10 +42,10 @@ func NewGRPCServer(tel *telemetry.Client) *grpc.Server {
 			PermitWithoutStream: true,            // Allow pings even when no active streams
 		}),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
-			Time:    15 * time.Second, // Server sends keepalive pings every 15s
-			Timeout: 5 * time.Second,  // Wait 5s for response before considering dead
-                        MaxConnectionAge:  0, // 0 = 不强制关闭活跃连接
-                        MaxConnectionIdle: 0, // 0 = 不强制关闭空闲连接
+			Time:              15 * time.Second, // Server sends keepalive pings every 15s
+			Timeout:           5 * time.Second,  // Wait 5s for response before considering dead
+			MaxConnectionAge:  0,                // 0 = 不强制关闭活跃连接
+			MaxConnectionIdle: 0,                // 0 = 不强制关闭空闲连接
 		}),
 		grpc.StatsHandler(
 			NewStatsWrapper(
