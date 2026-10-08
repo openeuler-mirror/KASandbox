@@ -68,16 +68,3 @@ func (c tcpProxyConfig) append(tables *iptables.IPTables) error {
 
 	return nil
 }
-
-// delete removes the TCP proxy redirect rules from iptables.
-func (c tcpProxyConfig) delete(tables *iptables.IPTables) []error {
-	var errs []error
-	for _, rule := range c.rules() {
-		err := tables.Delete("nat", "PREROUTING", c.ruleArgs(rule)...)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("error deleting %s egress proxy redirect rule: %w", rule.desc, err))
-		}
-	}
-
-	return errs
-}
