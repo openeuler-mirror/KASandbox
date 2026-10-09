@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/fc"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/builderrors"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/buildlogger"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/config"
@@ -35,6 +36,10 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 		attribute.Int64("env.vcpu_count", int64(cfg.GetVCpuCount())),
 		attribute.Bool("env.huge_pages", cfg.GetHugePages()),
 	)
+
+	if err := fc.CheckHugePages(cfg.GetHugePages()); err != nil {
+		return nil, fmt.Errorf("cannot build template on this node: %w", err)
+	}
 
 	metadata := storage.TemplateFiles{
 		BuildID: cfg.GetBuildID(),

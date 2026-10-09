@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/oci/auth"
 	templatemanager "github.com/e2b-dev/infra/packages/shared/pkg/grpc/template-manager"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
@@ -69,6 +71,13 @@ type TemplateConfig struct {
 func MemfilePageSize(hugePages bool) int64 {
 	if hugePages {
 		return header.HugepageSize
+	}
+
+	// UFFD operations must be aligned to the host base page size. On hosts
+	// whose base page is not 4 KiB (e.g. 64 KiB ARM64 kernels) use it as the
+	// block size; on 4 KiB hosts keep the original constant unchanged.
+	if pageSize := int64(os.Getpagesize()); pageSize != header.PageSize {
+		return pageSize
 	}
 
 	return header.PageSize
