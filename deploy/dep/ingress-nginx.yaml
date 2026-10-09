@@ -320,7 +320,10 @@ subjects:
   namespace: ingress-nginx
 ---
 apiVersion: v1
-data: null
+data:
+  # The default "auto" starts one worker per host CPU. On many-core hosts the
+  # old and new workers overlap during a reload and exceed the pod PID limit.
+  worker-processes: "8"
 kind: ConfigMap
 metadata:
   labels:
