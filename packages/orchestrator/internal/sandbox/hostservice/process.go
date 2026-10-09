@@ -297,6 +297,14 @@ func monitorAndRestart(ctx context.Context, entry *procEntry, restart func(conte
 			entry = newEntry
 			lastRestartErr = nil
 			lastStart = time.Now()
+			if entry.service.AfterRestart != nil && ctx.Err() == nil {
+				if err := entry.service.AfterRestart(ctx); err != nil && ctx.Err() == nil {
+					logger.L().Warn(ctx, "host service restart recovery failed",
+						zap.String("service", entry.service.Name),
+						zap.Error(err),
+					)
+				}
+			}
 		}
 	}
 }

@@ -40,6 +40,9 @@ type AndroidServicesParams struct {
 	NetNSName      string
 	MobileTap      string
 	AndroidVersion string
+
+	EnvdHostIP      string
+	EnvdAccessToken *string
 }
 
 type AndroidServices struct {
@@ -168,6 +171,10 @@ func StartAndroidServices(ctx context.Context, params AndroidServicesParams) (_ 
 	modem, err := BuildModemSimulatorService(params.Config, params.AndroidVersion, runtimeConfigPath, params.NetNSName, modemListener)
 	if err != nil {
 		return nil, err
+	}
+	// Reconnecting the transport alone does not restore the guest data session.
+	modem.AfterRestart = func(restartCtx context.Context) error {
+		return RestartGuestRild(restartCtx, params.EnvdHostIP, params.EnvdAccessToken, params.SandboxID, params.Config.ReadyCheckTimeout)
 	}
 	adbProxy, err := BuildVsockProxyService(params.Config, params.AndroidVersion, allocatedCID, params.SandboxID, runtimeConfigPath, params.NetNSName, adbListener)
 	if err != nil {

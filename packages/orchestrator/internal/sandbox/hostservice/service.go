@@ -37,6 +37,10 @@ type Service struct {
 	Cleanup       func()
 	RestartPolicy RestartPolicy
 	ReadyCheck    ReadyCheck
+	// AfterRestart runs synchronously after a replacement process starts, outside
+	// the manager lock. It must respect ctx; errors are logged without stopping
+	// the replacement process.
+	AfterRestart func(context.Context) error
 }
 
 // CloseParentResources releases all descriptors and filesystem resources
