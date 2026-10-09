@@ -143,7 +143,7 @@ func (tm *TemplateManager) CreateTemplate(
 		DiskSizeMB:         int32(diskSizeMB),
 		KernelVersion:      kernelVersion,
 		FirecrackerVersion: firecrackerVersion,
-		HugePages:          features.HasHugePages(),
+		HugePages:          resolvedOsType != api.Android && features.HasHugePages(),
 		StartCommand:       startCmd,
 		ReadyCommand:       readyCmd,
 		Force:              force,
