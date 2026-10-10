@@ -243,7 +243,7 @@ func (s *Slot) CreateNetwork(ctx context.Context) error {
 		return fmt.Errorf("error adding default NS route: %w", err)
 	}
 
-	tables, err := iptables.New()
+	tables, err := iptables.New(iptables.Timeout(5))
 	if err != nil {
 		return fmt.Errorf("error initializing iptables: %w", err)
 	}
@@ -649,7 +649,7 @@ func (s *Slot) CreateExternalNetNSNetwork(ctx context.Context) error {
 		return fmt.Errorf("error enabling ip_forward in external netns: %w", err)
 	}
 
-	tables, err := iptables.New()
+	tables, err := iptables.New(iptables.Timeout(5))
 	if err != nil {
 		return fmt.Errorf("error initializing iptables in external netns: %w", err)
 	}
@@ -687,7 +687,7 @@ func (s *Slot) applyExternalNetNSRules(tables *iptables.IPTables) error {
 	fmt.Fprintf(&b, "-A FORWARD -i %s -o %s -j ACCEPT\n", s.ExtraTapName(), s.VpeerName())
 	b.WriteString("COMMIT\n")
 
-	cmd := exec.Command("iptables-restore", "--noflush")
+	cmd := exec.Command("iptables-restore", "-w", "5", "--noflush")
 	cmd.Stdin = strings.NewReader(b.String())
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -761,7 +761,7 @@ func (s *Slot) RemoveExternalNetNSNetwork() error {
 		return errors.Join(errs...)
 	}
 
-	tables, err := iptables.New()
+	tables, err := iptables.New(iptables.Timeout(5))
 	if err != nil {
 		errs = append(errs, fmt.Errorf("error initializing iptables in external netns: %w", err))
 	} else {

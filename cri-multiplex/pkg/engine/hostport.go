@@ -306,7 +306,7 @@ func (m *HostPortManager) RestorePorts(sandboxID string, mappings []PortMapping)
 }
 
 func SetupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
-	tables, err := iptables.New()
+	tables, err := iptables.New(iptables.Timeout(5))
 	if err != nil {
 		return fmt.Errorf("init iptables: %w", err)
 	}
@@ -382,7 +382,7 @@ func SetupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandbox
 }
 
 func CleanupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
-	tables, err := iptables.New()
+	tables, err := iptables.New(iptables.Timeout(5))
 	if err != nil {
 		return fmt.Errorf("init iptables: %w", err)
 	}
@@ -450,7 +450,7 @@ func SetupHostPortMappings(nodeIP string, mappings []PortMapping, sandboxIP stri
 	if script == "" {
 		return nil // 全部规则已存在（幂等重入）
 	}
-	cmd := exec.Command("iptables-restore", "--noflush")
+	cmd := exec.Command("iptables-restore", "-w", "5", "--noflush")
 	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("iptables-restore: %w: %s", err, strings.TrimSpace(string(out)))
