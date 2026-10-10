@@ -437,6 +437,9 @@ func (f *Factory) CreateSandbox(
 			NetNSName:      ips.NamespaceID(),
 			MobileTap:      ips.ExtraTapName(),
 			AndroidVersion: string(config.VMMConfig.AndroidVersion),
+
+			EnvdHostIP:      ips.HostIPString(),
+			EnvdAccessToken: config.Envd.AccessToken,
 		})
 		if err != nil {
 			return nil, err
@@ -888,6 +891,9 @@ func (f *Factory) ResumeSandbox(
 			NetNSName:      ips.NamespaceID(),
 			MobileTap:      ips.ExtraTapName(),
 			AndroidVersion: string(config.VMMConfig.AndroidVersion),
+
+			EnvdHostIP:      ips.HostIPString(),
+			EnvdAccessToken: config.Envd.AccessToken,
 		})
 		if err != nil {
 			return nil, err
