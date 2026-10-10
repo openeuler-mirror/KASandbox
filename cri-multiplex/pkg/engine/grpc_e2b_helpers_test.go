@@ -488,3 +488,4 @@ func TestAnnotationsToSandboxConfigEgressAnnotationsNilMetadata(t *testing.T) {
 		t.Fatalf("nil metadata should be initialized with egress annotation: %v", cfg.Metadata)
 	}
 }
+

@@ -212,7 +212,10 @@ fi
 
 log_step "5.2 E2B 沙箱内经 CNI 访问外网"
 
-EGRESS_OUTPUT=$(kubectl_exec_output_with_retry "${POD_NAME}" 60 sh -c '
+# 集群 DNS（coredns）在高负载时段偶发解析超时，外层有界重试消除瞬时抖动
+EGRESS_OUTPUT=""
+for _attempt in 1 2 3 4 5 6; do
+    EGRESS_OUTPUT=$(kubectl_exec_output_with_retry "${POD_NAME}" 60 sh -c '
 set -eu
 getent hosts example.com >/tmp/e2b-dns.out 2>/tmp/e2b-dns.err || {
   echo "DNS_FAIL"
@@ -232,6 +235,12 @@ case "${code}" in
   *) echo "HTTP_FAIL ${code}"; exit 13 ;;
 esac
 ' 2>&1) || true
+    if grep -q "EXTERNAL_OK" <<< "${EGRESS_OUTPUT}"; then
+        break
+    fi
+    log_info "外网访问第 ${_attempt}/6 次尝试未成功，10s 后重试: $(tail -1 <<< "${EGRESS_OUTPUT}")"
+    sleep 10
+done
 if grep -q "EXTERNAL_OK" <<< "${EGRESS_OUTPUT}"; then
     log_pass "E2B 沙箱内 DNS 和 HTTPS 外网访问成功: ${EGRESS_OUTPUT}"
 else

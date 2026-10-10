@@ -176,34 +176,37 @@ func validateProxyUpstream(raw string) error {
 }
 
 // egressProxyChain is the dedicated nat chain (inside the slot netns) holding
-// the per-sandbox egress proxy redirect rules. nat PREROUTING carries a single
-// "-i tap0 -j E2B_EGRESS_PROXY" jump; all exemptions and the catch-all
-// REDIRECT live inside the chain. The chain shape exists so pooled slot reuse
-// can peel the whole per-sandbox redirect off with one flush + jump delete.
+// the per-sandbox egress proxy redirect rules. nat PREROUTING carries one
+// "-i <tapIf> -j E2B_EGRESS_PROXY" jump per guest-facing tap interface
+// (tap0 for the VM's primary NIC, cvd-mtap for the Android mobile-data NIC);
+// all exemptions and the catch-all REDIRECT live inside the chain. The chain
+// shape exists so pooled slot reuse can peel the whole per-sandbox redirect
+// off with one flush + jump deletes.
 const egressProxyChain = "E2B_EGRESS_PROXY"
 
 // buildEgressProxyRules renders the iptables-restore payload that
-// transparently redirects all outbound TCP from the tap interface to the
-// per-sandbox proxy listen port, via the dedicated E2B_EGRESS_PROXY chain.
+// transparently redirects all outbound TCP from the guest tap interfaces to
+// the per-sandbox proxy listen port, via the dedicated E2B_EGRESS_PROXY chain.
 // Exempted destinations RETURN before the catch-all REDIRECT: the
 // orchestrator management IP, the tap link-local subnet, and
 // SANDBOX_PROXY_EXEMPT_CIDRS. UDP is deliberately untouched.
 //
-// includeJump controls whether the PREROUTING jump is (re)installed: the jump
-// is append-only and iptables-restore does not dedupe it, so re-applies
-// (install retries) must omit it. The chain itself is declared and flushed in
-// the same payload, so chain rules are rewritten, never duplicated — verified
+// installJumps lists the interfaces whose PREROUTING jump is (re)installed in
+// this payload: jumps are append-only and iptables-restore does not dedupe
+// them, so re-applies (install retries) must only carry the jumps that are
+// actually missing. The chain itself is declared and flushed in the same
+// payload, so chain rules are rewritten, never duplicated — verified
 // idempotent on both the legacy and nf_tables iptables backends.
 //
 // Unlike the retired DNAT gateway form there is no "gateway self" exemption:
 // the proxy lives in this same netns and its own upstream connections leave
-// via OUTPUT, never hitting the -i tap0 PREROUTING jump.
-func buildEgressProxyRules(tapIf, orchestratorIP string, exemptCIDRs []string, port uint16, includeJump bool) (string, error) {
+// via OUTPUT, never hitting the tap PREROUTING jumps.
+func buildEgressProxyRules(installJumps []string, orchestratorIP string, exemptCIDRs []string, port uint16) (string, error) {
 	var b strings.Builder
 	b.WriteString("*nat\n")
 	fmt.Fprintf(&b, ":%s - [0:0]\n", egressProxyChain)
 	fmt.Fprintf(&b, "-F %s\n", egressProxyChain)
-	if includeJump {
+	for _, tapIf := range installJumps {
 		fmt.Fprintf(&b, "-A PREROUTING -i %s -j %s\n", tapIf, egressProxyChain)
 	}
 	fmt.Fprintf(&b, "-A %s -p tcp -d %s/32 -j RETURN\n", egressProxyChain, orchestratorIP)
@@ -223,14 +226,14 @@ func buildEgressProxyRules(tapIf, orchestratorIP string, exemptCIDRs []string, p
 
 // buildEgressProxyRemoveRules renders the iptables-restore payload that peels
 // the per-sandbox redirect off a slot netns before the slot re-enters the
-// proxy reuse pool: delete the PREROUTING jump, then flush and delete the
-// chain. jumpPresent/chainPresent come from the pre-install state probe so the
-// payload never references absent objects (restore is atomic per table and a
-// single bad line fails the whole commit).
-func buildEgressProxyRemoveRules(tapIf string, jumpPresent, chainPresent bool) string {
+// proxy reuse pool: delete each present PREROUTING jump (removeJumps), then
+// flush and delete the chain. removeJumps/chainPresent come from the
+// pre-install state probe so the payload never references absent objects
+// (restore is atomic per table and a single bad line fails the whole commit).
+func buildEgressProxyRemoveRules(removeJumps []string, chainPresent bool) string {
 	var b strings.Builder
 	b.WriteString("*nat\n")
-	if jumpPresent {
+	for _, tapIf := range removeJumps {
 		fmt.Fprintf(&b, "-D PREROUTING -i %s -j %s\n", tapIf, egressProxyChain)
 	}
 	if chainPresent {
@@ -242,31 +245,45 @@ func buildEgressProxyRemoveRules(tapIf string, jumpPresent, chainPresent bool) s
 }
 
 // egressProxyRulesState probes the slot netns (callers run this inside it) for
-// the installed redirect state: whether the PREROUTING jump and the chain
-// exist. A missing chain (iptables -S exit error) is reported as absent, not
-// an error.
-func egressProxyRulesState(ctx context.Context, tapIf string) (jumpPresent, chainPresent bool, err error) {
-	out, err := exec.CommandContext(ctx, "iptables", "-t", "nat", "-S", "PREROUTING").CombinedOutput()
+// the installed redirect state: per-interface PREROUTING jump presence and
+// whether the chain exists. A missing chain (iptables -S exit error) is
+// reported as absent, not an error.
+func egressProxyRulesState(ctx context.Context, tapIfs []string) (jumpPresent map[string]bool, chainPresent bool, err error) {
+	jumpPresent = make(map[string]bool, len(tapIfs))
+	out, err := exec.CommandContext(ctx, "iptables", "-w", "5", "-t", "nat", "-S", "PREROUTING").CombinedOutput()
 	if err != nil {
-		return false, false, fmt.Errorf("error listing nat PREROUTING rules: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		return nil, false, fmt.Errorf("error listing nat PREROUTING rules: %w (output: %s)", err, strings.TrimSpace(string(out)))
 	}
 	for line := range strings.Lines(string(out)) {
-		if strings.Contains(line, "-i "+tapIf) && strings.Contains(line, "-j "+egressProxyChain) {
-			jumpPresent = true
-			break
+		if !strings.Contains(line, "-j "+egressProxyChain) {
+			continue
+		}
+		for _, tapIf := range tapIfs {
+			if strings.Contains(line, "-i "+tapIf) {
+				jumpPresent[tapIf] = true
+			}
 		}
 	}
 
-	err = exec.CommandContext(ctx, "iptables", "-t", "nat", "-S", egressProxyChain).Run()
+	err = exec.CommandContext(ctx, "iptables", "-w", "5", "-t", "nat", "-S", egressProxyChain).Run()
 	chainPresent = err == nil
 
 	return jumpPresent, chainPresent, nil
 }
 
+// egressProxyTapIfs lists the guest-facing tap interfaces whose PREROUTING
+// traffic is redirected to the per-sandbox proxy: the primary tap (VM Linux
+// egress) and the extra cvd-mtap tap (Android application egress). The extra
+// tap exists on every native slot; on non-Android guests its jump is a dead
+// rule that never matches traffic.
+func (s *Slot) egressProxyTapIfs() []string {
+	return []string{s.TapName(), s.ExtraTapName()}
+}
+
 // applyEgressProxy installs the egress proxy redirect chain with a single
 // iptables-restore --noflush call inside the slot netns. Re-applies (install
 // retries) are idempotent: the chain is flushed and rewritten in the same
-// payload, and the PREROUTING jump is only appended when absent.
+// payload, and each PREROUTING jump is only appended when absent.
 //
 // Unlike the pre-chain form, the rules no longer die only with the netns:
 // pooled proxy slots outlive their sandbox, so Pool.Return strips the chain
@@ -279,17 +296,24 @@ func (s *Slot) applyEgressProxy(ctx context.Context) error {
 	defer n.Close()
 
 	return n.Do(func(_ ns.NetNS) error {
-		jumpPresent, _, err := egressProxyRulesState(ctx, s.TapName())
+		tapIfs := s.egressProxyTapIfs()
+		jumpPresent, _, err := egressProxyRulesState(ctx, tapIfs)
 		if err != nil {
 			return err
 		}
+		var installJumps []string
+		for _, tapIf := range tapIfs {
+			if !jumpPresent[tapIf] {
+				installJumps = append(installJumps, tapIf)
+			}
+		}
 
-		rules, err := buildEgressProxyRules(s.TapName(), s.config.OrchestratorInSandboxIPAddress, s.config.SandboxProxyExemptCIDRs, s.config.SandboxProxyListenPort, !jumpPresent)
+		rules, err := buildEgressProxyRules(installJumps, s.config.OrchestratorInSandboxIPAddress, s.config.SandboxProxyExemptCIDRs, s.config.SandboxProxyListenPort)
 		if err != nil {
 			return fmt.Errorf("error building egress proxy rules: %w", err)
 		}
 
-		cmd := exec.CommandContext(ctx, "iptables-restore", "--noflush")
+		cmd := exec.CommandContext(ctx, "iptables-restore", "-w", "5", "--noflush")
 		cmd.Stdin = strings.NewReader(rules)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -320,16 +344,23 @@ func (s *Slot) removeEgressProxyRules(ctx context.Context) error {
 	defer n.Close()
 
 	return n.Do(func(_ ns.NetNS) error {
-		jumpPresent, chainPresent, err := egressProxyRulesState(ctx, s.TapName())
+		tapIfs := s.egressProxyTapIfs()
+		jumpPresent, chainPresent, err := egressProxyRulesState(ctx, tapIfs)
 		if err != nil {
 			return err
 		}
-		if !jumpPresent && !chainPresent {
+		var removeJumps []string
+		for _, tapIf := range tapIfs {
+			if jumpPresent[tapIf] {
+				removeJumps = append(removeJumps, tapIf)
+			}
+		}
+		if len(removeJumps) == 0 && !chainPresent {
 			return nil
 		}
 
-		cmd := exec.CommandContext(ctx, "iptables-restore", "--noflush")
-		cmd.Stdin = strings.NewReader(buildEgressProxyRemoveRules(s.TapName(), jumpPresent, chainPresent))
+		cmd := exec.CommandContext(ctx, "iptables-restore", "-w", "5", "--noflush")
+		cmd.Stdin = strings.NewReader(buildEgressProxyRemoveRules(removeJumps, chainPresent))
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("error removing egress proxy rules via iptables-restore: %w (output: %s)", err, strings.TrimSpace(string(out)))

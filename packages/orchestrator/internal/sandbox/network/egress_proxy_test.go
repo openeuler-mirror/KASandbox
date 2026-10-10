@@ -11,7 +11,7 @@ import (
 func TestBuildEgressProxyRules(t *testing.T) {
 	t.Parallel()
 
-	got, err := buildEgressProxyRules("tap0", "192.0.2.1", []string{"10.233.64.0/18", "172.16.0.0/12"}, 15001, true)
+	got, err := buildEgressProxyRules([]string{"tap0"}, "192.0.2.1", []string{"10.233.64.0/18", "172.16.0.0/12"}, 15001)
 	require.NoError(t, err)
 
 	want := `*nat
@@ -28,10 +28,27 @@ COMMIT
 	assert.Equal(t, want, got)
 }
 
+// Android sandboxes route guest traffic via cvd-mtap while the VM's own egress
+// uses tap0: both interfaces must jump into the shared chain so Android
+// application traffic cannot bypass the per-sandbox proxy.
+func TestBuildEgressProxyRulesDualTapJumps(t *testing.T) {
+	t.Parallel()
+
+	got, err := buildEgressProxyRules([]string{"tap0", "cvd-mtap"}, "192.0.2.1", nil, 15001)
+	require.NoError(t, err)
+
+	assert.Contains(t, got, "-A PREROUTING -i tap0 -j E2B_EGRESS_PROXY\n")
+	assert.Contains(t, got, "-A PREROUTING -i cvd-mtap -j E2B_EGRESS_PROXY\n")
+	// The chain content (exemptions + catch-all) is interface-agnostic and must
+	// appear exactly once regardless of the jump count.
+	assert.Equal(t, 1, strings.Count(got, "-j REDIRECT --to-ports 15001"))
+	assert.Equal(t, 1, strings.Count(got, "-F E2B_EGRESS_PROXY"))
+}
+
 func TestBuildEgressProxyRulesNoExemptCIDRs(t *testing.T) {
 	t.Parallel()
 
-	got, err := buildEgressProxyRules("tap0", "192.0.2.1", nil, 15001, true)
+	got, err := buildEgressProxyRules([]string{"tap0"}, "192.0.2.1", nil, 15001)
 	require.NoError(t, err)
 
 	want := `*nat
@@ -46,12 +63,12 @@ COMMIT
 	assert.Equal(t, want, got)
 }
 
-// Re-applies (install retries) must omit the append-only PREROUTING jump;
+// Re-applies (install retries) must omit the append-only PREROUTING jumps;
 // the chain is flushed and rewritten in the same payload.
 func TestBuildEgressProxyRulesReapplyOmitsJump(t *testing.T) {
 	t.Parallel()
 
-	got, err := buildEgressProxyRules("tap0", "192.0.2.1", nil, 15001, false)
+	got, err := buildEgressProxyRules(nil, "192.0.2.1", nil, 15001)
 	require.NoError(t, err)
 
 	assert.NotContains(t, got, "-A PREROUTING")
@@ -59,10 +76,23 @@ func TestBuildEgressProxyRulesReapplyOmitsJump(t *testing.T) {
 	assert.Contains(t, got, "-A E2B_EGRESS_PROXY -p tcp -j REDIRECT --to-ports 15001\n")
 }
 
+// A re-apply that finds only one of the two jumps must install just the
+// missing one (per-interface append-only idempotency).
+func TestBuildEgressProxyRulesReapplyInstallsOnlyMissingJump(t *testing.T) {
+	t.Parallel()
+
+	got, err := buildEgressProxyRules([]string{"cvd-mtap"}, "192.0.2.1", nil, 15001)
+	require.NoError(t, err)
+
+	assert.NotContains(t, got, "-i tap0")
+	assert.Contains(t, got, "-A PREROUTING -i cvd-mtap -j E2B_EGRESS_PROXY\n")
+	assert.Contains(t, got, "-j REDIRECT --to-ports 15001")
+}
+
 func TestBuildEgressProxyRulesExemptionOrderAndNoSelfExemption(t *testing.T) {
 	t.Parallel()
 
-	got, err := buildEgressProxyRules("tap0", "192.0.2.1", []string{"10.0.0.0/8"}, 15001, true)
+	got, err := buildEgressProxyRules([]string{"tap0"}, "192.0.2.1", []string{"10.0.0.0/8"}, 15001)
 	require.NoError(t, err)
 
 	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
@@ -92,14 +122,14 @@ func TestBuildEgressProxyRulesExemptionOrderAndNoSelfExemption(t *testing.T) {
 func TestBuildEgressProxyRulesRejectsInvalidExemptCIDR(t *testing.T) {
 	t.Parallel()
 
-	_, err := buildEgressProxyRules("tap0", "192.0.2.1", []string{"not-a-cidr"}, 15001, true)
+	_, err := buildEgressProxyRules([]string{"tap0"}, "192.0.2.1", []string{"not-a-cidr"}, 15001)
 	require.Error(t, err)
 }
 
 func TestBuildEgressProxyRemoveRules(t *testing.T) {
 	t.Parallel()
 
-	got := buildEgressProxyRemoveRules("tap0", true, true)
+	got := buildEgressProxyRemoveRules([]string{"tap0"}, true)
 	want := `*nat
 -D PREROUTING -i tap0 -j E2B_EGRESS_PROXY
 -F E2B_EGRESS_PROXY
@@ -109,20 +139,31 @@ COMMIT
 	assert.Equal(t, want, got)
 }
 
+// Dual-interface removal: every present jump is deleted before the chain is
+// flushed and removed.
+func TestBuildEgressProxyRemoveRulesDualTapJumps(t *testing.T) {
+	t.Parallel()
+
+	got := buildEgressProxyRemoveRules([]string{"tap0", "cvd-mtap"}, true)
+	assert.Contains(t, got, "-D PREROUTING -i tap0 -j E2B_EGRESS_PROXY\n")
+	assert.Contains(t, got, "-D PREROUTING -i cvd-mtap -j E2B_EGRESS_PROXY\n")
+	assert.Contains(t, got, "-F E2B_EGRESS_PROXY\n-X E2B_EGRESS_PROXY\n")
+}
+
 // Idempotency: the removal payload must never reference absent objects —
 // restore is atomic per table and one bad line fails the whole commit.
 func TestBuildEgressProxyRemoveRulesPartialState(t *testing.T) {
 	t.Parallel()
 
-	got := buildEgressProxyRemoveRules("tap0", false, true)
+	got := buildEgressProxyRemoveRules(nil, true)
 	assert.NotContains(t, got, "-D PREROUTING")
 	assert.Contains(t, got, "-F E2B_EGRESS_PROXY\n-X E2B_EGRESS_PROXY\n")
 
-	got = buildEgressProxyRemoveRules("tap0", true, false)
+	got = buildEgressProxyRemoveRules([]string{"tap0"}, false)
 	assert.Contains(t, got, "-D PREROUTING -i tap0 -j E2B_EGRESS_PROXY\n")
 	assert.NotContains(t, got, "-F E2B_EGRESS_PROXY")
 	assert.NotContains(t, got, "-X E2B_EGRESS_PROXY")
 
-	got = buildEgressProxyRemoveRules("tap0", false, false)
+	got = buildEgressProxyRemoveRules(nil, false)
 	assert.Equal(t, "*nat\nCOMMIT\n", got)
 }

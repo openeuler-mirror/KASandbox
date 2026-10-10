@@ -195,8 +195,9 @@ fi
 setsid ./cri-multiplex "${args[@]}" > /tmp/cri-multiplex.log 2>&1 < /dev/null &
 
 # 等待 socket 就绪（节点 netns/iptables 存量大时 startup orphan reconcile 的
-# nft list ruleset 会拖到 15s 级，10 次不够）
-retries=30
+# nft list ruleset 会拖到 15s 级；预热池残留的数百个 stale pool entry 串行清理
+# 会拖到 60s 级，30 次不够，放宽到 120 次）
+retries=120
 while [ $retries -gt 0 ]; do
     if cri_multiplex_ready; then
         startup_pass "cri-multiplex 已启动，socket: ${SOCKET}, mode=${MODE_DESC}"

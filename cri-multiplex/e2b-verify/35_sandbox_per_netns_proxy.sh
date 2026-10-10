@@ -8,7 +8,8 @@
 #    通过 kubectl set env 修改该 DaemonSet 的 SANDBOX_PROXY_* 系列 env 并等待
 #    滚动重启完成来切换代理配置，结束（含失败兜底）时恢复基线 env 并再次等待
 #    滚动完成。滚动重启会销毁该节点全部现存 E2B 沙箱，仅供专用测试节点运行。
-#    与旧 34/35 号用例一致，本脚本自管理环境、不注册进 run_all.sh，需单独执行：
+#    本脚本自管理环境（自切非 CNI、结束恢复 CNI 基线），已注册进 run_all.sh
+#    排在全部 CNI 用例之后；也可单独执行：
 #        bash 35_sandbox_per_netns_proxy.sh
 #
 # 断言清单（§12.2 逐条对应，机读 PASS/FAIL）：
@@ -925,12 +926,14 @@ if guest_exec "${CID_A}" "command -v openssl" | grep -q openssl; then GUEST_HAS_
 
 # guest 内置 CA 验证（§7.3②：模板构建时已将真源 CA 内置进系统信任库，
 # 后续 MITM 断言的 curl 一律不带 --cacert，直连系统信任库以端到端证明内置生效）
+# 按指纹比对（guest 内置 CA 的 CN 随真源代际可能变化，内容一致性才是本质约束）
 if [ "${GUEST_HAS_OPENSSL}" = "1" ]; then
-    OUT=$(guest_exec "${CID_A}" "openssl x509 -in /etc/ssl/certs/e2b-egress-test-ca.pem -noout -subject 2>/dev/null || true")
-    if grep -q "e2b-egress-test-ca" <<< "${OUT}"; then
-        log_pass "guest 系统信任库已内置测试 CA（模板内置，无需 --cacert）"
+    HOST_CA_FP=$(openssl x509 -in "${CA_DIR_HOST}/mitmproxy-ca-cert.pem" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')
+    GUEST_CA_FP=$(guest_exec "${CID_A}" "openssl x509 -in /etc/ssl/certs/e2b-egress-test-ca.pem -noout -fingerprint -sha256 2>/dev/null || true" | grep -oi '[0-9a-f:]\{95\}' | head -1 | tr -d ':' | tr 'A-F' 'a-f')
+    if [ -n "${HOST_CA_FP}" ] && [ -n "${GUEST_CA_FP}" ] && [ "${HOST_CA_FP}" = "${GUEST_CA_FP}" ]; then
+        log_pass "guest 系统信任库已内置测试 CA 且与真源指纹一致（模板内置，无需 --cacert）"
     else
-        log_fail "guest 信任库缺少内置测试 CA（模板未内置，请先重建模板）"
+        log_fail "guest 内置 CA 与真源指纹不一致（host=${HOST_CA_FP:-缺失} guest=${GUEST_CA_FP:-缺失}），请对齐 confdir CA 或重建模板"
     fi
 else
     log_fail "guest 无 openssl（模板未按预期装好工具链）"

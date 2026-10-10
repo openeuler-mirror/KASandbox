@@ -80,9 +80,18 @@ else
 fi
 
 log_step "2.5 ListPodSandbox"
-output=$(${CRICTL} pods 2>&1) || true
-# crictl 默认截断 ID 到 12 位，用前缀匹配
-if echo "${output}" | grep -q "${POD_UID:0:12}"; then
+# crictl 默认截断 ID 到 12 位，用前缀匹配；mux 重启后 E2B 侧 List 偶发短暂
+# 降级（fan-out 合并缺 E2B 结果），有界重试消除瞬时抖动
+list_found=0
+for _ in $(seq 1 10); do
+    output=$(${CRICTL} pods 2>&1) || true
+    if echo "${output}" | grep -q "${POD_UID:0:12}"; then
+        list_found=1
+        break
+    fi
+    sleep 3
+done
+if [ "${list_found}" = "1" ]; then
     log_pass "ListPodSandbox 包含目标 Pod"
 else
     log_fail "ListPodSandbox 未找到 Pod: ${output}"

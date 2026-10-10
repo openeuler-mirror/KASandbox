@@ -19,7 +19,7 @@
 #
 # 前置：cri-multiplex 以 CNI 模式运行（CNI_ENABLED=1，见 01_start_multiplex.sh），
 # /tmp/e2b-pod.json 存在（提供 template/build/team/envd token）。
-# 不加入 run_all.sh（依赖新版二进制的 admin 接口）。
+# 已注册进 run_all.sh（全量模式跟在 23 之后的 CNI 状态里执行；--only 26 会先切 CNI）。
 ###############################################################################
 set -euo pipefail
 

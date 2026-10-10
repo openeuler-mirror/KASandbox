@@ -72,7 +72,11 @@ SCRIPTS=(
     "21|cri-multiplex 多 Runtime 路由验证|${SCRIPT_DIR}/21_mux_multi_runtime_routing.sh"
     "22|Pause Checkpoint Resume 全流程端到端验证|${SCRIPT_DIR}/22_pause_checkpoint_resume.sh"
     "23|重启 cri-multiplex 并隐藏 direct sandbox|${SCRIPT_DIR}/23_restart_multiplex_hide_direct.sh"
+    "26|E2BSandboxService admin 接口与 expose-ports 三种写法验证|${SCRIPT_DIR}/26_admin_sandbox_service.sh"
     "34|E2B CNI 沙箱出公网（default 路由）验证|${SCRIPT_DIR}/34_cni_public_egress.sh"
+    "35|原生模式 per-sandbox 代理（mitmproxy+addon.py）端到端验证|${SCRIPT_DIR}/35_sandbox_per_netns_proxy.sh"
+    "37|per-sandbox 代理 CA 自动生成与 guest 自动注入验证|${SCRIPT_DIR}/37_ca_auto_inject.sh"
+    "39|per-sandbox 代理 CA 运行时轮转（免重启）验证|${SCRIPT_DIR}/39_ca_runtime_rotate.sh"
 )
 
 #==================== 执行 ====================#
@@ -171,6 +175,18 @@ for entry in "${SCRIPTS[@]}"; do
 			18|19|20)
                 log_info "[${num}] 用例内部会以 CNI+Android runtime 模式启动 cri-multiplex，并使用独立 state-dir ..."
                 ;;
+            26)
+                log_info "切换 cri-multiplex 到 CNI 模式，用于 admin 接口/expose-ports 用例 ..."
+                switch_log="${LOG_DIR}/e2b-verify-switch-cni.log"
+                if ! run_streamed "${switch_log}" env CNI_ENABLED=1 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh"; then
+                    RESULTS+=("01-cni|切换 cri-multiplex 到 CNI 模式|FAIL(0/0/0)")
+                    TOTAL_FAIL=$((TOTAL_FAIL+1))
+                    continue
+                fi
+                ;;
+            35|37|39)
+                log_info "[${num}] 用例内部会自切非 CNI（原生）模式并自管理 template-manager DaemonSet env，结束后恢复基线 ..."
+                ;;
         esac
     else
         if [ "${num}" = "01" ]; then
@@ -180,7 +196,8 @@ for entry in "${SCRIPTS[@]}"; do
             switch_log="${LOG_DIR}/e2b-verify-switch-cni-android.log"
             if ! run_streamed "${switch_log}" start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式"; then
                 RESULTS+=("01-cni-android|切换 cri-multiplex 到 CNI+Android runtime 模式|FAIL(0/0/0)")
-                TOTAL_FAIL=$((TOTAL_FAIL+1))
+                RESULTS+=("${num}|${desc}|FAIL(0/1/0)")
+                TOTAL_FAIL=$((TOTAL_FAIL+2))
                 continue
             fi
             if ! prepare_shared_e2b_fixture_once; then

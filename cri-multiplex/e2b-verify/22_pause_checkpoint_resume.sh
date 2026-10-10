@@ -159,6 +159,7 @@ TMP_YAMLS=()
 cleanup() {
     echo ""
     echo "==================== 清理（trap EXIT） ===================="
+    [ -n "${PF_PID:-}" ] && kill "${PF_PID}" 2>/dev/null || true
     for p in "${CREATED_PODS[@]:-}"; do
         [ -n "${p}" ] || continue
         log_info "kubectl delete pod ${p} --ignore-not-found --wait=false"
@@ -289,6 +290,21 @@ log_info "api_pid=${API_PID} token_len=${#ADMIN_TOKEN}"
 log_pass "ADMIN_TOKEN 获取成功"
 
 log_step "0.2 API 鉴权自检（无 header 应 401，带 token 不应 401）"
+# 127.0.0.1:3000 来自 e2b-api 容器（pod 非 hostNetwork），历史上依赖外部环境
+# 残留的 port-forward；不可达时自建（cleanup 回收），保证重复执行稳定
+PF_PID=""
+if ! curl -sS -o /dev/null --max-time 3 "${API}/" 2>/dev/null; then
+    log_info "127.0.0.1:3000 不可达，自建 port-forward 到 svc/flux-sandbox-scheduler ..."
+    kubectl -n flux-system port-forward svc/flux-sandbox-scheduler 3000:3000 >/tmp/e2b22-portforward.log 2>&1 &
+    PF_PID=$!
+    pf_ok=0
+    for _ in $(seq 1 15); do
+        if curl -sS -o /dev/null --max-time 2 "${API}/" 2>/dev/null; then pf_ok=1; break; fi
+        sleep 1
+    done
+    [ "${pf_ok}" = "1" ] || die "port-forward 后 127.0.0.1:3000 仍不可达（见 /tmp/e2b22-portforward.log）"
+    log_info "port-forward 已建立（pid=${PF_PID}）"
+fi
 code=$(curl -sS -o /dev/null -w '%{http_code}' "${API}/internal/sandboxes/zzzzzzzzzzzzzzzzzzzz/snapshot-state")
 [ "${code}" = "401" ] || die "无 header 未返回 401: ${code}"
 resp=$(api_call GET "/internal/sandboxes/zzzzzzzzzzzzzzzzzzzz/snapshot-state")

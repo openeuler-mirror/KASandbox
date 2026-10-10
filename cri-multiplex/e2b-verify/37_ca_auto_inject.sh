@@ -8,7 +8,8 @@
 #    template-manager DaemonSet 的 SANDBOX_PROXY_* / SANDBOX_PROXY_CA_AUTO env
 #    并等待滚动重启，结束（含失败兜底）时恢复基线 env 并再次等待滚动完成。
 #    滚动重启会销毁该节点全部现存 E2B 沙箱，仅供专用测试节点运行。
-#    不注册进 run_all.sh，需单独执行：
+#    本脚本自管理环境（自切非 CNI、结束恢复 CNI 基线），已注册进 run_all.sh
+#    排在 35 之后；也可单独执行：
 #        bash 37_ca_auto_inject.sh
 #
 # 断言清单（§7.4 逐条对应，机读 PASS/FAIL；CA 布局已升级为 §7.5.1 代际化

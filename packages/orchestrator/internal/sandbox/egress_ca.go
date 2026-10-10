@@ -18,6 +18,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/network"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/shared/pkg/consts"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/envd/process"
@@ -67,11 +68,21 @@ func (s *Sandbox) injectEgressProxyCA(ctx context.Context, netCfg network.Config
 		return err
 	}
 
-	baseURL := fmt.Sprintf("http://%s:%d", s.Slot.HostIPString(), consts.DefaultEnvdServerPort)
-	accessToken := utils.DerefOrDefault(s.Config.Envd.AccessToken, "")
-
 	injectCtx, cancel := context.WithTimeout(ctx, egressCAInjectTimeout)
 	defer cancel()
+
+	// §19.4：安卓沙箱的 TLS 校验方是 Android 应用，envd 注入只覆盖 VM Linux
+	// 信任库，必须改经 ADB 通道注入 Android system 信任库。
+	if s.Config.VMMConfig.OsType.OrDefault() == vmm.OsAndroid {
+		if s.androidServices == nil || s.androidServices.ADBAddress == "" {
+			return fmt.Errorf("android sandbox has no ADB address for egress CA injection")
+		}
+
+		return injectEgressProxyCAAndroid(injectCtx, s.androidServices.ADBAddress, certPEM)
+	}
+
+	baseURL := fmt.Sprintf("http://%s:%d", s.Slot.HostIPString(), consts.DefaultEnvdServerPort)
+	accessToken := utils.DerefOrDefault(s.Config.Envd.AccessToken, "")
 
 	return injectEgressProxyCA(injectCtx, baseURL, accessToken, certPEM)
 }
