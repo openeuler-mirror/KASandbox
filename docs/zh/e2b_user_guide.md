@@ -458,15 +458,15 @@ K8S 模式包含 Nomad 模式的全部组件（除 Docker / Docker Compose 外�
 
 **e2b-webhook 镜像（K8S 模式可选）**
 
-仅当 K8S 模式下启用 webhook（`ENABLE_WEBHOOK=true`）时需要，`--download` 会自动下载：
+仅当 K8S 模式下启用 webhook（`ENABLE_WEBHOOK=true`）时需要。e2b-webhook 镜像**不再单独下载**，由 `./build.sh -i` 基于本地源码（`e2b-webhook/` 目录）与其他组件镜像一并构建：
 
-| 组件 | 版本 | 下载地址 | 说明 |
-|------|------|----------|------|
-| e2b-webhook | 1.0.0 | https://gitcode.com/fly_1997/e2b-webhook/releases/download/1.0.0/e2b-webhook.tar | 镜像 tar 包，`--install` 时自动 `docker load` 导入 |
+```bash
+./build.sh       # 编译 bin/e2b-webhook（含其他组件二进制）
+./build.sh -i    # 构建 api / orchestrator / client-proxy / e2b-webhook 镜像
+```
 
 > **说明**：
-> - 下载后保存为 `dep/e2b-webhook.tar`，`pull_docker_images` 会自动通过 `docker load -i` 导入为本地镜像 `e2b-webhook`。
-> - 仅 K8S 模式下载（nomad 模式不需要）。
+> - 镜像在源码树内构建，无需访问外部仓库。
 > - 部署时由 `deploy.sh` 推送到 Harbor，详见 [6.8 可选组件：e2b-webhook](#68-可选组件e2b-webhook)。
 
 #### 4.4.4 Python 与系统依赖
