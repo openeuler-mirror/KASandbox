@@ -61,6 +61,8 @@
 
 `bench all` 按上表顺序串行执行全部测试项，并生成汇总报告。`kill-all` 与 `clean-host` 为配套清理命令，不产生测量结果。
 
+`create` 与 `scale` 还会输出创建耗时的分解树，`scale` 另按达标标准给出结论，见 5.6。
+
 ## 2. 目录结构
 
 ```text
@@ -89,6 +91,7 @@ e2b-scripts/
         ├── sdk_engine.py          # SDK 并发引擎（barrier 同步起跑）
         ├── bench_template.py      # 标准基准模板查找与构建
         ├── create.py、scale.py 等 # 各测试项实现
+        ├── breakdown.py           # 创建耗时分解：日志采集、建树与渲染
         ├── runner.py              # bench all 编排
         ├── stats.py               # 耗时统计
         └── report.py              # JSON 结果与中文汇总报告
@@ -673,6 +676,7 @@ bash bench.sh scale --sizes 1,100,200 --rounds 3
 | --- | --- | --- |
 | `--sizes <N1,N2,...>` | 规模档位，逗号分隔的正整数；每档一次性并发拉起 N 个 Sandbox | 配置中的 `[[scale.tiers]]` |
 | `--rounds <N>` | 每档测量轮数，多轮取平均 | `[scale].rounds`（3） |
+| `--enforce-criteria` | 达标标准（见 5.6）不满足时以退出码 `1` 结束 | 只在报告里标出 |
 
 `scale` 仅指定 `--rounds` 时，档位仍取自配置文件。
 
@@ -887,12 +891,42 @@ bash bench.sh clean-host --dry-run
 - **内存安全阈值**：宿主 MemAvailable 低于阈值时停止加压，保护宿主稳定性。
 - **清理命令**：`kill-all` 与 `clean-host` 的用法见 5.1.8。
 
+### 5.6 耗时分解与达标标准
+
+**耗时分解**：`create` 与 `scale` 每轮创建后，按 Sandbox ID 把三层耗时拼成一棵树——客户端的 `Sandbox.create`、API 的各阶段、orchestrator 的各阶段，输出到终端、`report.md` 和结果 JSON（各档位的 `breakdown` 字段）。下面是 100 并发的一次输出节选：
+
+```text
+阶段（毫秒）                              次数     平均      P50      P95     最大     占比
+Sandbox.create（客户端）                   100    282.7    290.6    406.6    421.8   100.0%
+├ API：POST /sandboxes                     100    243.2    246.0    357.2    368.6    86.0%
+│ ├ middleware                             100      8.6      7.4     22.7     29.9     3.0%
+│ ├ node.SandboxCreate (gRPC)              100    226.1    228.6    331.0    359.2    80.0%
+│ │ ├ orchestrator：Create                 100    203.1    206.1    307.7    337.9    71.9%
+│ │ │ ├ ResumeSandbox（total）             100    195.2    198.0    286.7    332.5    69.1%
+│ │ │ │ └ ……
+│ │ │ └ （未打点）                         100      2.2      0.1     17.2     28.6     0.8%
+│ │ └ （未打点）                           100     22.9     16.6     60.2    111.0     8.1%
+│ └ （未打点）                             100      1.3      1.0      2.5      6.3     0.5%
+└ （未打点）                               100     39.5     38.7     71.5     88.2    14.0%
+```
+
+- 缩进表示包含关系，每行是该阶段在本档位全部样本上的统计。
+- "（未打点）"是父阶段里没有被任何子阶段覆盖的时间，按子阶段的时间并集扣除，所以并行子阶段之和可以大于父阶段。最上层的"（未打点）"是客户端自身和网络的开销。
+- 平均耗时低于 0.5 ms 的阶段在文本里合并成一行，JSON 里是完整的。
+- 树后面的"整批时间线"给出各层事件相对起跑时刻的最早、中位、最晚，要求脚本与服务端同机；时钟对不上时自动省略。
+
+服务端数据来自 API 与 orchestrator 日志里的 `[PerfTrace] {...}` 汇总行（每完成一次创建各一行），因此两者需为带 `perftrace` 打点的版本。日志来源在 `bench.toml` 的 `[breakdown]` 节配置：`source = "nomad"` 经 nomad HTTP API 读取，`source = "file"` 直接读日志文件；`enabled = false` 关闭分解。读不到日志或服务端没有打点时，只统计客户端总耗时，并在结果的 `notes` 里说明，测试本身不受影响。
+
+服务端环境变量：`PERF_TRACE=0` 关闭汇总行；`PERF_TRACE_VERBOSE=1` 时每个阶段结束额外输出一行 `[<op>] <阶段> cost: N ms, traceID=...`，用于观察卡住未返回的请求。
+
+**达标标准**：在 `bench.toml` 里用 `[[criteria.scale]]` 配置某档位的整批耗时上限，默认 100 并发 < 1000 ms。判定取该档位各轮中最差的一轮（各轮耗时见 `wall_rounds_ms`），每一轮都小于上限且没有创建失败才算达标；本次没有运行的档位记为"未测"。结论写入报告和结果 JSON 的 `criteria` 字段，默认不改变退出码，加 `--enforce-criteria` 时不达标返回 `1`。
+
 ## 6. 退出码
 
 | 退出码 | 含义 |
 | ---: | --- |
 | `0` | 操作成功，或全部 E2E 用例符合预期 |
-| `1` | SDK、网络、服务端错误，或存在 `FAIL` / `BLOCKED` |
+| `1` | SDK、网络、服务端错误，或存在 `FAIL` / `BLOCKED`；`scale --enforce-criteria` 时达标标准不满足 |
 | `2` | 参数或配置错误 |
 | `130` | 用户中断 |
 | 其他 | `run-command` 返回的远端命令退出码 |

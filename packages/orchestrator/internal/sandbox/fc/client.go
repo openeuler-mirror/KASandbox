@@ -3,18 +3,17 @@ package fc
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/bits-and-blooms/bitset"
 	"github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/go-openapi/strfmt"
-	"go.uber.org/zap"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/uffd/memory"
 	"github.com/e2b-dev/infra/packages/shared/pkg/fc/client"
 	"github.com/e2b-dev/infra/packages/shared/pkg/fc/client/operations"
 	"github.com/e2b-dev/infra/packages/shared/pkg/fc/models"
+	"github.com/e2b-dev/infra/packages/shared/pkg/perftrace"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
@@ -50,10 +49,9 @@ func (c *apiClient) loadSnapshot(
 		BackendType: &backendType,
 	}
 
-	tSnap := time.Now()
+	_, endSnapPath := perftrace.Phase(ctx, "fc.loadSnapshot get snapfile-path")
 	snapfilePath := snapfile.Path()
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.loadSnapshot get snapfile-path cost: %.3f ms, snapfile=%s",
-		time.Since(tSnap).Seconds()*1000, snapfilePath)
+	endSnapPath()
 
 	snapshotConfig := operations.LoadSnapshotParams{
 		Context: ctx,
@@ -65,25 +63,23 @@ func (c *apiClient) loadSnapshot(
 		},
 	}
 
-	tFcApi := time.Now()
+	_, endFcApi := perftrace.Phase(ctx, "fc.loadSnapshot FC API LoadSnapshot")
 	_, err := c.client.Operations.LoadSnapshot(&snapshotConfig)
+	endFcApi()
 	if err != nil {
 		return fmt.Errorf("error loading snapshot: %w", err)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.loadSnapshot FC API LoadSnapshot cost: %.3f ms",
-		time.Since(tFcApi).Seconds()*1000)
 
 	telemetry.ReportEvent(ctx, "loaded snapshot")
 
-	tUffd := time.Now()
+	_, endUffdReady := perftrace.Phase(ctx, "fc.loadSnapshot wait uffd-ready")
 	select {
 	case <-ctx.Done():
 		return fmt.Errorf("context canceled while waiting for uffd ready: %w", ctx.Err())
 	case <-uffdReady:
 		// Wait for the uffd to be ready to serve requests
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.loadSnapshot wait uffd-ready cost: %.3f ms",
-		time.Since(tUffd).Seconds()*1000)
+	endUffdReady()
 
 	telemetry.ReportEvent(ctx, "uffd ready")
 

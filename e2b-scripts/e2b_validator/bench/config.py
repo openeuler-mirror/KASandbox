@@ -94,6 +94,19 @@ BUILTIN: dict[str, Any] = {
             {"concurrency": 10, "rounds": 5},
         ],
     },
+    # 耗时分解（create / scale）：服务端数据来自 API 与 orchestrator 日志里的 [PerfTrace] 汇总行
+    "breakdown": {
+        "enabled": True,
+        "source": "nomad",
+        "nomad_addr": "",
+        "nomad_env_file": "/opt/e2b-infra/.env",
+        "api_job": "api",
+        "orchestrator_job": "template-manager",
+        "api_log": "",
+        "orchestrator_log": "",
+    },
+    # 达标标准：scale 某档位的整批耗时上限（毫秒）
+    "criteria": {"scale": [{"size": 100, "wall_ms_max": 1000}]},
     "profiles": {
         "quick": {
             "create": {"tiers": [{"concurrency": 1, "requests": 10}, {"concurrency": 10, "requests": 20}]},
@@ -110,7 +123,7 @@ BUILTIN: dict[str, Any] = {
     },
 }
 
-SECTION_ORDER = ("global",) + BENCH_SECTIONS
+SECTION_ORDER = ("global",) + BENCH_SECTIONS + ("breakdown", "criteria")
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

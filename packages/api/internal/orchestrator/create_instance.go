@@ -26,6 +26,7 @@ import (
 	feature_flags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
+	"github.com/e2b-dev/infra/packages/shared/pkg/perftrace"
 	sandbox_network "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-network"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 	ut "github.com/e2b-dev/infra/packages/shared/pkg/utils"
@@ -111,7 +112,9 @@ func (o *Orchestrator) CreateSandbox(
 	totalConcurrentInstances := team.Limits.SandboxConcurrency
 
 	// Check if team has reached max instances
+	_, endReserve := perftrace.Phase(ctx, "sandboxStore.Reserve")
 	finishStart, waitForStart, err := o.sandboxStore.Reserve(ctx, team.Team.ID, sandboxID, int(totalConcurrentInstances))
+	endReserve()
 	if err != nil {
 		var limitErr *sandbox.LimitExceededError
 
@@ -326,7 +329,9 @@ func (o *Orchestrator) CreateSandbox(
 		nodemanager.ConvertOrchestratorMountsToDatabaseMounts(volumeMounts),
 	)
 
+	_, endStoreAdd := perftrace.Phase(ctx, "sandboxStore.Add")
 	err = o.sandboxStore.Add(ctx, sbx, true)
+	endStoreAdd()
 	if err != nil {
 		telemetry.ReportError(ctx, "failed to add sandbox to store", err)
 

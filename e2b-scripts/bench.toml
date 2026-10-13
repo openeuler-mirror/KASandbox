@@ -175,6 +175,27 @@ rounds = 5
 concurrency = 10
 rounds = 5
 
+# 耗时分解（create / scale）：把单个沙箱的创建耗时拆成 客户端 → API → orchestrator 的阶段树，
+# 并列出每层没有被打点覆盖的时间。服务端数据来自两者日志里的 "[PerfTrace] {...}" 汇总行，
+# 读不到时只统计客户端总耗时，不影响测试结果。
+[breakdown]
+enabled = true
+# 日志来源：nomad = 经 nomad HTTP API 读取；file = 直接读 api_log / orchestrator_log 指定的文件（可用通配符）
+source = "nomad"
+# nomad 地址留空取环境变量 NOMAD_ADDR 或 http://127.0.0.1:4646；令牌取环境变量 NOMAD_TOKEN 或 nomad_env_file
+nomad_addr = ""
+nomad_env_file = "/opt/e2b-infra/.env"
+api_job = "api"
+orchestrator_job = "template-manager"
+api_log = ""
+orchestrator_log = ""
+
+# 达标标准：scale 某档位的整批耗时（「本轮耗时」）上限。每一轮都小于上限且没有创建失败才算达标；
+# 默认只在报告里标出，加 --enforce-criteria 时不达标以非零退出码结束。
+[[criteria.scale]]
+size = 100
+wall_ms_max = 1000
+
 # profile 只覆盖各节的档位规模；quick 为小规模自检，full 对标 CubeSandbox 文章
 [profiles.quick]
 scale = { tiers = [ { size = 1 }, { size = 10 } ], rounds = 2 }

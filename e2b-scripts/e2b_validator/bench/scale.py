@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 
 from ..e2b_common import positive_int, print_json
+from . import breakdown as bench_breakdown
 from . import config as bench_config
 from . import report as bench_report
 from . import sdk_engine
@@ -51,7 +52,34 @@ def register(subparsers) -> None:
     add_common_arguments(parser)
     parser.add_argument("-o", "--output", help="JSON 报告输出路径")
     parser.add_argument("--sandbox-timeout", type=positive_int, help="沙箱生命周期秒数（防泄漏兜底）")
+    parser.add_argument(
+        "--enforce-criteria",
+        action="store_true",
+        help="配置 [[criteria.scale]] 的达标标准不满足时以非零退出码结束（默认只在报告里标出）",
+    )
     parser.set_defaults(handler=guarded(execute))
+
+
+def judge(tiers: list[dict], criteria: list[dict] | None) -> list[dict]:
+    """达标判定：该档位每一轮整批耗时都小于上限且没有创建失败才算达标；没跑到的档位记为未测。"""
+    verdicts = []
+    for rule in criteria or []:
+        size, limit = int(rule["size"]), float(rule["wall_ms_max"])
+        verdict = {"name": f"{size} 并发整批耗时 < {limit:g} ms", "passed": None, "actual_ms": None, "detail": "本次没有运行该档位"}
+        tier = next((item for item in tiers if item["size"] == size), None)
+        if tier is not None:
+            metrics = tier.get("metrics") or {}
+            walls = metrics.get("wall_rounds_ms") or []
+            failed = metrics.get("failed") or 0
+            verdict["passed"] = bool(walls) and max(walls) < limit and not failed
+            verdict["actual_ms"] = max(walls) if walls else None
+            verdict["detail"] = (
+                f"{len(walls)} 轮中最差一轮 {max(walls):.0f} ms" + (f"，{failed} 个沙箱创建失败" if failed else "")
+                if walls
+                else "该档位未完成"
+            )
+        verdicts.append(verdict)
+    return verdicts
 
 
 def run(
@@ -61,6 +89,8 @@ def run(
     rounds: int,
     warmup: int,
     mem_threshold_pct: float,
+    breakdown: dict | None = None,
+    criteria: list[dict] | None = None,
 ) -> dict:
     params = {
         "tiers": tiers,
@@ -91,6 +121,7 @@ def run(
             break
 
         pre_tier_settle(ctx, f"scale-n{size}", pre_wait)
+        collector = bench_breakdown.collector(breakdown, ctx.note)
         walls: list[float] = []
         create_times: list[float] = []
         server_times: list[float] = []
@@ -101,8 +132,12 @@ def run(
         total_wall_ms = 0.0
         for round_index in range(max(0, warmup) + rounds):
             measured = round_index >= max(0, warmup)
+            if collector:
+                collector.arm()
             # SDK 创建路径（与用户 max_test 脚本一致）：每批 ≤150 并发、失败自动补充
             batch = sdk_engine.batch_create(ctx, ctx.template, size, concurrency=size)
+            if collector and measured:
+                collector.add_batch(batch)
             destroy = sdk_engine.destroy_all(ctx, batch["instances"])
             if measured:
                 walls.append(batch["wall_ms"])
@@ -125,6 +160,7 @@ def run(
             "rounds": len(walls),
             "unit_count": size,
             "wall_ms": round(wall_avg, 1) if wall_avg is not None else None,
+            "wall_rounds_ms": [round(wall, 1) for wall in walls],  # 各轮整批耗时，达标判定取最差一轮
             "per_unit_avg_ms": round(wall_avg / size, 1) if wall_avg is not None and size else None,
             "throughput_per_s": (
                 round((total_ops - failed_ops) * 1000 / total_wall_ms, 1) if total_wall_ms > 0 else None
@@ -143,10 +179,18 @@ def run(
         if failed_ops:
             tier["status"] = "failed"
             ctx.note(f"规模 {size} 档：{failed_ops}/{total_ops} 个沙箱创建失败")
+        tier_breakdown = collector.result() if collector else None
+        if tier_breakdown:
+            tier["breakdown"] = tier_breakdown
+            print(f"\n【耗时分解】规模 {size}\n  " + "\n  ".join(bench_breakdown.render(tier_breakdown)))
         tier_results.append(tier)
         ensure_clean_slate(ctx, f"scale-n{size}")
 
     result["tiers"] = tier_results
+    result["criteria"] = judge(tier_results, criteria)
+    for verdict in result["criteria"]:
+        label = {True: "达标", False: "不达标", None: "未测"}[verdict["passed"]]
+        print(f"【达标判定】{verdict['name']}：{label}（{verdict['detail']}）")
     tier_statuses = {tier["status"] for tier in tier_results}
     if aborted:
         result["status"] = "aborted"
@@ -183,6 +227,8 @@ def execute(args: argparse.Namespace) -> int:
         rounds=rounds,
         warmup=warmup,
         mem_threshold_pct=float(bench_config.global_param(cfg, "mem_threshold_pct")),
+        breakdown=cfg.get("breakdown"),
+        criteria=(cfg.get("criteria") or {}).get("scale"),
     )
     environment = collect_environment(ctx.client, ctx.template, template_source=ctx.template_source)
     json_path = bench_report.write_bench_json(ctx.result_dir, "scale", result)
@@ -191,5 +237,6 @@ def execute(args: argparse.Namespace) -> int:
 
         shutil.copyfile(json_path, args.output)
     bench_report.write_report(ctx.result_dir, [result], environment, ctx.run_id)
-    print_json({"result_dir": str(ctx.result_dir), "tiers": result["tiers"]})
-    return 0 if result["status"] == "ok" else 1
+    print_json({"result_dir": str(ctx.result_dir), "tiers": bench_report.without_breakdown(result["tiers"])})
+    unmet = args.enforce_criteria and any(verdict["passed"] is False for verdict in result["criteria"])
+    return 0 if result["status"] == "ok" and not unmet else 1

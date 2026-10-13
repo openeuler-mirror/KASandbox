@@ -34,6 +34,7 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
+	"github.com/e2b-dev/infra/packages/shared/pkg/perftrace"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
@@ -426,12 +427,9 @@ func (f *Factory) ResumeSandbox(
 	defer span.End()
 	defer handleSpanError(span, &e)
 
-	startTime := time.Now()
-	traceID := span.SpanContext().TraceID().String()
-	zap.L().Sugar().Infof("[ResumeSandbox] enter, traceID=%s", traceID)
-	defer func() {
-		zap.L().Sugar().Infof("[ResumeSandbox] total cost: %d ms, traceID=%s", time.Since(startTime).Milliseconds(), traceID)
-	}()
+	// ResumeSandbox 的总耗时，阶段名沿用原日志里的 "total"；下面各阶段都是它的子阶段
+	ctx, endTotal := perftrace.Phase(ctx, "total")
+	defer endTotal()
 
 	execCtx, execSpan := startExecutionSpan(ctx)
 
@@ -447,22 +445,22 @@ func (f *Factory) ResumeSandbox(
 		}
 	}()
 
-	tFiles := time.Now()
+	_, endFiles := perftrace.Phase(ctx, "new sandbox files")
 	sandboxFiles := t.Files().NewSandboxFiles(runtime.SandboxID)
 	cleanup.Add(ctx, cleanupFiles(f.config, sandboxFiles))
-	zap.L().Sugar().Infof("[ResumeSandbox] new sandbox files cost: %.3f ms, traceID=%s", time.Since(tFiles).Seconds()*1000, traceID)
+	endFiles()
 
 	telemetry.ReportEvent(ctx, "created sandbox files")
 
 	// Uffd initialization
 	fcUffdPath := sandboxFiles.SandboxUffdSocketPath()
 	uffdPromise := utils.NewPromise(func() (*uffd.Uffd, error) {
-		tMemfile := time.Now()
+		_, endMemfile := perftrace.Phase(ctx, "t.Memfile")
 		memfile, err := t.Memfile(ctx)
+		endMemfile()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get memfile: %w", err)
 		}
-		zap.L().Sugar().Infof("[ResumeSandbox] t.Memfile cost: %.3f ms, traceID=%s", time.Since(tMemfile).Seconds()*1000, traceID)
 
 		telemetry.ReportEvent(ctx, "got template memfile")
 
@@ -522,7 +520,7 @@ func (f *Factory) ResumeSandbox(
 
 		telemetry.ReportEvent(ctx, "got template rootfs")
 
-		tNBD := time.Now()
+		_, endNBD := perftrace.Phase(ctx, "create NBD providers")
 		overlay, err := rootfs.NewNBDProvider(
 			ctx,
 			readonlyRootfs,
@@ -530,10 +528,10 @@ func (f *Factory) ResumeSandbox(
 			f.devicePool,
 			f.featureFlags,
 		)
+		endNBD()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create rootfs overlay: %w", err)
 		}
-		zap.L().Sugar().Infof("[ResumeSandbox] create NBD providers cost: %.3f ms, traceID=%s", time.Since(tNBD).Seconds()*1000, traceID)
 
 		cleanup.Add(ctx, overlay.Close)
 
@@ -556,70 +554,70 @@ func (f *Factory) ResumeSandbox(
 			return struct{}{}, err
 		}
 
-		tServe := time.Now()
+		_, endServe := perftrace.Phase(ctx, "serveMemory (uffd start)")
 		err = serveMemory(
 			execCtx,
 			cleanup,
 			fcUffd,
 			runtime.SandboxID,
 		)
+		endServe()
 		if err != nil {
 			return struct{}{}, fmt.Errorf("failed to serve memory: %w", err)
 		}
-		zap.L().Sugar().Infof("[ResumeSandbox] serveMemory (uffd start) cost: %.3f ms, traceID=%s", time.Since(tServe).Seconds()*1000, traceID)
 
 		telemetry.ReportEvent(ctx, "started serving memory")
 
 		return struct{}{}, nil
 	})
 
-	t2 := time.Now()
 	// Wait for all resources to be initialized
+	_, endWaitSlot := perftrace.Phase(ctx, "wait network slot")
 	ips, err := ipsPromise.Wait(ctx)
+	endWaitSlot()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get network slot: %w", err)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] wait network slot cost: %.3f ms, traceID=%s", time.Since(t2).Seconds()*1000, traceID)
 
 	telemetry.ReportEvent(ctx, "got network slot")
 
-	tOverlay := time.Now()
+	_, endWaitOverlay := perftrace.Phase(ctx, "wait rootfs overlay")
 	overlay, err := overlayPromise.Wait(ctx)
+	endWaitOverlay()
 	if err != nil {
 		return nil, err
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] wait rootfs overlay cost: %.3f ms, traceID=%s", time.Since(tOverlay).Seconds()*1000, traceID)
 
-	tMemory := time.Now()
+	_, endWaitMemory := perftrace.Phase(ctx, "wait memory init")
 	_, err = memoryPromise.Wait(ctx)
+	endWaitMemory()
 	if err != nil {
 		return nil, err
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] wait memory init cost: %.3f ms, traceID=%s", time.Since(tMemory).Seconds()*1000, traceID)
 	// ==== END of resources initialization ====
 
-	tRootfs := time.Now()
+	_, endRootfs := perftrace.Phase(ctx, "t.Rootfs")
 	rootfs, err := t.Rootfs()
+	endRootfs()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get rootfs overlay: %w", err)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] t.Rootfs cost: %.3f ms, traceID=%s", time.Since(tRootfs).Seconds()*1000, traceID)
 
-	t3 := time.Now()
+	_, endMetadata := perftrace.Phase(ctx, "get template metadata")
 	meta, err := t.Metadata()
+	endMetadata()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get metadata: %w", err)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] get template metadata cost: %.3f ms, traceID=%s", time.Since(t3).Seconds()*1000, traceID)
 
-	tCgroup := time.Now()
 	// Create cgroup for sandbox resource accounting
+	_, endCgroup := perftrace.Phase(ctx, "create cgroup")
 	cgroupHandle, cgroupFD := createCgroup(ctx, f.cgroupManager, runtime.SandboxID, cleanup)
-	zap.L().Sugar().Infof("[ResumeSandbox] create cgroup cost: %.3f ms, traceID=%s", time.Since(tCgroup).Seconds()*1000, traceID)
+	endCgroup()
 
-	t4 := time.Now()
+	newProcessCtx, endNewProcess := perftrace.Phase(ctx, "fc.NewProcess")
 	fcHandle, fcErr := fc.NewProcess(
-		ctx,
+		newProcessCtx,
 		execCtx,
 		f.config,
 		ips,
@@ -633,32 +631,32 @@ func (f *Factory) ResumeSandbox(
 			BuildID:         rootfs.Header().Metadata.BaseBuildId.String(),
 		},
 	)
+	endNewProcess()
 	if fcErr != nil {
 		return nil, fmt.Errorf("failed to create FC: %w", fcErr)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.NewProcess cost: %.3f ms, traceID=%s", time.Since(t4).Seconds()*1000, traceID)
-	phaseStart := time.Now()
+	// "resume VM" 覆盖从 FC 进程对象就绪到 VM 恢复运行；fcHandle.Resume 内的阶段经 resumeCtx 挂在它下面
+	resumeCtx, endResumeVM := perftrace.Phase(ctx, "resume VM")
 	telemetry.ReportEvent(ctx, "created FC process")
 
 	// todo: check if kernel, firecracker, and envd versions exist
-	tSnapfile := time.Now()
+	_, endSnapfile := perftrace.Phase(resumeCtx, "t.Snapfile")
 	snapfile, err := t.Snapfile()
+	endSnapfile()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get snapfile: %w", err)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] t.Snapfile cost: %.3f ms, snapfile=%s, traceID=%s",
-		time.Since(tSnapfile).Seconds()*1000, snapfile.Path(), traceID)
 
 	telemetry.ReportEvent(ctx, "got snapfile")
 
-	tUffd := time.Now()
+	_, endWaitUffd := perftrace.Phase(resumeCtx, "wait uffd promise")
 	fcUffd, err := uffdPromise.Wait(ctx)
+	endWaitUffd()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get uffd: %w", err)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] wait uffd promise cost: %.3f ms, traceID=%s", time.Since(tUffd).Seconds()*1000, traceID)
 
-	uffdStartCtx, cancelUffdStartCtx := context.WithCancelCause(ctx)
+	uffdStartCtx, cancelUffdStartCtx := context.WithCancelCause(resumeCtx)
 	defer cancelUffdStartCtx(fmt.Errorf("uffd finished starting"))
 	go func() {
 		uffdWaitErr := fcUffd.Exit().Wait()
@@ -677,7 +675,6 @@ func (f *Factory) ResumeSandbox(
 		fcUffd.Ready(),
 		config.Envd.AccessToken,
 		cgroupFD,
-		span.SpanContext().TraceID().String(),
 	)
 
 	// Release the cgroup directory FD — the kernel already used it during clone
@@ -689,10 +686,11 @@ func (f *Factory) ResumeSandbox(
 		}
 	}
 
+	endResumeVM()
+
 	if fcStartErr != nil {
 		return nil, fmt.Errorf("failed to start FC: %w", fcStartErr)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] resume VM cost: %d ms, traceID=%s", time.Since(phaseStart).Milliseconds(), traceID)
 
 	telemetry.ReportEvent(ctx, "initialized FC")
 
@@ -746,15 +744,15 @@ func (f *Factory) ResumeSandbox(
 
 	telemetry.ReportEvent(execCtx, "waiting for envd")
 
-	tEnvd := time.Now()
+	_, endWaitEnvd := perftrace.Phase(ctx, "wait envd ready")
 	err = sbx.WaitForEnvd(
 		ctx,
 		f.config.EnvdTimeout,
 	)
+	endWaitEnvd()
 	if err != nil {
 		return nil, fmt.Errorf("failed to wait for sandbox start: %w", err)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] wait envd ready cost: %.3f ms, traceID=%s", time.Since(tEnvd).Seconds()*1000, traceID)
 
 	telemetry.ReportEvent(execCtx, "envd initialized")
 
