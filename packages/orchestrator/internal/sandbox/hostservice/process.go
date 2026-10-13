@@ -71,7 +71,7 @@ func startService(ctx context.Context, svc Service, metadata sbxlogger.SandboxMe
 		stdoutW, stderrW = svc.LogWriter, svc.LogWriter
 	} else {
 		out := &zapio.Writer{Log: svcLogger, Level: zap.InfoLevel}
-		errW := &zapio.Writer{Log: svcLogger, Level: zap.ErrorLevel}
+		errW := &zapio.Writer{Log: svcLogger, Level: zap.InfoLevel}
 		stdoutW, stderrW = out, errW
 		closeWriters = func() {
 			_ = out.Close()
