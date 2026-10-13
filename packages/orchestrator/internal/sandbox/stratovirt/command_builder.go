@@ -37,7 +37,7 @@ func (b *CommandBuilder) Build(
 	guestConsoleLogs bool,
 	memoryMB int64,
 	vcpuCount int64,
-	_ bool,
+	hugePages bool,
 	incomingURI string,
 	vsockGuestCID int64,
 ) *CommandResult {
@@ -58,6 +58,10 @@ func (b *CommandBuilder) Build(
 		machineType = "q35"
 	}
 
+	if hugePages {
+		machineType += ",hugepages=2M"
+	}
+
 	if versions.OsType.OrDefault() == vmm.OsWindows {
 		return b.buildWindowsCommand(
 			versions,
@@ -72,7 +76,7 @@ func (b *CommandBuilder) Build(
 		)
 	}
 	if versions.OsType.OrDefault() == vmm.OsAndroid {
-		return b.buildAndroidCommand(versions, files, slot, qmpSocket, guestConsoleLogs, memoryMB, vcpuCount, incomingArg, vsockGuestCID)
+		return b.buildAndroidCommand(versions, files, slot, qmpSocket, guestConsoleLogs, memoryMB, vcpuCount, incomingArg, vsockGuestCID, hugePages)
 	}
 
 	serialBackend := "null"
@@ -138,7 +142,11 @@ func (b *CommandBuilder) Build(
 	}
 }
 
-func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.SandboxFiles, slot *network.Slot, qmpSocket string, guestConsoleLogs bool, memoryMB, vcpuCount int64, incomingArg string, vsockGuestCID int64) *CommandResult {
+func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.SandboxFiles, slot *network.Slot, qmpSocket string, guestConsoleLogs bool, memoryMB, vcpuCount int64, incomingArg string, vsockGuestCID int64, hugePages bool) *CommandResult {
+	memoryMode := ""
+	if hugePages {
+		memoryMode = ",hugepages=2M"
+	}
 	diskNames := []string{storage.RootfsName, storage.PersistentName, storage.SDCardName}
 	guestDiskPaths := make([]string, len(diskNames))
 	var preamble strings.Builder
@@ -180,7 +188,7 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 	cmd := fmt.Sprintf(
 		"ip netns exec %s %s "+
 			"-disable-seccomp "+
-			"-machine virt,gic-version=3,dump-guest-core=off,mem-share=on "+
+			"-machine virt,gic-version=3,dump-guest-core=off%s "+
 			"-accel kvm "+
 			"-smp %d,cores=%d,threads=1 "+
 			"-m size=%dM,maxmem=%dM "+
@@ -202,6 +210,7 @@ func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.San
 			"%s",
 		slot.NamespaceID(),
 		versions.StratoVirtPath(b.config),
+		memoryMode,
 		vcpuCount,
 		vcpuCount,
 		memoryMB,
