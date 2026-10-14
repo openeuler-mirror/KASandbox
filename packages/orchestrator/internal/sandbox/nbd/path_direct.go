@@ -19,6 +19,7 @@ import (
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/block"
 	featureflags "github.com/e2b-dev/infra/packages/shared/pkg/feature-flags"
+	"github.com/e2b-dev/infra/packages/shared/pkg/hostkernel"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 )
@@ -33,6 +34,20 @@ const (
 )
 
 var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd")
+
+// connectionsPerDevice returns how many sockets to attach to each NBD device.
+// Attaching a socket freezes the device's block queue, and the nbd netlink
+// commands of all devices are serialized under one kernel-wide lock. On
+// Linux 4.19 each freeze waits for an RCU grace period, which is slow enough
+// that concurrent sandbox starts queue behind the extra connections, so 4.19
+// hosts use a single connection. Other kernels keep the feature-flag value.
+func connectionsPerDevice(flagValue int, linux419 bool) int {
+	if linux419 && flagValue > 1 {
+		return 1
+	}
+
+	return flagValue
+}
 
 type DirectPathMount struct {
 	cancelfn     context.CancelFunc
@@ -126,7 +141,10 @@ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err 
 		d.socksServer = make([]io.Closer, 0)
 		d.dispatchers = make([]*Dispatch, 0)
 
-		connections := d.featureFlags.IntFlag(ctx, featureflags.NBDConnectionsPerDevice)
+		connections := connectionsPerDevice(
+			d.featureFlags.IntFlag(ctx, featureflags.NBDConnectionsPerDevice),
+			hostkernel.IsLinux419(),
+		)
 
 		phaseStart = time.Now()
 		for i := range connections {
