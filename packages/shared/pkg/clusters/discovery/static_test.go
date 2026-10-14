@@ -217,7 +217,7 @@ func TestStaticDiscovery_FileReload(t *testing.T) {
 	base := time.Now()
 	writeFile(`[{"nodeID":"node1","ip":"10.0.0.1"}]`, base)
 
-	t.Setenv("E2B_STATIC_ALLOCATIONS_FILE", path)
+	t.Setenv("ORCHESTRATOR_STATIC_NODES_FILE", path)
 	t.Setenv("E2B_STATIC_DISCOVERY_HEALTHCHECK", "false")
 	sd := NewStaticDiscoveryFromEnv(context.Background())
 
@@ -238,8 +238,8 @@ func TestStaticDiscovery_EnvTakesPrecedenceOverFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "allocations.json")
 	require.NoError(t, os.WriteFile(path, []byte(`[{"nodeID":"file-node","ip":"10.0.0.9"}]`), 0o644))
 
-	t.Setenv("E2B_STATIC_ALLOCATIONS", "env-node=10.0.0.1")
-	t.Setenv("E2B_STATIC_ALLOCATIONS_FILE", path)
+	t.Setenv("ORCHESTRATOR_STATIC_NODES", "env-node=10.0.0.1")
+	t.Setenv("ORCHESTRATOR_STATIC_NODES_FILE", path)
 	t.Setenv("E2B_STATIC_DISCOVERY_HEALTHCHECK", "false")
 	sd := NewStaticDiscoveryFromEnv(context.Background())
 

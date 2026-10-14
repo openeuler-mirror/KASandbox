@@ -6,9 +6,14 @@ set -euo pipefail
 # 用法:
 #   ./k8s-deploy.sh prep     # 安装依赖、下载 kk/cni、生成集群配置（生成后需手动编辑节点信息）
 #   ./k8s-deploy.sh create   # 根据配置文件创建集群
-#   ./k8s-deploy.sh all      # prep + create（需先通过 -c 指定已编辑的配置文件）
-#   ./k8s-deploy.sh cri-multiplex   # 部署 cri-multiplex
+#   ./k8s-deploy.sh all      # prep + create（需先通过 CONFIG_FILE 指定已编辑的配置文件）
+#   ./k8s-deploy.sh configure-domain  # 单独配置 *.e2b.app 域名访问
+#   ./k8s-deploy.sh cri-multiplex   # 部署 cri-multiplex 并切换 kubelet endpoint
+#   ./k8s-deploy.sh cri-multiplex-uninstall  # 卸载 cri-multiplex 并恢复 kubelet endpoint
 #   ./k8s-deploy.sh kubelet-endpoint  # 仅切换 kubelet endpoint 并重启
+#   ./k8s-deploy.sh buildkit        # 安装并启用 buildkit
+#   ./k8s-deploy.sh download-cni    # 单独下载 CNI 插件
+# 完整说明执行: ./k8s-deploy.sh help
 
 KUBEKEY_VERSION="${KUBEKEY_VERSION:-v3.1.10}"
 K8S_VERSION="${K8S_VERSION:-v1.32.5}"
@@ -346,13 +351,14 @@ switch_kubelet_endpoint() {
         return
     fi
     if grep -q "unix://${mux_socket}" "$flags_file"; then
-        success "kubelet 已使用 cri-multiplex endpoint，跳过修改"
-    else
-        # 备份后替换
-        cp -a "$flags_file" "${flags_file}.bak.$(date +%s)"
-        sed -i "s#--container-runtime-endpoint=[^ \"']*#--container-runtime-endpoint=unix://${mux_socket}#g" "$flags_file"
-        success "kubeadm-flags.env 已更新: endpoint=${mux_socket}"
+        success "kubelet 已使用 cri-multiplex endpoint，跳过"
+        return
     fi
+
+    # 备份后替换
+    cp -a "$flags_file" "${flags_file}.bak.$(date +%s)"
+    sed -i "s#--container-runtime-endpoint=[^ \"']*#--container-runtime-endpoint=unix://${mux_socket}#g" "$flags_file"
+    success "kubeadm-flags.env 已更新: endpoint=${mux_socket}"
 
     # 重启 kubelet 使配置生效
     info "重启 kubelet ..."
@@ -382,6 +388,45 @@ deploy_cri_multiplex() {
         return
     fi
 
+    # e2b 专有 CNI 配置目录（与集群 CNI 的 /etc/cni/net.d 隔离，避免误用 calico 插件链）
+    local cni_conf_dir="/etc/cni/net-e2b.d"
+    mkdir -p "$cni_conf_dir"
+
+    # 生成默认 bridge conflist（已存在则跳过，不覆盖用户自定义；
+    # 多节点部署各节点子网须不重叠，通过 E2B_CNI_SUBNET 指定，如 E2B_CNI_SUBNET=10.12.4.0/22）
+    local conflist="$cni_conf_dir/e2b-bridge.conflist"
+    if [ -f "$conflist" ]; then
+        info "CNI 配置已存在，跳过生成: $conflist"
+    else
+        local subnet="${E2B_CNI_SUBNET:-10.12.0.0/22}"
+        cat > "$conflist" <<EOF
+{
+  "cniVersion": "1.0.0",
+  "name": "e2b-bridge",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "e2b0",
+      "isGateway": true,
+      "ipMasq": true,
+      "hairpinMode": true,
+      "ipam": {
+        "type": "host-local",
+        "ranges": [
+          [ { "subnet": "$subnet" } ]
+        ],
+        "routes": [
+          { "dst": "0.0.0.0/0" }
+        ],
+        "dataDir": "/var/lib/e2b/cni/networks"
+      }
+    }
+  ]
+}
+EOF
+        success "已生成默认 CNI 配置: $conflist (subnet=$subnet)"
+    fi
+
     # ② 创建 systemd 服务单元（保证开机自启与崩溃重启）
     info "创建 systemd 服务: $unit_file"
     cat > "$unit_file" << EOF
@@ -399,7 +444,7 @@ ExecStart=${bin} -socket ${mux_socket} -containerd-socket ${containerd_socket} -
   -orphan-grace-period 120s \
   -cleanup-max-retries 10 \
   -cni-enabled \
-  -cni-conf-dir /etc/cni/net.d \
+  -cni-conf-dir /etc/cni/net-e2b.d \
   -cni-bin-dir /opt/cni/bin \
   -cni-ifname eth0 \
   -cni-netns-dir /var/run/netns \
@@ -421,7 +466,6 @@ EOF
         sleep 0.5
     done
     success "cri-multiplex socket 已就绪: $mux_socket"
-
 
     # ⑤ 创建 RuntimeClass（android / e2b）
     if ! command -v kubectl >/dev/null 2>&1; then
@@ -640,12 +684,13 @@ main() {
             echo "  K8S_VERSION          K8S 版本（默认 v1.32.5）"
             echo "  CNI_PLUGINS_VERSION  CNI 插件版本（默认 v1.6.2）"
             echo "  CLUSTER_NAME         集群名（默认 k8s）"
-            echo "  CONFIG_FILE      指定配置文件路径（create/all 使用）"
-            echo "  HOST_IP          本机 IP（默认自动探测，prep 生成配置时使用）"
-            echo "  NODE_PASSWORD    节点 SSH 密码（必须通过环境变量提供）"
+            echo "  CONFIG_FILE              指定配置文件路径（create/all 使用）"
+            echo "  HOST_IP                  本机 IP（默认自动探测，prep 生成配置时使用）"
+            echo "  NODE_PASSWORD            节点 SSH 密码（必须通过环境变量提供）"
             echo "  CRI_MULTIPLEX_BIN          cri-multiplex 二进制路径（默认 /opt/e2b-infra/bin/cri-multiplex）"
             echo "  CRI_MULTIPLEX_ORCHESTRATOR orchestrator 地址（默认 localhost:5008）"
             echo "  KUBELET_FLAGS_FILE         kubelet 启动参数文件路径（默认 /var/lib/kubelet/kubeadm-flags.env）"
+            echo "  E2B_CNI_SUBNET             e2b bridge 子网（默认 10.12.0.0/22；多节点各节点须不重叠）"
             echo ""
             echo "示例:"
             echo "  $0 prep                                  # 生成 config-k8s-arm64.yaml（自动填充本机 IP）"
@@ -654,7 +699,10 @@ main() {
             echo "  HOST_IP=10.0.0.5 NODE_PASSWORD=secret $0 prep   # 指定 IP 和密码生成配置"
             echo "  $0 buildkit                              # 安装 buildkit"
             echo "  $0 download-cni                          # 下载 CNI 插件"
+            echo "  $0 cri-multiplex                         # 部署 cri-multiplex（默认子网 10.12.0.0/22）"
+            echo "  E2B_CNI_SUBNET=10.12.4.0/22 $0 cri-multiplex    # 多节点：指定不重叠子网"
             echo "  $0 kubelet-endpoint                      # 单独切换 kubelet endpoint 并重启"
+            echo "  $0 cri-multiplex-uninstall               # 卸载 cri-multiplex 并恢复 kubelet endpoint"
             echo "  CNI_PLUGINS_VERSION=v1.6.2 $0 download-cni      # 指定版本下载 CNI 插件"
             ;;
         *)
