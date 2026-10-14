@@ -156,12 +156,6 @@ check_install() {
                 "运行 ./build.sh --download 重新下载，或手动放入 $DEP_DIR/$fname"
         done
 
-        # k8s 模式 + 启用 webhook 时额外需要 e2b-webhook.tar
-        if [ "${DEPLOY_MODE:-nomad}" = "k8s" ] && [ "${ENABLE_WEBHOOK:-false}" = "true" ]; then
-            check "e2b-webhook 镜像包存在（dep/e2b-webhook.tar）" \
-                "$([ -f "$DEP_DIR/e2b-webhook.tar" ]; echo $?)" \
-                "运行 ./build.sh --download 下载 e2b-webhook 镜像"
-        fi
     fi
 
     # 外网连通性（拉取基础镜像需要，离线环境可跳过）
