@@ -751,15 +751,6 @@ download_packages() {
             || { rm -f "$pkg_dir/$filename"; error "$desc 下载失败"; }
     done
 
-    # e2b-webhook 镜像 tar 包（K8S 模式下启用 webhook 时需要）
-    # 下载后由 pull_docker_images 通过 docker load 导入
-    if [ "$DEPLOY_MODE" = "k8s" ]; then
-        local webhook_url="https://gitcode.com/fly_1997/e2b-webhook/releases/download/1.0.0/e2b-webhook.tar"
-        local webhook_pkg="e2b-webhook.tar"
-        echo "正在下载 e2b-webhook: $webhook_url"
-        wget -q --show-progress --no-check-certificate "$webhook_url" -O "$pkg_dir/$webhook_pkg" || error "e2b-webhook 下载失败"
-    fi
-
     echo "所有软件包下载完成，保存路径：$pkg_dir"
     return 0
 }
