@@ -56,6 +56,15 @@ type Config struct {
 	NewSlotsPoolSize    int `env:"NETWORK_POOL_NEW_SLOTS_SIZE"    envDefault:"300"`
 	ReusedSlotsPoolSize int `env:"NETWORK_POOL_REUSED_SLOTS_SIZE" envDefault:"1000"`
 
+	// IsolateNetNSDir 控制启动时是否把 /run/netns 私有化（isolateNetNSDir）。
+	// 取值 auto（默认）/ true / false：
+	//   auto —— k8s Pod 内（存在 KUBERNETES_SERVICE_HOST）自动跳过隔离，裸机 native 照常隔离；
+	//   true/false —— 强制开启/关闭。
+	// 原生模式需要隔离，防止 netns bind mount 经 shared /run 传播出叠加副本而泄漏；CNI/外部
+	// netns 部署（orchestrator 在独立 mount namespace 内，靠宿主传播接收 cri-multiplex 创建的
+	// 命名 netns）必须关闭，否则私有化会切断该传播，导致 setns 报 EINVAL。
+	IsolateNetNSDir string `env:"ORCHESTRATOR_ISOLATE_NETNS_DIR" envDefault:"auto"`
+
 	// Using reserver IPv4 in range that is used for experiments and documentation
 	// https://en.wikipedia.org/wiki/Reserved_IP_addresses
 	OrchestratorInSandboxIPAddress string `env:"SANDBOX_ORCHESTRATOR_IP" envDefault:"192.0.2.1"`
@@ -93,6 +102,25 @@ func ParseConfig() (Config, error) {
 	return env.ParseAs[Config]()
 }
 
+// shouldIsolateNetNSDir 按 IsolateNetNSDir 配置与运行环境决定是否私有化 /run/netns。
+// auto 时只在裸机 native 隔离，k8s Pod 内跳过（见 runningInKubernetes）。
+func (c Config) shouldIsolateNetNSDir() bool {
+	switch strings.ToLower(strings.TrimSpace(c.IsolateNetNSDir)) {
+	case "false", "0", "off":
+		return false
+	case "true", "1", "on":
+		return true
+	default: // auto 及任何未知值
+		return !runningInKubernetes()
+	}
+}
+
+// runningInKubernetes 判断进程是否跑在 k8s Pod 内。
+// kubelet 会给每个 Pod（含 hostNetwork）注入 KUBERNETES_SERVICE_HOST。
+func runningInKubernetes() bool {
+	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
+}
+
 type Pool struct {
 	config Config
 
@@ -109,9 +137,14 @@ type Pool struct {
 var ErrClosed = errors.New("cannot read from a closed pool")
 
 func NewPool(newSlotsPoolSize, reusedSlotsPoolSize int, slotStorage Storage, config Config) *Pool {
-	// 必须在创建任何 netns 之前隔离 /run/netns；失败时降级为原行为（仅记录日志）
-	if err := isolateNetNSDir(); err != nil {
-		logger.L().Error(context.Background(), "failed to isolate netns mount dir, named netns mounts may leak via shared propagation", zap.Error(err))
+	// 原生模式下必须在创建任何 netns 之前隔离 /run/netns；失败时降级为原行为（仅记录日志）。
+	// CNI/外部 netns 部署须关闭隔离，否则私有化会切断宿主传播进来的命名 netns，setns 报 EINVAL。
+	if config.shouldIsolateNetNSDir() {
+		if err := isolateNetNSDir(); err != nil {
+			logger.L().Error(context.Background(), "failed to isolate netns mount dir, named netns mounts may leak via shared propagation", zap.Error(err))
+		}
+	} else {
+		logger.L().Info(context.Background(), "skipping /run/netns isolation; required for CNI/external-netns (k8s) deployments that receive named netns mounts propagated from the host", zap.String("mode", config.IsolateNetNSDir))
 	}
 
 	// One slot is always in flight being created, so the buffer holds size-1.
