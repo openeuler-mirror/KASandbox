@@ -89,6 +89,7 @@ ENABLE_PACKAGE=false
 ENABLE_PACKAGE_SLIM=false
 PACKAGE_OUTPUT_NAME=""
 BUILD_TAGS=""
+IMAGES_FILTER=""   # 逗号分隔的镜像名（空 = 全部），由 -i/--images 解析
 
 # 镜像构建配置
 readonly API_IMAGE_NAME="api"
@@ -108,7 +109,8 @@ show_usage() {
   -m, --mooncake         启用 Mooncake 存储后端编译 (包含 CGo 链接)
   -f, --firecracker      构建 Firecracker 微虚拟机 (需要 Docker)
   -c, --cri-multiplex    构建 CRI 多路复用器
-  -i, --images           构建 Docker 镜像 (api/orchestrator/webhook/client-proxy)
+  -i, --images [名称]  构建 Docker 镜像；不带参数构建全部 (api/orchestrator/client-proxy/e2b-webhook)，
+                         带参数仅构建指定镜像（可用逗号分隔多个，webhook 是 e2b-webhook 别名）
   -p, --package          打包源码 (包含所有源代码，15MB)
   --package-slim         打包最小化构建包 (仅构建所需文件，< 5MB)
   -n, --package-name NAME 指定打包输出文件名 (不含扩展名，自动追加 .tar.*)
@@ -117,6 +119,9 @@ show_usage() {
 示例:
   ./build.sh                              # 标准构建
   ./build.sh -m -i                        # 使用 Mooncake + 构建镜像
+  ./build.sh -i                           # 构建全部 Docker 镜像
+  ./build.sh -i orchestrator              # 仅构建 orchestrator 镜像
+  ./build.sh -i api,webhook               # 构建 api 与 e2b-webhook 镜像
   ./build.sh -f                           # 构建 Firecracker
   ./build.sh -c -p                        # 构建 CRI 多路复用 + 打包源码
   ./build.sh --package-slim               # 打包最小化构建包（推荐）
@@ -130,7 +135,14 @@ while [[ $# -gt 0 ]]; do
         -m|--mooncake)      ENABLE_MOONCAKE=true ;;
         -f|--firecracker)   ENABLE_FIRECRACKER=true ;;
         -c|--cri-multiplex) ENABLE_CRI_MUX=true ;;
-        -i|--images)        ENABLE_IMAGES=true ;;
+        -i|--images)
+            ENABLE_IMAGES=true
+            # 可选参数：下一个 token 不是以 - 开头则视为镜像名列表
+            if [[ $# -ge 2 && ! "$2" =~ ^- ]]; then
+                IMAGES_FILTER="$2"
+                shift
+            fi
+            ;;
         -p|--package)       ENABLE_PACKAGE=true ;;
         --package-slim)     ENABLE_PACKAGE_SLIM=true ;;
         -n|--package-name)
@@ -466,8 +478,12 @@ build_docker_images() {
         return
     fi
     
-    # webhook 二进制未在主循环中构建，单独处理
-    ensure_webhook_binary
+    # webhook 二进制未在主循环中构建，单独处理；仅在 webhook 镜像会被构建时执行
+    local normalized=",${IMAGES_FILTER},"
+    normalized="${normalized//,webhook,/,${WEBHOOK_IMAGE_NAME},}"
+    if [ -z "$IMAGES_FILTER" ] || [[ "$normalized" == *",${WEBHOOK_IMAGE_NAME},"* ]]; then
+        ensure_webhook_binary
+    fi
     
     # Mooncake 模式：orchestrator 改用专用 Dockerfile（集成 urma/numactl 依赖并安装 Mooncake RPM）
     local orchestrator_task="${ORCHESTRATOR_IMAGE_NAME}|packages/orchestrator/Dockerfile|packages/orchestrator|orchestrator,fc-netns-exec"
@@ -486,10 +502,31 @@ build_docker_images() {
         "${CLIENT_PROXY_IMAGE_NAME}|packages/client-proxy/Dockerfile|packages/client-proxy|client-proxy"
         "${WEBHOOK_IMAGE_NAME}|e2b-webhook/webhook.Dockerfile|e2b-webhook|e2b-webhook"
     )
-    
+
+    # 应用 -i 后的镜像过滤（IMAGES_FILTER 为空 = 全部；webhook 是 e2b-webhook 别名）
+    local selected_tasks=()
+    if [ -n "$IMAGES_FILTER" ]; then
+        local wanted normalized
+        normalized=",${IMAGES_FILTER},"
+        normalized="${normalized//,webhook,/,${WEBHOOK_IMAGE_NAME},}"
+        for task in "${image_tasks[@]}"; do
+            local name="${task%%|*}"
+            if [[ "$normalized" == *",${name},"* ]]; then
+                selected_tasks+=("$task")
+            fi
+        done
+        if [ ${#selected_tasks[@]} -eq 0 ]; then
+            log_error "未匹配任何镜像：$IMAGES_FILTER（可选：${API_IMAGE_NAME}/${ORCHESTRATOR_IMAGE_NAME}/${CLIENT_PROXY_IMAGE_NAME}/${WEBHOOK_IMAGE_NAME}）"
+            return 1
+        fi
+        log_info "仅构建指定镜像：$IMAGES_FILTER"
+    else
+        selected_tasks=("${image_tasks[@]}")
+    fi
+
     local pids=()
     local task
-    for task in "${image_tasks[@]}"; do
+    for task in "${selected_tasks[@]}"; do
         (
             build_docker_image "$task"
         ) &
@@ -502,15 +539,41 @@ build_docker_images() {
         wait "$pid" || failed=$((failed + 1))
     done
     
-    # 显示已构建的镜像（按行首镜像名 + 冒号边界匹配，避免误匹配带 registry 前缀的同名镜像）
+    # 显示本次构建涉及的镜像（按行首镜像名 + 冒号边界匹配，避免误匹配带 registry 前缀的同名镜像）
+    local selected_names=()
+    for task in "${selected_tasks[@]}"; do
+        selected_names+=("${task%%|*}")
+    done
+    local name_pattern
+    name_pattern=$(IFS='|'; echo "${selected_names[*]}")
     echo -e "${CYAN}已构建镜像:${NC}"
     docker images --format "  {{.Repository}}:{{.Tag}}  ({{.Size}})" \
-        | grep -E "^(${API_IMAGE_NAME}|${ORCHESTRATOR_IMAGE_NAME}|${CLIENT_PROXY_IMAGE_NAME}|${WEBHOOK_IMAGE_NAME}):" || true
-    
+        | grep -E "^(${name_pattern}):" || true
+
     if [ "$failed" -gt 0 ]; then
         log_error "✗ $failed 个镜像构建失败"
         return 1
     fi
+
+    # 导出镜像为 tar 包，便于离线分发 / docker load
+    save_images_to_tar "${selected_names[@]}"
+}
+
+save_images_to_tar() {
+    local names=("$@")
+    local out_dir="${BIN_DIR}/images"
+    mkdir -p "$out_dir"
+    local name
+    for name in "${names[@]}"; do
+        local tar_path="${out_dir}/${name}.tar"
+        log_warn "→ 导出镜像 ${name} 到 ${tar_path}"
+        if docker save -o "$tar_path" "$name"; then
+            log_info "✓ ${tar_path} ($(du -h "$tar_path" | cut -f1))"
+        else
+            log_error "✗ 镜像 ${name} 导出失败"
+            rm -f "$tar_path"
+        fi
+    done
 }
 
 ensure_webhook_binary() {
