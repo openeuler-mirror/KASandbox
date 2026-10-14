@@ -235,6 +235,8 @@ func (s *Slot) CreateNetwork(ctx context.Context) error {
 		return fmt.Errorf("error setting address of the tap device: %w", err)
 	}
 
+	s.tuneTapNeighbor(ctx)
+
 	// Set NS lo device up
 	lo, err := netlink.LinkByName(loopbackInterface)
 	if err != nil {
@@ -637,6 +639,8 @@ func (s *Slot) CreateExternalNetNSNetwork(ctx context.Context) error {
 	if err = netlink.LinkSetUp(tapLink); err != nil {
 		return fmt.Errorf("error setting external netns tap device up: %w", err)
 	}
+
+	s.tuneTapNeighbor(ctx)
 
 	if err = os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644); err != nil {
 		return fmt.Errorf("error enabling ip_forward in external netns: %w", err)

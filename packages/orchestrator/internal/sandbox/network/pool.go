@@ -69,6 +69,17 @@ type Config struct {
 	// https://en.wikipedia.org/wiki/Reserved_IP_addresses
 	OrchestratorInSandboxIPAddress string `env:"SANDBOX_ORCHESTRATOR_IP" envDefault:"192.0.2.1"`
 
+	// ARP retransmission on the sandbox tap device (see tap_neigh.go). The
+	// first ARP request towards a just-resumed guest can be dropped while the
+	// kernel is still activating the tap's transmit queue; with the kernel
+	// default of 1000ms between retries that costs the sandbox start a full
+	// second. TapNeighProbes scales with the interval so the time until an
+	// unanswered neighbour is declared FAILED stays close to the kernel
+	// default of 3 x 1s (190 x ~16ms on HZ=250 kernels, ~2s on HZ=1000).
+	// Set either to 0 to keep the kernel defaults.
+	TapNeighRetransTimeMs int `env:"SANDBOX_TAP_NEIGH_RETRANS_TIME_MS" envDefault:"10"`
+	TapNeighProbes        int `env:"SANDBOX_TAP_NEIGH_PROBES"          envDefault:"190"`
+
 	// DeniedPodCIDRs are extra CIDRs added to every sandbox firewall's
 	// predefinedDenySet (all protocols, hard block). In CNI/external-netns
 	// deployments this should be set to the cluster Pod CIDR (e.g. from
