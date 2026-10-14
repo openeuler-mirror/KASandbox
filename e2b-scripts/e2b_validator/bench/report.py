@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from . import breakdown as bench_breakdown
+
 BENCH_TITLES = {
     "create": "基于 Template 创建沙箱（启动延迟与并发扩展）",
     "scale": "规模测试（一次性并发拉起 N 个沙箱的整批 wall）",
@@ -42,6 +44,26 @@ def _stats_cells(stats: dict[str, Any]) -> list[str]:
     ]
 
 
+def without_breakdown(tiers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """去掉各档位的耗时分解树，用于终端回显（完整数据在 JSON 文件和报告里）。"""
+    return [{key: value for key, value in tier.items() if key != "breakdown"} for tier in tiers]
+
+
+def _render_breakdown(result: dict[str, Any], key: str, title: str) -> list[str]:
+    lines: list[str] = []
+    verdicts = result.get("criteria") or []
+    if verdicts:
+        lines += ["", "**达标判定：**", "", "| 标准 | 实测 | 结论 | 说明 |", "|---|---:|---|---|"]
+        for item in verdicts:
+            label = {True: "达标", False: "**不达标**", None: "未测"}[item["passed"]]
+            lines.append(f"| {item['name']} | {_ms(item['actual_ms'])} | {label} | {item['detail']} |")
+    for tier in result.get("tiers", []):
+        if tier.get("breakdown"):
+            lines += ["", f"**耗时分解（{title} {tier[key]}）：**", "", "```text"]
+            lines += bench_breakdown.render(tier["breakdown"]) + ["```"]
+    return lines
+
+
 def _render_create(result: dict[str, Any]) -> list[str]:
     lines = [
         "| 并发 | 请求数 | avg | min | p95 | max | server avg | server p95 | wall | server span | 单沙箱均摊 | 吞吐 | 成功率 |",
@@ -57,7 +79,7 @@ def _render_create(result: dict[str, Any]) -> list[str]:
             + f" | {_ms(metrics.get('per_ms'))} "
             + f"| {_num(metrics.get('throughput_per_s'))} 个/s | {_pct(metrics.get('success_rate'))} |"
         )
-    return lines
+    return lines + _render_breakdown(result, "concurrency", "并发")
 
 
 def _render_scale(result: dict[str, Any]) -> list[str]:
@@ -80,7 +102,7 @@ def _render_scale(result: dict[str, Any]) -> list[str]:
             f"| {_num(metrics.get('throughput_per_s'))} 个/s | {_ms(metrics.get('destroy_avg_ms'))} "
             f"| {_ms(metrics.get('destroy_p95_ms'))} | {_pct(metrics.get('success_rate'))} |"
         )
-    return lines
+    return lines + _render_breakdown(result, "size", "规模")
 
 
 def _render_density(result: dict[str, Any]) -> list[str]:

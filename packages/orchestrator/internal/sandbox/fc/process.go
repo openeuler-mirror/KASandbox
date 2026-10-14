@@ -28,6 +28,7 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/keys"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
+	"github.com/e2b-dev/infra/packages/shared/pkg/perftrace"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
@@ -98,36 +99,33 @@ func NewProcess(
 	defer childSpan.End()
 
 	// Build the firecracker start script and get computed paths
-	tScript := time.Now()
+	_, endScript := perftrace.Phase(ctx, "fc.NewProcess build start-script")
 	startBuilder := NewStartScriptBuilder(config)
 	startScript, err := startBuilder.Build(versions, files, rootfsPaths, slot.NamespaceID())
+	endScript()
 	if err != nil {
 		return nil, err
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.NewProcess build start-script cost: %.3f ms, kernel=%s, rootfs=%s",
-		time.Since(tScript).Seconds()*1000, startScript.KernelPath, startScript.RootfsPath)
 
 	telemetry.SetAttributes(ctx,
 		attribute.String("sandbox.cmd", startScript.Value),
 	)
 
-	tStatFc := time.Now()
+	_, endStatFc := perftrace.Phase(ctx, "fc.NewProcess stat firecracker binary")
 	_, err = os.Stat(versions.FirecrackerPath(config))
+	endStatFc()
 	if err != nil {
 		return nil, fmt.Errorf("error stating firecracker binary: %w", err)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.NewProcess stat firecracker binary cost: %.3f ms, path=%s",
-		time.Since(tStatFc).Seconds()*1000, versions.FirecrackerPath(config))
 
-	tStatKernel := time.Now()
+	_, endStatKernel := perftrace.Phase(ctx, "fc.NewProcess stat kernel file")
 	_, err = os.Stat(versions.HostKernelPath(config))
+	endStatKernel()
 	if err != nil {
 		return nil, fmt.Errorf("error stating kernel file: %w", err)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.NewProcess stat kernel file cost: %.3f ms, path=%s",
-		time.Since(tStatKernel).Seconds()*1000, versions.HostKernelPath(config))
 
-	tCmd := time.Now()
+	_, endCmd := perftrace.Phase(ctx, "fc.NewProcess build exec.Cmd")
 	restoredSandbox := rootfsPaths.TemplateID != "" && rootfsPaths.BuildID != ""
 
 	// V2 恢复沙箱可走 fc-netns-exec --prepare-vm 合并链（helper 探测与
@@ -143,8 +141,7 @@ func NewProcess(
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid: true, // Create a new session
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.NewProcess build exec.Cmd cost: %.3f ms",
-		time.Since(tCmd).Seconds()*1000)
+	endCmd()
 
 	return &Process{
 		Versions:              versions,
@@ -173,7 +170,7 @@ func (p *Process) configure(
 	ctx, childSpan := tracer.Start(ctx, "configure-fc")
 	defer childSpan.End()
 
-	tIoWriter := time.Now()
+	_, endIoWriters := perftrace.Phase(ctx, "fc.configure setup io-writers")
 	stdoutWriter := &zapio.Writer{Log: sbxlogger.I(sbxMetadata).Logger.Detach(ctx), Level: zap.InfoLevel}
 	stdoutWriters := []io.Writer{stdoutWriter}
 	if stdoutExternal != nil {
@@ -187,8 +184,7 @@ func (p *Process) configure(
 		stderrWriters = append(stderrWriters, stderrExternal)
 	}
 	p.cmd.Stderr = io.MultiWriter(stderrWriters...)
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.configure setup io-writers cost: %.3f ms",
-		time.Since(tIoWriter).Seconds()*1000)
+	endIoWriters()
 
 	//// Set up cgroup FD for atomic placement via CLONE_INTO_CGROUP.
 	//// The cgroup is created and owned by the caller (Sandbox); Process only
@@ -198,15 +194,14 @@ func (p *Process) configure(
 	//	p.cmd.SysProcAttr.CgroupFD = cgroupFD
 	//}
 
-	tStart := time.Now()
+	_, endStart := perftrace.Phase(ctx, "fc.configure cmd.Start")
 	err := p.cmd.Start()
 	// ExtraFiles 在 fork 时已 dup 进子进程，父进程副本随启动完成即可关闭
 	p.closeNetnsFD()
+	endStart()
 	if err != nil {
 		return fmt.Errorf("error starting fc process: %w", err)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.configure cmd.Start cost: %.3f ms, pid=%d",
-		time.Since(tStart).Seconds()*1000, p.cmd.Process.Pid)
 
 	startCtx, cancelStart := context.WithCancelCause(ctx)
 	defer cancelStart(fmt.Errorf("fc finished starting"))
@@ -241,8 +236,9 @@ func (p *Process) configure(
 	}()
 
 	// Wait for the FC process to start so we can use FC API
-	tSocket := time.Now()
+	_, endSocket := perftrace.Phase(ctx, "fc.configure wait fc-socket")
 	err = socket.Wait(startCtx, p.firecrackerSocketPath)
+	endSocket()
 	if err != nil {
 		errMsg := fmt.Errorf("error waiting for fc socket: %w", err)
 
@@ -250,8 +246,6 @@ func (p *Process) configure(
 
 		return errors.Join(errMsg, fcStopErr)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.configure wait fc-socket cost: %.3f ms, socket=%s",
-		time.Since(tSocket).Seconds()*1000, p.firecrackerSocketPath)
 
 	return nil
 }
@@ -404,37 +398,37 @@ func (p *Process) Resume(
 	uffdReady chan struct{},
 	accessToken *string,
 	cgroupFD int,
-	traceID string,
 ) error {
 	ctx, span := tracer.Start(ctx, "resume-fc")
 	defer span.End()
 
 	// Symlink /dev/null to the rootfs link path, so we can start the FC process without the rootfs and then symlink the real rootfs.
-	tSymlink := time.Now()
+	_, endSymlink := perftrace.Phase(ctx, "fc.Resume symlink /dev/null")
 	rootfsLinkPath := p.files.SandboxCacheRootfsLinkPath(p.config.StorageConfig)
 	err := utils.SymlinkForce("/dev/null", rootfsLinkPath)
+	endSymlink()
 	if err != nil {
 		return fmt.Errorf("error symlinking rootfs: %w", err)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] fc.Resume symlink /dev/null cost: %.3f ms, link=%s, traceID=%s",
-		time.Since(tSymlink).Seconds()*1000, rootfsLinkPath, traceID)
 
 	// create errgroup with context that handled socket wait + rootfs symlink
-	eg, egCtx := errgroup.WithContext(ctx)
+	// 三个并行分支都是这个阶段的子阶段
+	egPhaseCtx, endEg := perftrace.Phase(ctx, "eg.Wait (configure+uffd-socket+rootfs-symlink) total")
+	eg, egCtx := errgroup.WithContext(egPhaseCtx)
 
 	eg.Go(func() error {
-		phaseStart := time.Now()
+		configureCtx, endConfigure := perftrace.Phase(egCtx, "configured fc")
 		err := p.configure(
-			egCtx,
+			configureCtx,
 			sbxMetadata,
 			nil,
 			nil,
 			cgroupFD,
 		)
+		endConfigure()
 		if err != nil {
 			return fmt.Errorf("error starting fc process: %w", err)
 		}
-		zap.L().Sugar().Infof("[ResumeSandbox] configured fc cost: %.3f ms, traceID=%s", time.Since(phaseStart).Seconds()*1000, traceID)
 
 		telemetry.ReportEvent(egCtx, "configured fc")
 
@@ -442,77 +436,69 @@ func (p *Process) Resume(
 	})
 
 	eg.Go(func() error {
-		phaseStart := time.Now()
+		_, endUffdSocket := perftrace.Phase(egCtx, "wait uffd-socket-ready")
 		err := socket.Wait(egCtx, uffdSocketPath)
+		endUffdSocket()
 		if err != nil {
 			return fmt.Errorf("error waiting for uffd socket: %w", err)
 		}
 
 		telemetry.ReportEvent(egCtx, "uffd socket ready")
-		zap.L().Sugar().Infof("[ResumeSandbox] wait uffd-socket-ready cost: %.3f ms, uffd=%s, traceID=%s",
-			time.Since(phaseStart).Seconds()*1000, uffdSocketPath, traceID)
 
 		return nil
 	})
 
 	eg.Go(func() error {
-		phaseStart := time.Now()
+		_, endRootfsPath := perftrace.Phase(egCtx, "get rootfs-provider path")
 		rootfsPath, err := p.rootfsProvider.Path()
+		endRootfsPath()
 		if err != nil {
 			return fmt.Errorf("error getting rootfs path: %w", err)
 		}
-		zap.L().Sugar().Infof("[ResumeSandbox] get rootfs-provider path cost: %.3f ms, path=%s, traceID=%s",
-			time.Since(phaseStart).Seconds()*1000, rootfsPath, traceID)
 
-		tSymlink2 := time.Now()
+		_, endSymlinkRootfs := perftrace.Phase(egCtx, "symlink real-rootfs")
 		err = utils.SymlinkForce(rootfsPath, rootfsLinkPath)
+		endSymlinkRootfs()
 		if err != nil {
 			return fmt.Errorf("error symlinking rootfs: %w", err)
 		}
 
 		telemetry.ReportEvent(egCtx, "symlinked rootfs")
-		zap.L().Sugar().Infof("[ResumeSandbox] symlink real-rootfs cost: %.3f ms, src=%s, dst=%s, traceID=%s",
-			time.Since(tSymlink2).Seconds()*1000, rootfsPath, rootfsLinkPath, traceID)
 
 		return nil
 	})
 
-	tEgWait := time.Now()
 	err = eg.Wait()
+	endEg()
 	if err != nil {
 		fcStopErr := p.Stop(ctx)
 
 		return errors.Join(fmt.Errorf("error waiting for uffd socket or symlinking rootfs: %w", err), fcStopErr)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] eg.Wait (configure+uffd-socket+rootfs-symlink) total cost: %.3f ms, traceID=%s",
-		time.Since(tEgWait).Seconds()*1000, traceID)
 
-	phase5Start := time.Now()
+	loadCtx, endLoad := perftrace.Phase(ctx, "load snapshot")
 	err = p.client.loadSnapshot(
-		ctx,
+		loadCtx,
 		uffdSocketPath,
 		uffdReady,
 		snapfile,
 	)
+	endLoad()
 	if err != nil {
 		fcStopErr := p.Stop(ctx)
 
 		return errors.Join(fmt.Errorf("error loading snapshot: %w", err), fcStopErr)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] load snapshot cost: %.3f ms, snapfile=%s, traceID=%s",
-		time.Since(phase5Start).Seconds()*1000, snapfile.Path(), traceID)
 
-	phase6Start := time.Now()
+	_, endResumeVM := perftrace.Phase(ctx, "resumeVM (FC API)")
 	err = p.client.resumeVM(ctx)
+	endResumeVM()
 	if err != nil {
 		fcStopErr := p.Stop(ctx)
 
 		return errors.Join(fmt.Errorf("error resuming vm: %w", err), fcStopErr)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] resumeVM (FC API) cost: %.3f ms, traceID=%s",
-		time.Since(phase6Start).Seconds()*1000, traceID)
 
-	phase7Start := time.Now()
 	// Always advertise the hyperloop /logs endpoint: envd's log exporter
 	// buffers every log line in memory and only starts draining once MMDS
 	// hands it a non-empty address, so a blank address would grow that
@@ -526,23 +512,22 @@ func (p *Process) Resume(
 		LogsCollectorAddress: collectorProxyAddr,
 	}
 
-	tHash := time.Now()
+	_, endHash := perftrace.Phase(ctx, "hash access token")
 	if accessToken != nil && *accessToken != "" {
 		meta.AccessTokenHash = keys.HashAccessToken(*accessToken)
 	} else {
 		meta.AccessTokenHash = keys.HashAccessToken("")
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] hash access token cost: %.3f ms, traceID=%s",
-		time.Since(tHash).Seconds()*1000, traceID)
+	endHash()
 
+	_, endMmds := perftrace.Phase(ctx, "setMmds (FC API)")
 	err = p.client.setMmds(ctx, meta)
+	endMmds()
 	if err != nil {
 		fcStopErr := p.Stop(ctx)
 
 		return errors.Join(fmt.Errorf("error setting mmds: %w", err), fcStopErr)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] setMmds (FC API) cost: %.3f ms, traceID=%s",
-		time.Since(phase7Start).Seconds()*1000, traceID)
 
 	telemetry.SetAttributes(
 		ctx,

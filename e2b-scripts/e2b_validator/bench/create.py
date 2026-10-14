@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 
 from ..e2b_common import positive_int, print_json
+from . import breakdown as bench_breakdown
 from . import config as bench_config
 from . import report as bench_report
 from . import sdk_engine
@@ -51,6 +52,7 @@ def run(
     warmup: int,
     mode: str,
     pre_wait: float = 0,
+    breakdown: dict | None = None,
 ) -> dict:
     params = {
         "concurrency": concurrency,
@@ -68,8 +70,13 @@ def run(
             ctx.track(warm["sandbox_id"])
             sdk_engine.destroy_all(ctx, [warm["instance"]])
 
+    collector = bench_breakdown.collector(breakdown, ctx.note)
+    if collector:
+        collector.arm()
     # SDK 创建路径（与用户 max_test 脚本一致）：每批并发 min(150, concurrency)，失败自动补充
     batch = sdk_engine.batch_create(ctx, ctx.template, requests, concurrency=concurrency)
+    if collector:
+        collector.add_batch(batch)
     latencies = batch["create_times_ms"]
     errors = batch["errors"]
     metrics = timing_stats(latencies, wall_ms=batch["wall_ms"], attempted=requests)
@@ -89,6 +96,10 @@ def run(
         metrics.update(sdk_engine.latency_stats(destroy["kill_times_ms"], "destroy"))
         metrics["destroy_wall_ms"] = round(destroy["wall_ms"], 1)
     tier = {"concurrency": concurrency, "metrics": metrics}
+    tier_breakdown = collector.result() if collector else None
+    if tier_breakdown:
+        tier["breakdown"] = tier_breakdown
+        print(f"\n【耗时分解】并发 {concurrency}\n  " + "\n  ".join(bench_breakdown.render(tier_breakdown)))
     if errors:
         tier["errors"] = errors[:10]
     if mode == "create-only":
@@ -132,6 +143,7 @@ def execute(args: argparse.Namespace) -> int:
                 warmup=warmup,
                 mode=args.mode,
                 pre_wait=float(tier.get("pre_wait", 0)),
+                breakdown=cfg.get("breakdown"),
             )
         )
         # create-only 的沙箱按设计保留存活（无 metadata 标记，由服务端 timeout 兜底回收）
@@ -146,5 +158,5 @@ def execute(args: argparse.Namespace) -> int:
 
         shutil.copyfile(json_path, args.output)
     bench_report.write_report(ctx.result_dir, [result], environment, ctx.run_id)
-    print_json({"result_dir": str(ctx.result_dir), "tiers": result["tiers"]})
+    print_json({"result_dir": str(ctx.result_dir), "tiers": bench_report.without_breakdown(result["tiers"])})
     return 0 if result["status"] == "ok" else 1

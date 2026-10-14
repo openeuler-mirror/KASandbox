@@ -29,6 +29,7 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
+	"github.com/e2b-dev/infra/packages/shared/pkg/perftrace"
 	sandbox_network "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-network"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
@@ -47,7 +48,7 @@ const (
 	executionEventDataKey = "execution"
 )
 
-func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequest) (*orchestrator.SandboxCreateResponse, error) {
+func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequest) (_ *orchestrator.SandboxCreateResponse, e error) {
 	// set max request timeout for this request
 	ctx, cancel := context.WithTimeoutCause(ctx, requestTimeout, fmt.Errorf("request timed out"))
 	defer cancel()
@@ -56,6 +57,10 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	ctx, childSpan := tracer.Start(ctx, "sandbox-create")
 	defer childSpan.End()
 
+	// 记录本次创建各阶段的耗时，请求返回时输出一行汇总（见 perftrace 包）
+	ctx, perf := perftrace.Begin(ctx, "orchestrator", "ResumeSandbox", req.GetSandbox().GetSandboxId(), time.Now())
+	defer func() { perf.End(e == nil) }()
+
 	childSpan.SetAttributes(
 		telemetry.WithTemplateID(req.GetSandbox().GetTemplateId()),
 		attribute.String("kernel.version", req.GetSandbox().GetKernelVersion()),
@@ -63,7 +68,6 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		attribute.String("client.id", s.info.ClientId),
 		attribute.String("envd.version", req.GetSandbox().GetEnvdVersion()),
 	)
-	traceID := childSpan.SpanContext().TraceID().String()
 
 	// setup launch darkly
 	ctx = featureflags.AddToContext(
@@ -89,7 +93,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	}
 
 	// Check if we've reached the max number of starting instances on this node
-	tAcquire := time.Now()
+	_, endAcquire := perftrace.Phase(ctx, "acquire starting slot")
 	if req.GetSandbox().GetSnapshot() {
 		err := s.waitForAcquire(ctx)
 		if err != nil {
@@ -105,10 +109,10 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 			return nil, status.Errorf(codes.ResourceExhausted, "too many sandboxes starting on this node, please retry")
 		}
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] acquire starting slot cost: %.3f ms, traceID=%s", time.Since(tAcquire).Seconds()*1000, traceID)
+	endAcquire()
 	defer s.startingSandboxes.Release(1)
 
-	tGetTemplate := time.Now()
+	_, endGetTemplate := perftrace.Phase(ctx, "templateCache.GetTemplate")
 	template, err := s.templateCache.GetTemplate(
 		ctx,
 		req.GetSandbox().GetBuildId(),
@@ -118,7 +122,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	if err != nil {
 		return nil, fmt.Errorf("failed to get template snapshot data: %w", err)
 	}
-	zap.L().Sugar().Infof("[ResumeSandbox] templateCache.GetTemplate cost: %.3f ms, traceID=%s", time.Since(tGetTemplate).Seconds()*1000, traceID)
+	endGetTemplate()
 
 	// Clone the network config to avoid modifying the original request
 	network := proto.CloneOf(req.GetSandbox().GetNetwork())
@@ -191,7 +195,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		return nil, status.Errorf(codes.Internal, "failed to create sandbox: %s", err)
 	}
 
-	tPost := time.Now()
+	_, endPost := perftrace.Phase(ctx, "post-resume lifecycle setup")
 	s.setupSandboxLifecycle(ctx, sbx)
 
 	eventType := events.SandboxCreatedEventPair
@@ -217,7 +221,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 			SandboxTeamID:      teamID,
 		},
 	)
-	zap.L().Sugar().Infof("[ResumeSandbox] post-resume lifecycle setup cost: %.3f ms, traceID=%s", time.Since(tPost).Seconds()*1000, traceID)
+	endPost()
 
 	return &orchestrator.SandboxCreateResponse{
 		ClientId: s.info.ClientId,

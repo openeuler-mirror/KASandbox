@@ -216,6 +216,7 @@ def batch_create(
                     pass
             # wall 从 barrier 放行瞬间起算，消除线程池 ramp-up 抖动
             batch_start = time.perf_counter()
+            release_wall = time.time()
             for future in as_completed(futures):
                 item = future.result()
                 results.append(item)
@@ -241,6 +242,8 @@ def batch_create(
                     )
 
         batch_duration = time.perf_counter() - batch_start
+        for item in batch_items:
+            item["release_wall"] = release_wall  # 起跑的墙钟时刻，耗时分解的整批时间线用
         print(
             f"--- 第 {batch_num} 批完成，成功: {batch_success}, "
             f"失败: {batch_failed}, 耗时 {batch_duration:.2f}秒 ---"

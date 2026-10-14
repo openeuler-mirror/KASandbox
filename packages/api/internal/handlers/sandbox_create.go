@@ -21,6 +21,7 @@ import (
 	"github.com/e2b-dev/infra/packages/api/internal/api"
 	templatecache "github.com/e2b-dev/infra/packages/api/internal/cache/templates"
 	"github.com/e2b-dev/infra/packages/api/internal/middleware/otel/metrics"
+	"github.com/e2b-dev/infra/packages/api/internal/middleware/otel/tracing"
 	"github.com/e2b-dev/infra/packages/api/internal/sandbox"
 	"github.com/e2b-dev/infra/packages/api/internal/utils"
 	"github.com/e2b-dev/infra/packages/auth/pkg/auth"
@@ -32,6 +33,7 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/id"
 	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
+	"github.com/e2b-dev/infra/packages/shared/pkg/perftrace"
 	sandbox_network "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-network"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 	sharedUtils "github.com/e2b-dev/infra/packages/shared/pkg/utils"
@@ -48,6 +50,17 @@ const (
 
 func (a *APIStore) PostSandboxes(c *gin.Context) {
 	ctx := c.Request.Context()
+
+	// 记录本次创建各阶段的耗时，请求返回时输出一行汇总（见 perftrace 包）。
+	// 起点取请求到达服务的时刻，进入本函数之前的中间件补记为一个阶段
+	handlerStart := time.Now()
+	requestStart, ok := tracing.GetRequestStartTime(ctx)
+	if !ok {
+		requestStart = handlerStart
+	}
+	ctx, perf := perftrace.Begin(ctx, "api", "CreateSandbox", "", requestStart)
+	perf.AddPhase("middleware", requestStart, handlerStart)
+	defer func() { perf.End(c.Writer.Status() < http.StatusBadRequest) }()
 
 	// Get team from context, use TeamContextKey
 	teamInfo := auth.MustGetTeamInfo(c)
@@ -78,7 +91,9 @@ func (a *APIStore) PostSandboxes(c *gin.Context) {
 	}
 
 	clusterID := clusters.WithClusterFallback(teamInfo.Team.ClusterID)
+	_, endResolveAlias := perftrace.Phase(ctx, "templateCache.ResolveAlias")
 	aliasInfo, err := a.templateCache.ResolveAlias(ctx, identifier, teamInfo.Team.Slug)
+	endResolveAlias()
 	if err != nil {
 		apiErr := templatecache.ErrorToAPIError(err, identifier)
 		telemetry.ReportErrorByCode(ctx, apiErr.Code, "error when resolving template alias", apiErr.Err, attribute.String("identifier", identifier))
@@ -87,7 +102,9 @@ func (a *APIStore) PostSandboxes(c *gin.Context) {
 		return
 	}
 
+	_, endGetTemplate := perftrace.Phase(ctx, "templateCache.Get")
 	env, build, err := a.templateCache.Get(ctx, aliasInfo.TemplateID, tag, teamInfo.Team.ID, clusterID)
+	endGetTemplate()
 	if err != nil {
 		apiErr := templatecache.ErrorToAPIError(err, aliasInfo.TemplateID)
 		telemetry.ReportErrorByCode(ctx, apiErr.Code, "error when getting template", apiErr.Err, telemetry.WithTemplateID(aliasInfo.TemplateID))
@@ -102,6 +119,7 @@ func (a *APIStore) PostSandboxes(c *gin.Context) {
 	setTemplateNameMetric(ctx, c, a.featureFlags, env.TemplateID, env.Names)
 
 	sandboxID := InstanceIDPrefix + id.Generate()
+	perf.SetSandboxID(sandboxID)
 
 	c.Set("instanceID", sandboxID)
 

@@ -75,7 +75,7 @@ def _bench_param_sets(cfg: dict, warmup: int) -> dict[str, list[dict]]:
     return {
         "create": [
             dict(concurrency=int(t["concurrency"]), requests=int(t["requests"]), warmup=warmup, mode="create-kill",
-                 pre_wait=float(t.get("pre_wait", 0)))
+                 pre_wait=float(t.get("pre_wait", 0)), breakdown=cfg.get("breakdown"))
             for t in cfg["create"]["tiers"]
         ],
         "scale": [
@@ -84,6 +84,8 @@ def _bench_param_sets(cfg: dict, warmup: int) -> dict[str, list[dict]]:
                 rounds=int(cfg["scale"].get("rounds", 3)),
                 warmup=warmup,
                 mem_threshold_pct=mem_threshold_pct,
+                breakdown=cfg.get("breakdown"),
+                criteria=(cfg.get("criteria") or {}).get("scale"),
             )
         ],
         "density": [

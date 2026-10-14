@@ -14,6 +14,7 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	"github.com/e2b-dev/infra/packages/shared/pkg/machineinfo"
+	"github.com/e2b-dev/infra/packages/shared/pkg/perftrace"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 )
 
@@ -187,7 +188,10 @@ func PlaceSandbox(ctx context.Context, algorithm Algorithm, clusterNodes []*node
 			telemetry.WithNodeID(node.ID),
 			telemetry.WithClusterID(node.ClusterID),
 		)
+		// orchestrator 侧同一沙箱的耗时分解由采集方挂到这个阶段下面
+		_, endNodeCreate := perftrace.Phase(ctx, "node.SandboxCreate (gRPC)")
 		err = node.SandboxCreate(ctx, sbxRequest)
+		endNodeCreate()
 		span.End()
 		if err == nil {
 			node.PlacementMetrics.Success(sbxRequest.GetSandbox().GetSandboxId())
