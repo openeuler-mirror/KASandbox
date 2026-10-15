@@ -177,8 +177,10 @@ idx=ip-base
 print(idx if idx >= 1 else "")' "$1" "${HOST_NETWORK_BASE}" 2>/dev/null || true
 }
 
-hostip_of() { # <pod_id>
-    ${CRICTL} inspectp "$1" 2>/dev/null | jq -r '.status.network.ip // empty' 2>/dev/null || true
+hostip_of() { # <pod_id> → slot HostIP（10.11.x.x）
+    # Network.IP 已改为返回节点 IP（原生模式对外口径），slot HostIP 改从
+    # e2b.dev/host-ip 注解读取（值不变）
+    ${CRICTL} inspectp "$1" 2>/dev/null | jq -r '.status.annotations["e2b.dev/host-ip"] // empty' 2>/dev/null || true
 }
 
 slot_ns_of() { # <pod_id> → 打印 ns-<idx>
