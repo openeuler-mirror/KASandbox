@@ -127,7 +127,7 @@ load_env() {
         *) error "未知 ORCHESTRATOR_TYPE：${ORCHESTRATOR_TYPE}（支持 systemd/k8s/nomad）" ;;
     esac
     # 组合校验：k8s 部署下 nomad 发现会让 API 落入 nil Nomad 客户端且 template-manager 不渲染；
-    # nomad 部署下 k8s 发现无 in-cluster 环境（systemd 则由 api job 注入 E2B_STATIC_ALLOCATIONS，合法）
+    # nomad 部署下 k8s 发现无 in-cluster 环境（systemd 则由 api job 注入 ORCHESTRATOR_STATIC_NODES，合法）
     case "$DEPLOY_TYPE:$ORCHESTRATOR_TYPE" in
         k8s:systemd|k8s:k8s|nomad:nomad|nomad:systemd) ;;
         *) error "DEPLOY_TYPE=${DEPLOY_TYPE} 与 ORCHESTRATOR_TYPE=${ORCHESTRATOR_TYPE} 组合无效（k8s 部署支持 systemd/k8s，nomad 部署支持 nomad/systemd）" ;;
@@ -164,7 +164,7 @@ load_env() {
         ENABLE_API="true"
     fi
     export ENABLE_API
-    # systemd 模式静态清单：k8s 注入 helm 静态 Endpoints，nomad 注入 api job E2B_STATIC_ALLOCATIONS；
+    # systemd 模式静态清单：k8s 注入 helm 静态 Endpoints，nomad 注入 api job ORCHESTRATOR_STATIC_NODES；
     # 空清单部署会静默成功但 API 无节点可调度——提前告警
     if [ "$ORCHESTRATOR_TYPE" = "systemd" ]; then
         export ORCHESTRATOR_STATIC_NODES=${ORCHESTRATOR_STATIC_NODES:-}

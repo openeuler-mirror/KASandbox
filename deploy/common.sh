@@ -14,3 +14,12 @@ error() {
 warn() {
     echo -e "\033[33m⚠️ $*\033[0m"
 }
+
+# 默认架构检测：x86_64→x86_64，aarch64/arm64→arm64，其他→unknown（通过 echo 返回，调用方用 $(detect_default_arch) 接收）
+detect_default_arch() {
+    case "$(uname -m)" in
+        x86_64)        echo "x86_64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        *)             echo "unknown" ;;
+    esac
+}

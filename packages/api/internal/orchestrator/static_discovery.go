@@ -10,7 +10,7 @@ import (
 )
 
 // staticDiscovery 将 shared StaticDiscovery 适配到 NodeDiscovery 接口。
-// systemd 承载下 sandbox 节点池与模板构建共用 E2B_STATIC_ALLOCATIONS
+// systemd 承载下 sandbox 节点池与模板构建共用 ORCHESTRATOR_STATIC_NODES
 // 静态清单（活性由 grpc_health_v1 探测判定），不再依赖 K8s sandbox 标签。
 // 清单 NodeID 约定与 K8s Node 名一致，与 k8sDiscovery 行为对齐（不截短 ID）。
 type staticDiscovery struct {

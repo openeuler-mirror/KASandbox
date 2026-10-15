@@ -77,7 +77,7 @@ job "api" {
         ORCHESTRATOR_PORT              = "${ORCHESTRATOR_PORT}"
         ORCHESTRATOR_TYPE              = "${ORCHESTRATOR_TYPE}"
         # systemd 模式静态节点清单（仅 ORCHESTRATOR_TYPE=systemd 时生效，其余模式为空）
-        E2B_STATIC_ALLOCATIONS         = "${ORCHESTRATOR_STATIC_NODES}"
+        ORCHESTRATOR_STATIC_NODES      = "${ORCHESTRATOR_STATIC_NODES}"
         API_GRPC_PORT                  = "${API_GRPC_PORT}"
         ADMIN_TOKEN                    = "${API_ADMIN_TOKEN}"
         SANDBOX_ACCESS_TOKEN_HASH_SEED = "${SANDBOX_ACCESS_TOKEN_HASH_SEED}"
