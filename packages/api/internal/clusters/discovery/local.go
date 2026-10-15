@@ -37,8 +37,8 @@ func NewLocalDiscovery(ctx context.Context, clusterID uuid.UUID, nomad *nomadapi
 
 	switch launcher {
 	case "systemd":
-		// orchestrator systemd 承载：候选节点来自静态配置（E2B_STATIC_ALLOCATIONS /
-		// E2B_STATIC_ALLOCATIONS_FILE），活性由 grpc_health_v1 探测实时判定
+		// orchestrator systemd 承载：候选节点来自静态配置（ORCHESTRATOR_STATIC_NODES /
+		// ORCHESTRATOR_STATIC_NODES_FILE），活性由 grpc_health_v1 探测实时判定
 		sd.discoveryClient = discovery.NewStaticDiscoveryFromEnv(ctx)
 	case "k8s":
 		if k8s == nil {

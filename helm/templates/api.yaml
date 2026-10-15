@@ -131,7 +131,7 @@ spec:
         - name: ORCHESTRATOR_TYPE
           value: "{{ .Values.orchestratorType }}"
         {{- if .Values.orchestratorStaticNodes }}
-        - name: E2B_STATIC_ALLOCATIONS
+        - name: ORCHESTRATOR_STATIC_NODES
           value: "{{ .Values.orchestratorStaticNodes }}"
         {{- end }}
         - name: ORCHESTRATOR_PORT

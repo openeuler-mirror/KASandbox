@@ -84,18 +84,18 @@ func NewStaticDiscovery(ctx context.Context, entries []staticEntry, healthCheck 
 
 // NewStaticDiscoveryFromEnv 按约定环境变量创建发现实例：
 //
-//	E2B_STATIC_ALLOCATIONS       节点清单，如 "node1=10.0.0.1,node2=10.0.0.2:5009"
-//	                             （省略 "=ip" 时以 NodeID 作为拨号地址）
-//	E2B_STATIC_ALLOCATIONS_FILE  JSON 清单路径，[{"nodeID":"node1","ip":"10.0.0.1"}]，
-//	                             仅在 E2B_STATIC_ALLOCATIONS 为空时生效；文件 mtime
-//	                             变化后自动重载，扩缩容无需重启调用方
+//	ORCHESTRATOR_STATIC_NODES      节点清单，如 "node1=10.0.0.1,node2=10.0.0.2:5009"
+//	                               （省略 "=ip" 时以 NodeID 作为拨号地址）
+//	ORCHESTRATOR_STATIC_NODES_FILE JSON 清单路径，[{"nodeID":"node1","ip":"10.0.0.1"}]，
+//	                               仅在 ORCHESTRATOR_STATIC_NODES 为空时生效；文件 mtime
+//	                               变化后自动重载，扩缩容无需重启调用方
 //	E2B_STATIC_DISCOVERY_HEALTHCHECK  "false" 关闭健康探测，退化为纯静态返回
 func NewStaticDiscoveryFromEnv(ctx context.Context, opts ...StaticOption) *StaticDiscovery {
-	entries := parseStaticEntries(env.GetEnv("E2B_STATIC_ALLOCATIONS", ""))
+	entries := parseStaticEntries(env.GetEnv("ORCHESTRATOR_STATIC_NODES", ""))
 
 	// env 与 file 同时配置时 env 优先；仅当清单来自文件时才启用
 	// mtime 热加载，避免热加载覆盖显式的 env 配置
-	filePath := env.GetEnv("E2B_STATIC_ALLOCATIONS_FILE", "")
+	filePath := env.GetEnv("ORCHESTRATOR_STATIC_NODES_FILE", "")
 	if len(entries) == 0 && filePath != "" {
 		if loaded, mtime, err := loadStaticEntriesFile(filePath); err != nil {
 			logger.L().Warn(ctx, "Failed to load static allocations file", zap.String("path", filePath), zap.Error(err))

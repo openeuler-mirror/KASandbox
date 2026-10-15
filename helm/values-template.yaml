@@ -187,7 +187,7 @@ clickhouseMetricPort: ${CLICKHOUSE_METRICS_PORT}
 dnsPort: ${DNS_PORT}
 
 # API 静态发现清单（ORCHESTRATOR_TYPE=systemd 时生效）："node1=ip1,node2=ip2"，
-# 由 .env ORCHESTRATOR_STATIC_NODES 手动注入；为空时不注入 E2B_STATIC_ALLOCATIONS
+# 由 .env ORCHESTRATOR_STATIC_NODES 手动注入；为空时不注入 ORCHESTRATOR_STATIC_NODES
 orchestratorStaticNodes: "${ORCHESTRATOR_STATIC_NODES}"
 
 api:

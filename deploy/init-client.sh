@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"  # 切到脚本所在目录，使 source .env 与 ./bin/* 不受调用方 cwd 影响
 source .env
 # Set timestamp format
 PS4='[\D{%Y-%m-%d %H:%M:%S}] '
@@ -114,57 +115,45 @@ mkdir -p /fc-vm
 envd_dir="/fc-envd"
 mkdir -p $envd_dir
 
-cp ./bin/envd "${envd_dir}/."
-
-chmod -R 755 $envd_dir
+# 幂等拷贝：内容一致则跳过（避免覆盖运行中进程正在使用的二进制，也避免无意义写系统目录）
+if [ -f "${envd_dir}/envd" ] && cmp -s ./bin/envd "${envd_dir}/envd"; then
+    echo "envd 已存在且内容一致，跳过拷贝"
+else
+    cp ./bin/envd "${envd_dir}/."
+    chmod -R 755 $envd_dir
+fi
 ls -lh $envd_dir
 du -h "${envd_dir}/envd"
 
 
 
 FIRECRACKER_VERSION=1.13.1
-ARCH=$(uname -m)
-case "$ARCH" in
-  x86_64)  FC_ARCH="x86_64" ;;
-  aarch64) FC_ARCH="aarch64" ;;
-  *)       echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
-esac
-
 # Download kernels
 kernels_dir="/fc-kernels"
 mkdir -p ${kernels_dir}/vmlinux-6.1.158/
-cp ./bin/vmlinux.bin "${kernels_dir}/vmlinux-6.1.158/"
-chmod -R 755 $kernels_dir
+# 幂等拷贝：内容一致则跳过
+if [ -f "${kernels_dir}/vmlinux-6.1.158/vmlinux.bin" ] && cmp -s ./bin/vmlinux.bin "${kernels_dir}/vmlinux-6.1.158/vmlinux.bin"; then
+    echo "vmlinux.bin 已存在且内容一致，跳过拷贝"
+else
+    cp ./bin/vmlinux.bin "${kernels_dir}/vmlinux-6.1.158/"
+    chmod -R 755 $kernels_dir
+fi
 ls -lh $kernels_dir
 
 # Download FC versions
 fc_versions_dir="/fc-versions"
 mkdir -p $fc_versions_dir
 mkdir -p $fc_versions_dir/v${FIRECRACKER_VERSION}
-#rm -rf firecracker-v${FIRECRACKER_VERSION}-${FC_ARCH}.tgz
-#wget https://github.com/firecracker-microvm/firecracker/releases/download/v${FIRECRACKER_VERSION}/firecracker-v${FIRECRACKER_VERSION}-${FC_ARCH}.tgz
 cd /opt/e2b-infra
-# 拼接文件名和下载链接
-# FILENAME="firecracker-v${FIRECRACKER_VERSION}-${FC_ARCH}.tgz"
-# DOWNLOAD_URL="https://github.com/firecracker-microvm/firecracker/releases/download/v${FIRECRACKER_VERSION}/${FILENAME}"
 
-# # 核心逻辑：检查文件是否存在，不存在则下载
-# if [ -f "${FILENAME}" ]; then
-#     echo "文件 ${FILENAME} 已存在，跳过下载。"
-# else
-#     echo "文件 ${FILENAME} 不存在，开始下载..."
-#     if wget "${DOWNLOAD_URL}"; then
-#         echo "下载完成：${FILENAME}"
-#     else
-#         echo "错误：下载 ${FILENAME} 失败！"
-#         exit 1  # 下载失败时退出脚本，返回非0状态码
-#     fi
-# fi
-
-# tar -xvf firecracker-v${FIRECRACKER_VERSION}-${FC_ARCH}.tgz
-cp bin/firecracker ${fc_versions_dir}/v${FIRECRACKER_VERSION}/firecracker
-chmod +x ${fc_versions_dir}/v${FIRECRACKER_VERSION}/firecracker
-chmod -R 755 $fc_versions_dir/v${FIRECRACKER_VERSION}
+# 幂等拷贝：内容一致则跳过
+if [ -f "${fc_versions_dir}/v${FIRECRACKER_VERSION}/firecracker" ] && cmp -s bin/firecracker "${fc_versions_dir}/v${FIRECRACKER_VERSION}/firecracker"; then
+    echo "firecracker 已存在且内容一致，跳过拷贝"
+else
+    cp bin/firecracker ${fc_versions_dir}/v${FIRECRACKER_VERSION}/firecracker
+    chmod +x ${fc_versions_dir}/v${FIRECRACKER_VERSION}/firecracker
+    chmod -R 755 $fc_versions_dir/v${FIRECRACKER_VERSION}
+fi
 ls -lh $fc_versions_dir
 
 # Set up huge pages

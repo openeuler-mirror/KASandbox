@@ -65,6 +65,7 @@
   - [10.6 修改沙箱配置](#106-修改沙箱配置)
   - [10.7 下载离线包](#107-下载离线包)
   - [10.8 全量卸载](#108-全量卸载)
+  - [10.9 组件更新](#109-组件更新)
 - [11. 常见问题](#11-常见问题)
   - [11.1 部署脚本失败（Nomad 403 错误）](#111-部署脚本失败nomad-403-错误)
   - [11.2 模板构建失败（连接拒绝）](#112-模板构建失败连接拒绝)
@@ -1061,6 +1062,117 @@ Kubelet ──Unix socket──▶ cri-multiplex
 > 1. kubelet 启动方式不同，配置位置/参数形式可能不同——kubeadm 初始化的一般是 `/var/lib/kubelet/kubeadm-flags.env`（默认路径）；若是自定义 systemd unit 或其它方式启动，runtime-endpoint 可能写在启动参数或独立配置文件中。脚本默认处理 kubeadm 方式，其它场景需按实际启动方式调整，也可用 `KUBELET_FLAGS_FILE` 指定配置文件路径。
 > 2. `cri-multiplex` 只负责部署服务，不切换 endpoint；`kubelet-endpoint` 幂等，若已指向 `cri-multiplex.sock` 则跳过修改。两者配合使用即为完整的 cri-multiplex 接入。也可通过 SSH 将 `kubelet-endpoint` 单独分发给其它节点执行。
 
+**CNI 网络配置（bridge）**
+
+cri-multiplex 的 systemd 单元已内置 `-cni-enabled`，沙箱 Pod 网络由 CNI 插件链配置，与集群 CNI（calico 等）相互独立：
+
+- 启动时从 `-cni-conf-dir` 加载**文件名排序第一个**的 CNI 配置（优先 `.conflist`，无则退化 `.conf`/`.json`）；配置仅在启动时加载一次，修改后须 `systemctl restart cri-multiplex` 生效。
+- 配置目录使用 e2b 专有路径 `/etc/cni/net-e2b.d`（systemd 单元内置），与集群 CNI 的 `/etc/cni/net.d`（calico 等）隔离，不会误用集群 CNI 插件链；`./k8s-deploy.sh cri-multiplex` 部署时自动生成默认配置 `e2b-bridge.conflist`（bridge + host-local，子网 `10.12.0.0/22`，可用环境变量 `E2B_CNI_SUBNET` 覆盖；文件已存在则跳过，不覆盖自定义配置）。
+- 沙箱创建时执行配置中的插件链，已验证的组合为 `bridge` + `host-local`（IPAM）；插件二进制通过 `./k8s-deploy.sh download-cni` 安装到 `/opt/cni/bin`（版本由 `CNI_PLUGINS_VERSION` 控制，默认 v1.6.2）。
+
+默认生成的 `/etc/cni/net-e2b.d/e2b-bridge.conflist` 内容如下（多节点时按下文修改各节点子网）：
+
+```json
+{
+  "cniVersion": "1.0.0",
+  "name": "e2b-bridge",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "e2b0",
+      "isGateway": true,
+      "ipMasq": true,
+      "hairpinMode": true,
+      "ipam": {
+        "type": "host-local",
+        "ranges": [
+          [ { "subnet": "10.12.0.0/22" } ]
+        ],
+        "routes": [
+          { "dst": "0.0.0.0/0" }
+        ],
+        "dataDir": "/var/lib/e2b/cni/networks"
+      }
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `bridge` | 宿主机网桥名（示例 `e2b0`），首次执行 CNI ADD 时自动创建 |
+| `isGateway` | 网桥配置子网网关 IP，作为沙箱默认网关 |
+| `ipMasq` | 沙箱出网流量 SNAT 为节点 IP（访问节点外网络必需） |
+| `hairpinMode` | 允许沙箱经网桥回环访问映射到自身的端口/服务 |
+| `ipam.ranges` | 沙箱 IP 池。**须与集群 Pod CIDR（KubeKey 默认 10.233.64.0/18）及主机网段错开**；host-local 为节点本地分配，多节点时各节点划分不重叠子段（见下文多节点配置） |
+| `ipam.routes` | 注入沙箱网络命名空间的路由，默认路由指向网桥网关 |
+| `ipam.dataDir` | host-local 分配记录目录（按网络名分目录）；示例显式设为 e2b 专有路径，与集群 CNI 的默认 `/var/lib/cni/networks` 隔离 |
+
+**多节点配置**
+
+`bridge + host-local` 无跨节点协调机制：每个节点独立一份 conflist，**仅 `ipam.ranges` 子网不同**，节点间子网必须互不重叠。部署脚本默认每节点生成相同的 `10.12.0.0/22`，多节点部署时须在各节点部署前指定各自子网（如 `E2B_CNI_SUBNET=10.12.4.0/22 ./k8s-deploy.sh cri-multiplex`），或部署后编辑 conflist 并 `systemctl restart cri-multiplex`。以 3 节点（主机网段 192.168.1.0/24）为例：
+
+| 节点 | 节点 IP | e2b 子网（ranges） | 网桥网关 IP |
+|------|---------|--------------------|-------------|
+| node1 | 192.168.1.11 | `10.12.0.0/22` | 10.12.0.1 |
+| node2 | 192.168.1.12 | `10.12.4.0/22` | 10.12.4.1 |
+| node3 | 192.168.1.13 | `10.12.8.0/22` | 10.12.8.1 |
+
+各节点 conflist 与上文单节点示例一致，仅替换 ranges（以 node2 为例）：
+
+```json
+        "ranges": [
+          [ { "subnet": "10.12.4.0/22" } ]
+        ],
+```
+
+跨节点访问说明：
+
+- **仅出网**（沙箱访问外部网络）：各节点 `ipMasq: true` 已足够（出节点时 SNAT 为节点 IP），无需额外配置。
+- **跨节点访问沙箱 IP**（如 client-proxy 在 Master、沙箱在 Worker）：bridge 网络无 overlay，须在各节点添加到**其它节点 e2b 子网**的静态路由，并写入持久化配置（`/etc/sysconfig/network-scripts/route-*` 或 `nmcli`）：
+
+```bash
+# node1 上（添加到 node2 / node3 子网的路由，网关为对端节点 IP）
+ip route add 10.12.4.0/22 via 192.168.1.12
+ip route add 10.12.8.0/22 via 192.168.1.13
+# node2 / node3 上同理，指向其余两个节点的子网
+```
+
+- 各节点须开启转发（calico 部署后通常已开启）：
+
+```bash
+sysctl net.ipv4.ip_forward          # 应为 1，否则执行：
+sysctl -w net.ipv4.ip_forward=1
+```
+
+> **提示**：跨节点互访的流量出节点时会被 `ipMasq` SNAT 为本节点 IP，对端沙箱看到的源地址是中间节点 IP 而非真实沙箱 IP；依赖源 IP 识别的场景需知悉该限制。
+
+**单节点沙箱容量上限**
+
+每节点可分配的沙箱数量取以下三者最小值：
+
+| 限制层 | 取值 | 超限表现 |
+|--------|------|----------|
+| orchestrator feature flag `max-sandboxes-per-node` | 默认 **10000** | 创建报 `ResourceExhausted: max number of running sandboxes on node reached` |
+| CNI 子网可用 IP 数 | ≈ 2^(32-前缀) − 3（减网络地址、广播地址、网桥网关）；`/22` = 1021、`/20` = 4093、`/18` = 16381 | 创建报 CNI ADD `no IP addresses available` |
+| 节点 CPU / 内存 | 按沙箱模板规格实测 | 沙箱启动失败或节点资源告警 |
+
+按上文 `/22` 规划时 IP 容量（1021）先到达，即**单节点默认最多约 1021 个沙箱**；需更多时扩大子网即可（`/20` = 4093、`/18` = 16381），当子网容量超过 10000 后软件上限重新成为瓶颈。注意 `max-sandboxes-per-node` 走 LaunchDarkly feature flag，离线部署下固定为默认值，无环境变量可调——需超过 10000 时须修改源码 `packages/shared/pkg/feature-flags/flags.go` 中的 fallback 并重新编译。另外 `MAX_STARTING_INSTANCES_PER_NODE`（默认 30，环境变量可调）只限制**同时启动中**的沙箱并发数，不影响总容量。
+
+已分配 IP 数量可查 host-local 记录：`ls /var/lib/e2b/cni/networks/e2b-bridge/ | wc -l`。
+
+**CNI 验证**：
+
+```bash
+ls /opt/cni/bin/{bridge,host-local}      # 插件已安装
+ip -d link show e2b0                      # 首个沙箱创建后网桥出现
+ip netns list | grep ^e2b-                # 每个沙箱一个命名 netns（前缀 e2b-）
+ls /var/lib/e2b/cni/networks/e2b-bridge/  # host-local 已分配 IP 记录
+journalctl -u cri-multiplex | grep -i cni # 配置加载与插件执行日志
+```
+
+> **注意**：`/etc/cni/net-e2b.d` 下无任何 CNI 配置时 cri-multiplex 启动即失败（`NoConfigsFoundError`），沙箱无法创建；普通 Pod 的 containerd/calico 链路独立，不受影响。
+
 **验证**：
 
 ```bash
@@ -1747,6 +1859,132 @@ ARCH=arm64 ./build.sh --download
 ```bash
 ./build.sh --uninstall
 ```
+
+### 10.9 组件更新
+
+本节列出从源码或新 RPM 升级组件的步骤。通用前置：
+
+```bash
+# 1. 源码升级：拉取最新代码后编译（RPM 升级跳到第 2 步直接装包）
+cd /path/to/KASandbox
+git pull
+./build.sh            # 或 ./build.sh -i 单独构建镜像
+./scripts/build-rpm.sh  # 需要 RPM 时
+
+# 2. RPM 安装后所有命令均在 /opt/e2b-infra/ 执行
+cd /opt/e2b-infra
+```
+
+#### 10.9.1 Nomad 模式
+
+**更新 api / edge / template-manager / redis**
+
+```bash
+# 单个任务热更新（无需停机，滚动替换）
+./build.sh --nomad-job deploy api
+./build.sh --nomad-job deploy edge
+./build.sh --nomad-job deploy template-manager
+./build.sh --nomad-job deploy redis
+
+# 全部任务一起更新（含镜像重建 + Token 重新生成）
+./build.sh --deploy services
+```
+
+> 说明：`--nomad-job deploy` 直接重跑 `rendered/<job>.hcl`，未重建镜像；如需使用新镜像，先执行 `./build.sh -i <name>` 构建（或 `./build.sh --deploy services` 一次完成构建 + 部署）。
+
+**更新基础设施（docker / nomad / consul / postgres / harbor）**
+
+```bash
+./build.sh --deploy docker        # 升级 docker 与 compose
+./build.sh --deploy nomad         # 升级 nomad
+./build.sh --deploy consul        # 升级 consul
+./build.sh --deploy postgres      # 升级 postgres（会触发容器重建，注意备份）
+./build.sh --deploy harbor        # 升级 harbor（含 nginx 配置）
+```
+
+#### 10.9.2 K8S 模式
+
+**更新 E2B 服务（api / edge / postgres / harbor 等 Helm 管理组件）**
+
+```bash
+# 构建新镜像 + helm upgrade（自动滚动更新 Deployment）
+./build.sh --deploy services
+
+# 仅重建并推送某个镜像（不触发 helm upgrade）
+cd /opt/e2b-infra
+./deploy.sh                     # 默认走完整部署
+# 或仅触发 helm 升级（复用现有镜像）
+helm upgrade e2b-api ./helm -n e2b
+
+# 滚动重启指定 Deployment（镜像未变仅重启 Pod）
+kubectl rollout restart deployment api -n e2b
+kubectl rollout restart deployment postgres -n e2b
+kubectl rollout restart deployment harbor -n e2b
+```
+
+**更新 e2b-webhook（K8S only）**
+
+```bash
+./deploy.sh deploy-webhook      # 仅重建镜像 + kubectl apply webhook manifest，不影响其它 Pod
+```
+
+**更新 cri-multiplex（K8S only）**
+
+```bash
+# 源码构建 cri-multiplex 二进制后
+cd /opt/e2b-infra
+cp bin/cri-multiplex /usr/local/bin/      # 替换旧二进制
+systemctl daemon-reload
+systemctl restart cri-multiplex
+# 验证
+systemctl status cri-multiplex
+curl --unix-socket /run/cri-multiplex.sock http://localhost/version
+```
+
+**更新 Orchestrator（仅 systemd 承载模式，`ORCHESTRATOR_TYPE=systemd`）**
+
+```bash
+# 源码编译后（rpm 安装包则 rpm -Uvh 升级）
+cd /opt/e2b-infra
+cp bin/orchestrator /usr/local/bin/orchestrator
+cp bin/orchestrator /usr/local/bin/template-manager    # 同一二进制两个名称
+cp orchestrator-run.sh /opt/e2b-infra/bin/orchestrator-run.sh
+chmod +x /opt/e2b-infra/bin/orchestrator-run.sh
+systemctl daemon-reload
+systemctl restart e2b-orchestrator.service
+systemctl status e2b-orchestrator.service
+journalctl -u e2b-orchestrator.service -f              # 查看日志
+```
+
+#### 10.9.3 模板与沙箱镜像
+
+模板与沙箱镜像更新通过 Harbor + create_template.py 完成，不影响控制面组件：
+
+```bash
+# 1. 制作并上传新沙箱镜像
+./build.sh --make ubuntu:22.04
+
+# 2. 构建新模板（模板别名递增，不覆盖旧模板）
+python3 create_template.py --server-ip <SERVER_IP> --harbor-ip <SERVER_IP>
+
+# 3. 已运行沙箱不受影响，新建沙箱自动使用新模板
+python3 create_sandbox.py --server-ip <SERVER_IP> --template <新模板别名>
+```
+
+#### 10.9.4 更新策略对比
+
+| 组件 | Nomad 模式 | K8S 模式 | 是否需停机 |
+|------|-----------|----------|-----------|
+| api | `--nomad-job deploy api` | `--deploy services`（helm upgrade） | 否（滚动） |
+| edge | `--nomad-job deploy edge` | 同上 | 否（滚动） |
+| template-manager | `--nomad-job deploy template-manager` | `systemd` 模式见 10.9.2；k8s 模式由 helm 管理 | 否 |
+| orchestrator（systemd） | 同 template-manager | `systemctl restart e2b-orchestrator.service` | 短暂中断 |
+| e2b-webhook | 不支持 | `./deploy.sh deploy-webhook` | 否 |
+| cri-multiplex | 不支持 | `systemctl restart cri-multiplex` | 短暂中断 |
+| postgres / harbor / consul / nomad | `--deploy <name>` | `kubectl rollout restart` 或 helm upgrade | postgres/harbor 短暂 |
+| 沙箱镜像 / 模板 | `create_template.py` | 同左 | 否 |
+
+> **建议**：生产环境升级前先备份 postgres 数据（`docker exec postgres pg_dump -U postgres mydatabase > backup.sql` 或 `kubectl exec -n e2b deploy/postgres -- pg_dump ...`），再按上表顺序逐个升级，每升一级验证沙箱创建/连接正常。
 
 ---
 
