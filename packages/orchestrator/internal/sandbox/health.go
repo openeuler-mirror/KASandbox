@@ -34,7 +34,8 @@ func (c *Checks) getHealth(ctx context.Context, timeout time.Duration) (bool, er
 		response.Body.Close()
 	}()
 
-	if response.StatusCode != http.StatusNoContent {
+	// 兼容任意 2xx：envd /health 早期返回 204，新版返回 200 + JSON body
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return false, fmt.Errorf("unexpected status code: %d", response.StatusCode)
 	}
 

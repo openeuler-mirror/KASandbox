@@ -205,7 +205,7 @@ func TestEnvdPortIsNotAffectedByTrafficAccessToken(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	require.NoError(t, resp.Body.Close())
-	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestSandboxWithTrafficAccessTokenAutoResumeViaProxy(t *testing.T) {
@@ -328,7 +328,7 @@ func TestEnvdAccessTokenAutoResumeViaProxy(t *testing.T) {
 	resp, err := client.Do(req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.NoError(t, resp.Body.Close())
 
 	// Pause sandbox.
@@ -357,7 +357,7 @@ func TestEnvdAccessTokenAutoResumeViaProxy(t *testing.T) {
 	req = utils.NewRequest(sbx, &envdHealthURL, envdPort, headers)
 	resp, err = client.Do(req)
 	require.NoError(t, err)
-	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.NoError(t, resp.Body.Close())
 
 	res, err = c.GetSandboxesSandboxIDWithResponse(ctx, sbx.SandboxID, setup.WithAPIKey())
