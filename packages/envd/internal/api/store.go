@@ -57,9 +57,12 @@ func (a *API) GetHealth(w http.ResponseWriter, r *http.Request) {
 	a.logger.Trace().Msg("Health check")
 
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "")
+	w.Header().Set("Content-Type", "application/json")
 
-	w.WriteHeader(http.StatusNoContent)
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "OK"}); err != nil {
+		a.logger.Error().Err(err).Msg("Failed to encode health status")
+	}
 }
 
 func (a *API) GetMetrics(w http.ResponseWriter, r *http.Request) {
