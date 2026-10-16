@@ -174,6 +174,8 @@ spec:
           value: "{{ .Values.lokiUrl }}"
         - name: SANDBOX_STORAGE_BACKEND
           value: "{{ .Values.sandboxStorageBackend }}"
+        - name: E2B_USE_HUGE_PAGES
+          value: "{{ .Values.useHugePages }}"
         resources:
           requests:
             cpu: {{ .Values.apiResourcesCpuCount }}m
