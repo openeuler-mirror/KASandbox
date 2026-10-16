@@ -688,19 +688,18 @@ func (e *grpcE2BEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSa
 		}
 	}
 
-	if pod.podIP != "" {
+	networkIP := pod.podIP
+	if networkIP == "" {
+		// 原生（非 CNI）模式下 slot HostIP（默认 10.11.0.x）是节点内部虚地址、出节点不可
+		// 路由，对外访问一律走 节点IP:hostPort，因此 Network.IP 直接返回节点 IP；slot
+		// HostIP 仍经 e2b.dev/host-ip 注解返回供运维定位 slot。节点 IP 兜底也避免 kubelet
+		// 因缺少 network 信息报 "Pod Sandbox status doesn't have network information"
+		// 而卡在 ContainerCreating
+		networkIP = e.nodeIP
+	}
+	if networkIP != "" {
 		status.Network = &runtime.PodSandboxNetworkStatus{
-			Ip: pod.podIP,
-		}
-	} else if pod.hostIP != "" {
-		status.Network = &runtime.PodSandboxNetworkStatus{
-			Ip: pod.hostIP,
-		}
-	} else if e.nodeIP != "" {
-		// hostIP 未获取到时回退到节点 IP，避免 kubelet 因缺少 network 信息
-		// 报 "Pod Sandbox status doesn't have network information" 而卡在 ContainerCreating
-		status.Network = &runtime.PodSandboxNetworkStatus{
-			Ip: e.nodeIP,
+			Ip: networkIP,
 		}
 	}
 
