@@ -213,6 +213,13 @@ func TestGRPCE2BHostPortMappingSetupAndCleanup(t *testing.T) {
 	if statusResp.Status.Annotations["e2b.dev/host-port-49983"] == "" || statusResp.Status.Annotations["e2b.dev/access-url-8080"] == "" {
 		t.Fatalf("hostport annotations missing: %+v", statusResp.Status.Annotations)
 	}
+	// 原生模式 Network.IP 返回节点 IP（slot HostIP 出节点不可路由，经 e2b.dev/host-ip 注解返回）
+	if statusResp.Status.Network == nil || statusResp.Status.Network.Ip != "192.0.2.10" {
+		t.Fatalf("native-mode Network.Ip = %+v, want node IP 192.0.2.10", statusResp.Status.Network)
+	}
+	if statusResp.Status.Annotations["e2b.dev/host-ip"] != "172.16.0.2" {
+		t.Fatalf("host-ip annotation = %q, want 172.16.0.2", statusResp.Status.Annotations["e2b.dev/host-ip"])
+	}
 
 	if _, err := e.StopPodSandbox(context.Background(), &runtime.StopPodSandboxRequest{PodSandboxId: "uid-a"}); err != nil {
 		t.Fatalf("StopPodSandbox: %v", err)
