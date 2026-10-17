@@ -21,6 +21,20 @@ struct uffd_pagefault {
 #define UFFD_FEATURE_WP_ASYNC (1 << 15)
 #endif
 
+// Linux < 5.7 uapi headers (e.g. openEuler 20.03 / kernel 4.19) do not define
+// the UFFD write-protect API. The values match include/uapi/linux/userfaultfd.h.
+// A runtime kernel without the feature simply never advertises it, so defining
+// the constants here only affects compilation, not behavior.
+#ifndef UFFDIO_COPY_MODE_WP
+#define UFFDIO_COPY_MODE_WP ((__u64)1<<1)
+struct uffdio_writeprotect {
+	struct uffdio_range range;
+#define UFFDIO_WRITEPROTECT_MODE_WP ((__u64)1<<0)
+#define UFFDIO_WRITEPROTECT_MODE_DONTWAKE ((__u64)1<<1)
+	__u64 mode;
+};
+#endif
+
 */
 import "C"
 
