@@ -69,6 +69,10 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		attribute.String("envd.version", req.GetSandbox().GetEnvdVersion()),
 	)
 
+	if err := fc.CheckHugePages(req.GetSandbox().GetHugePages()); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot create sandbox on this node: %s", err)
+	}
+
 	// setup launch darkly
 	ctx = featureflags.AddToContext(
 		ctx,
