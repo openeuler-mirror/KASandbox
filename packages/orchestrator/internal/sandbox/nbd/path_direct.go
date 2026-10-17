@@ -30,6 +30,14 @@ const (
 	disconnectTimeout = 30 * time.Second
 
 	mountReleaseTimeout = 2 * time.Minute
+
+	// nbdStatusPollInterval paces the NBD_CMD_STATUS polling loops after connect
+	// and disconnect. Each status query is a generic-netlink round trip that is
+	// serialized with every other NBD netlink command, including other devices'
+	// NBD_CMD_CONNECT (nbdnl shares one netlink socket per process, and the nbd
+	// genetlink family has no parallel_ops), so a sub-microsecond sleep turns a
+	// waiting caller into a syscall spin that competes with them.
+	nbdStatusPollInterval = 1 * time.Millisecond
 )
 
 var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/nbd")
@@ -259,7 +267,7 @@ func (d *DirectPathMount) Open(ctx context.Context) (retDeviceIndex uint32, err 
 			break
 		}
 		waitIterations++
-		time.Sleep(100 * time.Nanosecond)
+		time.Sleep(nbdStatusPollInterval)
 	}
 
 	telemetry.ReportEvent(ctx, "connected to NBD")
@@ -375,7 +383,7 @@ func disconnectNBDWithTimeout(ctx context.Context, deviceIndex uint32, timeout t
 		if err == nil && !s.Connected {
 			break
 		}
-		time.Sleep(100 * time.Nanosecond)
+		time.Sleep(nbdStatusPollInterval)
 	}
 
 	return nil
