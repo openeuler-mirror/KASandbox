@@ -395,6 +395,13 @@ func runBuild(
 	}
 	logger.L().Info(ctx, "rootfs size", zap.Uint64("size", rootfsSize))
 
+	if bc.Config.IsAndroid() {
+		if err := builder.prepareAndroidStartupCache(ctx, lastLayerResult.Metadata.Template.BuildID); err != nil {
+			return nil, fmt.Errorf("error preparing Android startup cache: %w", err)
+		}
+		userLogger.Info(ctx, "Android startup cache ready on this node")
+	}
+
 	resultEnvdVersion := bc.EnvdVersion
 	if bc.Config.UsesRawImage() && (bc.Config.IsWindows() || bc.Config.IsAndroid()) && lastLayerResult.Metadata.Template.EnvdVersion != "" {
 		resultEnvdVersion = lastLayerResult.Metadata.Template.EnvdVersion

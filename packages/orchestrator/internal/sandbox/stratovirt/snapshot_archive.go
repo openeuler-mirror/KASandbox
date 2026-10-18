@@ -129,3 +129,12 @@ func restoreSnapshotFiles(file template.File, dir string, cached bool) error {
 	}
 	return unpackSnapshot(file.Path(), dir)
 }
+
+// PrepareSnapshot populates the same immutable cache used by Android restore.
+func PrepareSnapshot(file template.File, parent string) error {
+	prepared, ok := file.(*template.PreparedFile)
+	if !ok {
+		return fmt.Errorf("snapshot file does not support preparation")
+	}
+	return prepared.PrepareDir(parent, unpackSnapshot)
+}
