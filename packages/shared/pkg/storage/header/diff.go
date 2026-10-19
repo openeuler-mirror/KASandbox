@@ -21,15 +21,28 @@ var (
 )
 
 func IsEmptyBlock(block []byte, blockSize int64) (bool, error) {
-	var emptyBuf []byte
+	// Standard block sizes keep the original code path unchanged.
 	switch blockSize {
 	case HugepageSize:
-		emptyBuf = EmptyHugePage
+		return bytes.Equal(block, EmptyHugePage), nil
 	case RootfsBlockSize:
-		emptyBuf = EmptyBlock
-	default:
-		return false, fmt.Errorf("block size not supported: %d", blockSize)
+		return bytes.Equal(block, EmptyBlock), nil
 	}
 
-	return bytes.Equal(block, emptyBuf), nil
+	// Other block sizes only occur on hosts whose base page differs from
+	// 4 KiB (e.g. 64 KiB ARM64 kernels such as openEuler 4.19).
+	if blockSize <= 0 {
+		return false, fmt.Errorf("block size must be positive: %d", blockSize)
+	}
+	if int64(len(block)) != blockSize {
+		return false, fmt.Errorf("block length does not match block size: %d != %d", len(block), blockSize)
+	}
+
+	for _, value := range block {
+		if value != 0 {
+			return false, nil
+		}
+	}
+
+	return true, nil
 }
