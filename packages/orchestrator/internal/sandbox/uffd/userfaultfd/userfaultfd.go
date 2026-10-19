@@ -27,6 +27,23 @@ const maxRequestsInProgress = 4096
 
 var ErrUnexpectedEventType = errors.New("unexpected event type")
 
+// uffdCopySize returns the destination alignment and length used for a single
+// UFFDIO_COPY.
+//
+// The kernel requires the destination to be aligned to the host page size and
+// the length to be a multiple of it (validate_range/validate_unaligned_range
+// in fs/userfaultfd.c). The snapshot memfile may use a smaller block size
+// (e.g. 4KiB), so the copy must cover at least one full host page. For
+// hugepage-backed regions the region page size is already a multiple of the
+// host page size, in which case the larger value is used.
+func uffdCopySize(regionPageSize uintptr) uintptr {
+	if regionPageSize > uintptr(block.PAGE_SIZE) {
+		return regionPageSize
+	}
+
+	return uintptr(block.PAGE_SIZE)
+}
+
 // hasEvent checks if a specific poll event flag is set in revents.
 func hasEvent(revents, event int16) bool {
 	return revents&event != 0
@@ -220,11 +237,28 @@ outerLoop:
 
 		addr := getPagefaultAddress(&pagefault)
 
-		offset, pagesize, err := u.ma.GetOffset(addr)
+		offset, regionPageSize, err := u.ma.GetOffset(addr)
 		if err != nil {
 			u.logger.Error(ctx, "UFFD serve get mapping error", zap.Error(err))
 
 			return fmt.Errorf("failed to map: %w", err)
+		}
+
+		// The kernel requires UFFDIO_COPY to operate on a full host page. Page
+		// fault addresses are usually already host-page aligned, but align
+		// defensively (e.g. if UFFD_FEATURE_EXACT_ADDRESS is negotiated) and
+		// recompute the memfile offset for the aligned address.
+		copySize := uffdCopySize(regionPageSize)
+		if aligned := addr &^ (copySize - 1); aligned != addr {
+			alignedOffset, _, mapErr := u.ma.GetOffset(aligned)
+			if mapErr != nil {
+				u.logger.Error(ctx, "UFFD serve get mapping error", zap.Error(mapErr))
+
+				return fmt.Errorf("failed to map: %w", mapErr)
+			}
+
+			addr = aligned
+			offset = alignedOffset
 		}
 
 		// Handle write to missing page (WRITE flag)
@@ -232,7 +266,7 @@ outerLoop:
 		// For the write to be executed, we first need to copy the page from the source to the guest memory.
 		if flags&UFFD_PAGEFAULT_FLAG_WRITE != 0 {
 			u.wg.Go(func() error {
-				return u.faultPage(ctx, addr, offset, pagesize, u.src, fdExit.SignalExit, block.Write)
+				return u.faultPage(ctx, addr, offset, copySize, u.src, fdExit.SignalExit, block.Write)
 			})
 
 			continue
@@ -242,7 +276,7 @@ outerLoop:
 		// If the event has no flags, it was a read to a missing page and we need to copy the page from the source to the guest memory.
 		if flags == 0 {
 			u.wg.Go(func() error {
-				return u.faultPage(ctx, addr, offset, pagesize, u.src, fdExit.SignalExit, block.Read)
+				return u.faultPage(ctx, addr, offset, copySize, u.src, fdExit.SignalExit, block.Read)
 			})
 
 			continue
@@ -281,16 +315,24 @@ func (u *Userfaultfd) Prefault(ctx context.Context, offset int64, data []byte) e
 	defer span.End()
 
 	// Get host virtual address and page size for this offset
-	addr, pagesize, err := u.ma.GetHostVirtAddr(offset)
+	addr, regionPageSize, err := u.ma.GetHostVirtAddr(offset)
 	if err != nil {
 		return fmt.Errorf("failed to get host virtual address: %w", err)
 	}
 
-	if len(data) != int(pagesize) {
-		return fmt.Errorf("data length (%d) is less than pagesize (%d)", len(data), pagesize)
+	copySize := uffdCopySize(regionPageSize)
+	if len(data) != int(copySize) {
+		return fmt.Errorf("data length (%d) does not match copy size (%d)", len(data), copySize)
 	}
 
-	return u.faultPage(ctx, addr, offset, pagesize, directDataSource{data, int64(pagesize)}, nil, block.Prefetch)
+	// Prefault bypasses the page-fault address alignment done in Serve, so the
+	// address must already be aligned to the copy size. Otherwise UFFDIO_COPY
+	// would write the data at a different address than it was read from.
+	if addr&(uintptr(copySize)-1) != 0 {
+		return fmt.Errorf("prefault address %#x is not aligned to copy size %d", addr, copySize)
+	}
+
+	return u.faultPage(ctx, addr, offset, copySize, directDataSource{data, int64(copySize)}, nil, block.Prefetch)
 }
 
 // directDataSource wraps a byte slice to implement block.Slicer for prefaulting.
@@ -311,7 +353,7 @@ func (u *Userfaultfd) faultPage(
 	ctx context.Context,
 	addr uintptr,
 	offset int64,
-	pagesize uintptr,
+	copySize uintptr,
 	source block.Slicer,
 	onFailure func() error,
 	accessType block.AccessType,
@@ -327,11 +369,11 @@ func (u *Userfaultfd) faultPage(
 
 	defer func() {
 		if r := recover(); r != nil {
-			u.logger.Error(ctx, "UFFD serve panic", zap.Any("pagesize", pagesize), zap.Any("panic", r))
+			u.logger.Error(ctx, "UFFD serve panic", zap.Any("copy_size", copySize), zap.Any("panic", r))
 		}
 	}()
 
-	b, dataErr := source.Slice(ctx, offset, int64(pagesize))
+	b, dataErr := block.ReadSlice(ctx, source, offset, int64(copySize))
 	if dataErr != nil {
 		var signalErr error
 		if onFailure != nil {
@@ -339,6 +381,24 @@ func (u *Userfaultfd) faultPage(
 		}
 
 		joinedErr := errors.Join(dataErr, signalErr)
+
+		span.RecordError(joinedErr)
+		u.logger.Error(ctx, "UFFD serve data fetch error", zap.Error(joinedErr))
+
+		return fmt.Errorf("failed to read from source: %w", joinedErr)
+	}
+
+	// A single UFFDIO_COPY must not read past the source slice, so make sure the
+	// source returned exactly one full copy unit.
+	if uintptr(len(b)) != copySize {
+		lenErr := fmt.Errorf("source returned %d bytes, expected %d", len(b), copySize)
+
+		var signalErr error
+		if onFailure != nil {
+			signalErr = onFailure()
+		}
+
+		joinedErr := errors.Join(lenErr, signalErr)
 
 		span.RecordError(joinedErr)
 		u.logger.Error(ctx, "UFFD serve data fetch error", zap.Error(joinedErr))
@@ -354,8 +414,8 @@ func (u *Userfaultfd) faultPage(
 	//if accessType != block.Write {
 	//	copyMode |= UFFDIO_COPY_MODE_WP
 	//}
-	
-	copyErr := u.fd.copy(addr, pagesize, b, copyMode)
+
+	copyErr := u.fd.copy(addr, copySize, b, copyMode)
 	if errors.Is(copyErr, unix.EEXIST) {
 		// Page is already mapped
 		span.SetAttributes(attribute.Bool("uffd.already_mapped", true))
@@ -378,8 +438,14 @@ func (u *Userfaultfd) faultPage(
 	}
 
 	// Add the offset to the missing requests tracker with metadata.
-	u.missingRequests.Add(offset)
-	u.prefetchTracker.Add(offset, accessType)
+	// A single UFFDIO_COPY can cover multiple source blocks (e.g. a 64KiB host
+	// page over a 4KiB memfile block size), so track every covered block to keep
+	// the prefetch mapping and missing-request accounting accurate.
+	blockSize := u.src.BlockSize()
+	for o := offset; o < offset+int64(copySize); o += blockSize {
+		u.missingRequests.Add(o)
+		u.prefetchTracker.Add(o, accessType)
+	}
 
 	return nil
 }

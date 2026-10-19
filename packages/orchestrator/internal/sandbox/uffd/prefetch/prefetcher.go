@@ -86,11 +86,34 @@ func (p *Prefetcher) Start(ctx context.Context) error {
 	maxCopyWorkers := p.featureFlags.IntFlag(ctx, featureflags.MemoryPrefetchMaxCopyWorkers)
 
 	blockSize := p.mapping.BlockSize
-	totalPages := len(indices)
+
+	// UFFDIO_COPY must operate on a full host page, which can be larger than
+	// the prefetch block size. Coalesce block indices into copy units (host
+	// pages) while preserving the first-access order.
+	unitSize := blockSize
+	if unitSize < int64(block.PAGE_SIZE) {
+		unitSize = int64(block.PAGE_SIZE)
+	}
+
+	seen := make(map[int64]struct{}, len(indices))
+	offsets := make([]int64, 0, len(indices))
+
+	for _, idx := range indices {
+		off := header.BlockOffset(int64(idx), blockSize) &^ (unitSize - 1)
+		if _, ok := seen[off]; ok {
+			continue
+		}
+
+		seen[off] = struct{}{}
+		offsets = append(offsets, off)
+	}
+
+	totalPages := len(offsets)
 
 	span.SetAttributes(
 		attribute.Int64("prefetch.total_pages", int64(totalPages)),
 		attribute.Int64("prefetch.block_size", blockSize),
+		attribute.Int64("prefetch.unit_size", unitSize),
 		attribute.Int("prefetch.max_fetch_workers", maxFetchWorkers),
 		attribute.Int("prefetch.max_copy_workers", maxCopyWorkers),
 	)
@@ -98,6 +121,7 @@ func (p *Prefetcher) Start(ctx context.Context) error {
 	p.logger.Debug(ctx, "prefetch: starting background prefetch",
 		zap.Int("total_pages", totalPages),
 		zap.Int64("block_size", blockSize),
+		zap.Int64("unit_size", unitSize),
 		zap.Int("max_fetch_workers", maxFetchWorkers),
 		zap.Int("max_copy_workers", maxCopyWorkers),
 	)
@@ -118,15 +142,15 @@ func (p *Prefetcher) Start(ctx context.Context) error {
 	var copyWg sync.WaitGroup
 
 	// Queue all offsets to fetch in the order they were originally accessed
-	for _, idx := range indices {
-		fetchCh <- header.BlockOffset(int64(idx), blockSize)
+	for _, off := range offsets {
+		fetchCh <- off
 	}
 	close(fetchCh)
 
 	// Start fetch workers - they populate the cache and queue offsets for copy
 	for range maxFetchWorkers {
 		fetchWg.Go(func() {
-			p.fetchWorker(ctx, fetchCh, copyCh, blockSize, &fetchedCount, &fetchSkippedCount)
+			p.fetchWorker(ctx, fetchCh, copyCh, unitSize, &fetchedCount, &fetchSkippedCount)
 		})
 	}
 
@@ -188,7 +212,7 @@ func (p *Prefetcher) fetchWorker(
 	ctx context.Context,
 	fetchCh <-chan int64,
 	copyCh chan<- prefetchData,
-	blockSize int64,
+	unitSize int64,
 	fetchedCount *atomic.Uint64,
 	skippedCount *atomic.Uint64,
 ) {
@@ -202,7 +226,7 @@ func (p *Prefetcher) fetchWorker(
 			}
 
 			// Fetch from source - this populates the cache
-			data, err := p.source.Slice(ctx, offset, blockSize)
+			data, err := block.ReadSlice(ctx, p.source, offset, unitSize)
 			if err != nil {
 				p.logger.Debug(ctx, "prefetch: failed to fetch page",
 					zap.Int64("offset", offset),
