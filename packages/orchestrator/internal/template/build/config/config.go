@@ -1,8 +1,6 @@
 package config
 
 import (
-	"os"
-
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/build/core/oci/auth"
 	templatemanager "github.com/e2b-dev/infra/packages/shared/pkg/grpc/template-manager"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
@@ -73,13 +71,17 @@ func MemfilePageSize(hugePages bool) int64 {
 		return header.HugepageSize
 	}
 
-	// UFFD operations must be aligned to the host base page size. On hosts
-	// whose base page is not 4 KiB (e.g. 64 KiB ARM64 kernels) use it as the
-	// block size; on 4 KiB hosts keep the original constant unchanged.
-	if pageSize := int64(os.Getpagesize()); pageSize != header.PageSize {
-		return pageSize
-	}
-
+	// Keep the memfile block size at the granularity Firecracker uses for its
+	// dirty/resident/empty bitmaps. With hugepages disabled Firecracker always
+	// reports these bitmaps at 4 KiB per bit (HugePageConfig::None => 4096),
+	// independent of the host base-page size. The memfile block size must match
+	// that granularity: CreateMapping() converts bit indexes to offsets with
+	// `index * blockSize`, so a larger block size would scale the 4 KiB indexes
+	// by the host page size and produce out-of-range mappings.
+	//
+	// Hosts with a base page larger than 4 KiB (e.g. 64 KiB ARM64) are handled
+	// on the I/O side instead: UFFD copies use the host page size as copy unit
+	// and read it from multiple 4 KiB blocks (see uffd/prefetch and block.ReadSlice).
 	return header.PageSize
 }
 
