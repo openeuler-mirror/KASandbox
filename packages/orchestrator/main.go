@@ -32,6 +32,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/hyperloopserver"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/metrics"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/nfsproxy"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/numa"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/portmap"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
@@ -80,6 +81,10 @@ const telemetryShutdownTimeout = 2 * time.Second
 var commitSHA string
 
 func main() {
+	if err := numa.Initialize(); err != nil {
+		log.Fatalf("failed to initialize NUMA locality: %v", err)
+	}
+
 	config, err := cfg.Parse()
 	if err != nil {
 		log.Fatalf("failed to parse config: %v", err)

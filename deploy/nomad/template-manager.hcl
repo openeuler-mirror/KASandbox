@@ -36,6 +36,7 @@ job "template-manager" {
       }
 
       env {
+        NUMA_LOCALITY                 = "${NUMA_LOCALITY}"
         NODE_ID                       = "$${node.unique.name}"
         CONSUL_TOKEN                  = "${CONSUL_ACL_TOKEN}"
         GCP_DOCKER_REPOSITORY_NAME    = "${HARBOR_HOST}"
