@@ -493,6 +493,50 @@ K8S 模式包含 Nomad 模式的全部组件（除 Docker / Docker Compose 外�
 | socat | 端口转发 | `yum install -y socat` |
 | websocat | WebSocket 代理 | https://github.com/vi/websocat/releases/latest/download/websocat.aarch64-unknown-linux-musl |
 
+#### 4.4.5 NUMA 本地优先（可选）
+
+默认关闭，无需额外安装工具。开启后，每次服务启动时优先选择允许使用的节点中普通空闲内存（`MemFree`）最多、且有可用 CPU 的节点；余量相同时选择编号较小的节点。运行期间不重新选点，重启服务后重新选择。
+
+前提：宿主机使用支持动态亲和的 openEuler 内核及 cgroup v2，服务的 cpuset 可写。
+
+1. 确认宿主机可重启后，以 root 添加内核启动参数并重启（已启用则跳过）：
+
+   ```bash
+   grubby --update-kernel=ALL --args="dynamic_affinity=enable"
+   reboot
+   ```
+
+   重启后重新登录，执行以下命令，确认输出 `dynamic_affinity=enable`：
+
+   ```bash
+   grep -o 'dynamic_affinity=[^ ]*' /proc/cmdline
+   ```
+
+2. 在部署目录的 `.env` 中设置：
+
+   ```bash
+   NUMA_LOCALITY=on
+   ```
+
+3. 按所选部署方式[重新部署服务](#101-服务管理)。启动日志出现 `NUMA locality: prefer node` 即表示启用成功。
+
+K8S 已部署支持该开关的镜像时，可直接更新 DaemonSet，无需重新构建镜像：
+
+```bash
+kubectl -n e2b set env ds/template-manager NUMA_LOCALITY=on
+kubectl -n e2b rollout status ds/template-manager
+```
+
+也可用 `kubectl -n e2b edit ds template-manager`，将容器环境变量 `NUMA_LOCALITY` 的值设为 `"on"`。保存后会自动更新 Pod；同步修改 `.env`，避免后续部署覆盖。
+
+如需在其他服务占满本地 CPU 时也允许使用其他节点的 CPU，在宿主机以 root 执行以下命令，并加入开机配置：
+
+```bash
+echo NO_DA_UTIL_TASKGROUP > /sys/kernel/debug/sched/features
+```
+
+关闭时将值改为 `off`，按上述相同方式更新服务。
+
 ### 4.5 Mooncake 配置（可选）
 
 Mooncake 是分布式内存语义层组件，用于加速跨节点内存共享。**仅当 `STORAGE_PROVIDER=MooncakeBucket` 时需要配置**，其他存储后端可跳过本节。
@@ -2151,7 +2195,8 @@ deploy/
 │   ├── e2b-webhook           # Webhook 二进制
 │   ├── migrator              # 数据库迁移工具
 │   ├── seed-db               # 数据库种子工具
-│   ├── fc-netns-exec         # 网络命名空间工具
+│   ├── fc-netns-exec         # Firecracker 网络命名空间工具
+│   ├── stratovirt-netns-exec # StratoVirt 网络命名空间与 Android 准备工具
 │   └── cri-multiplex         # CRI 多路复用器二进制
 ├── dep/                      # 部署依赖脚本（原始副本，build.sh 引用）
 │   ├── deploy.sh / main.py / nginx.conf / init-client.sh

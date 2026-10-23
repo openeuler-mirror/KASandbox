@@ -102,9 +102,9 @@ func (b *File) Slice(ctx context.Context, off, _ int64) ([]byte, error) {
 		return nil, fmt.Errorf("failed to get mapping: %w", err)
 	}
 
-	// Pass empty huge page when the build id is nil.
+	// Match the template block size, as required by UFFD prefetch.
 	if *buildID == uuid.Nil {
-		return header.EmptyHugePage, nil
+		return header.EmptyHugePage[:b.header.Metadata.BlockSize], nil
 	}
 
 	build, err := b.getBuild(ctx, buildID)

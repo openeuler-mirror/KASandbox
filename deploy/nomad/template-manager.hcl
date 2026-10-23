@@ -36,6 +36,7 @@ job "template-manager" {
       }
 
       env {
+        NUMA_LOCALITY                 = "${NUMA_LOCALITY}"
         NODE_ID                       = "$${node.unique.name}"
         CONSUL_TOKEN                  = "${CONSUL_ACL_TOKEN}"
         GCP_DOCKER_REPOSITORY_NAME    = "${HARBOR_HOST}"
@@ -51,6 +52,7 @@ job "template-manager" {
         ALLOW_SANDBOX_INTERNET        = "${ALLOW_SANDBOX_INTERNET}"
         SHARED_CHUNK_CACHE_PATH       = "${SHARED_CHUNK_CACHE_PATH}"
         E2B_FC_NETNS_EXEC_HELPER      = "${E2B_FC_NETNS_EXEC_HELPER}"
+        E2B_STRATOVIRT_NETNS_EXEC_HELPER = "${E2B_STRATOVIRT_NETNS_EXEC_HELPER}"
         E2B_USE_FC_NETNS_EXEC_HELPER  = "${E2B_USE_FC_NETNS_EXEC_HELPER}"
         GRPC_PORT                     = "${TEMPLATE_MANAGER_PORT}"
         GIN_MODE                      = "release"

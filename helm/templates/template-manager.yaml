@@ -85,6 +85,8 @@ spec:
         - containerPort: {{ .Values.templateManagerPort | int }}
           name: grpc
         env:
+        - name: NUMA_LOCALITY
+          value: {{ .Values.numaLocality | default "off" | quote }}
         - name: MAX_STARTING_INSTANCES_PER_NODE
           value: "100"
         - name: ENVD_TIMEOUT

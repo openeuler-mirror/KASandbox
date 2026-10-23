@@ -32,6 +32,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/hyperloopserver"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/metrics"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/nfsproxy"
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/numa"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/portmap"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/proxy"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
@@ -80,6 +81,10 @@ const telemetryShutdownTimeout = 2 * time.Second
 var commitSHA string
 
 func main() {
+	if err := numa.Initialize(); err != nil {
+		log.Fatalf("failed to initialize NUMA locality: %v", err)
+	}
+
 	config, err := cfg.Parse()
 	if err != nil {
 		log.Fatalf("failed to parse config: %v", err)
@@ -450,6 +455,7 @@ func run(config cfg.Config) (success bool) {
 	// 已清理（newStorage）之后、网络池开始填充之前创建，这样其冻结的挂载表
 	// 最小且不引用任何 netns；失败仅记录日志并回退原 unshare -m 路径
 	fc.WarmupPinnedMountNS(ctx, config.BuilderConfig)
+	stratovirt.WarmupPinnedMountNS(ctx, config.BuilderConfig)
 
 	startService("network pool", func() error {
 		networkPool.Populate(ctx)

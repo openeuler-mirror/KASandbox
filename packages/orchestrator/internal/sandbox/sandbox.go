@@ -812,7 +812,14 @@ func (f *Factory) ResumeSandbox(
 
 	tCgroup := time.Now()
 	// Create cgroup for sandbox resource accounting
-	cgroupHandle, cgroupFD := createCgroup(ctx, f.cgroupManager, runtime.SandboxID, cleanup)
+	manager := f.cgroupManager
+	// Android sandboxes run on StratoVirt, which keeps the VMM in the Pod
+	// cgroup (UseCgroupFD is disabled), so the per-sandbox accounting cgroup
+	// would stay empty. Restore its creation if per-VM cgroup placement is enabled.
+	if meta.Template.OsType == string(vmm.OsAndroid) {
+		manager = nil
+	}
+	cgroupHandle, cgroupFD := createCgroup(ctx, manager, runtime.SandboxID, cleanup)
 	zap.L().Sugar().Infof("[ResumeSandbox] create cgroup cost: %.3f ms, traceID=%s", time.Since(tCgroup).Seconds()*1000, traceID)
 
 	tParse := time.Now()
@@ -1047,9 +1054,23 @@ func (f *Factory) ResumeSandbox(
 	}
 
 	if config.VMMConfig.OsType.OrDefault() == vmm.OsAndroid {
-		if err := hostservice.RestartGuestRild(ctx, sbx.Slot.HostIPString(), config.Envd.AccessToken, runtime.SandboxID, f.config.ReadyCheckTimeout); err != nil {
-			return nil, fmt.Errorf("failed to restart guest RIL: %w", err)
-		}
+		rilCtx, cancelRIL := context.WithCancel(execCtx)
+		rilDone := make(chan struct{})
+		go func() {
+			defer close(rilDone)
+			defer cancelRIL()
+			if err := hostservice.RestartGuestRild(rilCtx, sbx.Slot.HostIPString(), config.Envd.AccessToken, runtime.SandboxID, f.config.ReadyCheckTimeout); err != nil && rilCtx.Err() == nil {
+				logger.L().Warn(rilCtx, "failed to restart guest RIL",
+					logger.WithSandboxID(runtime.SandboxID),
+					zap.Error(err))
+			}
+		}()
+		// Finish the background request before stopping the VM and recycling its IP.
+		cleanup.AddPriority(ctx, func(context.Context) error {
+			cancelRIL()
+			<-rilDone
+			return nil
+		})
 	}
 
 	if f.featureFlags.BoolFlag(execCtx, featureflags.HostStatsEnabled) {

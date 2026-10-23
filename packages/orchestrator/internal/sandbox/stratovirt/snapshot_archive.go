@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
 )
 
 var snapshotFiles = []string{"state", "memory"}
@@ -117,4 +119,22 @@ func isSnapshotFile(name string) bool {
 		}
 	}
 	return false
+}
+
+func restoreSnapshotFiles(file template.File, dir string, cached bool) error {
+	if cached {
+		if prepared, ok := file.(*template.PreparedFile); ok {
+			return prepared.LinkPreparedDir(dir, unpackSnapshot)
+		}
+	}
+	return unpackSnapshot(file.Path(), dir)
+}
+
+// PrepareSnapshot populates the same immutable cache used by Android restore.
+func PrepareSnapshot(file template.File, parent string) error {
+	prepared, ok := file.(*template.PreparedFile)
+	if !ok {
+		return fmt.Errorf("snapshot file does not support preparation")
+	}
+	return prepared.PrepareDir(parent, unpackSnapshot)
 }

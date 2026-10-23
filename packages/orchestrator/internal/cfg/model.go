@@ -17,6 +17,7 @@ type BuilderConfig struct {
 	DomainName                 string        `env:"DOMAIN_NAME"              envDefault:""`
 	EnvdTimeout                time.Duration `env:"ENVD_TIMEOUT"             envDefault:"10s"`
 	FirecrackerNetnsExecHelper string        `env:"E2B_FC_NETNS_EXEC_HELPER" envDefault:"/opt/e2b-infra/bin/fc-netns-exec"`
+	StratoVirtNetnsExecHelper  string        `env:"E2B_STRATOVIRT_NETNS_EXEC_HELPER" envDefault:"/opt/e2b-infra/bin/stratovirt-netns-exec"`
 	FirecrackerVersionsDir     string        `env:"FIRECRACKER_VERSIONS_DIR" envDefault:"/fc-versions"`
 	StratoVirtVersionsDir      string        `env:"STRATOVIRT_VERSIONS_DIR"  envDefault:"/stratovirt-versions"`
 	HostEnvdPath               string        `env:"HOST_ENVD_PATH"           envDefault:"/fc-envd/envd"`
@@ -54,6 +55,7 @@ func makePathsAbsolute(c *BuilderConfig) error {
 	for _, item := range []*string{
 		&c.DefaultCacheDir,
 		&c.FirecrackerNetnsExecHelper,
+		&c.StratoVirtNetnsExecHelper,
 		&c.FirecrackerVersionsDir,
 		&c.StratoVirtVersionsDir,
 		&c.HostEnvdPath,

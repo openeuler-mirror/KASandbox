@@ -136,6 +136,7 @@ postgresPassword: ${POSTGRES_PASSWORD}
 
 
 # --- template-manager ---
+numaLocality: "${NUMA_LOCALITY}"
 buildCacheBucketName: "${BUILD_CACHE_BUCKET_NAME}"
 templateManagerResourcesCpuCount: ${TEMPLATE_MANAGER_RESOURCES_CPU_COUNT}
 templateManagerResourcesMemoryMb: ${TEMPLATE_MANAGER_RESOURCES_MEMORY_MB}

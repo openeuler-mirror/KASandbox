@@ -67,7 +67,7 @@ case "%{_target_cpu}" in
     *)        echo "Unsupported architecture: %{_target_cpu}" >&2; exit 1 ;;
 esac
 for binary in api client-proxy envd orchestrator e2b-webhook \
-              migrator seed-db fc-netns-exec cri-multiplex; do
+              migrator seed-db fc-netns-exec stratovirt-netns-exec cri-multiplex; do
     binary_path="bin/${binary_arch}/${binary}"
     [ -x "$binary_path" ] || {
         echo "Missing built binary: $binary_path" >&2
