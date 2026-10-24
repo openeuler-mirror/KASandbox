@@ -1,11 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/e2b/e2b-webhook/provider"
+	"github.com/e2b/e2b-webhook/providers"
 )
 
 // sampleAnnotations 是测试中使用的示例 e2b 注解集合。
@@ -79,39 +83,119 @@ func envVar(name, value string) map[string]interface{} {
 	return map[string]interface{}{"name": name, "value": value}
 }
 
-// copyMap 返回 m 的浅拷贝; 若 m 为 nil 则返回空 map。
-// 用于 mockTransformer 避免返回内部状态引用被调用方修改。
-func copyMap(m map[string]string) map[string]string {
-	cp := make(map[string]string, len(m))
-	for k, v := range m {
-		cp[k] = v
+// fakeProvider 是测试用的 Provider：handler 决定选中的后端，默认产出
+// e2b.dev/template-id 与 sandbox.cri/backend 两个注解；android 不产出注解。
+type fakeProvider struct {
+	handler      string
+	annotations  map[string]string
+	runtimeClass string
+	err          error
+	calls        int
+}
+
+func (f *fakeProvider) Name() string    { return f.handler }
+func (f *fakeProvider) Handler() string { return f.handler }
+
+func (f *fakeProvider) Resolve(_ context.Context, _ provider.Request) (*provider.Result, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
 	}
-	return cp
+	annotations := map[string]string{}
+	if f.handler != "android" {
+		annotations["e2b.dev/template-id"] = "provider-template"
+		annotations[provider.AnnBackend] = f.handler
+	}
+	for key, value := range f.annotations {
+		annotations[key] = value
+	}
+	runtimeClass := f.runtimeClass
+	if runtimeClass == "" {
+		runtimeClass = f.handler
+	}
+	return &provider.Result{Annotations: annotations, RuntimeClass: runtimeClass}, nil
 }
 
-// mockTransformer 实现 annotationTransformer 接口, 用于测试 admitPod / admitBatchSandbox。
-type mockTransformer struct {
-	mu             sync.Mutex
-	podAnnotations map[string]string
-	podErr         error
-	podCalls       int
-	bsAnnotations  map[string]string
-	bsErr          error
-	bsCalls        int
+// newFakeMatcher 为每个 handler 建一个 fakeProvider 并构造 Matcher。
+func newFakeMatcher(t *testing.T, handlers ...string) *provider.Matcher {
+	t.Helper()
+	ps := make([]provider.Provider, 0, len(handlers))
+	for _, handler := range handlers {
+		ps = append(ps, &fakeProvider{handler: handler})
+	}
+	return newMatcherFromProviders(t, ps...)
 }
 
-func (m *mockTransformer) FetchForPod(pod *corev1.Pod) (map[string]string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.podCalls++
-	return copyMap(m.podAnnotations), m.podErr
+func newMatcherFromProviders(t *testing.T, ps ...provider.Provider) *provider.Matcher {
+	t.Helper()
+	matcher, err := provider.NewMatcher(ps...)
+	if err != nil {
+		t.Fatalf("NewMatcher: %v", err)
+	}
+	return matcher
 }
 
-func (m *mockTransformer) FetchForBatchSandbox(obj *unstructured.Unstructured) (map[string]string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.bsCalls++
-	return copyMap(m.bsAnnotations), m.bsErr
+// decodePatches 把 AdmissionResponse.Patch 解成 patchOperation 列表。
+func decodePatches(t *testing.T, resp *admissionv1.AdmissionResponse) []patchOperation {
+	t.Helper()
+	if len(resp.Patch) == 0 {
+		return nil
+	}
+	var patches []patchOperation
+	if err := json.Unmarshal(resp.Patch, &patches); err != nil {
+		t.Fatalf("unmarshal patches: %v", err)
+	}
+	return patches
+}
+
+// patchedAnnotations 按 patch 语义把增量合并到已有注解上（用于断言）。
+func patchedAnnotations(t *testing.T, basePath string, patches []patchOperation) map[string]string {
+	t.Helper()
+	prefix := basePath + "/"
+	out := map[string]string{}
+	for _, p := range patches {
+		switch {
+		case p.Path == basePath:
+			m, ok := p.Value.(map[string]interface{})
+			if !ok {
+				t.Fatalf("patch %s value = %T", p.Path, p.Value)
+			}
+			for k, v := range m {
+				out[k] = v.(string)
+			}
+		case strings.HasPrefix(p.Path, prefix):
+			key := strings.ReplaceAll(strings.TrimPrefix(p.Path, prefix), "~1", "/")
+			value, ok := p.Value.(string)
+			if !ok {
+				t.Fatalf("patch %s value = %T", p.Path, p.Value)
+			}
+			out[key] = value
+		}
+	}
+	return out
+}
+
+// patchExists 判断是否存在指定路径的 patch。
+func patchExists(patches []patchOperation, path string) bool {
+	for _, p := range patches {
+		if p.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+// setBatchSandboxRuntimeClass 设置 spec.template.spec.runtimeClassName。
+func setBatchSandboxRuntimeClass(obj *unstructured.Unstructured, runtimeClass string) {
+	spec, _ := obj.Object["spec"].(map[string]interface{})
+	template, _ := spec["template"].(map[string]interface{})
+	templateSpec, _ := template["spec"].(map[string]interface{})
+	templateSpec["runtimeClassName"] = runtimeClass
+}
+
+// setPodRuntimeClass 设置 spec.runtimeClassName。
+func setPodRuntimeClass(pod *corev1.Pod, runtimeClass string) {
+	pod.Spec.RuntimeClassName = &runtimeClass
 }
 
 // =============================================================================
@@ -255,309 +339,212 @@ func TestBuildPatch_JSONRoundTrip(t *testing.T) {
 }
 
 // =============================================================================
-// admitPod
+// admitPod / admitBatchSandbox —— Provider 选择与 patch
 // =============================================================================
 
-func TestAdmitPod_Create(t *testing.T) {
+func TestAdmitPod_NoSignalPassesThroughWithoutPatch(t *testing.T) {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Env: []corev1.EnvVar{
+			{Name: "TEMPLATE_NAME", Value: "tmpl"},
+			{Name: "ANDROID_SANDBOX", Value: "true"},
+		}}}},
 	}
-	ar := newPodReview(admissionv1.Create, pod)
-	tr := &mockTransformer{podAnnotations: sampleAnnotations}
-
-	resp := admitPod(ar, tr)
+	resp := admitPod(newPodReview(admissionv1.Create, pod), newFakeMatcher(t, "e2b", "android"))
 	if !resp.Allowed {
-		t.Fatalf("expected allowed=true")
+		t.Fatalf("Allowed = false, want true")
 	}
-	if resp.UID != "test-uid-1234" {
-		t.Errorf("expected uid=test-uid-1234, got %s", resp.UID)
-	}
-	if resp.PatchType == nil || *resp.PatchType != admissionv1.PatchTypeJSONPatch {
-		t.Fatalf("expected PatchType=JSONPatch")
-	}
-	if len(resp.Patch) == 0 {
-		t.Fatalf("expected non-empty patch")
-	}
-
-	var patches []patchOperation
-	if err := json.Unmarshal(resp.Patch, &patches); err != nil {
-		t.Fatalf("failed to unmarshal patch: %v", err)
-	}
-	if len(patches) != 2 {
-		t.Fatalf("expected 2 patches (annotations + runtimeClassName), got %d", len(patches))
-	}
-	if patches[0].Path != "/metadata/annotations" {
-		t.Errorf("expected path=/metadata/annotations, got %s", patches[0].Path)
-	}
-	if patches[1].Path != "/spec/runtimeClassName" || patches[1].Value != "e2b" {
-		t.Errorf("expected path=/spec/runtimeClassName value=e2b, got path=%s value=%v",
-			patches[1].Path, patches[1].Value)
-	}
-	if tr.podCalls != 1 {
-		t.Errorf("expected FetchForPod called once, got %d", tr.podCalls)
+	if len(resp.Patch) != 0 {
+		t.Fatalf("patch = %s, want no patch", resp.Patch)
 	}
 }
 
-func TestAdmitPod_AndroidSandbox(t *testing.T) {
+func TestAdmitPod_RuntimeClassSelectsProvider(t *testing.T) {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "android-pod", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
 		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name: "sandbox",
-					Env: []corev1.EnvVar{
-						{Name: "TEMPLATE_NAME", Value: "tpl-android"},
-						{Name: "ANDROID_SANDBOX", Value: "true"},
-					},
-				},
-			},
+			RuntimeClassName: strPtr("e2b"),
+			Containers:       []corev1.Container{{Name: "main", Env: []corev1.EnvVar{{Name: "TEMPLATE_NAME", Value: "tmpl"}}}},
 		},
 	}
-	ar := newPodReview(admissionv1.Create, pod)
-	tr := &mockTransformer{podAnnotations: sampleAnnotations}
-
-	resp := admitPod(ar, tr)
+	resp := admitPod(newPodReview(admissionv1.Create, pod), newFakeMatcher(t, "e2b", "android"))
 	if !resp.Allowed {
-		t.Fatalf("expected allowed=true")
+		t.Fatal("Allowed = false")
 	}
-
-	var patches []patchOperation
-	if err := json.Unmarshal(resp.Patch, &patches); err != nil {
-		t.Fatalf("failed to unmarshal patch: %v", err)
+	patches := decodePatches(t, resp)
+	annotations := patchedAnnotations(t, podAnnotationsPath, patches)
+	if annotations["e2b.dev/template-id"] != "provider-template" || annotations[provider.AnnBackend] != "e2b" {
+		t.Fatalf("annotations = %v", annotations)
 	}
-
-	// 期望: 仅 1 个 runtimeClassName patch (跳过 e2b 注解和 API 调用)
-	if len(patches) != 1 {
-		t.Fatalf("expected 1 patch, got %d", len(patches))
-	}
-
-	var rcPatch *patchOperation
-	for i := range patches {
-		if patches[i].Path == "/spec/runtimeClassName" {
-			rcPatch = &patches[i]
-			break
-		}
-	}
-	if rcPatch == nil {
-		t.Fatalf("expected runtimeClassName patch, got none")
-	}
-	if rcPatch.Value != "android" {
-		t.Errorf("expected runtimeClassName=android, got %v", rcPatch.Value)
+	if patchExists(patches, podRuntimeClassNamePath) {
+		t.Fatal("runtimeClass patch must not be added when already set")
 	}
 }
 
-func TestAdmitPod_NonCreate(t *testing.T) {
+func TestAdmitPod_AndroidRuntimeClassInjectsNothing(t *testing.T) {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
+		Spec:       corev1.PodSpec{RuntimeClassName: strPtr("android")},
 	}
-	tr := &mockTransformer{podAnnotations: sampleAnnotations}
-	for _, op := range []admissionv1.Operation{
-		admissionv1.Update,
-		admissionv1.Delete,
-		admissionv1.Connect,
-	} {
-		ar := newPodReview(op, pod)
-		resp := admitPod(ar, tr)
-		if !resp.Allowed {
-			t.Errorf("op=%s: expected allowed=true", op)
-		}
-		if len(resp.Patch) != 0 {
-			t.Errorf("op=%s: expected empty patch, got %d bytes", op, len(resp.Patch))
-		}
-		if resp.PatchType != nil {
-			t.Errorf("op=%s: expected nil PatchType", op)
-		}
+	resp := admitPod(newPodReview(admissionv1.Create, pod), newFakeMatcher(t, "e2b", "android"))
+	if !resp.Allowed {
+		t.Fatal("Allowed = false")
 	}
-	if tr.podCalls != 0 {
-		t.Errorf("expected FetchForPod not called for non-create, got %d", tr.podCalls)
+	if patches := decodePatches(t, resp); len(patches) != 0 {
+		t.Fatalf("patches = %+v, want none", patches)
 	}
 }
 
-func TestAdmitPod_MalformedJSON(t *testing.T) {
-	ar := &admissionv1.AdmissionReview{
-		Request: &admissionv1.AdmissionRequest{
-			UID:       "bad-uid",
-			Kind:      metav1.GroupVersionKind{Kind: "Pod"},
-			Operation: admissionv1.Create,
-			Object:    runtime.RawExtension{Raw: []byte(`{not valid json`)},
-		},
-	}
-	tr := &mockTransformer{podAnnotations: sampleAnnotations}
-	resp := admitPod(ar, tr)
-	if resp.Allowed {
-		t.Errorf("expected allowed=false for malformed JSON")
-	}
-	if resp.Result == nil {
-		t.Errorf("expected non-nil Result")
-	}
-}
-
-func TestAdmitPod_PartialE2BAnnotations(t *testing.T) {
+func TestAdmitPod_AnnotationSelectsBackendAndInjectsRuntimeClass(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "partial-pod",
-			Namespace: "default",
+			Name: "pod-1", Namespace: "default",
+			Annotations: map[string]string{provider.AnnBackend: "cube"},
+		},
+	}
+	resp := admitPod(newPodReview(admissionv1.Create, pod), newFakeMatcher(t, "e2b", "cube"))
+	patches := decodePatches(t, resp)
+	if !patchExists(patches, podRuntimeClassNamePath) {
+		t.Fatalf("runtimeClass patch missing: %+v", patches)
+	}
+	for _, p := range patches {
+		if p.Path == podRuntimeClassNamePath && p.Value != "cube" {
+			t.Fatalf("runtimeClass value = %v, want cube", p.Value)
+		}
+	}
+	annotations := patchedAnnotations(t, podAnnotationsPath, patches)
+	if annotations["e2b.dev/template-id"] != "provider-template" {
+		t.Fatalf("annotations = %v, want provider template injected", annotations)
+	}
+	if _, ok := annotations[provider.AnnBackend]; ok {
+		t.Fatal("sandbox.cri/backend already set by the user, must not be re-patched")
+	}
+}
+
+func TestAdmitPod_UnregisteredRuntimeClassPassesThrough(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
+		Spec:       corev1.PodSpec{RuntimeClassName: strPtr("runc")},
+	}
+	resp := admitPod(newPodReview(admissionv1.Create, pod), newFakeMatcher(t, "e2b"))
+	if !resp.Allowed || len(resp.Patch) != 0 {
+		t.Fatalf("Allowed=%v patch=%s, want pass-through", resp.Allowed, resp.Patch)
+	}
+}
+
+func TestAdmitPod_ResolveErrorOnlySetsRuntimeClass(t *testing.T) {
+	matcher := newMatcherFromProviders(t, &fakeProvider{handler: "e2b", err: errors.New("boom")})
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pod-1", Namespace: "default",
+			Annotations: map[string]string{provider.AnnBackend: "e2b"},
+		},
+	}
+	resp := admitPod(newPodReview(admissionv1.Create, pod), matcher)
+	patches := decodePatches(t, resp)
+	if len(patches) != 1 || patches[0].Path != podRuntimeClassNamePath || patches[0].Value != "e2b" {
+		t.Fatalf("patches = %+v, want only runtimeClassName", patches)
+	}
+}
+
+func TestAdmitPod_UserAnnotationsWin(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pod-1", Namespace: "default",
 			Annotations: map[string]string{
-				"e2b.dev/vcpu":        "4", // 自定义值，不应被覆盖
-				"e2b.dev/template-id": "custom-template",
+				"e2b.dev/template-id": "user",
+				provider.AnnBackend:   "e2b",
 			},
 		},
 	}
-	ar := newPodReview(admissionv1.Create, pod)
-	tr := &mockTransformer{podAnnotations: sampleAnnotations}
-	resp := admitPod(ar, tr)
-	if !resp.Allowed {
-		t.Fatalf("expected allowed=true")
-	}
-
-	var patches []patchOperation
-	if err := json.Unmarshal(resp.Patch, &patches); err != nil {
-		t.Fatalf("failed to unmarshal patch: %v", err)
-	}
-
-	// sampleAnnotations 中有 4 个, pod 已有 2 个 (vcpu, template-id), 应注入 2 个注解 + 1 个 runtimeClassName
-	want := len(sampleAnnotations) - 2 + 1
-	if len(patches) != want {
-		t.Fatalf("expected %d patches, got %d", want, len(patches))
-	}
-
+	resp := admitPod(newPodReview(admissionv1.Create, pod), newFakeMatcher(t, "e2b"))
+	patches := decodePatches(t, resp)
 	for _, p := range patches {
-		if strings.HasSuffix(p.Path, escapeJSONPointer("e2b.dev/vcpu")) {
-			t.Errorf("vcpu should not be patched")
-		}
 		if strings.HasSuffix(p.Path, escapeJSONPointer("e2b.dev/template-id")) {
-			t.Errorf("template-id should not be patched")
+			t.Fatalf("user annotation overwritten: %+v", p)
 		}
+	}
+	if !patchExists(patches, podRuntimeClassNamePath) {
+		t.Fatalf("runtimeClass patch missing: %+v", patches)
 	}
 }
 
-// =============================================================================
-// admitBatchSandbox
-// =============================================================================
-
-func TestAdmitBatchSandbox_Create(t *testing.T) {
-	obj := newBatchSandboxObj("bs-1", "default", []interface{}{
-		envVar("TEMPLATE_NAME", "tpl-from-env"),
-		envVar("OTHER", "x"),
-	})
-	raw, _ := json.Marshal(obj)
-	ar := newAdmissionReview("BatchSandbox", admissionv1.Create, raw)
-	tr := &mockTransformer{bsAnnotations: sampleAnnotations}
-
-	resp := admitBatchSandbox(ar, tr)
-	if !resp.Allowed {
-		t.Fatalf("expected allowed=true")
-	}
-	if resp.UID != "test-uid-1234" {
-		t.Errorf("expected uid=test-uid-1234, got %s", resp.UID)
-	}
-	if resp.PatchType == nil || *resp.PatchType != admissionv1.PatchTypeJSONPatch {
-		t.Fatalf("expected PatchType=JSONPatch")
-	}
-	if len(resp.Patch) == 0 {
-		t.Fatalf("expected non-empty patch")
-	}
-
-	var patches []patchOperation
-	if err := json.Unmarshal(resp.Patch, &patches); err != nil {
-		t.Fatalf("failed to unmarshal patch: %v", err)
-	}
-	if len(patches) != 1 {
-		t.Fatalf("expected 1 patch, got %d", len(patches))
-	}
-	if patches[0].Path != "/spec/template/metadata/annotations" {
-		t.Errorf("expected path=/spec/template/metadata/annotations, got %s", patches[0].Path)
-	}
-	if tr.bsCalls != 1 {
-		t.Errorf("expected FetchForBatchSandbox called once, got %d", tr.bsCalls)
-	}
-}
-
-func TestAdmitBatchSandbox_NonCreate(t *testing.T) {
-	obj := newBatchSandboxObj("bs-1", "default", []interface{}{envVar("TEMPLATE_NAME", "tpl")})
-	raw, _ := json.Marshal(obj)
-	tr := &mockTransformer{bsAnnotations: sampleAnnotations}
-	for _, op := range []admissionv1.Operation{
-		admissionv1.Update,
-		admissionv1.Delete,
-		admissionv1.Connect,
-	} {
-		ar := newAdmissionReview("BatchSandbox", op, raw)
-		resp := admitBatchSandbox(ar, tr)
-		if !resp.Allowed {
-			t.Errorf("op=%s: expected allowed=true", op)
-		}
-		if len(resp.Patch) != 0 {
-			t.Errorf("op=%s: expected empty patch, got %d bytes", op, len(resp.Patch))
-		}
-	}
-	if tr.bsCalls != 0 {
-		t.Errorf("expected FetchForBatchSandbox not called for non-create, got %d", tr.bsCalls)
-	}
-}
-
-func TestAdmitBatchSandbox_MalformedJSON(t *testing.T) {
-	ar := &admissionv1.AdmissionReview{
-		Request: &admissionv1.AdmissionRequest{
-			UID:       "bad-uid",
-			Kind:      metav1.GroupVersionKind{Kind: "BatchSandbox"},
-			Operation: admissionv1.Create,
-			Object:    runtime.RawExtension{Raw: []byte(`{not valid json`)},
+func TestAdmitPod_OversizedAnnotationsDropped(t *testing.T) {
+	big := map[string]string{"e2b.dev/big": strings.Repeat("x", 201*1024)}
+	matcher := newMatcherFromProviders(t, &fakeProvider{handler: "e2b", annotations: big})
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pod-1", Namespace: "default",
+			Annotations: map[string]string{provider.AnnBackend: "e2b"},
 		},
 	}
-	tr := &mockTransformer{bsAnnotations: sampleAnnotations}
-	resp := admitBatchSandbox(ar, tr)
-	if resp.Allowed {
-		t.Errorf("expected allowed=false for malformed JSON")
-	}
-	if resp.Result == nil {
-		t.Errorf("expected non-nil Result")
+	resp := admitPod(newPodReview(admissionv1.Create, pod), matcher)
+	patches := decodePatches(t, resp)
+	if len(patches) != 1 || patches[0].Path != podRuntimeClassNamePath {
+		t.Fatalf("patches = %+v, want only runtimeClassName", patches)
 	}
 }
 
-func TestAdmitBatchSandbox_PartialAnnotations(t *testing.T) {
-	obj := newBatchSandboxObj("bs-1", "default", []interface{}{envVar("TEMPLATE_NAME", "tpl")})
-	// 在 spec.template.metadata.annotations 设置已有的 e2b 注解
-	_ = unstructured.SetNestedField(obj.Object, map[string]interface{}{
-		"e2b.dev/vcpu": "8", // 已存在, 不应被覆盖
-	}, "spec", "template", "metadata", "annotations")
-
+func TestAdmitBatchSandbox_RuntimeClassFromTemplate(t *testing.T) {
+	obj := newBatchSandboxObj("bs-1", "default", []interface{}{envVar("TEMPLATE_NAME", "tmpl")})
+	setBatchSandboxRuntimeClass(obj, "cube")
 	raw, _ := json.Marshal(obj)
-	ar := newAdmissionReview("BatchSandbox", admissionv1.Create, raw)
-	tr := &mockTransformer{bsAnnotations: sampleAnnotations}
-	resp := admitBatchSandbox(ar, tr)
-	if !resp.Allowed {
-		t.Fatalf("expected allowed=true")
+	resp := admitBatchSandbox(newAdmissionReview("BatchSandbox", admissionv1.Create, raw), newFakeMatcher(t, "cube"))
+	patches := decodePatches(t, resp)
+	if len(patches) != 1 || patches[0].Path != bsAnnotationsPath {
+		t.Fatalf("patches = %+v, want annotations at %s", patches, bsAnnotationsPath)
 	}
-
-	var patches []patchOperation
-	if err := json.Unmarshal(resp.Patch, &patches); err != nil {
-		t.Fatalf("failed to unmarshal patch: %v", err)
-	}
-	// vcpu 已存在, 其余 3 个应被注入
-	if len(patches) != len(sampleAnnotations)-1 {
-		t.Fatalf("expected %d patches, got %d", len(sampleAnnotations)-1, len(patches))
-	}
-	for _, p := range patches {
-		if !strings.HasPrefix(p.Path, "/spec/template/metadata/annotations/") {
-			t.Errorf("patch path should target template annotations, got %s", p.Path)
-		}
-		if strings.HasSuffix(p.Path, escapeJSONPointer("e2b.dev/vcpu")) {
-			t.Errorf("vcpu should not be patched")
-		}
+	if patchExists(patches, bsRuntimeClassNamePath) {
+		t.Fatal("runtimeClass already set in template, must not be patched")
 	}
 }
+
+func TestAdmitBatchSandbox_NoSignalPassesThrough(t *testing.T) {
+	obj := newBatchSandboxObj("bs-1", "default", []interface{}{envVar("TEMPLATE_NAME", "tmpl")})
+	raw, _ := json.Marshal(obj)
+	resp := admitBatchSandbox(newAdmissionReview("BatchSandbox", admissionv1.Create, raw), newFakeMatcher(t, "cube"))
+	if !resp.Allowed || len(resp.Patch) != 0 {
+		t.Fatalf("Allowed=%v patch=%s, want pass-through", resp.Allowed, resp.Patch)
+	}
+}
+
+// testRequestFromPodCoversEnvAndIdentity 补齐归一化断言。
+func TestRequestFromPodCoversEnvAndIdentity(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "pod-1", Namespace: "ns", UID: "uid-1",
+			Labels:      map[string]string{"app": "x"},
+			Annotations: map[string]string{"e2b.dev/sandbox-id": "legacy-id"},
+		},
+		Spec: corev1.PodSpec{
+			RuntimeClassName: strPtr("e2b"),
+			Containers: []corev1.Container{{Name: "main", Env: []corev1.EnvVar{
+				{Name: "TEMPLATE_NAME", Value: "tmpl"},
+				{Name: "K", Value: "V"},
+			}}},
+		},
+	}
+	req := requestFromPod(pod)
+	if req.Kind != "Pod" || req.SandboxID != "legacy-id" || req.Template != "tmpl" || req.RuntimeClass != "e2b" || req.Env["K"] != "V" {
+		t.Fatalf("request = %+v", req)
+	}
+}
+
+func strPtr(s string) *string { return &s }
 
 // =============================================================================
 // serveMutate - 分发逻辑
 // =============================================================================
 
 func TestServeMutate_CreatePod(t *testing.T) {
-	oldFetcher := annotationFetcher
-	defer func() { annotationFetcher = oldFetcher }()
-	annotationFetcher = &mockTransformer{podAnnotations: sampleAnnotations}
+	oldMatcher := admissionMatcher
+	defer func() { admissionMatcher = oldMatcher }()
+	admissionMatcher = newFakeMatcher(t, "e2b")
 
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "http-pod", Namespace: "default"}}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "http-pod", Namespace: "default"},
+		Spec:       corev1.PodSpec{RuntimeClassName: strPtr("e2b")},
+	}
 	ar := newPodReview(admissionv1.Create, pod)
 	body, _ := json.Marshal(ar)
 
@@ -593,11 +580,12 @@ func TestServeMutate_CreatePod(t *testing.T) {
 }
 
 func TestServeMutate_CreateBatchSandbox(t *testing.T) {
-	oldFetcher := annotationFetcher
-	defer func() { annotationFetcher = oldFetcher }()
-	annotationFetcher = &mockTransformer{bsAnnotations: sampleAnnotations}
+	oldMatcher := admissionMatcher
+	defer func() { admissionMatcher = oldMatcher }()
+	admissionMatcher = newFakeMatcher(t, "e2b")
 
 	obj := newBatchSandboxObj("bs-http", "default", []interface{}{envVar("TEMPLATE_NAME", "tpl")})
+	setBatchSandboxRuntimeClass(obj, "e2b")
 	raw, _ := json.Marshal(obj)
 	ar := newAdmissionReview("BatchSandbox", admissionv1.Create, raw)
 	body, _ := json.Marshal(ar)
@@ -633,9 +621,9 @@ func TestServeMutate_CreateBatchSandbox(t *testing.T) {
 }
 
 func TestServeMutate_NonPodKind(t *testing.T) {
-	oldFetcher := annotationFetcher
-	defer func() { annotationFetcher = oldFetcher }()
-	annotationFetcher = &mockTransformer{podAnnotations: sampleAnnotations}
+	oldMatcher := admissionMatcher
+	defer func() { admissionMatcher = oldMatcher }()
+	admissionMatcher = newFakeMatcher(t, "e2b")
 
 	raw, _ := json.Marshal(map[string]string{"key": "val"})
 	ar := newAdmissionReview("ConfigMap", admissionv1.Create, raw)
@@ -861,94 +849,6 @@ func TestGetNestedStringMap_MissingPath(t *testing.T) {
 }
 
 // =============================================================================
-// sandboxConfig.toE2BAnnotations
-// =============================================================================
-
-func TestSandboxConfig_ToE2BAnnotations(t *testing.T) {
-	internetTrue := true
-	token := "secret-token"
-	cfg := sandboxConfig{
-		SandboxID:           "sbx-1",
-		BaseTemplateID:      "base-1",
-		TemplateID:          "tpl-xyz",
-		BuildID:             "build-1",
-		TeamID:              "team-1",
-		Vcpu:                4,
-		RAMMB:               2048,
-		TotalDiskSizeMB:     10240,
-		MaxSandboxLength:    600,
-		HugePages:           true,
-		AutoPause:           true,
-		Snapshot:            true,
-		AllowInternetAccess: &internetTrue,
-		EnvdVersion:         "0.1.0",
-		KernelVersion:       "5.10",
-		FirecrackerVersion:  "1.0",
-		ExecutionID:         "exec-1",
-		EnvdAccessToken:     &token,
-		Network: &sandboxNetworkConfig{
-			Egress: &sandboxNetworkEgressConfig{
-				AllowedCidrs: []string{"10.0.0.0/8"},
-			},
-		},
-	}
-
-	annos := cfg.toE2BAnnotations()
-
-	cases := map[string]string{
-		"e2b.dev/sandbox-id":          "sbx-1",
-		"e2b.dev/base_template_id":    "base-1",
-		"e2b.dev/template-id":         "tpl-xyz",
-		"e2b.dev/build-id":            "build-1",
-		"e2b.dev/team-id":             "team-1",
-		"e2b.dev/vcpu":                "4",
-		"e2b.dev/ram-mb":              "2048",
-		"e2b.dev/total-disk-size-mb":  "10240",
-		"e2b.dev/max-sandbox-length":  "600",
-		"e2b.dev/huge-pages":          "true",
-		"e2b.dev/auto-pause":          "true",
-		"e2b.dev/snapshot":            "true",
-		"e2b.dev/envd-version":        "0.1.0",
-		"e2b.dev/kernel-version":      "5.10",
-		"e2b.dev/firecracker-version": "1.0",
-		"e2b.dev/execution-id":        "exec-1",
-		"e2b.dev/allow-internet":      "true",
-		"e2b.dev/envd-access-token":   "secret-token",
-		"e2b.dev/network":             `{"egress":{"allowedCidrs":["10.0.0.0/8"]}}`,
-		"e2b.dev/env-vars":            "{}",
-		"e2b.dev/volume-mounts":       "[]",
-		"e2b.dev/auto-resume":         `{"policy":"off"}`,
-	}
-	for k, want := range cases {
-		if got := annos[k]; got != want {
-			t.Errorf("annotation %s = %q, want %q", k, got, want)
-		}
-	}
-}
-
-func TestSandboxConfig_ToE2BAnnotations_NilOptionals(t *testing.T) {
-	cfg := sandboxConfig{
-		TemplateID: "tpl-xyz",
-		Vcpu:       1,
-		RAMMB:      512,
-	}
-	annos := cfg.toE2BAnnotations()
-
-	if annos["e2b.dev/allow-internet"] != "true" {
-		t.Errorf("nil allow_internet_access should default to true, got %q", annos["e2b.dev/allow-internet"])
-	}
-	if annos["e2b.dev/envd-access-token"] != "" {
-		t.Errorf("nil envd_access_token should default to empty, got %q", annos["e2b.dev/envd-access-token"])
-	}
-	if annos["e2b.dev/network"] != `{"egress":{},"ingress":{}}` {
-		t.Errorf("empty network should default to empty object, got %q", annos["e2b.dev/network"])
-	}
-	if _, ok := annos["e2b.dev/sandbox-id"]; ok {
-		t.Errorf("empty SandboxID should not produce e2b.dev/sandbox-id annotation")
-	}
-}
-
-// =============================================================================
 // copyMap
 // =============================================================================
 
@@ -977,377 +877,6 @@ func TestCopyMap_Nil(t *testing.T) {
 	}
 	if len(cp) != 0 {
 		t.Errorf("expected empty map, got %d", len(cp))
-	}
-}
-
-// =============================================================================
-// SandboxTransformer - mock API server
-// =============================================================================
-
-// transformAPIServer 启动一个模拟 /sandboxes/transform 的 httptest.Server。
-// cfg 为返回的沙箱配置; status 为 HTTP 状态码。
-// captured 记录最后一次收到的请求体 (可选)。
-func transformAPIServer(t *testing.T, cfg sandboxConfig, status int, captured *sandboxTransformRequest) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/sandboxes/transform" {
-			http.NotFound(w, r)
-			return
-		}
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-		if captured != nil {
-			_ = json.NewDecoder(r.Body).Decode(captured)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(sandboxTransformResponse{Sandbox: cfg})
-	}))
-}
-
-func sampleConfig(templateID string) sandboxConfig {
-	return sandboxConfig{
-		TemplateID: templateID,
-		BuildID:    "build-1",
-		TeamID:     "team-1",
-		Vcpu:       2,
-		RAMMB:      512,
-	}
-}
-
-// =============================================================================
-// SandboxTransformer.FetchForPod
-// =============================================================================
-
-func TestSandboxTransformer_FetchForPod_Success(t *testing.T) {
-	var captured sandboxTransformRequest
-	server := transformAPIServer(t, sampleConfig("tpl-1"), http.StatusOK, &captured)
-	defer server.Close()
-
-	tr := NewSandboxTransformer(server.URL, "key-1", 2*time.Second)
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "p1",
-			Namespace: "ns",
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  "sandbox",
-					Image: "test:latest",
-					Env: []corev1.EnvVar{
-						{Name: "TEMPLATE_NAME", Value: "tpl-1"},
-					},
-				},
-			},
-		},
-	}
-	annos, err := tr.FetchForPod(pod)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if annos["e2b.dev/template-id"] != "tpl-1" {
-		t.Errorf("expected template-id=tpl-1, got %q", annos["e2b.dev/template-id"])
-	}
-	if captured.TemplateName != "tpl-1" {
-		t.Errorf("expected API called with templateName=tpl-1, got %q", captured.TemplateName)
-	}
-}
-
-func TestSandboxTransformer_FetchForPod_FallbackSandboxID(t *testing.T) {
-	var captured sandboxTransformRequest
-	server := transformAPIServer(t, sampleConfig("tpl-1"), http.StatusOK, &captured)
-	defer server.Close()
-
-	tr := NewSandboxTransformer(server.URL, "", 2*time.Second)
-	// sandboxID 始终使用 pod.Name
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pod-name-1",
-			Namespace: "ns",
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  "sandbox",
-					Image: "test:latest",
-					Env: []corev1.EnvVar{
-						{Name: "TEMPLATE_NAME", Value: "tpl-1"},
-					},
-				},
-			},
-		},
-	}
-	_, err := tr.FetchForPod(pod)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if captured.TemplateName != "tpl-1" {
-		t.Errorf("expected API called with templateName=tpl-1, got %q", captured.TemplateName)
-	}
-}
-
-func TestSandboxTransformer_FetchForPod_MissingLabel(t *testing.T) {
-	server := transformAPIServer(t, sampleConfig("tpl-1"), http.StatusOK, nil)
-	defer server.Close()
-
-	tr := NewSandboxTransformer(server.URL, "", 2*time.Second)
-	// 无 TEMPLATE_NAME env: 应返回 (nil, nil) 放行
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "ns", Labels: map[string]string{}},
-	}
-	annos, err := tr.FetchForPod(pod)
-	if err != nil {
-		t.Fatalf("expected no error for missing label/env, got %v", err)
-	}
-	if annos != nil {
-		t.Errorf("expected nil annotations when no templateID source, got %v", annos)
-	}
-}
-
-func TestSandboxTransformer_FetchForPod_EnvTemplateName(t *testing.T) {
-	var captured sandboxTransformRequest
-	server := transformAPIServer(t, sampleConfig("tpl-env"), http.StatusOK, &captured)
-	defer server.Close()
-
-	tr := NewSandboxTransformer(server.URL, "", 2*time.Second)
-	// containers[0].env 有 TEMPLATE_NAME: 应正常调用 API
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "spotbox-abc-0", Namespace: "ns", Labels: map[string]string{}},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  "sandbox",
-					Image: "test:latest",
-					Env: []corev1.EnvVar{
-						{Name: "ENVD_PORT", Value: "3999"},
-						{Name: "TEMPLATE_NAME", Value: "tpl-env"},
-					},
-				},
-			},
-		},
-	}
-	annos, err := tr.FetchForPod(pod)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if annos["e2b.dev/template-id"] != "tpl-env" {
-		t.Errorf("expected template-id=tpl-env, got %q", annos["e2b.dev/template-id"])
-	}
-	if captured.TemplateName != "tpl-env" {
-		t.Errorf("expected API called with templateName=tpl-env, got %q", captured.TemplateName)
-	}
-}
-
-func TestSandboxTransformer_FetchForPod_NoCache(t *testing.T) {
-	var mu sync.Mutex
-	callCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		callCount++
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(sandboxTransformResponse{Sandbox: sampleConfig("tpl-1")})
-	}))
-	defer server.Close()
-
-	tr := NewSandboxTransformer(server.URL, "", 2*time.Second)
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "p1", Namespace: "ns",
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  "sandbox",
-					Image: "test:latest",
-					Env: []corev1.EnvVar{
-						{Name: "TEMPLATE_NAME", Value: "tpl-1"},
-					},
-				},
-			},
-		},
-	}
-
-	a1, err := tr.FetchForPod(pod)
-	if err != nil {
-		t.Fatalf("first fetch failed: %v", err)
-	}
-	a2, err := tr.FetchForPod(pod)
-	if err != nil {
-		t.Fatalf("second fetch failed: %v", err)
-	}
-	if a1["e2b.dev/template-id"] != a2["e2b.dev/template-id"] {
-		t.Errorf("two fetches returned different template-id")
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if callCount != 2 {
-		t.Errorf("expected API called twice (no cache), got %d", callCount)
-	}
-}
-
-func TestSandboxTransformer_FetchForPod_APIError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	tr := NewSandboxTransformer(server.URL, "", 2*time.Second)
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "p1", Namespace: "ns",
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  "sandbox",
-					Image: "test:latest",
-					Env: []corev1.EnvVar{
-						{Name: "TEMPLATE_NAME", Value: "tpl-1"},
-					},
-				},
-			},
-		},
-	}
-	if _, err := tr.FetchForPod(pod); err == nil {
-		t.Errorf("expected error on API failure, got nil")
-	}
-}
-
-// =============================================================================
-// SandboxTransformer.FetchForBatchSandbox
-// =============================================================================
-
-func TestSandboxTransformer_FetchForBatchSandbox_Success(t *testing.T) {
-	var captured sandboxTransformRequest
-	server := transformAPIServer(t, sampleConfig("tpl-from-env"), http.StatusOK, &captured)
-	defer server.Close()
-
-	tr := NewSandboxTransformer(server.URL, "key-1", 2*time.Second)
-	obj := newBatchSandboxObj("bs-1", "default", []interface{}{
-		envVar("TEMPLATE_NAME", "tpl-from-env"),
-	})
-	annos, err := tr.FetchForBatchSandbox(obj)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if annos["e2b.dev/template-id"] != "tpl-from-env" {
-		t.Errorf("expected template-id=tpl-from-env, got %q", annos["e2b.dev/template-id"])
-	}
-	if captured.TemplateName != "tpl-from-env" {
-		t.Errorf("expected API called with templateName=tpl-from-env, got %q", captured.TemplateName)
-	}
-}
-
-func TestSandboxTransformer_FetchForBatchSandbox_NoCache(t *testing.T) {
-	var mu sync.Mutex
-	callCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		callCount++
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(sandboxTransformResponse{Sandbox: sampleConfig("tpl-x")})
-	}))
-	defer server.Close()
-
-	tr := NewSandboxTransformer(server.URL, "", 2*time.Second)
-	obj := newBatchSandboxObj("bs-1", "default", []interface{}{
-		envVar("TEMPLATE_NAME", "tpl-x"),
-	})
-
-	_, _ = tr.FetchForBatchSandbox(obj)
-	_, _ = tr.FetchForBatchSandbox(obj)
-
-	mu.Lock()
-	defer mu.Unlock()
-	if callCount != 2 {
-		t.Errorf("expected API called twice (no cache), got %d", callCount)
-	}
-}
-
-func TestSandboxTransformer_FetchForBatchSandbox_NoTemplateName(t *testing.T) {
-	server := transformAPIServer(t, sampleConfig("tpl-x"), http.StatusOK, nil)
-	defer server.Close()
-
-	tr := NewSandboxTransformer(server.URL, "", 2*time.Second)
-	obj := newBatchSandboxObj("bs-1", "default", []interface{}{
-		envVar("OTHER", "x"),
-	})
-	if _, err := tr.FetchForBatchSandbox(obj); err == nil {
-		t.Errorf("expected error for missing TEMPLATE_NAME, got nil")
-	}
-}
-
-func TestSandboxTransformer_FetchForBatchSandbox_APIError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "bad", http.StatusBadRequest)
-	}))
-	defer server.Close()
-
-	tr := NewSandboxTransformer(server.URL, "", 2*time.Second)
-	obj := newBatchSandboxObj("bs-1", "default", []interface{}{
-		envVar("TEMPLATE_NAME", "tpl-x"),
-	})
-	if _, err := tr.FetchForBatchSandbox(obj); err == nil {
-		t.Errorf("expected error on API failure, got nil")
-	}
-}
-
-// =============================================================================
-// 无缓存: Pod 与 BatchSandbox 各自独立调用 API
-// =============================================================================
-
-func TestSandboxTransformer_NoSharedCache_PodAndBatchSandbox(t *testing.T) {
-	var mu sync.Mutex
-	callCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		callCount++
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(sandboxTransformResponse{Sandbox: sampleConfig("shared-tpl")})
-	}))
-	defer server.Close()
-
-	tr := NewSandboxTransformer(server.URL, "", 2*time.Second)
-
-	// Pod 用 TEMPLATE_NAME=shared-tpl
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "p1", Namespace: "ns",
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  "sandbox",
-					Image: "test:latest",
-					Env: []corev1.EnvVar{
-						{Name: "TEMPLATE_NAME", Value: "shared-tpl"},
-					},
-				},
-			},
-		},
-	}
-	if _, err := tr.FetchForPod(pod); err != nil {
-		t.Fatalf("pod fetch failed: %v", err)
-	}
-
-	// BatchSandbox 用 TEMPLATE_NAME=shared-tpl, 无缓存, 应再次调用 API
-	bs := newBatchSandboxObj("bs-1", "ns", []interface{}{
-		envVar("TEMPLATE_NAME", "shared-tpl"),
-	})
-	if _, err := tr.FetchForBatchSandbox(bs); err != nil {
-		t.Fatalf("batchsandbox fetch failed: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if callCount != 2 {
-		t.Errorf("expected API called twice (no shared cache), got %d", callCount)
 	}
 }
 
@@ -1453,11 +982,52 @@ func BenchmarkBuildPatch_WithExisting(b *testing.B) {
 }
 
 func BenchmarkAdmitPod(b *testing.B) {
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "bench-pod", Namespace: "default"}}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "bench-pod", Namespace: "default"},
+		Spec:       corev1.PodSpec{RuntimeClassName: strPtr("e2b")},
+	}
 	ar := newPodReview(admissionv1.Create, pod)
-	tr := &mockTransformer{podAnnotations: sampleAnnotations}
+	matcher, err := provider.NewMatcher(&fakeProvider{handler: "e2b"})
+	if err != nil {
+		b.Fatalf("NewMatcher: %v", err)
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		admitPod(ar, tr)
+		admitPod(ar, matcher)
+	}
+}
+
+// =============================================================================
+// WEBHOOK_PROVIDERS 启动期校验
+// =============================================================================
+
+func TestBuildMatcherRejectsUnknownProvider(t *testing.T) {
+	if _, err := buildMatcher("e2b,cube", providers.NewSandboxTransformer("http://example.invalid", "", time.Second)); err == nil {
+		t.Fatal("unknown provider accepted")
+	}
+}
+
+func TestBuildMatcherRejectsDuplicateProvider(t *testing.T) {
+	if _, err := buildMatcher("e2b,e2b", providers.NewSandboxTransformer("http://example.invalid", "", time.Second)); err == nil {
+		t.Fatal("duplicate provider accepted")
+	}
+}
+
+func TestBuildMatcherRejectsEmptyList(t *testing.T) {
+	if _, err := buildMatcher(" , ", providers.NewSandboxTransformer("http://example.invalid", "", time.Second)); err == nil {
+		t.Fatal("empty provider list accepted")
+	}
+}
+
+func TestBuildMatcherAcceptsE2BAndAndroid(t *testing.T) {
+	m, err := buildMatcher("e2b,android", providers.NewSandboxTransformer("http://example.invalid", "", time.Second))
+	if err != nil {
+		t.Fatalf("buildMatcher: %v", err)
+	}
+	if sel, ok := m.Select(provider.Request{RuntimeClass: "e2b"}); !ok || sel.Provider.Handler() != "e2b" {
+		t.Fatalf("e2b selection = (%v, %v)", sel, ok)
+	}
+	if sel, ok := m.Select(provider.Request{RuntimeClass: "android"}); !ok || sel.Provider.Handler() != "android" {
+		t.Fatalf("android selection = (%v, %v)", sel, ok)
 	}
 }

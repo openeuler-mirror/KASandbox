@@ -7,3 +7,6 @@
 # e2b-scripts 本地环境配置与测试结果
 e2b-scripts/.env
 e2b-scripts/test-results/
+
+# go build output in the webhook module
+e2b-webhook/e2b-webhook

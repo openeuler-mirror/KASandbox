@@ -1,7 +1,12 @@
-package main
+// Package providers 实现 webhook 的各后端 Provider。
+//
+// 本文件承载 e2b API 的 transform 客户端与 sandboxConfig→注解映射；
+// 它只认识 e2b 自己的键，sandbox.cri/* 统一键由 provider 包定义。
+package providers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,14 +15,10 @@ import (
 	"strings"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/klog/v2"
-)
 
-// ────────────────────────────────────────────
-// API 请求 / 响应结构体
-// ────────────────────────────────────────────
+	"github.com/e2b/e2b-webhook/provider"
+)
 
 // sandboxTransformRequest 是 POST /sandboxes/transform 的请求体。
 // API 仅需要 templateName (template ID 或 alias), sandboxID 由服务端生成。
@@ -181,11 +182,47 @@ func (cfg *sandboxConfig) toE2BAnnotations() map[string]string {
 	return annos
 }
 
+// ToE2BAnnotations 是 toE2BAnnotations 的导出别名，供过渡期的 webhook 适配器使用。
+func (cfg *sandboxConfig) ToE2BAnnotations() map[string]string {
+	return cfg.toE2BAnnotations()
+}
+
+// toUnifiedAnnotations 产出 sandbox.cri/* 子集；只填非空字段。
+func (cfg *sandboxConfig) toUnifiedAnnotations(backend, sandboxID string) map[string]string {
+	out := provider.Unified(backend, sandboxID, cfg.TemplateID)
+	if cfg.BuildID != "" {
+		out[provider.AnnBuild] = cfg.BuildID
+	}
+	if cfg.Vcpu > 0 {
+		out[provider.AnnVCPU] = strconv.Itoa(cfg.Vcpu)
+	}
+	if cfg.RAMMB > 0 {
+		out[provider.AnnMemoryMB] = strconv.Itoa(cfg.RAMMB)
+	}
+	if cfg.TotalDiskSizeMB > 0 {
+		out[provider.AnnDiskMB] = strconv.Itoa(cfg.TotalDiskSizeMB)
+	}
+	if cfg.EnvdVersion != "" {
+		out[provider.AnnEnvdVersion] = cfg.EnvdVersion
+	}
+	if len(cfg.EnvVars) > 0 {
+		if b, err := json.Marshal(cfg.EnvVars); err == nil {
+			out[provider.AnnEnvVars] = string(b)
+		}
+	}
+	if len(cfg.Metadata) > 0 {
+		if b, err := json.Marshal(cfg.Metadata); err == nil {
+			out[provider.AnnMetadata] = string(b)
+		}
+	}
+	return out
+}
+
 // ────────────────────────────────────────────
 // SandboxTransformer
 // ────────────────────────────────────────────
 
-// SandboxTransformer 调用 e2b API 将沙箱配置转换为注解。
+// SandboxTransformer 调用 e2b API 把模板名转换为沙箱配置。
 // 每次调用都会向 API 发起新请求, 不缓存结果。
 type SandboxTransformer struct {
 	apiURL     string
@@ -204,141 +241,32 @@ func NewSandboxTransformer(apiURL, apiKey string, timeout time.Duration) *Sandbo
 	}
 }
 
-// FetchForPod 从 pod 的 containers[0].env 中提取 TEMPLATE_NAME, 调用 API 获取沙箱配置, 映射为 e2b 注解。
-// 无 TEMPLATE_NAME 时返回 (nil, nil), 表示放行不注入 (注解可能已由 BatchSandbox webhook 注入并继承)。
-func (s *SandboxTransformer) FetchForPod(pod *corev1.Pod) (map[string]string, error) {
-	templateID := extractTemplateNameFromPodEnv(pod)
-
-	if templateID == "" {
-		klog.V(3).Infof("pod %s/%s has no TEMPLATE_NAME env, skipping",
-			pod.Namespace, pod.Name)
+// Transform 调用 POST /sandboxes/transform 获取模板对应的沙箱配置。
+// templateName 为空时返回 (nil, nil)：调用方走"只补 runtimeClass"的降级路径。
+func (s *SandboxTransformer) Transform(ctx context.Context, templateName string) (*sandboxConfig, error) {
+	if templateName == "" {
+		klog.V(3).Infof("empty template name, skipping transform")
 		return nil, nil
 	}
-
-	sandboxID := pod.Name
-
-	annos, err := s.callTransformAPI(templateID, sandboxID)
+	cfg, err := s.callTransformAPI(ctx, templateName)
 	if err != nil {
-		klog.Errorf("transform API failed for templateID=%s sandboxID=%s: %v",
-			templateID, sandboxID, err)
+		klog.Errorf("transform API failed for templateName=%s: %v", templateName, err)
 		return nil, fmt.Errorf("transform API: %w", err)
 	}
-
-	return annos, nil
-}
-
-// FetchForBatchSandbox 从 BatchSandbox 资源的
-// spec.template.spec.containers[0].env 中提取 TEMPLATE_NAME 的值作为 templateID,
-// 调用 API 获取沙箱配置, 映射为 e2b 注解。
-func (s *SandboxTransformer) FetchForBatchSandbox(obj *unstructured.Unstructured) (map[string]string, error) {
-	templateID, err := extractTemplateNameFromBatchSandbox(obj)
-	if err != nil {
-		klog.Errorf("batchsandbox %s/%s: %v", obj.GetNamespace(), obj.GetName(), err)
-		return nil, err
-	}
-
-	// sandboxID: 优先使用 BatchSandbox 名称, 否则回退到 UID
-	sandboxID := obj.GetName()
-	if sandboxID == "" {
-		sandboxID = string(obj.GetUID())
-		klog.V(3).Infof("batchsandbox has no name, using UID as sandboxID: %s", sandboxID)
-	}
-
-	annos, err := s.callTransformAPI(templateID, sandboxID)
-	if err != nil {
-		klog.Errorf("transform API failed for templateID=%s sandboxID=%s: %v",
-			templateID, sandboxID, err)
-		return nil, fmt.Errorf("transform API: %w", err)
-	}
-
-	return annos, nil
-}
-
-// extractTemplateNameFromPodEnv 从 pod 的 containers[0].env 中提取 TEMPLATE_NAME 的值。
-// 不存在时返回空字符串。
-func extractTemplateNameFromPodEnv(pod *corev1.Pod) string {
-	if len(pod.Spec.Containers) == 0 {
-		return ""
-	}
-	for _, env := range pod.Spec.Containers[0].Env {
-		if env.Name == "TEMPLATE_NAME" && env.Value != "" {
-			return env.Value
-		}
-	}
-	return ""
-}
-
-// hasAndroidSandboxEnv 检查 pod 的 containers[0].env 中是否存在 ANDROID_SANDBOX=true。
-func hasAndroidSandboxEnv(pod *corev1.Pod) bool {
-	if len(pod.Spec.Containers) == 0 {
-		return false
-	}
-	for _, env := range pod.Spec.Containers[0].Env {
-		if env.Name == "ANDROID_SANDBOX" && env.Value == "true" {
-			return true
-		}
-	}
-	return false
-}
-
-func extractTemplateNameFromBatchSandbox(obj *unstructured.Unstructured) (string, error) {
-	containers, found, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
-	if err != nil {
-		return "", fmt.Errorf("read spec.template.spec.containers: %w", err)
-	}
-	if !found || len(containers) == 0 {
-		return "", fmt.Errorf("spec.template.spec.containers not found or empty")
-	}
-
-	firstContainer, ok := containers[0].(map[string]interface{})
-	if !ok {
-		return "", fmt.Errorf("containers[0] is not an object")
-	}
-
-	envList, found, err := unstructured.NestedSlice(firstContainer, "env")
-	if err != nil {
-		return "", fmt.Errorf("read containers[0].env: %w", err)
-	}
-	if !found {
-		return "", fmt.Errorf("containers[0].env not found")
-	}
-
-	for _, e := range envList {
-		envVar, ok := e.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		name, found, err := unstructured.NestedString(envVar, "name")
-		if err != nil || !found {
-			continue
-		}
-		if name == "TEMPLATE_NAME" {
-			value, found, err := unstructured.NestedString(envVar, "value")
-			if err != nil || !found || value == "" {
-				return "", fmt.Errorf("TEMPLATE_NAME env var is empty")
-			}
-			return value, nil
-		}
-	}
-
-	return "", fmt.Errorf("TEMPLATE_NAME env var not found in containers[0].env")
+	return cfg, nil
 }
 
 // callTransformAPI 调用 POST /sandboxes/transform。
-// templateID 作为 templateName 发送给 API; sandboxID 仅用于日志 (API 服务端自行生成)。
-func (s *SandboxTransformer) callTransformAPI(templateID, sandboxID string) (map[string]string, error) {
+func (s *SandboxTransformer) callTransformAPI(ctx context.Context, templateName string) (*sandboxConfig, error) {
 	url := s.apiURL + "/sandboxes/transform"
-	klog.V(2).Infof("calling %s (templateName=%s sandboxID=%s)", url, templateID, sandboxID)
+	klog.V(2).Infof("calling %s (templateName=%s)", url, templateName)
 
-	reqBody := sandboxTransformRequest{
-		TemplateName: templateID,
-	}
-	bodyBytes, err := json.Marshal(reqBody)
+	bodyBytes, err := json.Marshal(sandboxTransformRequest{TemplateName: templateName})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -363,10 +291,6 @@ func (s *SandboxTransformer) callTransformAPI(templateID, sandboxID string) (map
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
-
-	annos := apiResp.Sandbox.toE2BAnnotations()
-
-	klog.V(2).Infof("transform returned %d annotations for templateID=%s",
-		len(annos), templateID)
-	return annos, nil
+	klog.V(2).Infof("transform returned config for templateName=%s", templateName)
+	return &apiResp.Sandbox, nil
 }
