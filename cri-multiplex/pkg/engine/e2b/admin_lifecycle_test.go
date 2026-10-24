@@ -364,7 +364,7 @@ func TestAdminUpdateListCachedBuildsForwarding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AdminListCachedBuilds: %v", err)
 	}
-	if client.buildsCalls != 1 || len(builds.Builds) != 1 || builds.Builds[0].BuildId != "build-a" {
+	if client.buildsCalls != 1 || len(builds) != 1 || builds[0].BuildID != "build-a" {
 		t.Fatalf("builds forwarding mismatch: calls=%d resp=%+v", client.buildsCalls, builds)
 	}
 

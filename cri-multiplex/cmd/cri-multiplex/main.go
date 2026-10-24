@@ -163,15 +163,6 @@ func main() {
 	}
 	defer e2bEng.Close()
 
-	// Admin server 是附加管理面（Node Agent 调用），启动失败仅告警，不影响 CRI 主服务。
-	adminSrv := admin.NewServer(*adminSocket, e2bEng)
-	if err := adminSrv.Start(); err != nil {
-		log.Printf("WARNING: admin server failed to start on %s: %v", *adminSocket, err)
-	} else {
-		defer adminSrv.Stop()
-		log.Printf("admin server listening on %s", *adminSocket)
-	}
-
 	if *androidEnabled && *androidNodeIP == "" && !*cniEnabled {
 		*androidNodeIP = autoNodeIP()
 		if *androidNodeIP == "" {
@@ -239,6 +230,20 @@ func main() {
 		}
 	}
 	cleanupManager.Start(context.Background())
+
+	// Admin server 是附加管理面（Node Agent 调用），启动失败仅告警，不影响 CRI 主服务。
+	// v1（E2B 专用，deprecated）与 v2（按 backend 分发）共用同一个 unix socket。
+	adminReg, err := admin.NewRegistry(reg.Modules())
+	if err != nil {
+		log.Fatalf("initialize admin backend registry: %v", err)
+	}
+	adminSrv := admin.NewServer(*adminSocket, e2bEng, admin.NewV2Server(adminReg, mux.Routes()))
+	if err := adminSrv.Start(); err != nil {
+		log.Printf("WARNING: admin server failed to start on %s: %v", *adminSocket, err)
+	} else {
+		defer adminSrv.Stop()
+		log.Printf("admin server listening on %s (v1: e2b only, v2: registry)", *adminSocket)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

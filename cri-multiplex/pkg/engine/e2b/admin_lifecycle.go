@@ -129,15 +129,3 @@ func (e *Engine) AdminList(ctx context.Context) (*orchestrator.SandboxListRespon
 	}
 	return resp, nil
 }
-
-// AdminListCachedBuilds 薄转发 orchestrator ListCachedBuilds，不触碰本地状态。
-func (e *Engine) AdminListCachedBuilds(ctx context.Context) (*orchestrator.SandboxListCachedBuildsResponse, error) {
-	if err := e.ensureConn(); err != nil {
-		return nil, mapE2BError(err)
-	}
-	resp, err := e.client.ListCachedBuilds(ctx, &emptypb.Empty{})
-	if err != nil {
-		return nil, mapE2BError(err)
-	}
-	return resp, nil
-}

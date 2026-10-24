@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"time"
 
 	"google.golang.org/grpc"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -63,57 +62,4 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-// E2BOperation 与 RuntimeInfo 暂时留在根包，供 admin v1 服务使用；
-// Task 13 引入中性 Admin DTO 后删除。
-type E2BOperation struct {
-	OperationID  string    `json:"operation_id"`
-	Action       string    `json:"action"`
-	CRISandboxID string    `json:"cri_sandbox_id,omitempty"`
-	E2BSandboxID string    `json:"e2b_sandbox_id,omitempty"`
-	TeamID       string    `json:"team_id,omitempty"`
-	TemplateID   string    `json:"template_id,omitempty"`
-	BuildID      string    `json:"build_id,omitempty"`
-	State        string    `json:"state"`
-	Error        string    `json:"error,omitempty"`
-	StartedAt    time.Time `json:"started_at,omitempty"`
-	FinishedAt   time.Time `json:"finished_at,omitempty"`
-}
-
-// E2B operation 状态取值，暂时留在根包供 admin v1 与 e2b 共用。
-const (
-	OperationStateRunning   = "Running"
-	OperationStateSucceeded = "Succeeded"
-	OperationStateFailed    = "Failed"
-
-	LegacyOperationStatePending = "Pending"
-	OperationRestartError       = "process restarted during operation"
-)
-
-type RuntimeInfo struct {
-	CRISandboxID string
-	E2BSandboxID string
-	TeamID       string
-	PodName      string
-	PodNamespace string
-	PodUID       string
-	NodeName     string
-	TemplateID   string
-	BuildID      string
-	ExecutionID  string
-	RuntimeState string
-	CNIEnabled   bool
-	NetNSPath    string
-	IfName       string
-	PodIP        string
-	Gateway      string
-	DNS          []string
-	HostPorts    []HostPortMapping
-}
-
-// HostPortMapping 是 admin v1 视图里的 host→sandbox 端口映射。
-type HostPortMapping struct {
-	HostPort    int
-	SandboxPort int
 }

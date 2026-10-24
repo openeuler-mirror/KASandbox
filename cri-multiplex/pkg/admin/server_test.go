@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ type fakeEngine struct {
 	listResp   *orchestrator.SandboxListResponse
 	listErr    error
 	deleteErr  error
-	buildsResp *orchestrator.SandboxListCachedBuildsResponse
+	buildsResp []engine.CachedBuild
 	buildsErr  error
 
 	createCalls int
@@ -127,7 +128,7 @@ func (f *fakeEngine) AdminDelete(ctx context.Context, req *orchestrator.SandboxD
 	return &emptypb.Empty{}, f.deleteErr
 }
 
-func (f *fakeEngine) AdminListCachedBuilds(ctx context.Context) (*orchestrator.SandboxListCachedBuildsResponse, error) {
+func (f *fakeEngine) AdminListCachedBuilds(ctx context.Context) ([]engine.CachedBuild, error) {
 	f.buildsCalls++
 	if f.buildsErr != nil {
 		return nil, f.buildsErr
@@ -135,7 +136,7 @@ func (f *fakeEngine) AdminListCachedBuilds(ctx context.Context) (*orchestrator.S
 	if f.buildsResp != nil {
 		return f.buildsResp, nil
 	}
-	return &orchestrator.SandboxListCachedBuildsResponse{}, nil
+	return nil, nil
 }
 
 func TestPauseSandboxValidation(t *testing.T) {
@@ -247,7 +248,7 @@ func TestGetSandboxRuntimeMapping(t *testing.T) {
 func TestE2BSandboxServiceDelegatesToEngine(t *testing.T) {
 	eng := &fakeEngine{
 		listResp:   &orchestrator.SandboxListResponse{Sandboxes: []*orchestrator.RunningSandbox{{ClientId: "client-a"}}},
-		buildsResp: &orchestrator.SandboxListCachedBuildsResponse{Builds: []*orchestrator.CachedBuildInfo{{BuildId: "build-a"}}},
+		buildsResp: []engine.CachedBuild{{BuildID: "build-a"}},
 	}
 	s := NewServer("/tmp/unused.sock", eng)
 	ctx := context.Background()
@@ -304,5 +305,41 @@ func TestE2BSandboxServiceErrorPassthrough(t *testing.T) {
 	s := NewServer("/tmp/unused.sock", eng)
 	if _, err := s.Create(context.Background(), &orchestrator.SandboxCreateRequest{}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("create error code = %v, want InvalidArgument", status.Code(err))
+	}
+}
+
+func TestServerRegistersV1AndV2OnSameSocket(t *testing.T) {
+	eng := &fakeEngine{}
+	reg, err := NewRegistry([]*engine.BackendModule{{Descriptor: engine.BackendDescriptor{Type: engine.EngineTypeE2B, Handler: "e2b"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(filepath.Join(t.TempDir(), "admin.sock"), eng, NewV2Server(reg, nil))
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	info := s.grpcSrv.GetServiceInfo()
+	for _, name := range []string{
+		"crimultiplex.admin.v1.E2BSandboxAdminService",
+		"crimultiplex.admin.v1.E2BSandboxService",
+		"crimultiplex.admin.v2.SandboxAdminService",
+		"crimultiplex.admin.v2.SandboxService",
+	} {
+		if _, ok := info[name]; !ok {
+			t.Fatalf("service %s not registered; got %v", name, info)
+		}
+	}
+}
+
+func TestServerWithoutV2RegistersOnlyV1(t *testing.T) {
+	s := NewServer(filepath.Join(t.TempDir(), "admin.sock"), &fakeEngine{})
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+	if info := s.grpcSrv.GetServiceInfo(); len(info) != 2 {
+		t.Fatalf("v1-only server services = %v", info)
 	}
 }

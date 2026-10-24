@@ -125,9 +125,23 @@ protoc \
   proto/orchestrator.proto proto/admin.proto
 ```
 
+`proto/admin_v2.proto` 是后端中性的 admin API（v2）。它**不 import** `orchestrator.proto`，
+因此单独生成到 `pkg/admin/v2`（package `adminv2`）：
+
+```bash
+protoc \
+  --go_out=. --go_opt=module=github.com/cri-multiplex \
+  --go-grpc_out=. --go-grpc_opt=module=github.com/cri-multiplex \
+  --experimental_allow_proto3_optional \
+  -I proto -I /usr/include \
+  proto/admin_v2.proto
+```
+
 ### Admin socket services
 
-Two services share the admin unix socket:
+Two generations of services share one admin unix socket:
+
+**v1（E2B 专用，deprecated，至少保留两个版本）**
 
 - **E2BSandboxAdminService** — Pause/Checkpoint with operation-id idempotency, plus GetSandboxRuntime.
 - **E2BSandboxService** — orchestrator-shaped lifecycle API (message types reused from
@@ -138,6 +152,18 @@ Two services share the admin unix socket:
   Stop+Remove in one call
   (blocking sandbox operation lock + `cleanupSandboxResources`, idempotent OK when missing);
   `Update`/`List`/`ListCachedBuilds` are thin forwards. Always enabled.
+
+**v2（后端中性，新调用方用它）**
+
+- **SandboxService** — Create/Update/List/Delete/ListCachedBuilds。
+- **SandboxAdminService** — PauseSandbox/CheckpointSandbox/GetSandboxRuntime。
+- 请求里的 `backend` 为空默认 `e2b`；`admin.Registry` 按 Type/Handler/Aliases 解析，
+  未注册返回 `NotFound`。后端能力缺失返回 `Unimplemented`（e2b 8 个方法全实现，
+  android/containerd 本期不实现 v2）。target 用 `cri_sandbox_id` 或 `sandbox_id` 二选一；
+  给了 CRI ID 且路由归属不符返回 `FailedPrecondition`，路由缺失时交给引擎判断。
+- Pause/Checkpoint 的 `timeout_seconds` 收敛到 [60s, 300s]，审计日志用 klog 输出
+  `backend/action/operation_id/target/result/duration_ms`，不记录 metadata。
+- 新后端只需实现 `engine.Admin*` 能力接口并在 `main` 注册，无需改 `pkg/admin/server.go`。
 
 ## Key constraints
 
