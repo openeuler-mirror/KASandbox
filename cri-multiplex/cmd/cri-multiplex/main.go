@@ -13,6 +13,9 @@ import (
 
 	"github.com/cri-multiplex/pkg/admin"
 	"github.com/cri-multiplex/pkg/engine"
+	"github.com/cri-multiplex/pkg/engine/android"
+	"github.com/cri-multiplex/pkg/engine/containerd"
+	"github.com/cri-multiplex/pkg/engine/e2b"
 	"github.com/cri-multiplex/pkg/engine/util"
 	"github.com/cri-multiplex/pkg/server"
 )
@@ -128,7 +131,7 @@ func main() {
 		log.Fatalf("initialize state store: %v", err)
 	}
 
-	containerEng := engine.NewContainerEngine(*containerdSocket)
+	containerEng := containerd.New(*containerdSocket)
 	defer containerEng.Close()
 
 	if *nodeIP == "" {
@@ -139,11 +142,10 @@ func main() {
 		}
 		log.Printf("auto-detected node-ip: %s", *nodeIP)
 	}
-	cfg := &engine.E2BConfig{
+	cfg := e2b.Config{
+		Deps:                  engine.Deps{Store: stateStore, NodeName: *nodeName, NodeIP: *nodeIP},
 		OrchestratorAddr:      *orchestratorAddress,
 		OrchestratorProxyAddr: *orchestratorProxyAddr,
-		NodeIP:                *nodeIP,
-		NodeName:              *nodeName,
 		CNI: util.CNIConfig{
 			Enabled:     *cniEnabled,
 			ConfDir:     *cniConfDir,
@@ -153,21 +155,21 @@ func main() {
 			PoolEnabled: *cniPoolEnabled,
 			PoolSize:    *cniPoolSize,
 		},
-		StateStore: stateStore,
-		HideLabel:  *hideSandboxLabel,
+		HideLabel: *hideSandboxLabel,
 	}
-	e2bEng := engine.NewE2BEngine(cfg)
+	e2bEng, err := e2b.New(cfg)
+	if err != nil {
+		log.Fatalf("initialize e2b backend: %v", err)
+	}
 	defer e2bEng.Close()
 
 	// Admin server 是附加管理面（Node Agent 调用），启动失败仅告警，不影响 CRI 主服务。
-	if adminEng, ok := e2bEng.(admin.Engine); ok {
-		adminSrv := admin.NewServer(*adminSocket, adminEng)
-		if err := adminSrv.Start(); err != nil {
-			log.Printf("WARNING: admin server failed to start on %s: %v", *adminSocket, err)
-		} else {
-			defer adminSrv.Stop()
-			log.Printf("admin server listening on %s", *adminSocket)
-		}
+	adminSrv := admin.NewServer(*adminSocket, e2bEng)
+	if err := adminSrv.Start(); err != nil {
+		log.Printf("WARNING: admin server failed to start on %s: %v", *adminSocket, err)
+	} else {
+		defer adminSrv.Stop()
+		log.Printf("admin server listening on %s", *adminSocket)
 	}
 
 	if *androidEnabled && *androidNodeIP == "" && !*cniEnabled {
@@ -177,10 +179,10 @@ func main() {
 		}
 		log.Printf("auto-detected android-node-ip: %s", *androidNodeIP)
 	}
-	androidEng := engine.NewAndroidEngine(engine.AndroidConfig{
+	androidEng, err := android.New(android.Config{
+		Deps:                 engine.Deps{Store: stateStore, NodeName: *nodeName, NodeIP: *androidNodeIP},
 		Enabled:              *androidEnabled,
 		ArtifactsDir:         *androidArtifactsDir,
-		NodeIP:               *androidNodeIP,
 		ADBPortStart:         *androidADBPortStart,
 		BaseInstanceNumStart: *androidBaseInstanceNumStart,
 		WebRTCPortStart:      *androidWebRTCPortStart,
@@ -194,8 +196,10 @@ func main() {
 			NetNSDir:    *cniNetNSDir,
 			NetNSPrefix: *androidCNINetNSPrefix,
 		},
-		StateStore: stateStore,
 	})
+	if err != nil {
+		log.Fatalf("initialize android backend: %v", err)
+	}
 	defer androidEng.Close()
 
 	// 后端装配顺序固定：Register → Freeze → CleanupManager → Mux → Restore → Reconcile → Start。

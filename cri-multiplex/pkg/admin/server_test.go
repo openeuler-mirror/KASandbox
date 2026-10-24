@@ -10,7 +10,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/cri-multiplex/pkg/engine"
-	"github.com/cri-multiplex/pkg/engine/util"
 	"github.com/cri-multiplex/pkg/orchestrator"
 )
 
@@ -79,8 +78,13 @@ func (f *fakeEngine) AdminGetRuntime(criID, e2bID string) (*engine.RuntimeInfo, 
 			PodName: "pod-a", PodNamespace: "ns-a", PodUID: "uid-a", NodeName: "node-a",
 			TemplateID: "tmpl-a", BuildID: "build-a", ExecutionID: "exec-a",
 			RuntimeState: "Running",
-			CNI:          &util.CNIRecord{NetNSPath: "/var/run/netns/x", IfName: "eth0", PodIP: "10.0.0.10", Gateway: "10.0.0.1", DNS: []string{"10.96.0.10"}},
-			HostPorts:    []util.PortMapping{{HostPort: 20001, SandboxPort: 49983}},
+			CNIEnabled:   true,
+			NetNSPath:    "/var/run/netns/x",
+			IfName:       "eth0",
+			PodIP:        "10.0.0.10",
+			Gateway:      "10.0.0.1",
+			DNS:          []string{"10.96.0.10"},
+			HostPorts:    []engine.HostPortMapping{{HostPort: 20001, SandboxPort: 49983}},
 		}, []engine.E2BOperation{{
 			OperationID: "op-1", Action: "Pause", CRISandboxID: "cri-a", E2BSandboxID: "e2b-a",
 			TemplateID: "tmpl-snap", BuildID: "build-snap", State: engine.OperationStateRunning,

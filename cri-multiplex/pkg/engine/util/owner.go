@@ -14,14 +14,14 @@ const resourceOwnerFile = ".cri-multiplex-owner.json"
 var ErrOwnershipUnknown = errors.New("resource ownership is unknown")
 
 type ResourceOwner struct {
-	Owner           string     `json:"owner"`
-	Runtime         string     `json:"runtime"`
-	SandboxID       string     `json:"sandbox_id"`
-	PodUID          string     `json:"pod_uid,omitempty"`
-	PodNamespace    string     `json:"pod_namespace,omitempty"`
-	PodName         string     `json:"pod_name,omitempty"`
-	BaseInstanceNum int        `json:"base_instance_num,omitempty"`
-	ArtifactsDir    string     `json:"artifacts_dir,omitempty"`
+	Owner           string `json:"owner"`
+	Runtime         string `json:"runtime"`
+	SandboxID       string `json:"sandbox_id"`
+	PodUID          string `json:"pod_uid,omitempty"`
+	PodNamespace    string `json:"pod_namespace,omitempty"`
+	PodName         string `json:"pod_name,omitempty"`
+	BaseInstanceNum int    `json:"base_instance_num,omitempty"`
+	ArtifactsDir    string `json:"artifacts_dir,omitempty"`
 }
 
 func WriteResourceOwner(path string, owner ResourceOwner) error {

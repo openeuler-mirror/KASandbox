@@ -164,9 +164,9 @@ func TestStateStoreBatchFailureAndRetry(t *testing.T) {
 	first := awaitStateWrite(t, writes)
 	done := make(chan error, 5)
 	for i := 0; i < 5; i++ {
-		go func(i int) { done <- store.SaveE2BImage(fmt.Sprint(i)) }(i)
+		go func(i int) { done <- store.SaveBackendState(fmt.Sprintf("probe_image_%d", i), i) }(i)
 	}
-	awaitStateMutation(t, store, func(s persistedState) bool { return len(e2bSection[[]string](t, s, "images")) == 5 })
+	awaitStateMutation(t, store, func(s persistedState) bool { return len(s.Sections) == 5 })
 	first.release <- nil
 	failed := awaitStateWrite(t, writes)
 	if err := awaitStateResult(t, firstDone); err != nil {
@@ -179,7 +179,7 @@ func TestStateStoreBatchFailureAndRetry(t *testing.T) {
 			t.Fatalf("batch caller received %v, want sync failure", err)
 		}
 	}
-	go func() { firstDone <- store.SaveE2BImage("retry") }()
+	go func() { firstDone <- store.SaveBackendState("e2b.images", []string{"retry"}) }()
 	retry := awaitStateWrite(t, writes)
 	retry.release <- nil
 	if err := awaitStateResult(t, firstDone); err != nil {
@@ -191,11 +191,11 @@ func TestStateStoreDeleteDuringFlushDoesNotResurrect(t *testing.T) {
 	store := newStateStoreTestStore(t)
 	writes := blockStateWrites(t, store)
 	firstDone := make(chan error, 1)
-	go func() { firstDone <- store.SaveE2BPod(E2BPodState{SandboxID: "deleted"}) }()
+	go func() { firstDone <- store.SaveBackendState("e2b.pods", []map[string]any{{"sandbox_id": "deleted"}}) }()
 	first := awaitStateWrite(t, writes)
 	deleteDone := make(chan error, 1)
-	go func() { deleteDone <- store.DeleteE2BPod("deleted") }()
-	awaitStateMutation(t, store, func(s persistedState) bool { return len(e2bSection[[]E2BPodState](t, s, "pods")) == 0 })
+	go func() { deleteDone <- store.DeleteBackendState("e2b.pods") }()
+	awaitStateMutation(t, store, func(s persistedState) bool { return len(e2bSection[[]map[string]any](t, s, "pods")) == 0 })
 	first.release <- nil
 	second := awaitStateWrite(t, writes)
 	second.release <- nil
@@ -213,7 +213,7 @@ func TestStateStoreDeleteDuringFlushDoesNotResurrect(t *testing.T) {
 	if err := json.Unmarshal(data, &saved); err != nil {
 		t.Fatal(err)
 	}
-	if pods := e2bSection[[]E2BPodState](t, saved, "pods"); len(pods) != 0 {
+	if pods := e2bSection[[]map[string]any](t, saved, "pods"); len(pods) != 0 {
 		t.Fatalf("deleted pod resurrected: pods=%v", pods)
 	}
 }
@@ -240,6 +240,7 @@ func runConcurrentStateSaves(t *testing.T, store *JSONStateStore, count int) ([]
 	errs := make(chan error, count)
 	timings := make([]stateProbeTiming, count)
 	var wg sync.WaitGroup
+	var upsertMu sync.Mutex
 	for i := 0; i < count; i++ {
 		wg.Add(1)
 		go func(i int) {
@@ -247,9 +248,9 @@ func runConcurrentStateSaves(t *testing.T, store *JSONStateStore, count int) ([]
 			<-start
 			id := fmt.Sprintf("state-probe-%03d", i)
 			started := time.Now()
-			if err := store.SaveE2BPod(E2BPodState{
-				SandboxID: id, E2BSandboxID: id, State: stateRunning,
-				EnvdAccessToken: "secret-test-token",
+			if err := upsertE2BPodForTest(store, &upsertMu, map[string]any{
+				"sandbox_id": id, "e2b_sandbox_id": id, "state": 0,
+				"envd_access_token": "secret-test-token",
 			}); err != nil {
 				errs <- err
 				return
@@ -279,13 +280,15 @@ func runConcurrentStateSaves(t *testing.T, store *JSONStateStore, count int) ([]
 	if err := json.Unmarshal(data, &saved); err != nil {
 		t.Fatal(err)
 	}
-	savedPods := e2bSection[[]E2BPodState](t, saved, "pods")
+	savedPods := e2bSection[[]map[string]any](t, saved, "pods")
 	if len(saved.Routes) != count || len(savedPods) != count {
 		t.Fatalf("persisted routes=%d pods=%d, want %d each", len(saved.Routes), len(savedPods), count)
 	}
 	ids := make(map[string]bool, count)
 	for _, p := range savedPods {
-		ids[p.SandboxID] = true
+		if id, ok := p["sandbox_id"].(string); ok {
+			ids[id] = true
+		}
 	}
 	for _, r := range saved.Routes {
 		if !ids[r.ID] {
@@ -293,4 +296,20 @@ func runConcurrentStateSaves(t *testing.T, store *JSONStateStore, count int) ([]
 		}
 	}
 	return timings, wall
+}
+
+func appendString(values []string, v string) []string {
+	return append(values, v)
+}
+
+// upsertE2BPodForTest 在测试里保留旧 typed 方法的 upsert 语义：
+// KV 只有单次调用原子性，读改写需要调用方自己串行化。
+func upsertE2BPodForTest(store *JSONStateStore, mu *sync.Mutex, pod map[string]any) error {
+	mu.Lock()
+	defer mu.Unlock()
+	var pods []map[string]any
+	if _, err := store.LoadBackendState("e2b.pods", &pods); err != nil {
+		return err
+	}
+	return store.SaveBackendState("e2b.pods", append(pods, pod))
 }

@@ -171,13 +171,13 @@ func runtimeInfoToProto(info *engine.RuntimeInfo, activeOps []engine.E2BOperatio
 		ExecutionId:  info.ExecutionID,
 		RuntimeState: info.RuntimeState,
 	}
-	if info.CNI != nil {
+	if info.CNIEnabled {
 		resp.Cni = &CNIRecord{
-			NetnsPath:  info.CNI.NetNSPath,
-			IfName:     info.CNI.IfName,
-			PodIp:      info.CNI.PodIP,
-			Gateway:    info.CNI.Gateway,
-			DnsServers: append([]string(nil), info.CNI.DNS...),
+			NetnsPath:  info.NetNSPath,
+			IfName:     info.IfName,
+			PodIp:      info.PodIP,
+			Gateway:    info.Gateway,
+			DnsServers: append([]string(nil), info.DNS...),
 		}
 	}
 	for _, m := range info.HostPorts {

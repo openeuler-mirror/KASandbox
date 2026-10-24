@@ -13,10 +13,10 @@ func TestBackendStateLayoutPreservesLegacySections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJSONStateStore: %v", err)
 	}
-	if err := store.SaveE2BPod(E2BPodState{SandboxID: "sb1"}); err != nil {
+	if err := store.SaveBackendState("e2b.pods", []map[string]any{{"sandbox_id": "sb1"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveE2BOperation(E2BOperation{OperationID: "op1", Action: "Pause"}); err != nil {
+	if err := store.SaveBackendState("e2b_operations", map[string]any{"op1": map[string]any{"operation_id": "op1", "action": "Pause"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -80,8 +80,8 @@ func TestBackendStateKeepsUnknownSections(t *testing.T) {
 	if err := store.SaveBackendState("android.pods", []any{}); err != nil {
 		t.Fatal(err)
 	}
-	var pods []E2BPodState
-	if ok, err := store.LoadBackendState("e2b.pods", &pods); err != nil || !ok || len(pods) != 1 || pods[0].SandboxID != "legacy" {
+	var pods []map[string]any
+	if ok, err := store.LoadBackendState("e2b.pods", &pods); err != nil || !ok || len(pods) != 1 || pods[0]["sandbox_id"] != "legacy" {
 		t.Fatalf("legacy e2b.pods lost: ok=%v err=%v pods=%+v", ok, err, pods)
 	}
 }

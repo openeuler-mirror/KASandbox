@@ -3,11 +3,9 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/cri-multiplex/pkg/engine/util"
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -32,128 +30,6 @@ type CleanupTask struct {
 	NextRetryAt  time.Time  `json:"next_retry_at"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
-}
-
-type E2BPodState struct {
-	SandboxID       string            `json:"sandbox_id"`
-	E2BSandboxID    string            `json:"e2b_sandbox_id"`
-	PodUID          string            `json:"pod_uid"`
-	Name            string            `json:"name"`
-	Namespace       string            `json:"namespace"`
-	Labels          map[string]string `json:"labels,omitempty"`
-	Annotations     map[string]string `json:"annotations,omitempty"`
-	CreatedAt       time.Time         `json:"created_at"`
-	EndedAt         *time.Time        `json:"ended_at,omitempty"`
-	State           e2bState          `json:"state"`
-	TemplateID      string            `json:"template_id"`
-	BuildID         string            `json:"build_id"`
-	ExecutionID     string            `json:"execution_id,omitempty"`
-	TeamID          string            `json:"team_id,omitempty"`
-	NodeName        string            `json:"node_name,omitempty"`
-	ImageRef        string            `json:"image_ref"`
-	EnvdAccessToken string            `json:"envd_access_token,omitempty"`
-
-	ContainerLabels      map[string]string `json:"container_labels,omitempty"`
-	ContainerAnnotations map[string]string `json:"container_annotations,omitempty"`
-	ContainerName        string            `json:"container_name,omitempty"`
-	ContainerCommand     []string          `json:"container_command,omitempty"`
-	ContainerArgs        []string          `json:"container_args,omitempty"`
-	ContainerStdin       bool              `json:"container_stdin"`
-	ContainerTTY         bool              `json:"container_tty"`
-	ContainerState       e2bContainerState `json:"container_state"`
-	ContainerCreatedAt   time.Time         `json:"container_created_at"`
-	ContainerStartedAt   time.Time         `json:"container_started_at"`
-	ContainerFinishedAt  time.Time         `json:"container_finished_at"`
-	ContainerExitCode    int32             `json:"container_exit_code"`
-	ContainerLogPath     string            `json:"container_log_path,omitempty"`
-	FullLogPath          string            `json:"full_log_path,omitempty"`
-	PodLogDirectory      string            `json:"pod_log_directory,omitempty"`
-
-	HostIP       string             `json:"host_ip,omitempty"`
-	HostPort     int                `json:"host_port,omitempty"`
-	PodIP        string             `json:"pod_ip,omitempty"`
-	CNIEnabled   bool               `json:"cni_enabled"`
-	CNIRecord    *util.CNIRecord    `json:"cni_record,omitempty"`
-	PortMappings []util.PortMapping `json:"port_mappings,omitempty"`
-
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-type AndroidPodState struct {
-	SandboxID       string              `json:"sandbox_id"`
-	PodUID          string              `json:"pod_uid"`
-	Name            string              `json:"name"`
-	Namespace       string              `json:"namespace"`
-	Labels          map[string]string   `json:"labels,omitempty"`
-	Annotations     map[string]string   `json:"annotations,omitempty"`
-	CreatedAt       time.Time           `json:"created_at"`
-	StartedAt       time.Time           `json:"started_at"`
-	StoppedAt       time.Time           `json:"stopped_at"`
-	State           androidSandboxState `json:"state"`
-	ArtifactsDir    string              `json:"artifacts_dir"`
-	WorkDir         string              `json:"work_dir"`
-	InstanceID      string              `json:"instance_id"`
-	BaseInstanceNum int                 `json:"base_instance_num"`
-	NodeIP          string              `json:"node_ip"`
-	ADBPort         int                 `json:"adb_port"`
-	WebRTCPort      int                 `json:"webrtc_port"`
-	LaunchPID       int                 `json:"launch_pid"`
-	LaunchPGID      int                 `json:"launch_pgid"`
-	LaunchLogPath   string              `json:"launch_log_path"`
-
-	CNIEnabled   bool            `json:"cni_enabled"`
-	CNIRecord    *util.CNIRecord `json:"cni_record,omitempty"`
-	GuestIP      string          `json:"guest_ip,omitempty"`
-	GuestGateway string          `json:"guest_gateway,omitempty"`
-	GuestPrefix  string          `json:"guest_prefix,omitempty"`
-	TapName      string          `json:"tap_name,omitempty"`
-
-	ContainerID          string                `json:"container_id,omitempty"`
-	ContainerName        string                `json:"container_name,omitempty"`
-	ContainerAttempt     uint32                `json:"container_attempt"`
-	ContainerImage       string                `json:"container_image,omitempty"`
-	ContainerImageRef    string                `json:"container_image_ref,omitempty"`
-	ContainerState       androidContainerState `json:"container_state"`
-	ContainerCreatedAt   time.Time             `json:"container_created_at"`
-	ContainerStartedAt   time.Time             `json:"container_started_at"`
-	ContainerFinishedAt  time.Time             `json:"container_finished_at"`
-	ContainerExitCode    int32                 `json:"container_exit_code"`
-	ContainerLabels      map[string]string     `json:"container_labels,omitempty"`
-	ContainerAnnotations map[string]string     `json:"container_annotations,omitempty"`
-	LogPath              string                `json:"log_path,omitempty"`
-	FullLogPath          string                `json:"full_log_path,omitempty"`
-
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-// E2BOperation 状态取值。
-// "Pending" 是早期保留值，当前代码不再创建 Pending operation；启动恢复仍会识别
-// 旧 state.json 中的 Pending 并按未完成操作处理。
-const (
-	OperationStateRunning   = "Running"
-	OperationStateSucceeded = "Succeeded"
-	OperationStateFailed    = "Failed"
-)
-
-const (
-	legacyOperationStatePending = "Pending"
-	operationRestartError       = "process restarted during operation"
-)
-
-// E2BOperation 是节点侧 Pause/Checkpoint 操作记录，供 operation_id 幂等和
-// webhook 崩溃恢复时查询节点事实。
-type E2BOperation struct {
-	OperationID  string    `json:"operation_id"`
-	Action       string    `json:"action"`
-	CRISandboxID string    `json:"cri_sandbox_id,omitempty"`
-	E2BSandboxID string    `json:"e2b_sandbox_id,omitempty"`
-	TeamID       string    `json:"team_id,omitempty"`
-	TemplateID   string    `json:"template_id,omitempty"`
-	BuildID      string    `json:"build_id,omitempty"`
-	State        string    `json:"state"`
-	Error        string    `json:"error,omitempty"`
-	StartedAt    time.Time `json:"started_at,omitempty"`
-	FinishedAt   time.Time `json:"finished_at,omitempty"`
 }
 
 // persistedState 的固定字段只有 version/routes/cleanup_tasks；其余顶层键全部原样保存在
@@ -228,25 +104,9 @@ type StateStore interface {
 	DeleteRoute(kind, id string) error
 	LoadRoutes() ([]RouteRecord, error)
 
-	SaveE2BPod(E2BPodState) error
-	DeleteE2BPod(sandboxID string) error
-	LoadE2BPods() ([]E2BPodState, error)
-
-	SaveE2BImage(imageRef string) error
-	DeleteE2BImage(imageRef string) error
-	LoadE2BImages() ([]string, error)
-
-	SaveAndroidPod(AndroidPodState) error
-	DeleteAndroidPod(sandboxID string) error
-	LoadAndroidPods() ([]AndroidPodState, error)
-
 	SaveCleanupTask(CleanupTask) error
 	DeleteCleanupTask(id string) error
 	LoadCleanupTasks() ([]CleanupTask, error)
-
-	SaveE2BOperation(E2BOperation) error
-	DeleteE2BOperation(operationID string) error
-	LoadE2BOperations() (map[string]E2BOperation, error)
 
 	// 通用后端状态 KV：点分路径只支持 1 段（顶层键）或 2 段（<section>.<key>）。
 	SaveBackendState(path string, value any) error
@@ -297,44 +157,7 @@ func NewJSONStateStore(dir string) (*JSONStateStore, error) {
 	if store.state.Version == 0 {
 		store.state.Version = 1
 	}
-	if store.failInFlightOperationsAfterRestart() {
-		store.mu.Lock()
-		err := store.flushLocked()
-		store.mu.Unlock()
-		if err != nil {
-			return nil, fmt.Errorf("recover in-flight operations: %w", err)
-		}
-	}
 	return store, nil
-}
-
-func (s *JSONStateStore) failInFlightOperationsAfterRestart() bool {
-	operations := make(map[string]E2BOperation)
-	if _, err := s.loadBackendStateLocked("e2b_operations", &operations); err != nil || len(operations) == 0 {
-		return false
-	}
-	now := time.Now()
-	changed := false
-	for id, op := range operations {
-		if op.State != OperationStateRunning && op.State != legacyOperationStatePending {
-			continue
-		}
-		op.State = OperationStateFailed
-		op.Error = operationRestartError
-		if op.FinishedAt.IsZero() {
-			op.FinishedAt = now
-		}
-		operations[id] = op
-		changed = true
-	}
-	if !changed {
-		return false
-	}
-	if err := s.setBackendStateLocked("e2b_operations", operations); err != nil {
-		log.Printf("[state] warning: mark recovered operations: %v", err)
-		return false
-	}
-	return true
 }
 
 func (s *JSONStateStore) SaveRoute(r RouteRecord) error {
@@ -369,118 +192,6 @@ func (s *JSONStateStore) LoadRoutes() ([]RouteRecord, error) {
 	return cloneRouteRecords(s.state.Routes), nil
 }
 
-func (s *JSONStateStore) SaveE2BPod(p E2BPodState) error {
-	if s == nil || s.disabled {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var pods []E2BPodState
-	if _, err := s.loadBackendStateLocked("e2b.pods", &pods); err != nil {
-		return err
-	}
-	p.UpdatedAt = time.Now()
-	return s.saveBackendStateLocked("e2b.pods", upsertE2BPodState(pods, p))
-}
-func (s *JSONStateStore) DeleteE2BPod(sandboxID string) error {
-	if s == nil || s.disabled {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var pods []E2BPodState
-	if _, err := s.loadBackendStateLocked("e2b.pods", &pods); err != nil {
-		return err
-	}
-	return s.saveBackendStateLocked("e2b.pods", deleteE2BPodState(pods, sandboxID))
-}
-func (s *JSONStateStore) LoadE2BPods() ([]E2BPodState, error) {
-	if s == nil || s.disabled {
-		return nil, nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var pods []E2BPodState
-	if _, err := s.loadBackendStateLocked("e2b.pods", &pods); err != nil {
-		return nil, err
-	}
-	return cloneE2BPodStates(pods), nil
-}
-func (s *JSONStateStore) SaveE2BImage(imageRef string) error {
-	if s == nil || s.disabled || imageRef == "" {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var images []string
-	if _, err := s.loadBackendStateLocked("e2b.images", &images); err != nil {
-		return err
-	}
-	images = upsertString(images, imageRef)
-	sort.Strings(images)
-	return s.saveBackendStateLocked("e2b.images", images)
-}
-func (s *JSONStateStore) DeleteE2BImage(imageRef string) error {
-	if s == nil || s.disabled || imageRef == "" {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var images []string
-	if _, err := s.loadBackendStateLocked("e2b.images", &images); err != nil {
-		return err
-	}
-	return s.saveBackendStateLocked("e2b.images", deleteString(images, imageRef))
-}
-func (s *JSONStateStore) LoadE2BImages() ([]string, error) {
-	if s == nil || s.disabled {
-		return nil, nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var images []string
-	if _, err := s.loadBackendStateLocked("e2b.images", &images); err != nil {
-		return nil, err
-	}
-	return cloneStrings(images), nil
-}
-func (s *JSONStateStore) SaveAndroidPod(p AndroidPodState) error {
-	if s == nil || s.disabled {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var pods []AndroidPodState
-	if _, err := s.loadBackendStateLocked("android.pods", &pods); err != nil {
-		return err
-	}
-	p.UpdatedAt = time.Now()
-	return s.saveBackendStateLocked("android.pods", upsertAndroidPodState(pods, p))
-}
-func (s *JSONStateStore) DeleteAndroidPod(sandboxID string) error {
-	if s == nil || s.disabled {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var pods []AndroidPodState
-	if _, err := s.loadBackendStateLocked("android.pods", &pods); err != nil {
-		return err
-	}
-	return s.saveBackendStateLocked("android.pods", deleteAndroidPodState(pods, sandboxID))
-}
-func (s *JSONStateStore) LoadAndroidPods() ([]AndroidPodState, error) {
-	if s == nil || s.disabled {
-		return nil, nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var pods []AndroidPodState
-	if _, err := s.loadBackendStateLocked("android.pods", &pods); err != nil {
-		return nil, err
-	}
-	return cloneAndroidPodStates(pods), nil
-}
 func (s *JSONStateStore) SaveCleanupTask(task CleanupTask) error {
 	if s == nil || s.disabled || task.ID == "" {
 		return nil
@@ -517,48 +228,6 @@ func (s *JSONStateStore) LoadCleanupTasks() ([]CleanupTask, error) {
 	return out, nil
 }
 
-func (s *JSONStateStore) SaveE2BOperation(op E2BOperation) error {
-	if s == nil || s.disabled || op.OperationID == "" {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	operations := make(map[string]E2BOperation)
-	if _, err := s.loadBackendStateLocked("e2b_operations", &operations); err != nil {
-		return err
-	}
-	operations[op.OperationID] = op
-	return s.saveBackendStateLocked("e2b_operations", operations)
-}
-func (s *JSONStateStore) DeleteE2BOperation(operationID string) error {
-	if s == nil || s.disabled || operationID == "" {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	operations := make(map[string]E2BOperation)
-	if _, err := s.loadBackendStateLocked("e2b_operations", &operations); err != nil {
-		return err
-	}
-	delete(operations, operationID)
-	if len(operations) == 0 {
-		return s.deleteBackendStateLocked("e2b_operations")
-	}
-	return s.saveBackendStateLocked("e2b_operations", operations)
-}
-func (s *JSONStateStore) LoadE2BOperations() (map[string]E2BOperation, error) {
-	if s == nil || s.disabled {
-		return nil, nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	operations := make(map[string]E2BOperation)
-	if _, err := s.loadBackendStateLocked("e2b_operations", &operations); err != nil {
-		return nil, err
-	}
-	return operations, nil
-}
-
 // splitBackendStatePath 把点分路径拆成 (section, key)；只支持 1 段或 2 段。
 func splitBackendStatePath(path string) (string, string, error) {
 	parts := strings.Split(path, ".")
@@ -578,7 +247,6 @@ func splitBackendStatePath(path string) (string, string, error) {
 	}
 }
 
-// SaveBackendState 写入 "<section>" 或 "<section>.<key>"；其余顶层 section 原样保留。
 func (s *JSONStateStore) SaveBackendState(path string, value any) error {
 	if s == nil || s.disabled {
 		return nil
@@ -823,62 +491,6 @@ func deleteRouteRecord(records []RouteRecord, kind, id string) []RouteRecord {
 	return out
 }
 
-func upsertE2BPodState(records []E2BPodState, p E2BPodState) []E2BPodState {
-	out := make([]E2BPodState, 0, len(records)+1)
-	replaced := false
-	for _, item := range records {
-		if item.SandboxID == p.SandboxID {
-			out = append(out, p)
-			replaced = true
-		} else {
-			out = append(out, item)
-		}
-	}
-	if !replaced {
-		out = append(out, p)
-	}
-	return out
-}
-
-func deleteE2BPodState(records []E2BPodState, sandboxID string) []E2BPodState {
-	out := make([]E2BPodState, 0, len(records))
-	for _, item := range records {
-		if item.SandboxID == sandboxID {
-			continue
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
-func upsertAndroidPodState(records []AndroidPodState, p AndroidPodState) []AndroidPodState {
-	out := make([]AndroidPodState, 0, len(records)+1)
-	replaced := false
-	for _, item := range records {
-		if item.SandboxID == p.SandboxID {
-			out = append(out, p)
-			replaced = true
-		} else {
-			out = append(out, item)
-		}
-	}
-	if !replaced {
-		out = append(out, p)
-	}
-	return out
-}
-
-func deleteAndroidPodState(records []AndroidPodState, sandboxID string) []AndroidPodState {
-	out := make([]AndroidPodState, 0, len(records))
-	for _, item := range records {
-		if item.SandboxID == sandboxID {
-			continue
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
 func upsertCleanupTask(tasks []CleanupTask, task CleanupTask) []CleanupTask {
 	out := make([]CleanupTask, 0, len(tasks)+1)
 	replaced := false
@@ -947,47 +559,9 @@ func cloneRouteRecords(values []RouteRecord) []RouteRecord {
 	return out
 }
 
-func cloneE2BPodStates(values []E2BPodState) []E2BPodState {
-	if len(values) == 0 {
-		return nil
+func (s *JSONStateStore) PathForTest() string {
+	if s == nil {
+		return ""
 	}
-	out := make([]E2BPodState, len(values))
-	for i, v := range values {
-		out[i] = v
-		out[i].Labels = copyStringMap(v.Labels)
-		out[i].Annotations = copyStringMap(v.Annotations)
-		out[i].ContainerLabels = copyStringMap(v.ContainerLabels)
-		out[i].ContainerAnnotations = copyStringMap(v.ContainerAnnotations)
-		out[i].ContainerCommand = append([]string(nil), v.ContainerCommand...)
-		out[i].ContainerArgs = append([]string(nil), v.ContainerArgs...)
-		out[i].PortMappings = append([]util.PortMapping(nil), v.PortMappings...)
-		if v.CNIRecord != nil {
-			rec := *v.CNIRecord
-			rec.DNS = append([]string(nil), v.CNIRecord.DNS...)
-			rec.ResultJSON = append([]byte(nil), v.CNIRecord.ResultJSON...)
-			out[i].CNIRecord = &rec
-		}
-	}
-	return out
-}
-
-func cloneAndroidPodStates(values []AndroidPodState) []AndroidPodState {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make([]AndroidPodState, len(values))
-	for i, v := range values {
-		out[i] = v
-		out[i].Labels = copyStringMap(v.Labels)
-		out[i].Annotations = copyStringMap(v.Annotations)
-		out[i].ContainerLabels = copyStringMap(v.ContainerLabels)
-		out[i].ContainerAnnotations = copyStringMap(v.ContainerAnnotations)
-		if v.CNIRecord != nil {
-			rec := *v.CNIRecord
-			rec.DNS = append([]string(nil), v.CNIRecord.DNS...)
-			rec.ResultJSON = append([]byte(nil), v.CNIRecord.ResultJSON...)
-			out[i].CNIRecord = &rec
-		}
-	}
-	return out
+	return s.path
 }
