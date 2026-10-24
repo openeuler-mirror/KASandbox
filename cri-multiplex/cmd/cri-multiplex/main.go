@@ -25,8 +25,14 @@ const (
 	defaultAdminSocket           = "/run/cri-multiplex/admin.sock"
 )
 
-type stateRestorer interface {
-	RestoreState(context.Context) error
+// logRegistrySnapshot 打印冻结后的后端快照（只含 Descriptor 与能力开关，不含任何密钥）。
+func logRegistrySnapshot(reg *engine.Registry) {
+	for _, mod := range reg.Modules() {
+		desc := mod.Descriptor
+		log.Printf("[backend-registry] type=%s handler=%s aliases=%v image_prefixes=%v cleaner=%t reconciler=%t restorer=%t health=%t",
+			desc.Type, desc.Handler, desc.Aliases, desc.ImagePrefixes,
+			mod.Cleaner != nil, mod.Reconciler != nil, mod.Restorer != nil, mod.Health != nil)
+	}
 }
 
 // autoNodeIP 返回本机第一个非 lo 的 IPv4 地址，用于自动填充 --node-ip
@@ -104,7 +110,17 @@ func main() {
 	cleanupMaxRetries := flag.Int("cleanup-max-retries", 10, "Maximum cleanup retry attempts")
 	cleanupDryRun := flag.Bool("cleanup-dry-run", false, "Log orphan cleanup actions without deleting resources")
 	hideSandboxLabel := flag.String("hide-sandbox-label", "", "Hide E2B sandboxes carrying this label (key=value, e.g. flux-sandbox.io/direct=true) from ListPodSandbox/ListContainers, so kubelet does not garbage-collect them as orphans; empty keeps them visible")
+	unknownHandlerPolicy := flag.String("unknown-handler-policy", string(server.UnknownHandlerPassthrough), "Behaviour for an unregistered runtime handler: passthrough (fall back to the default backend) or reject")
+	runtimeName := flag.String("runtime-name", "e2b-cri-shim", "Runtime name reported by the CRI Version API")
 	flag.Parse()
+
+	handlerPolicy := server.UnknownHandlerPolicy(*unknownHandlerPolicy)
+	switch handlerPolicy {
+	case server.UnknownHandlerPassthrough, server.UnknownHandlerReject:
+	default:
+		log.Fatalf("invalid -unknown-handler-policy %q (want %q or %q)",
+			*unknownHandlerPolicy, server.UnknownHandlerPassthrough, server.UnknownHandlerReject)
+	}
 
 	stateStore, err := engine.NewJSONStateStore(*stateDir)
 	if err != nil {
@@ -128,10 +144,10 @@ func main() {
 		NodeIP:                *nodeIP,
 		NodeName:              *nodeName,
 		CNI: engine.CNIConfig{
-			Enabled:  *cniEnabled,
-			ConfDir:  *cniConfDir,
-			BinDir:   *cniBinDir,
-			IfName:   *cniIfName,
+			Enabled:     *cniEnabled,
+			ConfDir:     *cniConfDir,
+			BinDir:      *cniBinDir,
+			IfName:      *cniIfName,
 			NetNSDir:    *cniNetNSDir,
 			PoolEnabled: *cniPoolEnabled,
 			PoolSize:    *cniPoolSize,
@@ -180,6 +196,19 @@ func main() {
 		StateStore: stateStore,
 	})
 	defer androidEng.Close()
+
+	// 后端装配顺序固定：Register → Freeze → CleanupManager → Mux → Restore → Reconcile → Start。
+	reg := engine.NewRegistry(engine.EngineTypeContainer)
+	for _, mod := range []engine.BackendModule{containerEng.Module(), e2bEng.Module(), androidEng.Module()} {
+		if err := reg.Register(mod); err != nil {
+			log.Fatalf("register backend %s: %v", mod.Descriptor.Type, err)
+		}
+	}
+	if err := reg.Freeze(); err != nil {
+		log.Fatalf("freeze backend registry: %v", err)
+	}
+	logRegistrySnapshot(reg)
+
 	cleanupManager := engine.NewCleanupManager(stateStore, e2bEng, androidEng, engine.CleanupConfig{
 		Enabled:     *orphanReconcileEnabled,
 		Interval:    *orphanReconcileInterval,
@@ -191,23 +220,17 @@ func main() {
 
 	restoreCtx, cancelRestore := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelRestore()
-	if restorer, ok := e2bEng.(stateRestorer); ok {
-		if err := restorer.RestoreState(restoreCtx); err != nil {
-			log.Fatalf("restore e2b state: %v", err)
-		}
-	}
-	if err := androidEng.RestoreState(restoreCtx); err != nil {
-		log.Fatalf("restore android state: %v", err)
+	mux := server.NewMuxServer(reg, stateStore, server.MuxOptions{
+		UnknownHandlerPolicy: handlerPolicy,
+		RuntimeName:          *runtimeName,
+	})
+	if err := mux.RestoreState(restoreCtx); err != nil {
+		log.Fatalf("restore mux state: %v", err)
 	}
 	if *orphanReconcileEnabled {
 		if err := cleanupManager.Reconcile(restoreCtx); err != nil {
 			log.Printf("startup orphan reconcile warning: %v", err)
 		}
-	}
-
-	mux := server.NewMuxServer(containerEng, e2bEng, androidEng, stateStore)
-	if err := mux.RestoreState(); err != nil {
-		log.Fatalf("restore mux state: %v", err)
 	}
 	cleanupManager.Start(context.Background())
 

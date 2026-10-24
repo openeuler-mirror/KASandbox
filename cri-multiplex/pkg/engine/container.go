@@ -20,6 +20,15 @@ type ContainerEngine struct {
 	initErr    error
 }
 
+// ContainerDescriptor 是 containerd 后端的静态标识。
+// 没有镜像前缀：未命中任何前缀的镜像都落到默认后端（containerd）。
+var ContainerDescriptor = BackendDescriptor{Type: EngineTypeContainer, Handler: "container"}
+
+// Module 只填 Descriptor 与 Engine：containerd 不参与清理、对账与状态恢复。
+func (e *ContainerEngine) Module() BackendModule {
+	return BackendModule{Descriptor: ContainerDescriptor, Engine: e}
+}
+
 func NewContainerEngine(socketPath string) *ContainerEngine {
 	return &ContainerEngine{socketPath: socketPath}
 }

@@ -308,7 +308,37 @@ func (e *grpcE2BEngine) RestoreState(ctx context.Context) error {
 		log.Printf("[GrpcE2BEngine] WARNING: reconcile restored pods failed: %v", err)
 	}
 	log.Printf("[GrpcE2BEngine] restored %d pod records and %d image records", len(pods), len(images))
+	e.restoreRoutes()
+
 	return nil
+}
+
+// restoreRoutes 把已恢复的 sandbox 写回路由表。
+// 写入端是唯一允许保留 "<sandboxID>-c" 容器 ID 约定的地方；读取与删除端不再假设它。
+func (e *grpcE2BEngine) restoreRoutes() {
+	if e == nil || e.stateStore == nil {
+		return
+	}
+	for _, pod := range e.tracker.List() {
+		if pod == nil || pod.sandboxID == "" || pod.state == stateRemoved {
+			continue
+		}
+		if err := e.stateStore.SaveRoute(RouteRecord{Kind: "pod", ID: pod.sandboxID, Engine: EngineTypeE2B}); err != nil {
+			log.Printf("[GrpcE2BEngine] WARNING: restore pod route failed sandbox=%s: %v", pod.sandboxID, err)
+		}
+		if pod.containerName == "" {
+			continue
+		}
+		containerID := pod.sandboxID + "-c"
+		if err := e.stateStore.SaveRoute(RouteRecord{
+			Kind:      "container",
+			ID:        containerID,
+			Engine:    EngineTypeE2B,
+			SandboxID: pod.sandboxID,
+		}); err != nil {
+			log.Printf("[GrpcE2BEngine] WARNING: restore container route failed container=%s: %v", containerID, err)
+		}
+	}
 }
 
 func (e *grpcE2BEngine) reconcileRestoredPods(ctx context.Context) error {

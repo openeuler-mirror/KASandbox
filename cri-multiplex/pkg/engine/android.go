@@ -35,6 +35,14 @@ const (
 	annAndroidGuestDNS   = "android.dev/guest-dns-servers"
 )
 
+// AndroidDescriptor 是 android 后端的静态标识：android.dev/ 开头的镜像由 android 后端处理。
+var AndroidDescriptor = BackendDescriptor{Type: EngineTypeAndroid, Handler: "android", ImagePrefixes: []string{"android.dev/"}}
+
+// Module 现已填 Descriptor/Engine/Restorer；Cleaner 与 Reconciler 由后续阶段补齐。
+func (e *AndroidEngine) Module() BackendModule {
+	return BackendModule{Descriptor: AndroidDescriptor, Engine: e, Restorer: e}
+}
+
 type AndroidConfig struct {
 	Enabled              bool
 	ArtifactsDir         string
@@ -278,9 +286,31 @@ func (e *AndroidEngine) RestoreState(ctx context.Context) error {
 			e.containers[container.ContainerID] = container
 		}
 		e.persistPodLocked(pod.CRISandboxID)
+		e.restoreRoutesLocked(pod, container)
 	}
 	log.Printf("[AndroidEngine] restored %d pod records", len(states))
 	return nil
+}
+
+// restoreRoutesLocked 把已恢复的 sandbox 写回路由表；调用方必须持有 e.mu。
+func (e *AndroidEngine) restoreRoutesLocked(pod *AndroidSandboxRecord, container *AndroidContainerRecord) {
+	if e == nil || e.stateStore == nil || pod == nil || pod.CRISandboxID == "" {
+		return
+	}
+	if err := e.stateStore.SaveRoute(RouteRecord{Kind: "pod", ID: pod.CRISandboxID, Engine: EngineTypeAndroid}); err != nil {
+		log.Printf("[AndroidEngine] WARNING: restore pod route failed sandbox=%s: %v", pod.CRISandboxID, err)
+	}
+	if container == nil || container.ContainerID == "" {
+		return
+	}
+	if err := e.stateStore.SaveRoute(RouteRecord{
+		Kind:      "container",
+		ID:        container.ContainerID,
+		Engine:    EngineTypeAndroid,
+		SandboxID: pod.CRISandboxID,
+	}); err != nil {
+		log.Printf("[AndroidEngine] WARNING: restore container route failed container=%s: %v", container.ContainerID, err)
+	}
 }
 
 func (e *AndroidEngine) persistPodLocked(sandboxID string) {

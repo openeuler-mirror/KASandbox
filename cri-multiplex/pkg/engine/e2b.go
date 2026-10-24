@@ -38,8 +38,17 @@ type CNIConfig struct {
 	PoolSize int
 }
 
+// E2BDescriptor 是 e2b 后端的静态标识：e2b.dev/ 开头的镜像由 e2b 后端处理。
+var E2BDescriptor = BackendDescriptor{Type: EngineTypeE2B, Handler: "e2b", ImagePrefixes: []string{"e2b.dev/"}}
+
 type E2BEngine interface {
 	RuntimeEngine
+	Module() BackendModule
+}
+
+// Module 现已填 Descriptor/Engine/Restorer；Cleaner 与 Reconciler 由后续阶段补齐。
+func (e *grpcE2BEngine) Module() BackendModule {
+	return BackendModule{Descriptor: E2BDescriptor, Engine: e, Restorer: e}
 }
 
 func NewE2BEngine(cfg *E2BConfig) E2BEngine {

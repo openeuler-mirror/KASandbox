@@ -15,6 +15,7 @@ type RouteRecord struct {
 	Kind      string     `json:"kind"`
 	ID        string     `json:"id"`
 	Engine    EngineType `json:"engine"`
+	SandboxID string     `json:"sandbox_id,omitempty"`
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
