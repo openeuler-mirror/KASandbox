@@ -6,6 +6,7 @@ use vmm::logger::{IncMetric, METRICS};
 use vmm::rpc_interface::VmmAction;
 use vmm::vmm_config::snapshot::{
     CreateSnapshotParams, LoadSnapshotConfig, LoadSnapshotParams, MemBackendConfig, MemBackendType,
+    RollbackSnapshotParams, SaveDirtyBitmapParams,
     Vm, VmState,
 };
 
@@ -30,6 +31,8 @@ pub(crate) fn parse_put_snapshot(
         Some(request_type) => match request_type {
             "create" => parse_put_snapshot_create(body),
             "load" => parse_put_snapshot_load(body),
+            "rollback" => parse_put_snapshot_rollback(body),
+            "save-dirty-bitmap" => parse_put_snapshot_save_dirty_bitmap(body),
             _ => Err(RequestError::InvalidPathMethod(
                 format!("/snapshot/{}", request_type),
                 Method::Put,
@@ -56,6 +59,20 @@ fn parse_put_snapshot_create(body: &Body) -> Result<ParsedRequest, RequestError>
     Ok(ParsedRequest::new_sync(VmmAction::CreateSnapshot(
         snapshot_config,
     )))
+}
+
+fn parse_put_snapshot_rollback(body: &Body) -> Result<ParsedRequest, RequestError> {
+    let rollback_config = serde_json::from_slice::<RollbackSnapshotParams>(body.raw())?;
+
+    Ok(ParsedRequest::new_sync(VmmAction::RollbackSnapshot(
+        rollback_config,
+    )))
+}
+
+fn parse_put_snapshot_save_dirty_bitmap(body: &Body) -> Result<ParsedRequest, RequestError> {
+    let config = serde_json::from_slice::<SaveDirtyBitmapParams>(body.raw())?;
+
+    Ok(ParsedRequest::new_sync(VmmAction::SaveDirtyBitmap(config)))
 }
 
 fn parse_put_snapshot_load(body: &Body) -> Result<ParsedRequest, RequestError> {

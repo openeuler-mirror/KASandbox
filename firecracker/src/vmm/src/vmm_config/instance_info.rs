@@ -15,6 +15,10 @@ pub enum VmState {
     Paused,
     /// Vm is running
     Running,
+    /// An in-place rollback failed past its commit point: guest memory and
+    /// device state no longer form one moment in time. Only queries and exit
+    /// are allowed; the orchestrator replaces the process.
+    Faulted,
 }
 
 impl Display for VmState {
@@ -23,6 +27,7 @@ impl Display for VmState {
             VmState::NotStarted => write!(f, "Not started"),
             VmState::Paused => write!(f, "Paused"),
             VmState::Running => write!(f, "Running"),
+            VmState::Faulted => write!(f, "Faulted"),
         }
     }
 }
@@ -49,6 +54,9 @@ pub struct InstanceInfo {
     pub app_name: String,
     /// The regions of the guest memory.
     pub memory_regions: Option<Vec<GuestMemoryRegionMapping>>,
+    /// How dirty pages are tracked: "hdbss" | "kvm-wp" | "off".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dirty_tracking: Option<String>,
 }
 
 /// Response structure for the memory mappings endpoint.

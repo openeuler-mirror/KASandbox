@@ -343,6 +343,7 @@ fn main_exec() -> Result<(), MainError> {
         vmm_version: FIRECRACKER_VERSION.to_string(),
         app_name: "Firecracker".to_string(),
         memory_regions: None,
+        dirty_tracking: None,
     };
 
     if let Some(metrics_path) = arguments.single_value("metrics-path") {
