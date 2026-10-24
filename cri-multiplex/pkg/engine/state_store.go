@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -155,22 +156,71 @@ type E2BOperation struct {
 	FinishedAt   time.Time `json:"finished_at,omitempty"`
 }
 
-type persistedE2BState struct {
-	Pods   []E2BPodState `json:"pods,omitempty"`
-	Images []string      `json:"images,omitempty"`
-}
-
-type persistedAndroidState struct {
-	Pods []AndroidPodState `json:"pods,omitempty"`
-}
-
+// persistedState 的固定字段只有 version/routes/cleanup_tasks；其余顶层键全部原样保存在
+// Sections 里（e2b、android、e2b_operations 等），保证旧版本回滚后仍能读到同样的布局。
 type persistedState struct {
-	Version       int                     `json:"version"`
-	Routes        []RouteRecord           `json:"routes,omitempty"`
-	E2B           persistedE2BState       `json:"e2b"`
-	Android       persistedAndroidState   `json:"android"`
-	CleanupTasks  []CleanupTask           `json:"cleanup_tasks,omitempty"`
-	E2BOperations map[string]E2BOperation `json:"e2b_operations,omitempty"`
+	Version      int
+	Routes       []RouteRecord
+	CleanupTasks []CleanupTask
+	Sections     map[string]json.RawMessage
+}
+
+func (p persistedState) MarshalJSON() ([]byte, error) {
+	out := make(map[string]json.RawMessage, len(p.Sections)+3)
+	for key, raw := range p.Sections {
+		out[key] = raw
+	}
+	version, err := json.Marshal(p.Version)
+	if err != nil {
+		return nil, err
+	}
+	out["version"] = version
+	if len(p.Routes) > 0 {
+		raw, err := json.Marshal(p.Routes)
+		if err != nil {
+			return nil, err
+		}
+		out["routes"] = raw
+	}
+	if len(p.CleanupTasks) > 0 {
+		raw, err := json.Marshal(p.CleanupTasks)
+		if err != nil {
+			return nil, err
+		}
+		out["cleanup_tasks"] = raw
+	}
+	return json.Marshal(out)
+}
+
+func (p *persistedState) UnmarshalJSON(data []byte) error {
+	raw := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var sections map[string]json.RawMessage
+	for key, value := range raw {
+		switch key {
+		case "version":
+			if err := json.Unmarshal(value, &p.Version); err != nil {
+				return err
+			}
+		case "routes":
+			if err := json.Unmarshal(value, &p.Routes); err != nil {
+				return err
+			}
+		case "cleanup_tasks":
+			if err := json.Unmarshal(value, &p.CleanupTasks); err != nil {
+				return err
+			}
+		default:
+			if sections == nil {
+				sections = make(map[string]json.RawMessage, len(raw))
+			}
+			sections[key] = value
+		}
+	}
+	p.Sections = sections
+	return nil
 }
 
 type StateStore interface {
@@ -197,6 +247,11 @@ type StateStore interface {
 	SaveE2BOperation(E2BOperation) error
 	DeleteE2BOperation(operationID string) error
 	LoadE2BOperations() (map[string]E2BOperation, error)
+
+	// 通用后端状态 KV：点分路径只支持 1 段（顶层键）或 2 段（<section>.<key>）。
+	SaveBackendState(path string, value any) error
+	LoadBackendState(path string, dst any) (bool, error)
+	DeleteBackendState(path string) error
 }
 
 type JSONStateStore struct {
@@ -254,12 +309,13 @@ func NewJSONStateStore(dir string) (*JSONStateStore, error) {
 }
 
 func (s *JSONStateStore) failInFlightOperationsAfterRestart() bool {
-	if len(s.state.E2BOperations) == 0 {
+	operations := make(map[string]E2BOperation)
+	if _, err := s.loadBackendStateLocked("e2b_operations", &operations); err != nil || len(operations) == 0 {
 		return false
 	}
 	now := time.Now()
 	changed := false
-	for id, op := range s.state.E2BOperations {
+	for id, op := range operations {
 		if op.State != OperationStateRunning && op.State != legacyOperationStatePending {
 			continue
 		}
@@ -268,10 +324,17 @@ func (s *JSONStateStore) failInFlightOperationsAfterRestart() bool {
 		if op.FinishedAt.IsZero() {
 			op.FinishedAt = now
 		}
-		s.state.E2BOperations[id] = op
+		operations[id] = op
 		changed = true
 	}
-	return changed
+	if !changed {
+		return false
+	}
+	if err := s.setBackendStateLocked("e2b_operations", operations); err != nil {
+		log.Printf("[state] warning: mark recovered operations: %v", err)
+		return false
+	}
+	return true
 }
 
 func (s *JSONStateStore) SaveRoute(r RouteRecord) error {
@@ -312,96 +375,112 @@ func (s *JSONStateStore) SaveE2BPod(p E2BPodState) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state.Version = 1
+	var pods []E2BPodState
+	if _, err := s.loadBackendStateLocked("e2b.pods", &pods); err != nil {
+		return err
+	}
 	p.UpdatedAt = time.Now()
-	s.state.E2B.Pods = upsertE2BPodState(s.state.E2B.Pods, p)
-	return s.flushLocked()
+	return s.saveBackendStateLocked("e2b.pods", upsertE2BPodState(pods, p))
 }
-
 func (s *JSONStateStore) DeleteE2BPod(sandboxID string) error {
 	if s == nil || s.disabled {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state.Version = 1
-	s.state.E2B.Pods = deleteE2BPodState(s.state.E2B.Pods, sandboxID)
-	return s.flushLocked()
+	var pods []E2BPodState
+	if _, err := s.loadBackendStateLocked("e2b.pods", &pods); err != nil {
+		return err
+	}
+	return s.saveBackendStateLocked("e2b.pods", deleteE2BPodState(pods, sandboxID))
 }
-
 func (s *JSONStateStore) LoadE2BPods() ([]E2BPodState, error) {
 	if s == nil || s.disabled {
 		return nil, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return cloneE2BPodStates(s.state.E2B.Pods), nil
+	var pods []E2BPodState
+	if _, err := s.loadBackendStateLocked("e2b.pods", &pods); err != nil {
+		return nil, err
+	}
+	return cloneE2BPodStates(pods), nil
 }
-
 func (s *JSONStateStore) SaveE2BImage(imageRef string) error {
 	if s == nil || s.disabled || imageRef == "" {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state.Version = 1
-	s.state.E2B.Images = upsertString(s.state.E2B.Images, imageRef)
-	sort.Strings(s.state.E2B.Images)
-	return s.flushLocked()
+	var images []string
+	if _, err := s.loadBackendStateLocked("e2b.images", &images); err != nil {
+		return err
+	}
+	images = upsertString(images, imageRef)
+	sort.Strings(images)
+	return s.saveBackendStateLocked("e2b.images", images)
 }
-
 func (s *JSONStateStore) DeleteE2BImage(imageRef string) error {
 	if s == nil || s.disabled || imageRef == "" {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state.Version = 1
-	s.state.E2B.Images = deleteString(s.state.E2B.Images, imageRef)
-	return s.flushLocked()
+	var images []string
+	if _, err := s.loadBackendStateLocked("e2b.images", &images); err != nil {
+		return err
+	}
+	return s.saveBackendStateLocked("e2b.images", deleteString(images, imageRef))
 }
-
 func (s *JSONStateStore) LoadE2BImages() ([]string, error) {
 	if s == nil || s.disabled {
 		return nil, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return cloneStrings(s.state.E2B.Images), nil
+	var images []string
+	if _, err := s.loadBackendStateLocked("e2b.images", &images); err != nil {
+		return nil, err
+	}
+	return cloneStrings(images), nil
 }
-
 func (s *JSONStateStore) SaveAndroidPod(p AndroidPodState) error {
 	if s == nil || s.disabled {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state.Version = 1
+	var pods []AndroidPodState
+	if _, err := s.loadBackendStateLocked("android.pods", &pods); err != nil {
+		return err
+	}
 	p.UpdatedAt = time.Now()
-	s.state.Android.Pods = upsertAndroidPodState(s.state.Android.Pods, p)
-	return s.flushLocked()
+	return s.saveBackendStateLocked("android.pods", upsertAndroidPodState(pods, p))
 }
-
 func (s *JSONStateStore) DeleteAndroidPod(sandboxID string) error {
 	if s == nil || s.disabled {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state.Version = 1
-	s.state.Android.Pods = deleteAndroidPodState(s.state.Android.Pods, sandboxID)
-	return s.flushLocked()
+	var pods []AndroidPodState
+	if _, err := s.loadBackendStateLocked("android.pods", &pods); err != nil {
+		return err
+	}
+	return s.saveBackendStateLocked("android.pods", deleteAndroidPodState(pods, sandboxID))
 }
-
 func (s *JSONStateStore) LoadAndroidPods() ([]AndroidPodState, error) {
 	if s == nil || s.disabled {
 		return nil, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return cloneAndroidPodStates(s.state.Android.Pods), nil
+	var pods []AndroidPodState
+	if _, err := s.loadBackendStateLocked("android.pods", &pods); err != nil {
+		return nil, err
+	}
+	return cloneAndroidPodStates(pods), nil
 }
-
 func (s *JSONStateStore) SaveCleanupTask(task CleanupTask) error {
 	if s == nil || s.disabled || task.ID == "" {
 		return nil
@@ -444,36 +523,199 @@ func (s *JSONStateStore) SaveE2BOperation(op E2BOperation) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state.Version = 1
-	if s.state.E2BOperations == nil {
-		s.state.E2BOperations = make(map[string]E2BOperation)
+	operations := make(map[string]E2BOperation)
+	if _, err := s.loadBackendStateLocked("e2b_operations", &operations); err != nil {
+		return err
 	}
-	s.state.E2BOperations[op.OperationID] = op
-	return s.flushLocked()
+	operations[op.OperationID] = op
+	return s.saveBackendStateLocked("e2b_operations", operations)
 }
-
 func (s *JSONStateStore) DeleteE2BOperation(operationID string) error {
 	if s == nil || s.disabled || operationID == "" {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state.Version = 1
-	delete(s.state.E2BOperations, operationID)
-	return s.flushLocked()
+	operations := make(map[string]E2BOperation)
+	if _, err := s.loadBackendStateLocked("e2b_operations", &operations); err != nil {
+		return err
+	}
+	delete(operations, operationID)
+	if len(operations) == 0 {
+		return s.deleteBackendStateLocked("e2b_operations")
+	}
+	return s.saveBackendStateLocked("e2b_operations", operations)
 }
-
 func (s *JSONStateStore) LoadE2BOperations() (map[string]E2BOperation, error) {
 	if s == nil || s.disabled {
 		return nil, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make(map[string]E2BOperation, len(s.state.E2BOperations))
-	for k, v := range s.state.E2BOperations {
-		out[k] = v
+	operations := make(map[string]E2BOperation)
+	if _, err := s.loadBackendStateLocked("e2b_operations", &operations); err != nil {
+		return nil, err
 	}
-	return out, nil
+	return operations, nil
+}
+
+// splitBackendStatePath 把点分路径拆成 (section, key)；只支持 1 段或 2 段。
+func splitBackendStatePath(path string) (string, string, error) {
+	parts := strings.Split(path, ".")
+	switch len(parts) {
+	case 1:
+		if parts[0] == "" {
+			return "", "", fmt.Errorf("empty backend state path")
+		}
+		return parts[0], "", nil
+	case 2:
+		if parts[0] == "" || parts[1] == "" {
+			return "", "", fmt.Errorf("invalid backend state path %q", path)
+		}
+		return parts[0], parts[1], nil
+	default:
+		return "", "", fmt.Errorf("invalid backend state path %q: only <section> or <section>.<key> is supported", path)
+	}
+}
+
+// SaveBackendState 写入 "<section>" 或 "<section>.<key>"；其余顶层 section 原样保留。
+func (s *JSONStateStore) SaveBackendState(path string, value any) error {
+	if s == nil || s.disabled {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveBackendStateLocked(path, value)
+}
+
+func (s *JSONStateStore) saveBackendStateLocked(path string, value any) error {
+	if err := s.setBackendStateLocked(path, value); err != nil {
+		return err
+	}
+	return s.flushLocked()
+}
+
+// setBackendStateLocked 只改内存，不落盘；调用方决定何时 flush。
+func (s *JSONStateStore) setBackendStateLocked(path string, value any) error {
+	section, key, err := splitBackendStatePath(path)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshal backend state %s: %w", path, err)
+	}
+	s.state.Version = 1
+	if s.state.Sections == nil {
+		s.state.Sections = make(map[string]json.RawMessage)
+	}
+	if key == "" {
+		s.state.Sections[section] = data
+		return nil
+	}
+
+	children := make(map[string]json.RawMessage)
+	if raw, ok := s.state.Sections[section]; ok && len(raw) > 0 {
+		if err := json.Unmarshal(raw, &children); err != nil {
+			return fmt.Errorf("decode backend section %s: %w", section, err)
+		}
+	}
+	children[key] = data
+	sectionData, err := json.Marshal(children)
+	if err != nil {
+		return fmt.Errorf("encode backend section %s: %w", section, err)
+	}
+	s.state.Sections[section] = sectionData
+	return nil
+}
+
+// LoadBackendState 读取 "<section>" 或 "<section>.<key>"；不存在时返回 (false, nil)。
+func (s *JSONStateStore) LoadBackendState(path string, dst any) (bool, error) {
+	if s == nil || s.disabled {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadBackendStateLocked(path, dst)
+}
+
+func (s *JSONStateStore) loadBackendStateLocked(path string, dst any) (bool, error) {
+	section, key, err := splitBackendStatePath(path)
+	if err != nil {
+		return false, err
+	}
+	raw, ok := s.state.Sections[section]
+	if !ok || len(raw) == 0 {
+		return false, nil
+	}
+	if key == "" {
+		if err := json.Unmarshal(raw, dst); err != nil {
+			return false, fmt.Errorf("decode backend state %s: %w", path, err)
+		}
+		return true, nil
+	}
+	var children map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &children); err != nil {
+		return false, fmt.Errorf("decode backend section %s: %w", section, err)
+	}
+	value, ok := children[key]
+	if !ok || len(value) == 0 {
+		return false, nil
+	}
+	if err := json.Unmarshal(value, dst); err != nil {
+		return false, fmt.Errorf("decode backend state %s: %w", path, err)
+	}
+	return true, nil
+}
+
+// DeleteBackendState 删除 "<section>" 或 "<section>.<key>"；子对象空了就连顶层 section 一起删。
+func (s *JSONStateStore) DeleteBackendState(path string) error {
+	if s == nil || s.disabled {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deleteBackendStateLocked(path)
+}
+
+func (s *JSONStateStore) deleteBackendStateLocked(path string) error {
+	section, key, err := splitBackendStatePath(path)
+	if err != nil {
+		return err
+	}
+	if s.state.Sections == nil {
+		return nil
+	}
+	if key == "" {
+		if _, ok := s.state.Sections[section]; !ok {
+			return nil
+		}
+		delete(s.state.Sections, section)
+		return s.flushLocked()
+	}
+
+	raw, ok := s.state.Sections[section]
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	children := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(raw, &children); err != nil {
+		return fmt.Errorf("decode backend section %s: %w", section, err)
+	}
+	if _, ok := children[key]; !ok {
+		return nil
+	}
+	delete(children, key)
+	if len(children) == 0 {
+		delete(s.state.Sections, section)
+		return s.flushLocked()
+	}
+	sectionData, err := json.Marshal(children)
+	if err != nil {
+		return fmt.Errorf("encode backend section %s: %w", section, err)
+	}
+	s.state.Sections[section] = sectionData
+	return s.flushLocked()
 }
 
 // flushLocked must be called with mu held, after updating state. It releases

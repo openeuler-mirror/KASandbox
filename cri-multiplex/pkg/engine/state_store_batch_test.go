@@ -63,6 +63,28 @@ func awaitStateResult(t *testing.T, done <-chan error) error {
 	}
 }
 
+// e2bSection 从 persistedState 的 "e2b" section 里取出一个子键，避免测试直接依赖 typed 字段。
+func e2bSection[T any](t *testing.T, s persistedState, key string) T {
+	t.Helper()
+	var out T
+	raw, ok := s.Sections["e2b"]
+	if !ok {
+		return out
+	}
+	var children map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &children); err != nil {
+		t.Fatalf("decode e2b section: %v", err)
+	}
+	value, ok := children[key]
+	if !ok {
+		return out
+	}
+	if err := json.Unmarshal(value, &out); err != nil {
+		t.Fatalf("decode e2b.%s: %v", key, err)
+	}
+	return out
+}
+
 func awaitStateMutation(t *testing.T, store *JSONStateStore, ready func(persistedState) bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -144,7 +166,7 @@ func TestStateStoreBatchFailureAndRetry(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		go func(i int) { done <- store.SaveE2BImage(fmt.Sprint(i)) }(i)
 	}
-	awaitStateMutation(t, store, func(s persistedState) bool { return len(s.E2B.Images) == 5 })
+	awaitStateMutation(t, store, func(s persistedState) bool { return len(e2bSection[[]string](t, s, "images")) == 5 })
 	first.release <- nil
 	failed := awaitStateWrite(t, writes)
 	if err := awaitStateResult(t, firstDone); err != nil {
@@ -173,7 +195,7 @@ func TestStateStoreDeleteDuringFlushDoesNotResurrect(t *testing.T) {
 	first := awaitStateWrite(t, writes)
 	deleteDone := make(chan error, 1)
 	go func() { deleteDone <- store.DeleteE2BPod("deleted") }()
-	awaitStateMutation(t, store, func(s persistedState) bool { return len(s.E2B.Pods) == 0 })
+	awaitStateMutation(t, store, func(s persistedState) bool { return len(e2bSection[[]E2BPodState](t, s, "pods")) == 0 })
 	first.release <- nil
 	second := awaitStateWrite(t, writes)
 	second.release <- nil
@@ -188,8 +210,11 @@ func TestStateStoreDeleteDuringFlushDoesNotResurrect(t *testing.T) {
 		t.Fatal(err)
 	}
 	var saved persistedState
-	if err := json.Unmarshal(data, &saved); err != nil || len(saved.E2B.Pods) != 0 {
-		t.Fatalf("deleted pod resurrected: pods=%d err=%v", len(saved.E2B.Pods), err)
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if pods := e2bSection[[]E2BPodState](t, saved, "pods"); len(pods) != 0 {
+		t.Fatalf("deleted pod resurrected: pods=%v", pods)
 	}
 }
 
@@ -254,11 +279,12 @@ func runConcurrentStateSaves(t *testing.T, store *JSONStateStore, count int) ([]
 	if err := json.Unmarshal(data, &saved); err != nil {
 		t.Fatal(err)
 	}
-	if len(saved.Routes) != count || len(saved.E2B.Pods) != count {
-		t.Fatalf("persisted routes=%d pods=%d, want %d each", len(saved.Routes), len(saved.E2B.Pods), count)
+	savedPods := e2bSection[[]E2BPodState](t, saved, "pods")
+	if len(saved.Routes) != count || len(savedPods) != count {
+		t.Fatalf("persisted routes=%d pods=%d, want %d each", len(saved.Routes), len(savedPods), count)
 	}
 	ids := make(map[string]bool, count)
-	for _, p := range saved.E2B.Pods {
+	for _, p := range savedPods {
 		ids[p.SandboxID] = true
 	}
 	for _, r := range saved.Routes {

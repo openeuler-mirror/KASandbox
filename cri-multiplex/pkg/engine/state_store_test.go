@@ -64,9 +64,9 @@ func TestE2BOperationRoundTrip(t *testing.T) {
 func TestInFlightE2BOperationsFailOnRestart(t *testing.T) {
 	dir := t.TempDir()
 	startedAt := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
-	state := persistedState{
-		Version: 1,
-		E2BOperations: map[string]E2BOperation{
+	state := map[string]any{
+		"version": 1,
+		"e2b_operations": map[string]E2BOperation{
 			"op-running": {
 				OperationID: "op-running",
 				State:       OperationStateRunning,
