@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"github.com/cri-multiplex/pkg/orchestrator"
 )
 
@@ -33,7 +34,7 @@ func TestAdminCreateFullLifecycle(t *testing.T) {
 		ClientId: "client-a",
 		HostIp:   "172.16.0.2",
 	}}
-	fakeCNI := &fakeCNIManager{addRecord: &CNIRecord{
+	fakeCNI := &fakeCNIManager{addRecord: &util.CNIRecord{
 		SandboxID: "sbx-1",
 		Network:   "calico",
 		IfName:    "eth0",
@@ -42,7 +43,7 @@ func TestAdminCreateFullLifecycle(t *testing.T) {
 		Gateway:   "10.0.0.1",
 		DNS:       []string{"10.96.0.10"},
 	}}
-	var setupCalls []PortMapping
+	var setupCalls []util.PortMapping
 	store, err := NewJSONStateStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewJSONStateStore: %v", err)
@@ -51,12 +52,12 @@ func TestAdminCreateFullLifecycle(t *testing.T) {
 	e.cniConfig.Enabled = true
 	e.cniManager = fakeCNI
 	e.stateStore = store
-	e.hostPortOps = hostPortMappingOps{
-		setup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
-			setupCalls = append(setupCalls, PortMapping{HostPort: hostPort, SandboxPort: sandboxPort})
+	e.hostPortOps = util.HostPortMappingOps{
+		Setup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
+			setupCalls = append(setupCalls, util.PortMapping{HostPort: hostPort, SandboxPort: sandboxPort})
 			return nil
 		},
-		cleanup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error { return nil },
+		Cleanup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error { return nil },
 	}
 
 	fixedEnd := time.Now().Add(2 * time.Hour).Truncate(time.Second)
@@ -198,7 +199,7 @@ func TestAdminCreateIdempotentExisting(t *testing.T) {
 func TestAdminDeleteFullCleanup(t *testing.T) {
 	client := &fakeSandboxServiceClient{}
 	fakeCNI := &fakeCNIManager{}
-	var cleanupCalls []PortMapping
+	var cleanupCalls []util.PortMapping
 	store, err := NewJSONStateStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewJSONStateStore: %v", err)
@@ -207,10 +208,10 @@ func TestAdminDeleteFullCleanup(t *testing.T) {
 	e.cniConfig.Enabled = true
 	e.cniManager = fakeCNI
 	e.stateStore = store
-	e.hostPortOps = hostPortMappingOps{
-		setup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error { return nil },
-		cleanup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
-			cleanupCalls = append(cleanupCalls, PortMapping{HostPort: hostPort, SandboxPort: sandboxPort})
+	e.hostPortOps = util.HostPortMappingOps{
+		Setup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error { return nil },
+		Cleanup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
+			cleanupCalls = append(cleanupCalls, util.PortMapping{HostPort: hostPort, SandboxPort: sandboxPort})
 			return nil
 		},
 	}
@@ -219,9 +220,9 @@ func TestAdminDeleteFullCleanup(t *testing.T) {
 		e2bSandboxID: "sbx-1",
 		state:        stateRunning,
 		hostIP:       "172.16.0.2",
-		portMappings: []PortMapping{{HostPort: 20001, SandboxPort: 49983}, {HostPort: 20002, SandboxPort: 8080}},
+		portMappings: []util.PortMapping{{HostPort: 20001, SandboxPort: 49983}, {HostPort: 20002, SandboxPort: 8080}},
 		cniEnabled:   true,
-		cniRecord:    &CNIRecord{SandboxID: "sbx-1", NetNSPath: "/var/run/netns/e2b-sbx-1"},
+		cniRecord:    &util.CNIRecord{SandboxID: "sbx-1", NetNSPath: "/var/run/netns/e2b-sbx-1"},
 	}
 	e.tracker.Add("sbx-1", pod)
 	if err := store.SaveE2BPod(pod.toPersistedState()); err != nil {

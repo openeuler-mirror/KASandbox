@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -386,14 +387,14 @@ func shellQuoteList(values []string) []string {
 	return out
 }
 
-func cniNetNSName(rec *CNIRecord) string {
+func cniNetNSName(rec *util.CNIRecord) string {
 	if rec == nil {
 		return ""
 	}
 	return rec.NetNSName
 }
 
-func cniNetNSPath(rec *CNIRecord) string {
+func cniNetNSPath(rec *util.CNIRecord) string {
 	if rec == nil {
 		return ""
 	}

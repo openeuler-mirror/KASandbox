@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"github.com/cri-multiplex/pkg/envd/process"
 	"github.com/cri-multiplex/pkg/orchestrator"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -24,13 +25,13 @@ func newTestGRPCE2BEngine(client *fakeSandboxServiceClient) *grpcE2BEngine {
 		orchestratorAddr:      "fake",
 		orchestratorProxyAddr: "fake-proxy",
 		nodeIP:                "192.0.2.10",
-		hostPortOps:           defaultHostPortMappingOps(),
+		hostPortOps:           util.DefaultHostPortMappingOps(),
 		client:                client,
 		tracker:               newPodTracker(),
 		imageCache:            make(map[string]*e2bImageMeta),
 		streamingReqs:         make(map[string]*execStreamRequest),
 		attachReqs:            make(map[string]*attachStreamRequest),
-		hostPortManager:       NewHostPortManager(20000, 20010),
+		hostPortManager:       util.NewHostPortManager(20000, 20010),
 		repairPodNeighbor:     func(context.Context, string, string, string) (bool, error) { return false, nil },
 	}
 }
@@ -52,7 +53,7 @@ func TestGRPCE2BRunPodSandboxWithInjectedClientAndCNI(t *testing.T) {
 	client := &fakeSandboxServiceClient{}
 	e := newTestGRPCE2BEngine(client)
 	e.cniConfig.Enabled = true
-	e.cniManager = &fakeCNIManager{addRecord: &CNIRecord{
+	e.cniManager = &fakeCNIManager{addRecord: &util.CNIRecord{
 		SandboxID: "uid-a",
 		Network:   "calico",
 		IfName:    "eth0",
@@ -115,7 +116,7 @@ func TestGRPCE2BPodAndContainerLifecycle(t *testing.T) {
 		envdAccessToken: "token-a",
 		podIP:           "10.0.0.20",
 		cniEnabled:      true,
-		cniRecord:       &CNIRecord{SandboxID: "uid-a", Network: "calico", NetNSPath: "/var/run/netns/e2b-uid-a", PodIP: "10.0.0.20"},
+		cniRecord:       &util.CNIRecord{SandboxID: "uid-a", Network: "calico", NetNSPath: "/var/run/netns/e2b-uid-a", PodIP: "10.0.0.20"},
 	})
 
 	createResp, err := e.CreateContainer(context.Background(), &runtime.CreateContainerRequest{
@@ -169,26 +170,26 @@ func TestGRPCE2BPodAndContainerLifecycle(t *testing.T) {
 }
 
 func TestGRPCE2BHostPortMappingSetupAndCleanup(t *testing.T) {
-	var setupCalls []PortMapping
-	var cleanupCalls []PortMapping
+	var setupCalls []util.PortMapping
+	var cleanupCalls []util.PortMapping
 	client := &fakeSandboxServiceClient{createResp: &orchestrator.SandboxCreateResponse{
 		ClientId: "client-a",
 		HostIp:   "172.16.0.2",
 	}}
 	e := newTestGRPCE2BEngine(client)
-	e.hostPortOps = hostPortMappingOps{
-		setup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
+	e.hostPortOps = util.HostPortMappingOps{
+		Setup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
 			if nodeIP != "192.0.2.10" || sandboxIP != "172.16.0.2" {
 				t.Fatalf("unexpected setup endpoints nodeIP=%s sandboxIP=%s", nodeIP, sandboxIP)
 			}
-			setupCalls = append(setupCalls, PortMapping{HostPort: hostPort, SandboxPort: sandboxPort})
+			setupCalls = append(setupCalls, util.PortMapping{HostPort: hostPort, SandboxPort: sandboxPort})
 			return nil
 		},
-		cleanup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
+		Cleanup: func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error {
 			if nodeIP != "192.0.2.10" || sandboxIP != "172.16.0.2" {
 				t.Fatalf("unexpected cleanup endpoints nodeIP=%s sandboxIP=%s", nodeIP, sandboxIP)
 			}
-			cleanupCalls = append(cleanupCalls, PortMapping{HostPort: hostPort, SandboxPort: sandboxPort})
+			cleanupCalls = append(cleanupCalls, util.PortMapping{HostPort: hostPort, SandboxPort: sandboxPort})
 			return nil
 		},
 	}
@@ -371,7 +372,7 @@ func TestGRPCE2BRemovePodSandboxDeletesOrchestratorAndCNI(t *testing.T) {
 		e2bSandboxID: "e2buid",
 		state:        stateRunning,
 		cniEnabled:   true,
-		cniRecord:    &CNIRecord{SandboxID: "uid-a", NetNSPath: "/var/run/netns/e2b-uid-a"},
+		cniRecord:    &util.CNIRecord{SandboxID: "uid-a", NetNSPath: "/var/run/netns/e2b-uid-a"},
 	})
 
 	if _, err := e.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "uid-a"}); err != nil {
@@ -689,15 +690,15 @@ func TestGRPCE2BRunPodSandboxStaleRecordRecreate(t *testing.T) {
 	e.cniConfig.Enabled = true
 	e.cniManager = fakeCNI
 	var hostPortCleaned int
-	e.hostPortOps.cleanup = func(string, int, string, int) error {
+	e.hostPortOps.Cleanup = func(string, int, string, int) error {
 		hostPortCleaned++
 		return nil
 	}
 	e.tracker.Add("uid-s", &podInfo{
 		sandboxID: "uid-s", e2bSandboxID: "e2b-uid-s", state: stateStopped, createdAt: time.Now(),
 		hostIP:       "172.16.0.9",
-		portMappings: []PortMapping{{HostPort: 20001, SandboxPort: 49983}},
-		cniRecord:    &CNIRecord{SandboxID: "uid-s", NetNSPath: "/var/run/netns/e2b-uid-s"},
+		portMappings: []util.PortMapping{{HostPort: 20001, SandboxPort: 49983}},
+		cniRecord:    &util.CNIRecord{SandboxID: "uid-s", NetNSPath: "/var/run/netns/e2b-uid-s"},
 	})
 
 	if _, err := e.RunPodSandbox(context.Background(), e2bRunReq("uid-s")); err != nil {

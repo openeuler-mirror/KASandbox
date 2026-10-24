@@ -1,4 +1,4 @@
-package engine
+package util
 
 import (
 	"errors"
@@ -22,15 +22,15 @@ type PortMapping struct {
 	SandboxPort int `json:"sandbox_port"`
 }
 
-type hostPortMappingOps struct {
-	setup   func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error
-	cleanup func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error
+type HostPortMappingOps struct {
+	Setup   func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error
+	Cleanup func(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) error
 }
 
-func defaultHostPortMappingOps() hostPortMappingOps {
-	return hostPortMappingOps{
-		setup:   SetupHostPortMapping,
-		cleanup: CleanupHostPortMapping,
+func DefaultHostPortMappingOps() HostPortMappingOps {
+	return HostPortMappingOps{
+		Setup:   SetupHostPortMapping,
+		Cleanup: CleanupHostPortMapping,
 	}
 }
 
@@ -130,7 +130,7 @@ func SetupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandbox
 		return fmt.Errorf("init iptables: %w", err)
 	}
 
-	comment := hostPortRuleComment(nodeIP, hostPort, sandboxIP, sandboxPort)
+	comment := HostPortRuleComment(nodeIP, hostPort, sandboxIP, sandboxPort)
 	// PREROUTING
 	appendRuleIfMissing := func(table, chain string, rulespec ...string) error {
 		exists, err := tables.Exists(table, chain, rulespec...)
@@ -206,7 +206,7 @@ func CleanupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandb
 		return fmt.Errorf("init iptables: %w", err)
 	}
 
-	comment := hostPortRuleComment(nodeIP, hostPort, sandboxIP, sandboxPort)
+	comment := HostPortRuleComment(nodeIP, hostPort, sandboxIP, sandboxPort)
 	var errs []error
 	deleteBoth := func(table, chain string, legacy []string) {
 		tagged := append([]string(nil), legacy...)
@@ -250,7 +250,7 @@ func CleanupHostPortMapping(nodeIP string, hostPort int, sandboxIP string, sandb
 	return errors.Join(errs...)
 }
 
-func hostPortRuleComment(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) string {
+func HostPortRuleComment(nodeIP string, hostPort int, sandboxIP string, sandboxPort int) string {
 	replacer := strings.NewReplacer(":", "_", " ", "_")
 	return fmt.Sprintf("cri-multiplex:hostport:%s:%d:%s:%d",
 		replacer.Replace(nodeIP), hostPort, replacer.Replace(sandboxIP), sandboxPort)

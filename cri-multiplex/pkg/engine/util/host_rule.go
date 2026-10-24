@@ -1,4 +1,4 @@
-package engine
+package util
 
 import (
 	"bufio"
@@ -11,22 +11,22 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-type hostResourceOps struct {
-	listIPTables     func(context.Context) ([]byte, error)
-	deleteIPTables   func(context.Context, iptablesOwnerRule) error
-	listNFTables     func(context.Context) ([]byte, error)
-	deleteNFTables   func(context.Context, nftablesOwnerRule) error
-	deleteNamedNetNS func(string) error
+type HostResourceOps struct {
+	ListIPTables     func(context.Context) ([]byte, error)
+	DeleteIPTables   func(context.Context, IPTablesOwnerRule) error
+	ListNFTables     func(context.Context) ([]byte, error)
+	DeleteNFTables   func(context.Context, NFTablesOwnerRule) error
+	DeleteNamedNetNS func(string) error
 }
 
-type iptablesOwnerRule struct {
+type IPTablesOwnerRule struct {
 	Table   string
 	Chain   string
 	Spec    []string
 	Comment string
 }
 
-type nftablesOwnerRule struct {
+type NFTablesOwnerRule struct {
 	Family  string
 	Table   string
 	Chain   string
@@ -34,16 +34,16 @@ type nftablesOwnerRule struct {
 	Comment string
 }
 
-func defaultHostResourceOps() hostResourceOps {
-	return hostResourceOps{
-		listIPTables: func(ctx context.Context) ([]byte, error) {
+func DefaultHostResourceOps() HostResourceOps {
+	return HostResourceOps{
+		ListIPTables: func(ctx context.Context) ([]byte, error) {
 			out, err := exec.CommandContext(ctx, "iptables-save").CombinedOutput()
 			if err != nil {
 				return nil, fmt.Errorf("iptables-save: %w: %s", err, strings.TrimSpace(string(out)))
 			}
 			return out, nil
 		},
-		deleteIPTables: func(ctx context.Context, rule iptablesOwnerRule) error {
+		DeleteIPTables: func(ctx context.Context, rule IPTablesOwnerRule) error {
 			args := []string{"-t", rule.Table, "-D", rule.Chain}
 			args = append(args, rule.Spec...)
 			out, err := exec.CommandContext(ctx, "iptables", args...).CombinedOutput()
@@ -52,14 +52,14 @@ func defaultHostResourceOps() hostResourceOps {
 			}
 			return nil
 		},
-		listNFTables: func(ctx context.Context) ([]byte, error) {
+		ListNFTables: func(ctx context.Context) ([]byte, error) {
 			out, err := exec.CommandContext(ctx, "nft", "-a", "list", "ruleset").CombinedOutput()
 			if err != nil {
 				return nil, fmt.Errorf("nft list ruleset: %w: %s", err, strings.TrimSpace(string(out)))
 			}
 			return out, nil
 		},
-		deleteNFTables: func(ctx context.Context, rule nftablesOwnerRule) error {
+		DeleteNFTables: func(ctx context.Context, rule NFTablesOwnerRule) error {
 			args := []string{"delete", "rule", rule.Family, rule.Table, rule.Chain, "handle", rule.Handle}
 			out, err := exec.CommandContext(ctx, "nft", args...).CombinedOutput()
 			if err != nil {
@@ -67,12 +67,12 @@ func defaultHostResourceOps() hostResourceOps {
 			}
 			return nil
 		},
-		deleteNamedNetNS: netns.DeleteNamed,
+		DeleteNamedNetNS: netns.DeleteNamed,
 	}
 }
 
-func parseIPTablesOwnerRules(data []byte) []iptablesOwnerRule {
-	var rules []iptablesOwnerRule
+func ParseIPTablesOwnerRules(data []byte) []IPTablesOwnerRule {
+	var rules []IPTablesOwnerRule
 	table := ""
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	for scanner.Scan() {
@@ -106,7 +106,7 @@ func parseIPTablesOwnerRules(data []byte) []iptablesOwnerRule {
 		for i := range spec {
 			spec[i] = strings.Trim(spec[i], `"`)
 		}
-		rules = append(rules, iptablesOwnerRule{Table: table, Chain: fields[1], Spec: spec, Comment: comment})
+		rules = append(rules, IPTablesOwnerRule{Table: table, Chain: fields[1], Spec: spec, Comment: comment})
 	}
 	return rules
 }
@@ -118,8 +118,8 @@ var (
 	nftHandlePattern  = regexp.MustCompile(`#\s*handle\s+(\d+)`)
 )
 
-func parseNFTablesOwnerRules(data []byte) []nftablesOwnerRule {
-	var rules []nftablesOwnerRule
+func ParseNFTablesOwnerRules(data []byte) []NFTablesOwnerRule {
+	var rules []NFTablesOwnerRule
 	family, table, chain := "", "", ""
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	for scanner.Scan() {
@@ -135,7 +135,7 @@ func parseNFTablesOwnerRules(data []byte) []nftablesOwnerRule {
 		commentMatch := nftCommentPattern.FindStringSubmatch(line)
 		handleMatch := nftHandlePattern.FindStringSubmatch(line)
 		if family != "" && table != "" && chain != "" && len(commentMatch) == 2 && len(handleMatch) == 2 {
-			rules = append(rules, nftablesOwnerRule{
+			rules = append(rules, NFTablesOwnerRule{
 				Family: family, Table: table, Chain: chain,
 				Handle: handleMatch[1], Comment: commentMatch[1],
 			})

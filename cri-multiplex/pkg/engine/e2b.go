@@ -3,6 +3,7 @@ package engine
 import (
 	"time"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
@@ -14,28 +15,12 @@ type E2BConfig struct {
 	OrchestratorProxyAddr string
 	NodeIP                string
 	NodeName              string
-	CNI                   CNIConfig
+	CNI                   util.CNIConfig
 	StateStore            StateStore
 	// HideLabel 形如 "key=value"；非空时，带该 label 的 E2B sandbox 从
 	// ListPodSandbox/ListContainers 响应中隐藏（kubelet PLEG/runtimeCache 不可见，
 	// 从而不触发孤儿 sandbox 清杀）；为空则保持原有行为。
 	HideLabel string
-}
-
-type CNIConfig struct {
-	Enabled     bool
-	ConfDir     string
-	BinDir      string
-	IfName      string
-	NetNSDir    string
-	NetNSPrefix string
-	// PoolEnabled 为预热池总开关（仅 E2B 引擎使用）；false 时即使 PoolSize>0 也不启用池化。
-	PoolEnabled bool
-	// PoolSize 为 netns/veth 预热池目标容量（仅 E2B 引擎使用）：
-	// 后台预热协程提前完成 CNI ADD（netns 创建 + veth 配对 + IPAM 分配），
-	// RunPodSandbox 直接从池中取用，把并发创建时的串行 CNI 开销挡在池外。
-	// 0 表示关闭池化，每次创建走实时 CNI ADD。
-	PoolSize int
 }
 
 // E2BDescriptor 是 e2b 后端的静态标识：e2b.dev/ 开头的镜像由 e2b 后端处理。
@@ -48,7 +33,7 @@ type E2BEngine interface {
 
 // Module 现已填 Descriptor/Engine/Restorer；Cleaner 与 Reconciler 由后续阶段补齐。
 func (e *grpcE2BEngine) Module() BackendModule {
-	return BackendModule{Descriptor: E2BDescriptor, Engine: e, Restorer: e}
+	return BackendModule{Descriptor: E2BDescriptor, Engine: e, Cleaner: e, Reconciler: e, Restorer: e}
 }
 
 func NewE2BEngine(cfg *E2BConfig) E2BEngine {
@@ -112,10 +97,10 @@ type podInfo struct {
 	hostPort   int // 默认端口 49983 的映射
 	podIP      string
 	cniEnabled bool
-	cniRecord  *CNIRecord
+	cniRecord  *util.CNIRecord
 
 	// 新增：多端口映射
-	portMappings []PortMapping // hostPort -> sandboxPort
+	portMappings []util.PortMapping // hostPort -> sandboxPort
 }
 
 func (p *podInfo) envdSandboxID() string {
@@ -182,7 +167,7 @@ func (p *podInfo) toPersistedState() E2BPodState {
 		PodIP:                p.podIP,
 		CNIEnabled:           p.cniEnabled,
 		CNIRecord:            cloneCNIRecord(p.cniRecord),
-		PortMappings:         append([]PortMapping(nil), p.portMappings...),
+		PortMappings:         append([]util.PortMapping(nil), p.portMappings...),
 	}
 }
 
@@ -224,12 +209,12 @@ func podInfoFromPersistedState(p E2BPodState) *podInfo {
 		podIP:        p.PodIP,
 		cniEnabled:   p.CNIEnabled,
 		cniRecord:    cloneCNIRecord(p.CNIRecord),
-		portMappings: append([]PortMapping(nil), p.PortMappings...),
+		portMappings: append([]util.PortMapping(nil), p.PortMappings...),
 	}
 	return info
 }
 
-func cloneCNIRecord(rec *CNIRecord) *CNIRecord {
+func cloneCNIRecord(rec *util.CNIRecord) *util.CNIRecord {
 	if rec == nil {
 		return nil
 	}

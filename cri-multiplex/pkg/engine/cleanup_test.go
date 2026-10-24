@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -22,20 +23,41 @@ func newCleanupTestStore(t *testing.T) *JSONStateStore {
 	return store
 }
 
+// newCleanupManagerForTests 用注册表构造 CleanupManager，供直接调用 scan*/reconcile* 的用例使用。
+func newCleanupManagerForTests(t *testing.T, engines ...RuntimeEngine) *CleanupManager {
+	t.Helper()
+	reg := NewRegistry("")
+	for _, eng := range engines {
+		if eng == nil {
+			continue
+		}
+		if err := reg.Register(BackendModule{
+			Descriptor: BackendDescriptor{Type: eng.Type(), Handler: string(eng.Type())},
+			Engine:     eng,
+		}); err != nil {
+			t.Fatalf("register %s: %v", eng.Type(), err)
+		}
+	}
+	if err := reg.Freeze(); err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+	return NewCleanupManager(nil, reg, CleanupConfig{})
+}
+
 func TestCleanupE2BNotFoundIsIdempotent(t *testing.T) {
 	store := newCleanupTestStore(t)
 	client := &fakeSandboxServiceClient{deleteErr: status.Error(codes.NotFound, "sandbox not found")}
 	e := newTestGRPCE2BEngine(client)
 	e.stateStore = store
 	e.cniManager = &fakeCNIManager{delErr: os.ErrNotExist}
-	e.hostPortOps.cleanup = func(string, int, string, int) error {
+	e.hostPortOps.Cleanup = func(string, int, string, int) error {
 		return errors.New("Bad rule (does a matching rule exist in that chain?)")
 	}
 	pod := &podInfo{
 		sandboxID: "e2b-pod", e2bSandboxID: "remote-e2b-pod", state: stateRunning,
 		hostIP: "192.0.2.20", cniEnabled: true,
-		cniRecord:    &CNIRecord{SandboxID: "e2b-pod", NetNSPath: "/missing/e2b-pod"},
-		portMappings: []PortMapping{{HostPort: 21000, SandboxPort: 49983}},
+		cniRecord:    &util.CNIRecord{SandboxID: "e2b-pod", NetNSPath: "/missing/e2b-pod"},
+		portMappings: []util.PortMapping{{HostPort: 21000, SandboxPort: 49983}},
 	}
 	e.tracker.Add(pod.sandboxID, pod)
 	if err := store.SaveE2BPod(pod.toPersistedState()); err != nil {
@@ -43,12 +65,10 @@ func TestCleanupE2BNotFoundIsIdempotent(t *testing.T) {
 	}
 	_ = store.SaveRoute(RouteRecord{Kind: "pod", ID: pod.sandboxID, Engine: EngineTypeE2B})
 
-	m := NewCleanupManager(store, e, nil, CleanupConfig{Enabled: true})
-	if result := m.CleanupE2BSandbox(context.Background(), pod.sandboxID, "test"); !result.Succeeded || result.Err != nil {
-		t.Fatalf("cleanup result = %+v", result)
-	}
-	if result := m.CleanupE2BSandbox(context.Background(), pod.sandboxID, "repeat"); !result.Succeeded || result.Err != nil {
-		t.Fatalf("repeat cleanup result = %+v", result)
+	for _, reason := range []string{"test", "repeat"} {
+		if err := e.CleanupSandbox(context.Background(), pod.sandboxID, reason); err != nil {
+			t.Fatalf("cleanup %s: %v", reason, err)
+		}
 	}
 	pods, _ := store.LoadE2BPods()
 	routes, _ := store.LoadRoutes()
@@ -68,17 +88,16 @@ func TestCleanupAndroidNotFoundIsIdempotent(t *testing.T) {
 		CRISandboxID: "android-pod", PodUID: "android-pod", State: androidSandboxUnknown,
 		WorkDir: filepath.Join(stateDir, "android-pod"), ArtifactsDir: artifactsDir,
 		LaunchPID: 999999, LaunchPGID: 999999,
-		CNIRecord: &CNIRecord{SandboxID: "android-pod", NetNSPath: "/missing/android-pod"},
+		CNIRecord: &util.CNIRecord{SandboxID: "android-pod", NetNSPath: "/missing/android-pod"},
 	}
 	e.pods[rec.CRISandboxID] = rec
 	if err := store.SaveAndroidPod(androidPodStateFromRecords(rec, nil)); err != nil {
 		t.Fatal(err)
 	}
 
-	m := NewCleanupManager(store, nil, e, CleanupConfig{Enabled: true})
 	for _, reason := range []string{"test", "repeat"} {
-		if result := m.CleanupAndroidSandbox(context.Background(), rec.CRISandboxID, reason); !result.Succeeded || result.Err != nil {
-			t.Fatalf("cleanup %s result = %+v", reason, result)
+		if err := e.CleanupSandbox(context.Background(), rec.CRISandboxID, reason); err != nil {
+			t.Fatalf("cleanup %s: %v", reason, err)
 		}
 	}
 	pods, _ := store.LoadAndroidPods()
@@ -87,21 +106,21 @@ func TestCleanupAndroidNotFoundIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestHostPortCommentCleanupOnlyDeletesOwnedRules(t *testing.T) {
-	owned := hostPortRuleComment("192.0.2.10", 20000, "10.0.0.2", 49983)
+func TestE2BReconcileDeletesOrphanHostPortRules(t *testing.T) {
+	owned := util.HostPortRuleComment("192.0.2.10", 20000, "10.0.0.2", 49983)
 	data := []byte("*nat\n" +
 		"-A PREROUTING -p tcp --dport 20000 -m comment --comment \"" + owned + "\" -j DNAT --to-destination 10.0.0.2:49983\n" +
 		"-A PREROUTING -p tcp --dport 20001 -j DNAT --to-destination 10.0.0.3:49983\nCOMMIT\n")
-	var deleted []iptablesOwnerRule
-	m := &CleanupManager{cfg: CleanupConfig{}, now: time.Now, hostOps: hostResourceOps{
-		listIPTables: func(context.Context) ([]byte, error) { return data, nil },
-		deleteIPTables: func(_ context.Context, rule iptablesOwnerRule) error {
+	var deleted []util.IPTablesOwnerRule
+	e := &grpcE2BEngine{hostOps: util.HostResourceOps{
+		ListIPTables: func(context.Context) ([]byte, error) { return data, nil },
+		DeleteIPTables: func(_ context.Context, rule util.IPTablesOwnerRule) error {
 			deleted = append(deleted, rule)
 			return nil
 		},
 	}}
-	if err := m.scanHostPortRules(context.Background()); err != nil {
-		t.Fatalf("scanHostPortRules: %v", err)
+	if err := e.Reconcile(context.Background(), ReconcileOptions{}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
 	}
 	if len(deleted) != 1 || deleted[0].Comment != owned {
 		t.Fatalf("deleted rules = %+v", deleted)
@@ -112,7 +131,7 @@ func TestHostResourceParsersOnlyReturnOwnedRules(t *testing.T) {
 	iptablesData := []byte("*filter\n" +
 		"-A FORWARD -m comment --comment \"cri-multiplex:hostport:a\" -j ACCEPT\n" +
 		"-A FORWARD -m comment --comment \"someone-else\" -j ACCEPT\nCOMMIT\n")
-	iptablesRules := parseIPTablesOwnerRules(iptablesData)
+	iptablesRules := util.ParseIPTablesOwnerRules(iptablesData)
 	if len(iptablesRules) != 1 || iptablesRules[0].Comment != "cri-multiplex:hostport:a" {
 		t.Fatalf("iptables owner rules = %+v", iptablesRules)
 	}
@@ -120,46 +139,46 @@ func TestHostResourceParsersOnlyReturnOwnedRules(t *testing.T) {
 	nftData := []byte("table ip nat {\n chain prerouting {\n" +
 		"tcp dport 20000 counter comment \"cri-multiplex:hostport:a\" # handle 12\n" +
 		"tcp dport 20001 counter comment \"someone-else\" # handle 13\n }\n}\n")
-	nftRules := parseNFTablesOwnerRules(nftData)
+	nftRules := util.ParseNFTablesOwnerRules(nftData)
 	if len(nftRules) != 1 || nftRules[0].Handle != "12" || nftRules[0].Comment != "cri-multiplex:hostport:a" {
 		t.Fatalf("nftables owner rules = %+v", nftRules)
 	}
 }
 
-func TestPendingE2BNetNSIsProtectedFromOrphanScan(t *testing.T) {
+func TestE2BReconcileProtectsPendingNetNS(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"e2b-pending", "e2b-orphan"} {
 		if err := os.WriteFile(filepath.Join(root, name), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	e := &grpcE2BEngine{
-		cniConfig:    CNIConfig{Enabled: true, NetNSDir: root, NetNSPrefix: "e2b-"},
-		pendingNetNS: map[string]struct{}{"e2b-pending": {}},
-	}
 	var deleted []string
-	m := &CleanupManager{e2b: e, hostOps: hostResourceOps{
-		deleteNamedNetNS: func(name string) error {
-			deleted = append(deleted, name)
-			return nil
+	e := &grpcE2BEngine{
+		cniConfig:    util.CNIConfig{Enabled: true, NetNSDir: root, NetNSPrefix: "e2b-"},
+		pendingNetNS: map[string]struct{}{"e2b-pending": {}},
+		hostOps: util.HostResourceOps{
+			DeleteNamedNetNS: func(name string) error {
+				deleted = append(deleted, name)
+				return nil
+			},
 		},
-	}}
-	if err := m.scanOrphanNetNS(); err != nil {
-		t.Fatalf("scanOrphanNetNS: %v", err)
+	}
+	if err := e.Reconcile(context.Background(), ReconcileOptions{}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
 	}
 	if len(deleted) != 1 || deleted[0] != "e2b-orphan" {
 		t.Fatalf("deleted netns = %v", deleted)
 	}
 }
 
-func TestPendingAndroidResourcesAreProtectedFromOrphanScan(t *testing.T) {
+func TestAndroidReconcileProtectsPendingResources(t *testing.T) {
 	stateDir := t.TempDir()
 	netNSDir := t.TempDir()
 	sandboxID := "android-pending-sandbox"
 	pendingDir := filepath.Join(stateDir, sandboxID)
 	orphanDir := filepath.Join(stateDir, "android-orphan-sandbox")
 	for path, id := range map[string]string{pendingDir: sandboxID, orphanDir: "android-orphan-sandbox"} {
-		if err := writeResourceOwner(path, ResourceOwner{Owner: "cri-multiplex", Runtime: EngineTypeAndroid, SandboxID: id}); err != nil {
+		if err := util.WriteResourceOwner(path, util.ResourceOwner{Owner: "cri-multiplex", Runtime: string(EngineTypeAndroid), SandboxID: id}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -167,11 +186,11 @@ func TestPendingAndroidResourcesAreProtectedFromOrphanScan(t *testing.T) {
 	e := NewAndroidEngine(AndroidConfig{
 		StateDir:     stateDir,
 		ArtifactsDir: filepath.Join(t.TempDir(), "cf17"),
-		CNI:          CNIConfig{Enabled: true, NetNSDir: netNSDir, NetNSPrefix: "android-"},
+		CNI:          util.CNIConfig{Enabled: true, NetNSDir: netNSDir, NetNSPrefix: "android-"},
 	})
 	e.markPendingSandbox(sandboxID)
 	defer e.unmarkPendingSandbox(sandboxID)
-	pendingNetNS := "android-" + shortID(sandboxID)
+	pendingNetNS := "android-" + util.ShortID(sandboxID)
 	orphanNetNS := "android-orphan"
 	for _, name := range []string{pendingNetNS, orphanNetNS} {
 		if err := os.WriteFile(filepath.Join(netNSDir, name), nil, 0o600); err != nil {
@@ -180,14 +199,14 @@ func TestPendingAndroidResourcesAreProtectedFromOrphanScan(t *testing.T) {
 	}
 
 	var deleted []string
-	m := &CleanupManager{android: e, hostOps: hostResourceOps{
-		deleteNamedNetNS: func(name string) error {
+	e.hostOps = util.HostResourceOps{
+		DeleteNamedNetNS: func(name string) error {
 			deleted = append(deleted, name)
 			return nil
 		},
-	}}
-	if err := m.scanOwnedAndroidDirectories(); err != nil {
-		t.Fatalf("scanOwnedAndroidDirectories: %v", err)
+	}
+	if err := e.Reconcile(context.Background(), ReconcileOptions{}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
 	}
 	if _, err := os.Stat(pendingDir); err != nil {
 		t.Fatalf("pending workdir was removed: %v", err)
@@ -195,54 +214,44 @@ func TestPendingAndroidResourcesAreProtectedFromOrphanScan(t *testing.T) {
 	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
 		t.Fatalf("orphan workdir still exists: %v", err)
 	}
-	if err := m.scanOrphanNetNS(); err != nil {
-		t.Fatalf("scanOrphanNetNS: %v", err)
-	}
 	if len(deleted) != 1 || deleted[0] != orphanNetNS {
 		t.Fatalf("deleted netns = %v", deleted)
 	}
 }
 
-func TestAndroidUnexpectedExitMarksStateAndEnqueuesCleanup(t *testing.T) {
+func TestAndroidUnexpectedExitMarksState(t *testing.T) {
 	store := newCleanupTestStore(t)
 	e := NewAndroidEngine(AndroidConfig{Enabled: true, StateDir: t.TempDir(), ArtifactsDir: t.TempDir(), StateStore: store})
 	pod := &AndroidSandboxRecord{CRISandboxID: "exit-pod", PodUID: "exit-pod", State: androidSandboxRunning}
 	container := &AndroidContainerRecord{ContainerID: "exit-pod-c", CRISandboxID: "exit-pod", State: androidContainerRunning}
 	e.pods[pod.CRISandboxID] = pod
 	e.containers[container.ContainerID] = container
-	called := make(chan string, 1)
-	m := NewCleanupManager(store, nil, e, CleanupConfig{Enabled: true})
-	m.cleanupAndroidFunc = func(_ context.Context, sandboxID string) error {
-		called <- sandboxID
-		return nil
-	}
 
 	e.handleUnexpectedCVDExit(pod.CRISandboxID, nil)
-	select {
-	case sandboxID := <-called:
-		if sandboxID != pod.CRISandboxID {
-			t.Fatalf("cleanup sandbox = %s", sandboxID)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("unexpected exit did not enqueue cleanup")
-	}
 	if pod.State != androidSandboxUnknown || container.State != androidContainerExited {
 		t.Fatalf("unexpected exit state: pod=%s container=%s", pod.State, container.State)
 	}
 }
 
-func TestRouteStateReconcileRepairsBothDirections(t *testing.T) {
+func TestE2BReconcileRebuildsAndPrunesOwnRoutes(t *testing.T) {
 	store := newCleanupTestStore(t)
-	if err := store.SaveE2BPod(E2BPodState{SandboxID: "live", State: stateRunning, ContainerName: "app"}); err != nil {
+	if err := store.SaveE2BPod(E2BPodState{
+		SandboxID: "live", State: stateRunning, ContainerName: "app", UpdatedAt: time.Now(),
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveRoute(RouteRecord{Kind: "pod", ID: "orphan", Engine: EngineTypeAndroid}); err != nil {
+	if err := store.SaveRoute(RouteRecord{Kind: "pod", ID: "orphan", Engine: EngineTypeE2B}); err != nil {
 		t.Fatal(err)
 	}
-	m := &CleanupManager{stateStore: store}
-	if err := m.reconcileRoutes(); err != nil {
-		t.Fatalf("reconcileRoutes: %v", err)
+	if err := store.SaveRoute(RouteRecord{Kind: "pod", ID: "android-live", Engine: EngineTypeAndroid}); err != nil {
+		t.Fatal(err)
 	}
+
+	e := &grpcE2BEngine{stateStore: store, client: &fakeSandboxServiceClient{}}
+	if err := e.Reconcile(context.Background(), ReconcileOptions{GracePeriod: time.Hour}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
 	routes, _ := store.LoadRoutes()
 	got := map[string]EngineType{}
 	for _, route := range routes {
@@ -254,25 +263,46 @@ func TestRouteStateReconcileRepairsBothDirections(t *testing.T) {
 	if _, ok := got["pod:orphan"]; ok {
 		t.Fatalf("orphan route not removed: %+v", got)
 	}
+	if got["pod:android-live"] != EngineTypeAndroid {
+		t.Fatalf("android route was touched by the e2b reconciler: %+v", got)
+	}
+}
+
+func TestCleanupManagerReconcileRunsModuleReconcilers(t *testing.T) {
+	store := newCleanupTestStore(t)
+	var called bool
+	reg := NewRegistry("")
+	if err := reg.Register(BackendModule{
+		Descriptor: BackendDescriptor{Type: EngineTypeE2B, Handler: "e2b"},
+		Engine:     &stubEngine{typ: EngineTypeE2B},
+		Reconciler: reconcileFunc(func(context.Context, ReconcileOptions) error { called = true; return nil }),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = reg.Freeze()
+	m := NewCleanupManager(store, reg, CleanupConfig{Enabled: true})
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !called {
+		t.Fatal("module reconciler was not called")
+	}
+}
+
+type reconcileFunc func(context.Context, ReconcileOptions) error
+
+func (f reconcileFunc) Reconcile(ctx context.Context, opts ReconcileOptions) error {
+	return f(ctx, opts)
 }
 
 func TestCleanupRetryTaskDeletedAfterSuccess(t *testing.T) {
 	store := newCleanupTestStore(t)
 	now := time.Now()
-	calls := 0
-	m := &CleanupManager{
-		stateStore: store,
-		cfg:        CleanupConfig{MaxRetries: 3},
-		now:        func() time.Time { return now },
-	}
-	m.cleanupE2BFunc = func(context.Context, string) error {
-		calls++
-		if calls == 1 {
-			return errors.New("temporary cleanup failure")
-		}
-		return nil
-	}
-	first := m.CleanupE2BSandbox(context.Background(), "retry-pod", "test")
+	cleaner := &stubCleaner{err: errors.New("temporary cleanup failure")}
+	m := NewCleanupManager(store, testCleanupRegistry(t, EngineTypeE2B, cleaner), CleanupConfig{MaxRetries: 3})
+	m.now = func() time.Time { return now }
+
+	first := m.Schedule(context.Background(), EngineTypeE2B, "retry-pod", "sandbox", "test")
 	if first.Err == nil {
 		t.Fatal("first cleanup should fail")
 	}
@@ -280,26 +310,27 @@ func TestCleanupRetryTaskDeletedAfterSuccess(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].Attempts != 1 {
 		t.Fatalf("cleanup tasks after failure = %+v", tasks)
 	}
+
+	cleaner.err = nil
 	now = tasks[0].NextRetryAt.Add(time.Millisecond)
 	if err := m.RetryPending(context.Background()); err != nil {
 		t.Fatalf("RetryPending: %v", err)
 	}
 	tasks, _ = store.LoadCleanupTasks()
-	if len(tasks) != 0 || calls != 2 {
-		t.Fatalf("retry did not converge: calls=%d tasks=%+v", calls, tasks)
+	if len(tasks) != 0 || cleaner.callCount() != 2 {
+		t.Fatalf("retry did not converge: calls=%d tasks=%+v", cleaner.callCount(), tasks)
 	}
 }
 
-func TestUnknownOwnerDirectoryIsNotDeleted(t *testing.T) {
+func TestAndroidReconcileKeepsUnknownOwnerDirectory(t *testing.T) {
 	stateDir := t.TempDir()
 	unknown := filepath.Join(stateDir, "android-similar")
 	if err := os.MkdirAll(unknown, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	e := NewAndroidEngine(AndroidConfig{StateDir: stateDir, ArtifactsDir: filepath.Join(t.TempDir(), "cf17")})
-	m := &CleanupManager{android: e}
-	if err := m.scanOwnedAndroidDirectories(); err != nil {
-		t.Fatalf("scanOwnedAndroidDirectories: %v", err)
+	if err := e.Reconcile(context.Background(), ReconcileOptions{}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
 	}
 	if _, err := os.Stat(unknown); err != nil {
 		t.Fatalf("unknown owner directory was removed: %v", err)

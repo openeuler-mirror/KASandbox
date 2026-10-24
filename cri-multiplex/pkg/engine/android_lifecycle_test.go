@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -57,7 +58,7 @@ func newEnabledCNIMockAndroidEngine(t *testing.T, validateErr error, startErr er
 		Enabled:      true,
 		ArtifactsDir: t.TempDir(),
 		StateDir:     t.TempDir(),
-		CNI:          CNIConfig{Enabled: true},
+		CNI:          util.CNIConfig{Enabled: true},
 	}, validateErr, startErr)
 }
 
@@ -87,7 +88,7 @@ func TestAndroidRunStartStopRemoveLifecycleWithMocks(t *testing.T) {
 	e.ops.cleanupGuestNetwork = func(e *AndroidEngine, ctx context.Context, rec *AndroidSandboxRecord) {
 		cleanupCalls++
 	}
-	fakeCNI := &fakeCNIManager{addRecord: &CNIRecord{
+	fakeCNI := &fakeCNIManager{addRecord: &util.CNIRecord{
 		SandboxID: "android-uid",
 		Network:   "calico",
 		IfName:    "eth0",

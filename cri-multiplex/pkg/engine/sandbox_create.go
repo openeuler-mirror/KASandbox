@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/cri-multiplex/pkg/cnineighbor"
+	"github.com/cri-multiplex/pkg/engine/util"
 	"github.com/cri-multiplex/pkg/orchestrator"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
@@ -44,7 +45,7 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 	var cniStageMs, orchCreateMs, hostPortMs int64
 	cniSource := "disabled"
 
-	var cniRecord *CNIRecord
+	var cniRecord *util.CNIRecord
 	if e.cniConfig.Enabled {
 		if e.cniManager == nil {
 			return nil, status.Errorf(codes.Unavailable, "e2b cni is enabled but cni manager is not initialized")
@@ -137,7 +138,7 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 
 	// ===== 多端口分配 =====
 	hostPortStart := time.Now()
-	var allMappings []PortMapping
+	var allMappings []util.PortMapping
 	if hostIP != "" && e.hostPortManager != nil {
 		// 1. 收集需要暴露的端口（仅来自 metadata）
 		var ports []int
@@ -157,7 +158,7 @@ func (e *grpcE2BEngine) createE2BSandbox(ctx context.Context, p e2bCreateParams)
 			} else {
 				// 3. 为每个端口创建 iptables 规则
 				for _, m := range mappings {
-					if err := e.hostPortOps.setup(e.nodeIP, m.HostPort, hostIP, m.SandboxPort); err != nil {
+					if err := e.hostPortOps.Setup(e.nodeIP, m.HostPort, hostIP, m.SandboxPort); err != nil {
 						log.Printf("[GrpcE2BEngine] WARNING: failed to setup mapping %d->%d for %s: %v", m.HostPort, m.SandboxPort, sandboxID, err)
 					} else {
 						log.Printf("[GrpcE2BEngine] HostPort mapping: %s:%d -> %s:%d", e.nodeIP, m.HostPort, hostIP, m.SandboxPort)

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -27,8 +28,8 @@ func newAdminOpsTestEngine(t *testing.T, client *fakeSandboxServiceClient) *grpc
 		executionID:  "exec-a",
 		teamID:       "team-a",
 		nodeName:     "node-a",
-		cniRecord:    &CNIRecord{SandboxID: "cri-a", NetNSPath: "/var/run/netns/e2b-cri-a", IfName: "eth0", PodIP: "10.0.0.10", Gateway: "10.0.0.1", DNS: []string{"10.96.0.10"}},
-		portMappings: []PortMapping{{HostPort: 20001, SandboxPort: 49983}},
+		cniRecord:    &util.CNIRecord{SandboxID: "cri-a", NetNSPath: "/var/run/netns/e2b-cri-a", IfName: "eth0", PodIP: "10.0.0.10", Gateway: "10.0.0.1", DNS: []string{"10.96.0.10"}},
+		portMappings: []util.PortMapping{{HostPort: 20001, SandboxPort: 49983}},
 	})
 	return e
 }

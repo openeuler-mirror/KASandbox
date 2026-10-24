@@ -13,6 +13,7 @@ import (
 
 	"github.com/cri-multiplex/pkg/admin"
 	"github.com/cri-multiplex/pkg/engine"
+	"github.com/cri-multiplex/pkg/engine/util"
 	"github.com/cri-multiplex/pkg/server"
 )
 
@@ -143,7 +144,7 @@ func main() {
 		OrchestratorProxyAddr: *orchestratorProxyAddr,
 		NodeIP:                *nodeIP,
 		NodeName:              *nodeName,
-		CNI: engine.CNIConfig{
+		CNI: util.CNIConfig{
 			Enabled:     *cniEnabled,
 			ConfDir:     *cniConfDir,
 			BinDir:      *cniBinDir,
@@ -185,7 +186,7 @@ func main() {
 		WebRTCPortStart:      *androidWebRTCPortStart,
 		LaunchTimeout:        *androidLaunchTimeout,
 		StateDir:             *androidStateDir,
-		CNI: engine.CNIConfig{
+		CNI: util.CNIConfig{
 			Enabled:     *cniEnabled,
 			ConfDir:     *cniConfDir,
 			BinDir:      *cniBinDir,
@@ -209,7 +210,7 @@ func main() {
 	}
 	logRegistrySnapshot(reg)
 
-	cleanupManager := engine.NewCleanupManager(stateStore, e2bEng, androidEng, engine.CleanupConfig{
+	cleanupManager := engine.NewCleanupManager(stateStore, reg, engine.CleanupConfig{
 		Enabled:     *orphanReconcileEnabled,
 		Interval:    *orphanReconcileInterval,
 		GracePeriod: *orphanGracePeriod,
@@ -223,6 +224,7 @@ func main() {
 	mux := server.NewMuxServer(reg, stateStore, server.MuxOptions{
 		UnknownHandlerPolicy: handlerPolicy,
 		RuntimeName:          *runtimeName,
+		Cleanup:              cleanupManager,
 	})
 	if err := mux.RestoreState(restoreCtx); err != nil {
 		log.Fatalf("restore mux state: %v", err)

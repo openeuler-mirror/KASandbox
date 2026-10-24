@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -18,13 +19,13 @@ func TestGRPCE2BRepairsNeighborBeforeCreate(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			client := &fakeSandboxServiceClient{}
 			e := newTestGRPCE2BEngine(client)
-			rec := &CNIRecord{SandboxID: "uid-a", NetNSName: "test-ns", NetNSPath: "/var/run/netns/test-ns", IfName: "eth0", PodIP: "192.0.2.2"}
+			rec := &util.CNIRecord{SandboxID: "uid-a", NetNSName: "test-ns", NetNSPath: "/var/run/netns/test-ns", IfName: "eth0", PodIP: "192.0.2.2"}
 			cni := &fakeCNIManager{addRecord: rec}
 			e.cniConfig.Enabled, e.cniManager = true, cni
 			wantAdds := 1
 			if pooled {
 				rec.SandboxID = "pool12345678"
-				e.cniPoolReady = make(chan *CNIRecord, 1)
+				e.cniPoolReady = make(chan *util.CNIRecord, 1)
 				e.cniPoolReady <- rec
 				e.markPendingNetNS(rec.NetNSName)
 				wantAdds = 0
@@ -59,12 +60,12 @@ func TestGRPCE2BNeighborFailureRollsBackWithoutCanceledContext(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			client := &fakeSandboxServiceClient{}
 			e := newTestGRPCE2BEngine(client)
-			rec := &CNIRecord{SandboxID: "uid-a", NetNSName: "test-ns", NetNSPath: "/var/run/netns/test-ns", IfName: "eth0", PodIP: "192.0.2.2"}
+			rec := &util.CNIRecord{SandboxID: "uid-a", NetNSName: "test-ns", NetNSPath: "/var/run/netns/test-ns", IfName: "eth0", PodIP: "192.0.2.2"}
 			cni := &fakeCNIManager{addRecord: rec}
 			e.cniConfig.Enabled, e.cniManager = true, cni
 			if pooled {
 				rec.SandboxID = "pool12345678"
-				e.cniPoolReady = make(chan *CNIRecord, 1)
+				e.cniPoolReady = make(chan *util.CNIRecord, 1)
 				e.cniPoolReady <- rec
 				e.markPendingNetNS(rec.NetNSName)
 			}
@@ -112,12 +113,12 @@ func TestAdminCreateNeighborRepair(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				client := &fakeSandboxServiceClient{}
 				e := newTestGRPCE2BEngine(client)
-				rec := &CNIRecord{SandboxID: "sbx-1", NetNSName: "admin-ns", NetNSPath: "/var/run/netns/admin-ns", IfName: "eth0", PodIP: "192.0.2.3"}
+				rec := &util.CNIRecord{SandboxID: "sbx-1", NetNSName: "admin-ns", NetNSPath: "/var/run/netns/admin-ns", IfName: "eth0", PodIP: "192.0.2.3"}
 				cni := &fakeCNIManager{addRecord: rec}
 				e.cniConfig.Enabled, e.cniManager = true, cni
 				if pooled {
 					rec.SandboxID = "pool12345678"
-					e.cniPoolReady = make(chan *CNIRecord, 1)
+					e.cniPoolReady = make(chan *util.CNIRecord, 1)
 					e.cniPoolReady <- rec
 					e.markPendingNetNS(rec.NetNSName)
 				}

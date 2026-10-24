@@ -44,8 +44,6 @@ type MuxServer struct {
 	reg    *engine.Registry
 	routes *engine.RouteTable
 	opts   MuxOptions
-	// store 只服务 cleanupPending 守卫，Task 7 之后删除。
-	store engine.StateStore
 
 	grpcServer *grpc.Server
 }
@@ -56,7 +54,6 @@ func NewMuxServer(reg *engine.Registry, store engine.StateStore, opts MuxOptions
 		reg:    reg,
 		routes: engine.NewRouteTable(store),
 		opts:   opts,
-		store:  store,
 	}
 }
 
@@ -128,23 +125,6 @@ func (s *MuxServer) RestoreState(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (s *MuxServer) cleanupPending(sandboxID string) bool {
-	if s == nil || s.store == nil || sandboxID == "" {
-		return false
-	}
-	tasks, err := s.store.LoadCleanupTasks()
-	if err != nil {
-		log.Printf("[MuxServer] WARNING: load cleanup tasks for sandbox=%s: %v", sandboxID, err)
-		return true
-	}
-	for _, task := range tasks {
-		if task.SandboxID == sandboxID {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *MuxServer) Start(socketPath string) error {
@@ -345,10 +325,11 @@ func (s *MuxServer) RemovePodSandbox(ctx context.Context, req *runtime.RemovePod
 		log.Printf("[MuxServer] RemovePodSandbox: sandbox %s already absent, treating as success", req.PodSandboxId)
 		return &runtime.RemovePodSandboxResponse{}, nil
 	}
+	if err != nil {
+		s.scheduleCleanup(ctx, eng.Type(), req.PodSandboxId, "sandbox", "remove-failed")
+	}
 	if err == nil {
-		if s.cleanupPending(req.PodSandboxId) {
-			log.Printf("[MuxServer] retaining routes while cleanup is pending sandbox=%s", req.PodSandboxId)
-		} else if derr := s.routes.DeleteSandbox(req.PodSandboxId); derr != nil {
+		if derr := s.routes.DeleteSandbox(req.PodSandboxId); derr != nil {
 			log.Printf("[MuxServer] WARNING: delete routes for sandbox %s: %v", req.PodSandboxId, derr)
 		}
 	}

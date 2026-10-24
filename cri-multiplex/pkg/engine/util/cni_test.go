@@ -1,4 +1,4 @@
-package engine
+package util
 
 import (
 	"net"
@@ -103,23 +103,23 @@ func TestFirstIPv4AndShortID(t *testing.T) {
 	}
 
 	// 超长 ID：前 6 字符 + sha256 前 6 位 hex，保证同前缀批量 ID 不碰撞
-	if got := shortID("  abcdefghijklmnopqrstuvwxyz "); got != "abcdef71c480" {
-		t.Fatalf("shortID = %q, want abcdef71c480", got)
+	if got := ShortID("  abcdefghijklmnopqrstuvwxyz "); got != "abcdef71c480" {
+		t.Fatalf("ShortID = %q, want abcdef71c480", got)
 	}
 
 	// 回归：批量创建时 UID 共享前缀（e2bbulk-direct-100-...），短 ID 必须不同
-	a := shortID("e2bbulk-direct-100-1178721552619941")
-	b := shortID("e2bbulk-direct-100-2178721552620000")
+	a := ShortID("e2bbulk-direct-100-1178721552619941")
+	b := ShortID("e2bbulk-direct-100-2178721552620000")
 	if a == b {
-		t.Fatalf("shortID collision for shared-prefix ids: %q", a)
+		t.Fatalf("ShortID collision for shared-prefix ids: %q", a)
 	}
 	if len(a) != 12 || len(b) != 12 {
-		t.Fatalf("shortID length = (%d, %d), want 12", len(a), len(b))
+		t.Fatalf("ShortID length = (%d, %d), want 12", len(a), len(b))
 	}
 
 	// 短 ID 原样返回
-	if got := shortID("short-id"); got != "short-id" {
-		t.Fatalf("shortID = %q, want short-id", got)
+	if got := ShortID("short-id"); got != "short-id" {
+		t.Fatalf("ShortID = %q, want short-id", got)
 	}
 }
 

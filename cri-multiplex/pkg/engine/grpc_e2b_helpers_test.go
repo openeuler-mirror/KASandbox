@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -363,7 +364,7 @@ func TestCNIPodIP(t *testing.T) {
 	if got := cniPodIP(nil); got != "" {
 		t.Fatalf("cniPodIP nil = %q", got)
 	}
-	if got := cniPodIP(&CNIRecord{PodIP: "10.0.0.10"}); got != "10.0.0.10" {
+	if got := cniPodIP(&util.CNIRecord{PodIP: "10.0.0.10"}); got != "10.0.0.10" {
 		t.Fatalf("cniPodIP = %q", got)
 	}
 }
@@ -414,12 +415,12 @@ func TestRevealsHiddenFromCRIList(t *testing.T) {
 }
 
 func TestNewGRPCE2BEngineHideLabelParsing(t *testing.T) {
-	e := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "flux-sandbox.io/direct=true")
+	e := newGRPCE2BEngine("", "", "", "", util.CNIConfig{}, nil, "flux-sandbox.io/direct=true")
 	if e.hideLabelKey != "flux-sandbox.io/direct" || e.hideLabelValue != "true" {
 		t.Fatalf("hide label parsed wrong: %q=%q", e.hideLabelKey, e.hideLabelValue)
 	}
 	// 非法格式：告警并禁用
-	e2 := newGRPCE2BEngine("", "", "", "", CNIConfig{}, nil, "no-equals-sign")
+	e2 := newGRPCE2BEngine("", "", "", "", util.CNIConfig{}, nil, "no-equals-sign")
 	if e2.hideLabelKey != "" {
 		t.Fatalf("invalid hide label should be disabled, got key=%q", e2.hideLabelKey)
 	}

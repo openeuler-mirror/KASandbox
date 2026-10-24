@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"github.com/cri-multiplex/pkg/orchestrator"
 )
 
@@ -29,8 +30,8 @@ type RuntimeInfo struct {
 	BuildID      string
 	ExecutionID  string
 	RuntimeState string
-	CNI          *CNIRecord
-	HostPorts    []PortMapping
+	CNI          *util.CNIRecord
+	HostPorts    []util.PortMapping
 }
 
 func runtimeStateString(s e2bState) string {
@@ -306,7 +307,7 @@ func (e *grpcE2BEngine) AdminGetRuntime(criID, e2bID string) (*RuntimeInfo, []E2
 		ExecutionID:  pod.executionID,
 		RuntimeState: runtimeStateString(pod.state),
 		CNI:          cloneCNIRecord(pod.cniRecord),
-		HostPorts:    append([]PortMapping(nil), pod.portMappings...),
+		HostPorts:    append([]util.PortMapping(nil), pod.portMappings...),
 	}
 
 	var active []E2BOperation

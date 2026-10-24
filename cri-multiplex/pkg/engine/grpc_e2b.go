@@ -27,6 +27,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/cri-multiplex/pkg/cnineighbor"
+	"github.com/cri-multiplex/pkg/engine/util"
 	"github.com/cri-multiplex/pkg/envd/process"
 	"github.com/cri-multiplex/pkg/orchestrator"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -102,11 +103,14 @@ type attachStreamRequest struct {
 }
 
 type grpcE2BEngine struct {
+	hostOps util.HostResourceOps
+	now     func() time.Time
+
 	orchestratorAddr      string
 	orchestratorProxyAddr string
 	nodeIP                string
 	nodeName              string
-	hostPortOps           hostPortMappingOps
+	hostPortOps           util.HostPortMappingOps
 	stateStore            StateStore
 	mu                    sync.Mutex
 	pendingNetNSMu        sync.RWMutex
@@ -127,14 +131,13 @@ type grpcE2BEngine struct {
 	streamingMu       sync.RWMutex
 	streamingOnce     sync.Once
 
-	hostPortManager   *HostPortManager // 新增：宿主机端口管理
-	cniConfig         CNIConfig
-	cniManager        cniNetworkManager
-	cleanupManager    *CleanupManager
+	hostPortManager   *util.HostPortManager // 新增：宿主机端口管理
+	cniConfig         util.CNIConfig
+	cniManager        util.CNINetworkManager
 	repairPodNeighbor func(context.Context, string, string, string) (bool, error)
 
 	// CNI 预热池（实现见 cni_pool.go）：PoolEnabled && PoolSize>0 时启用
-	cniPoolReady chan *CNIRecord
+	cniPoolReady chan *util.CNIRecord
 	cniPoolStop  chan struct{}
 	cniPoolWG    sync.WaitGroup
 	cniPoolSeq   int64
@@ -152,14 +155,16 @@ type grpcE2BEngine struct {
 	hideLabelValue string
 }
 
-func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName string, cniConfig CNIConfig, store StateStore, hideLabel string) *grpcE2BEngine {
+func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName string, cniConfig util.CNIConfig, store StateStore, hideLabel string) *grpcE2BEngine {
 	log.Printf("[GrpcE2BEngine] orchestrator address: %s, proxy: %s, nodeIP: %s, nodeName: %s, cni_enabled: %v", orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName, cniConfig.Enabled)
 	e := &grpcE2BEngine{
 		orchestratorAddr:      orchestratorAddr,
 		orchestratorProxyAddr: orchestratorProxyAddr,
 		nodeIP:                nodeIP,
 		nodeName:              nodeName,
-		hostPortOps:           defaultHostPortMappingOps(),
+		hostPortOps:           util.DefaultHostPortMappingOps(),
+		hostOps:               util.DefaultHostResourceOps(),
+		now:                   time.Now,
 		stateStore:            store,
 		pendingNetNS:          make(map[string]struct{}),
 		cniConfig:             cniConfig,
@@ -168,7 +173,7 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName 
 		imageCache:            make(map[string]*e2bImageMeta),
 		streamingReqs:         make(map[string]*execStreamRequest),
 		attachReqs:            make(map[string]*attachStreamRequest),
-		hostPortManager:       NewHostPortManager(20000, 29999), // 避开 NodePort 范围
+		hostPortManager:       util.NewHostPortManager(20000, 29999), // 避开 NodePort 范围
 	}
 	if hideLabel != "" {
 		key, value, found := strings.Cut(hideLabel, "=")
@@ -181,7 +186,7 @@ func newGRPCE2BEngine(orchestratorAddr, orchestratorProxyAddr, nodeIP, nodeName 
 		}
 	}
 	if cniConfig.Enabled {
-		cniManager, err := NewCNIManager(cniConfig)
+		cniManager, err := util.NewCNIManager(cniConfig)
 		if err != nil {
 			log.Printf("[GrpcE2BEngine] WARNING: failed to initialize CNI manager: %v", err)
 		} else {
@@ -271,15 +276,15 @@ func (e *grpcE2BEngine) RestoreState(ctx context.Context) error {
 				if mapping.HostPort <= 0 || mapping.SandboxPort <= 0 {
 					continue
 				}
-				if err := SetupHostPortMapping(e.nodeIP, mapping.HostPort, pod.hostIP, mapping.SandboxPort); err != nil {
+				if err := util.SetupHostPortMapping(e.nodeIP, mapping.HostPort, pod.hostIP, mapping.SandboxPort); err != nil {
 					log.Printf("[GrpcE2BEngine] WARNING: restore hostport mapping failed sandbox=%s host=%d sandbox=%d: %v",
 						pod.sandboxID, mapping.HostPort, mapping.SandboxPort, err)
 				}
 			}
 		} else if pod.hostPort > 0 {
-			e.hostPortManager.RestorePorts(pod.sandboxID, []PortMapping{{HostPort: pod.hostPort, SandboxPort: envdSandboxPort}})
+			e.hostPortManager.RestorePorts(pod.sandboxID, []util.PortMapping{{HostPort: pod.hostPort, SandboxPort: envdSandboxPort}})
 			if pod.hostIP != "" {
-				if err := SetupHostPortMapping(e.nodeIP, pod.hostPort, pod.hostIP, envdSandboxPort); err != nil {
+				if err := util.SetupHostPortMapping(e.nodeIP, pod.hostPort, pod.hostIP, envdSandboxPort); err != nil {
 					log.Printf("[GrpcE2BEngine] WARNING: restore default hostport mapping failed sandbox=%s host=%d: %v",
 						pod.sandboxID, pod.hostPort, err)
 				}
@@ -557,7 +562,7 @@ func (e *grpcE2BEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 	if pod.hostIP != "" {
 		cleanupOK := true
 		for _, m := range pod.portMappings {
-			if err := e.hostPortOps.cleanup(e.nodeIP, m.HostPort, pod.hostIP, m.SandboxPort); err != nil {
+			if err := e.hostPortOps.Cleanup(e.nodeIP, m.HostPort, pod.hostIP, m.SandboxPort); err != nil {
 				log.Printf("[GrpcE2BEngine] WARNING: cleanup mapping %d->%d failed: %v", m.HostPort, m.SandboxPort, err)
 				cleanupOK = false
 			}
@@ -616,15 +621,14 @@ func (e *grpcE2BEngine) deleteOrchestratorSandbox(ctx context.Context, pod *podI
 	log.Printf("[GrpcE2BEngine] sandbox deleted on %s: cri_id=%s, e2b_id=%s", reason, pod.sandboxID, pod.e2bSandboxID)
 }
 
+// CleanupSandbox 实现 engine.Cleaner：幂等回收一个 sandbox 的全部后端资源。
+func (e *grpcE2BEngine) CleanupSandbox(ctx context.Context, sandboxID, reason string) error {
+	log.Printf("[GrpcE2BEngine] cleanup sandbox %s (reason=%s)", sandboxID, reason)
+	return e.cleanupSandboxResources(ctx, sandboxID)
+}
+
 func (e *grpcE2BEngine) RemovePodSandbox(ctx context.Context, req *runtime.RemovePodSandboxRequest) (*runtime.RemovePodSandboxResponse, error) {
 	log.Printf("[GrpcE2BEngine] RemovePodSandbox: id=%s", req.PodSandboxId)
-	if e.cleanupManager != nil {
-		result := e.cleanupManager.CleanupE2BSandbox(ctx, req.PodSandboxId, "remove")
-		if result.Err != nil {
-			log.Printf("[GrpcE2BEngine] RemovePodSandbox cleanup pending: id=%s err=%v", req.PodSandboxId, result.Err)
-		}
-		return &runtime.RemovePodSandboxResponse{}, nil
-	}
 	if err := e.cleanupSandboxResources(ctx, req.PodSandboxId); err != nil {
 		return nil, mapE2BError(err)
 	}
@@ -1834,7 +1838,7 @@ func (e *grpcE2BEngine) cleanupStalePodResources(pod *podInfo) {
 	}
 	if pod.hostIP != "" {
 		for _, m := range pod.portMappings {
-			if err := e.hostPortOps.cleanup(e.nodeIP, m.HostPort, pod.hostIP, m.SandboxPort); err != nil {
+			if err := e.hostPortOps.Cleanup(e.nodeIP, m.HostPort, pod.hostIP, m.SandboxPort); err != nil {
 				log.Printf("[GrpcE2BEngine] WARNING: stale cleanup mapping %d->%d for %s: %v", m.HostPort, m.SandboxPort, pod.sandboxID, err)
 			}
 		}
@@ -1997,7 +2001,7 @@ func min(a, b int) int {
 	return b
 }
 
-func cniPodIP(rec *CNIRecord) string {
+func cniPodIP(rec *util.CNIRecord) string {
 	if rec == nil {
 		return ""
 	}

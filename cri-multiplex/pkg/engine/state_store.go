@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/cri-multiplex/pkg/engine/util"
 	"log"
 	"os"
 	"path/filepath"
@@ -24,7 +25,6 @@ type CleanupTask struct {
 	Runtime      EngineType `json:"runtime"`
 	SandboxID    string     `json:"sandbox_id"`
 	ResourceType string     `json:"resource_type"`
-	ResourceID   string     `json:"resource_id,omitempty"`
 	Reason       string     `json:"reason"`
 	Attempts     int        `json:"attempts"`
 	LastError    string     `json:"last_error,omitempty"`
@@ -68,12 +68,12 @@ type E2BPodState struct {
 	FullLogPath          string            `json:"full_log_path,omitempty"`
 	PodLogDirectory      string            `json:"pod_log_directory,omitempty"`
 
-	HostIP       string        `json:"host_ip,omitempty"`
-	HostPort     int           `json:"host_port,omitempty"`
-	PodIP        string        `json:"pod_ip,omitempty"`
-	CNIEnabled   bool          `json:"cni_enabled"`
-	CNIRecord    *CNIRecord    `json:"cni_record,omitempty"`
-	PortMappings []PortMapping `json:"port_mappings,omitempty"`
+	HostIP       string             `json:"host_ip,omitempty"`
+	HostPort     int                `json:"host_port,omitempty"`
+	PodIP        string             `json:"pod_ip,omitempty"`
+	CNIEnabled   bool               `json:"cni_enabled"`
+	CNIRecord    *util.CNIRecord    `json:"cni_record,omitempty"`
+	PortMappings []util.PortMapping `json:"port_mappings,omitempty"`
 
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -100,12 +100,12 @@ type AndroidPodState struct {
 	LaunchPGID      int                 `json:"launch_pgid"`
 	LaunchLogPath   string              `json:"launch_log_path"`
 
-	CNIEnabled   bool       `json:"cni_enabled"`
-	CNIRecord    *CNIRecord `json:"cni_record,omitempty"`
-	GuestIP      string     `json:"guest_ip,omitempty"`
-	GuestGateway string     `json:"guest_gateway,omitempty"`
-	GuestPrefix  string     `json:"guest_prefix,omitempty"`
-	TapName      string     `json:"tap_name,omitempty"`
+	CNIEnabled   bool            `json:"cni_enabled"`
+	CNIRecord    *util.CNIRecord `json:"cni_record,omitempty"`
+	GuestIP      string          `json:"guest_ip,omitempty"`
+	GuestGateway string          `json:"guest_gateway,omitempty"`
+	GuestPrefix  string          `json:"guest_prefix,omitempty"`
+	TapName      string          `json:"tap_name,omitempty"`
 
 	ContainerID          string                `json:"container_id,omitempty"`
 	ContainerName        string                `json:"container_name,omitempty"`
@@ -718,7 +718,7 @@ func cloneE2BPodStates(values []E2BPodState) []E2BPodState {
 		out[i].ContainerAnnotations = copyStringMap(v.ContainerAnnotations)
 		out[i].ContainerCommand = append([]string(nil), v.ContainerCommand...)
 		out[i].ContainerArgs = append([]string(nil), v.ContainerArgs...)
-		out[i].PortMappings = append([]PortMapping(nil), v.PortMappings...)
+		out[i].PortMappings = append([]util.PortMapping(nil), v.PortMappings...)
 		if v.CNIRecord != nil {
 			rec := *v.CNIRecord
 			rec.DNS = append([]string(nil), v.CNIRecord.DNS...)

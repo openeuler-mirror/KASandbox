@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,7 +41,7 @@ var AndroidDescriptor = BackendDescriptor{Type: EngineTypeAndroid, Handler: "and
 
 // Module 现已填 Descriptor/Engine/Restorer；Cleaner 与 Reconciler 由后续阶段补齐。
 func (e *AndroidEngine) Module() BackendModule {
-	return BackendModule{Descriptor: AndroidDescriptor, Engine: e, Restorer: e}
+	return BackendModule{Descriptor: AndroidDescriptor, Engine: e, Cleaner: e, Reconciler: e, Restorer: e}
 }
 
 type AndroidConfig struct {
@@ -52,7 +53,7 @@ type AndroidConfig struct {
 	WebRTCPortStart      int
 	LaunchTimeout        time.Duration
 	StateDir             string
-	CNI                  CNIConfig
+	CNI                  util.CNIConfig
 	StateStore           StateStore
 }
 
@@ -99,7 +100,7 @@ type AndroidSandboxRecord struct {
 	LaunchPID       int
 	LaunchPGID      int
 	LaunchLogPath   string
-	CNIRecord       *CNIRecord
+	CNIRecord       *util.CNIRecord
 
 	State     androidSandboxState
 	CreatedAt time.Time
@@ -129,6 +130,9 @@ type AndroidContainerRecord struct {
 }
 
 type AndroidEngine struct {
+	hostOps util.HostResourceOps
+	now     func() time.Time
+
 	cfg              AndroidConfig
 	ops              androidRuntimeOps
 	stateStore       StateStore
@@ -137,8 +141,7 @@ type AndroidEngine struct {
 	containers       map[string]*AndroidContainerRecord
 	portOwners       map[int]string
 	instanceOwners   map[int]string
-	cniManager       cniNetworkManager
-	cleanupManager   *CleanupManager
+	cniManager       util.CNINetworkManager
 	expectedStops    map[string]bool
 	pendingMu        sync.RWMutex
 	pendingSandboxes map[string]struct{}
@@ -188,6 +191,8 @@ func NewAndroidEngine(cfg AndroidConfig) *AndroidEngine {
 	return &AndroidEngine{
 		cfg:              cfg,
 		ops:              defaultAndroidRuntimeOps(),
+		hostOps:          util.DefaultHostResourceOps(),
+		now:              time.Now,
 		stateStore:       cfg.StateStore,
 		pods:             make(map[string]*AndroidSandboxRecord),
 		containers:       make(map[string]*AndroidContainerRecord),
@@ -207,7 +212,7 @@ func (e *AndroidEngine) markPendingSandbox(sandboxID string) {
 	e.pendingSandboxes[sandboxID] = struct{}{}
 	if e.cfg.CNI.Enabled {
 		prefix := defaultString(e.cfg.CNI.NetNSPrefix, "android-")
-		e.pendingNetNS[prefix+shortID(sandboxID)] = struct{}{}
+		e.pendingNetNS[prefix+util.ShortID(sandboxID)] = struct{}{}
 	}
 	e.pendingMu.Unlock()
 }
@@ -220,7 +225,7 @@ func (e *AndroidEngine) unmarkPendingSandbox(sandboxID string) {
 	delete(e.pendingSandboxes, sandboxID)
 	if e.cfg.CNI.Enabled {
 		prefix := defaultString(e.cfg.CNI.NetNSPrefix, "android-")
-		delete(e.pendingNetNS, prefix+shortID(sandboxID))
+		delete(e.pendingNetNS, prefix+util.ShortID(sandboxID))
 	}
 	e.pendingMu.Unlock()
 }
@@ -361,7 +366,7 @@ func (e *AndroidEngine) ensureCNIManager() error {
 	if e.cniManager != nil {
 		return nil
 	}
-	mgr, err := NewCNIManager(e.cfg.CNI)
+	mgr, err := util.NewCNIManager(e.cfg.CNI)
 	if err != nil {
 		return err
 	}
@@ -539,16 +544,15 @@ func (e *AndroidEngine) StopPodSandbox(ctx context.Context, req *runtime.StopPod
 	return &runtime.StopPodSandboxResponse{}, nil
 }
 
+// CleanupSandbox 实现 engine.Cleaner：幂等回收一个 sandbox 的全部后端资源。
+func (e *AndroidEngine) CleanupSandbox(ctx context.Context, sandboxID, reason string) error {
+	log.Printf("[AndroidEngine] cleanup sandbox %s (reason=%s)", sandboxID, reason)
+	return e.cleanupSandboxResources(ctx, sandboxID)
+}
+
 func (e *AndroidEngine) RemovePodSandbox(ctx context.Context, req *runtime.RemovePodSandboxRequest) (*runtime.RemovePodSandboxResponse, error) {
 	if err := e.ensureEnabled(); err != nil {
 		return nil, err
-	}
-	if e.cleanupManager != nil {
-		result := e.cleanupManager.CleanupAndroidSandbox(ctx, req.PodSandboxId, "remove")
-		if result.Err != nil {
-			log.Printf("[AndroidEngine] RemovePodSandbox cleanup pending: sandbox=%s err=%v", req.PodSandboxId, result.Err)
-		}
-		return &runtime.RemovePodSandboxResponse{}, nil
 	}
 	if err := e.cleanupSandboxResources(ctx, req.PodSandboxId); err != nil {
 		return nil, status.Errorf(codes.Internal, "cleanup android sandbox %s: %v", req.PodSandboxId, err)
@@ -1054,11 +1058,11 @@ func (e *AndroidEngine) ensureArtifactsDir(rec *AndroidSandboxRecord) error {
 
 func (e *AndroidEngine) writeOwnerFiles(rec *AndroidSandboxRecord) error {
 	owner := androidResourceOwner(rec)
-	if err := writeResourceOwner(rec.WorkDir, owner); err != nil {
+	if err := util.WriteResourceOwner(rec.WorkDir, owner); err != nil {
 		return err
 	}
 	if filepathClean(rec.ArtifactsDir) != filepathClean(e.cfg.ArtifactsDir) {
-		if err := writeResourceOwner(rec.ArtifactsDir, owner); err != nil {
+		if err := util.WriteResourceOwner(rec.ArtifactsDir, owner); err != nil {
 			return err
 		}
 	}
@@ -1214,9 +1218,6 @@ func (e *AndroidEngine) handleUnexpectedCVDExit(sandboxID string, waitErr error)
 	}
 	e.persistPodLocked(sandboxID)
 	e.mu.Unlock()
-	if e.cleanupManager != nil {
-		go e.cleanupManager.CleanupAndroidSandbox(context.Background(), sandboxID, "process-exit")
-	}
 }
 
 func (e *AndroidEngine) stopCVD(ctx context.Context, rec *AndroidSandboxRecord) error {

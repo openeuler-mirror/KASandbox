@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"github.com/vishvananda/netns"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
@@ -27,7 +28,7 @@ var cniPoolPodConfig = &runtime.PodSandboxConfig{
 }
 
 // CNI 预热池：后台协程串行执行完整的 CNI ADD（netns 创建 + veth 配对 + IPAM
-// 分配），把成品 CNIRecord 放入 ready 队列；RunPodSandbox 命中时直接取用，
+// 分配），把成品 util.CNIRecord 放入 ready 队列；RunPodSandbox 命中时直接取用，
 // 避开并发创建时 CNI 插件链（host-local IPAM 文件锁、netlink/mount 串行化、
 // udev 事件风暴）导致的近线性膨胀（实测 100 并发 p50≈65s、200 并发 p50≈200s）。
 //
@@ -37,7 +38,7 @@ var cniPoolPodConfig = &runtime.PodSandboxConfig{
 // netns 失去 pending 保护，由下次启动的 reconciler 回收。
 
 func (e *grpcE2BEngine) startCNIPool(size int) {
-	e.cniPoolReady = make(chan *CNIRecord, size)
+	e.cniPoolReady = make(chan *util.CNIRecord, size)
 	e.cniPoolStop = make(chan struct{})
 	e.cniPoolWG.Add(1)
 	go e.cniPoolWarmLoop(size)
@@ -140,7 +141,7 @@ func (e *grpcE2BEngine) cniPoolWarmLoop(size int) {
 // 进程重启后池内容（内存 channel）即失效，启动时的 cleanupStaleCNIPool
 // 依靠这个可逆命名对上一轮遗留 entry 做带正确 ContainerID 的 CNI DEL，
 // host-local IPAM 才能正确释放地址。
-func (e *grpcE2BEngine) warmCNIPoolEntry() (*CNIRecord, error) {
+func (e *grpcE2BEngine) warmCNIPoolEntry() (*util.CNIRecord, error) {
 	seq := atomic.AddInt64(&e.cniPoolSeq, 1)
 	warmID := fmt.Sprintf("pool%08x", uint32(time.Now().UnixNano())^uint32(seq))
 	e.markPendingNetNS(e.cniManager.NetNSName(warmID))
@@ -154,7 +155,7 @@ func (e *grpcE2BEngine) warmCNIPoolEntry() (*CNIRecord, error) {
 
 // acquireCNIFromPool 非阻塞地从池中取一个预热好的 entry；池空或未启用返回 nil。
 // 取出的 entry 仍带 pending 标记，由调用方（RunPodSandbox）在使用完毕后解除。
-func (e *grpcE2BEngine) acquireCNIFromPool() *CNIRecord {
+func (e *grpcE2BEngine) acquireCNIFromPool() *util.CNIRecord {
 	if e.cniPoolReady == nil {
 		return nil
 	}
@@ -216,7 +217,7 @@ func (e *grpcE2BEngine) cleanupStaleCNIPool() {
 		}
 		if isHex8(suffix) {
 			// 新命名：warmID 可还原，完整 CNI DEL
-			rec := &CNIRecord{
+			rec := &util.CNIRecord{
 				SandboxID: "pool" + suffix,
 				NetNSName: name,
 				NetNSPath: filepath.Join(e.cniConfig.NetNSDir, name),

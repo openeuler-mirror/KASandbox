@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -103,7 +104,7 @@ func TestAndroidGuestDNSServersUsesAnnotationThenCNIThenDefault(t *testing.T) {
 	if got := e.guestDNSServers(rec); len(got) != 2 || got[0] != "8.8.8.8" || got[1] != "1.1.1.1" {
 		t.Fatalf("annotation DNS = %v", got)
 	}
-	rec = &AndroidSandboxRecord{Annotations: map[string]string{}, CNIRecord: &CNIRecord{DNS: []string{"10.233.0.10"}}}
+	rec = &AndroidSandboxRecord{Annotations: map[string]string{}, CNIRecord: &util.CNIRecord{DNS: []string{"10.233.0.10"}}}
 	if got := e.guestDNSServers(rec); len(got) != 1 || got[0] != "10.233.0.10" {
 		t.Fatalf("CNI DNS = %v", got)
 	}
@@ -127,7 +128,7 @@ func TestAndroidStatePersistsGuestNetworkFields(t *testing.T) {
 		GuestGateway:    "192.168.240.1",
 		GuestPrefix:     "30",
 		TapName:         "cvd-etap-01",
-		CNIRecord: &CNIRecord{
+		CNIRecord: &util.CNIRecord{
 			SandboxID: "android-uid",
 			NetNSName: "android-uid",
 			NetNSPath: "/var/run/netns/android-uid",
