@@ -232,10 +232,11 @@ func (s *V2Server) ListCachedBuilds(ctx context.Context, req *adminv2.SandboxLis
 	}
 	resp := &adminv2.SandboxListCachedBuildsResponse{}
 	for _, b := range builds {
-		resp.Builds = append(resp.Builds, &adminv2.CachedBuild{
-			BuildId:        b.BuildID,
-			ExpirationTime: timestamppb.New(b.ExpirationTime),
-		})
+		item := &adminv2.CachedBuild{BuildId: b.BuildID}
+		if !b.ExpirationTime.IsZero() {
+			item.ExpirationTime = timestamppb.New(b.ExpirationTime)
+		}
+		resp.Builds = append(resp.Builds, item)
 	}
 	return resp, nil
 }

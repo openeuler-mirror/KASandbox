@@ -23,6 +23,14 @@ var (
 	errNoTemplate       = errors.New("TEMPLATE_NAME env var not found in containers[0].env")
 )
 
+// 旧版 Webhook 的默认选路：没有 runtimeClass 时，ANDROID_SANDBOX=true 视为 android，
+// 否则默认 e2b（保留升级前的注入行为，避免存量负载掉到 containerd）。
+const (
+	legacyDefaultBackend = "e2b"
+	legacyAndroidEnvName = "ANDROID_SANDBOX"
+	legacyAndroidBackend = "android"
+)
+
 const (
 	// resolveTimeout 是调用 Provider 的上限；超时按"只补 runtimeClass"降级。
 	resolveTimeout = 2 * time.Second
@@ -179,8 +187,16 @@ func admitObject(ar *admissionv1.AdmissionReview, matcher *provider.Matcher, req
 		if explicit != "" {
 			klog.Warningf("%s %s/%s requests backend %q but no provider is registered; passing through without mutation",
 				req.Kind, req.Namespace, req.Name, explicit)
+			return allowResponse(ar.Request.UID)
 		}
-		return allowResponse(ar.Request.UID)
+		// 没有任何显式信号时才走旧版默认选路：ANDROID_SANDBOX=true → android，否则 e2b。
+		fallback, found := defaultProvider(matcher, req)
+		if !found {
+			return allowResponse(ar.Request.UID)
+		}
+		klog.V(2).Infof("%s %s/%s has no backend signal; defaulting to %s",
+			req.Kind, req.Namespace, req.Name, fallback.Handler())
+		selection = &provider.Selection{Provider: fallback, Source: "default"}
 	}
 
 	handler := selection.Provider.Handler()
@@ -193,7 +209,7 @@ func admitObject(ar *admissionv1.AdmissionReview, matcher *provider.Matcher, req
 		result = nil
 	}
 
-	patches := buildMergedPatch(req.Kind, existing, result, handler, runtimeClassSet)
+	patches := buildMergedPatch(req.Kind, req.Namespace, req.Name, existing, result, handler, runtimeClassSet)
 	if len(patches) == 0 {
 		klog.V(3).Infof("no patches needed for %s %s/%s", req.Kind, req.Namespace, req.Name)
 		return allowResponse(ar.Request.UID)
@@ -202,9 +218,21 @@ func admitObject(ar *admissionv1.AdmissionReview, matcher *provider.Matcher, req
 	return patchResponse(ar.Request.UID, patches)
 }
 
+// defaultProvider 复刻旧版入口逻辑：只带 ANDROID_SANDBOX=true 的 Pod 走 android，
+// 其余没有 runtimeClass/backend 注解的对象默认 e2b。对应 Provider 未注册时返回 false（放行）。
+func defaultProvider(matcher *provider.Matcher, req provider.Request) (provider.Provider, bool) {
+	if strings.EqualFold(strings.TrimSpace(req.Env[legacyAndroidEnvName]), "true") {
+		if p, ok := matcher.Resolve(legacyAndroidBackend); ok {
+			return p, true
+		}
+	}
+	p, ok := matcher.Resolve(legacyDefaultBackend)
+	return p, ok
+}
+
 // buildMergedPatch 生成合并后的 patch：runtimeClass（未设置时）+ 注解增量。
 // 用户已有注解不覆盖；合并后总大小超限时丢弃 Provider 的注解增量。
-func buildMergedPatch(kind string, existing map[string]string, result *provider.Result, handler string, runtimeClassSet bool) []patchOperation {
+func buildMergedPatch(kind, namespace, name string, existing map[string]string, result *provider.Result, handler string, runtimeClassSet bool) []patchOperation {
 	annotationsPath, runtimeClassPath := podAnnotationsPath, podRuntimeClassNamePath
 	if kind == "BatchSandbox" {
 		annotationsPath, runtimeClassPath = bsAnnotationsPath, bsRuntimeClassNamePath
@@ -236,7 +264,7 @@ func buildMergedPatch(kind string, existing map[string]string, result *provider.
 	if len(deltas) > 0 {
 		if annotationBytes(merged) > annotationLimitBytes {
 			klog.Warningf("%s %s/%s: merged annotations exceed %d bytes, dropping provider annotations",
-				kind, "", "", annotationLimitBytes)
+				kind, namespace, name, annotationLimitBytes)
 			return patches
 		}
 		patches = append(patches, buildPatch(existing, deltas, annotationsPath)...)

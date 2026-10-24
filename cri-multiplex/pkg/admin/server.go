@@ -175,10 +175,11 @@ func (s *Server) ListCachedBuilds(ctx context.Context, _ *emptypb.Empty) (*orche
 	}
 	resp := &orchestrator.SandboxListCachedBuildsResponse{}
 	for _, b := range builds {
-		resp.Builds = append(resp.Builds, &orchestrator.CachedBuildInfo{
-			BuildId:        b.BuildID,
-			ExpirationTime: timestamppb.New(b.ExpirationTime),
-		})
+		item := &orchestrator.CachedBuildInfo{BuildId: b.BuildID}
+		if !b.ExpirationTime.IsZero() {
+			item.ExpirationTime = timestamppb.New(b.ExpirationTime)
+		}
+		resp.Builds = append(resp.Builds, item)
 	}
 	return resp, nil
 }

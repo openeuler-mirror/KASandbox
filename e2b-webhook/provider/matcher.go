@@ -36,6 +36,15 @@ func NewMatcher(providers ...Provider) (*Matcher, error) {
 	return m, nil
 }
 
+// Resolve 按 Handler 查 Provider（用于旧版默认选路：android env / 默认 e2b）。
+func (m *Matcher) Resolve(handler string) (Provider, bool) {
+	if m == nil {
+		return nil, false
+	}
+	p, ok := m.byHandler[strings.TrimSpace(handler)]
+	return p, ok
+}
+
 // Select 返回命中的 Provider 与来源；都没有命中时返回 false（放行且不注入）。
 func (m *Matcher) Select(req Request) (*Selection, bool) {
 	if m == nil {

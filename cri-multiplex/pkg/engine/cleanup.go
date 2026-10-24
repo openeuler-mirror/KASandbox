@@ -160,7 +160,7 @@ func (m *CleanupManager) module(backend EngineType) (*BackendModule, bool) {
 
 // Reconcile 先重试到期任务，再让每个后端自己的 Reconciler 做对账。
 func (m *CleanupManager) Reconcile(ctx context.Context) error {
-	if m == nil || !m.cfg.Enabled {
+	if m == nil || !m.cfg.Enabled || m.reg == nil {
 		return nil
 	}
 	var errs []error

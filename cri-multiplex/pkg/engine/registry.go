@@ -242,7 +242,9 @@ func (r *Registry) Modules() []*BackendModule {
 	defer r.mu.RUnlock()
 
 	if r.frozen {
-		return r.snapshot
+		out := make([]*BackendModule, len(r.snapshot))
+		copy(out, r.snapshot)
+		return out
 	}
 
 	ordered := r.sortedLocked()

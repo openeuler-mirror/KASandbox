@@ -227,7 +227,7 @@ func main() {
 
 	klog.Infof("starting e2b-webhook server on :%s (cert=%s key=%s)", port, certFile, keyFile)
 	klog.Infof("transform API: %s/sandboxes/transform (timeout=%s)", apiURL, apiTimeout)
-	klog.Infof("webhook providers: %s", providersSpec)
+	klog.Infof("webhook providers: %s (legacy default: android env → android, else e2b)", providersSpec)
 
 	// 监听 SIGINT/SIGTERM 信号，触发优雅退出
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

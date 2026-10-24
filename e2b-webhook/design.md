@@ -204,16 +204,18 @@ metadata.annotations (Pod)
 | P1 | `runtimeClassName` | 等于某个已注册 `Provider.Handler()`（`e2b`/`android`） | 进入 P2 |
 | P2 | 注解 `sandbox.cri/backend` | 等于某个已注册 `Provider.Handler()` | 放行，不注入 |
 
-- 两个信号都未命中 → `Allowed=true`，无 patch（不改 runtimeClass、不注入注解）。
+- 两个信号都未命中 → 走旧版默认选路（见下），保证存量负载不被改道。
 - 两个信号冲突 → P1 优先，记录告警。
 - 显式指定但对应 Provider 未注册（含 `runc`/`kata`）→ 放行并告警，不注入。
 - BatchSandbox 从模板字段读取：`spec.template.spec.runtimeClassName` 与 `spec.template.metadata.annotations`。
 
-**兼容性变更**：不再通过 `SANDBOX_BACKEND`、`ANDROID_SANDBOX`、`TEMPLATE_NAME` 或默认 backend 选路。
-存量 Pod / BatchSandbox 必须显式设置 `runtimeClassName`（或 `sandbox.cri/backend` 注解），否则 Webhook 不注入任何内容。
-`TEMPLATE_NAME` 只作为 e2b Provider 的输入参数（调用 transform API），不再参与选路。
+**选路变更与兼容性**：新增 P1 `runtimeClassName` 与 P2 `sandbox.cri/backend`；两者都没有时保留旧行为：
+`containers[0].env[ANDROID_SANDBOX] == "true"` → `android`，否则默认 `e2b`（再走对应 Provider 的注解注入），
+存量 E2B/Android Pod 升级后行为不变。只有**显式**写成未注册值（如 `runc`）才会放行并告警。
+`SANDBOX_BACKEND` 不再参与选路；`TEMPLATE_NAME` 只作为 e2b Provider 的输入参数（调用 transform API），不再决定后端。
+BatchSandbox 同样按此规则默认 `e2b`，并把 runtimeClass 写进模板（旧版不写，属于新增的显式化）。
 
-**发布顺序**：先发 `e2b-webhook`（新版本对未设置 runtimeClass 的存量对象只放行），再发 `cri-multiplex`（Admin v2 + 注册表）。
+**发布顺序**：先发 `e2b-webhook`（默认选路兼容存量负载），再发 `cri-multiplex`（Admin v2 + 注册表）。
 回滚顺序相反；v2 admin 与 v1 并存，回滚 cri-multiplex 不需要回滚 webhook。
 
 ---

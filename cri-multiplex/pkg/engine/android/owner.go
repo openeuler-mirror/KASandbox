@@ -20,7 +20,7 @@ func androidResourceOwner(rec *AndroidSandboxRecord) util.ResourceOwner {
 	}
 }
 
-// removeOwnedAndroidPath 保留给 root 的薄包装；Task 10 随 android 一起搬走。
+// removeOwnedAndroidPath 是 android 侧的薄包装，统一 owner 判定参数。
 func removeOwnedAndroidPath(path string, owner util.ResourceOwner, cfg Config, artifacts, stateProvesOwner bool) error {
 	return util.RemoveOwnedPath(path, cfg.StateDir, cfg.ArtifactsDir, owner, artifacts, stateProvesOwner)
 }

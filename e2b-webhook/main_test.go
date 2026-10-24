@@ -90,6 +90,7 @@ type fakeProvider struct {
 	annotations  map[string]string
 	runtimeClass string
 	err          error
+	nilResult    bool
 	calls        int
 }
 
@@ -100,6 +101,9 @@ func (f *fakeProvider) Resolve(_ context.Context, _ provider.Request) (*provider
 	f.calls++
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.nilResult {
+		return nil, nil
 	}
 	annotations := map[string]string{}
 	if f.handler != "android" {
@@ -342,7 +346,7 @@ func TestBuildPatch_JSONRoundTrip(t *testing.T) {
 // admitPod / admitBatchSandbox —— Provider 选择与 patch
 // =============================================================================
 
-func TestAdmitPod_NoSignalPassesThroughWithoutPatch(t *testing.T) {
+func TestAdmitPod_AndroidEnvDefaultsToAndroid(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Env: []corev1.EnvVar{
@@ -351,11 +355,61 @@ func TestAdmitPod_NoSignalPassesThroughWithoutPatch(t *testing.T) {
 		}}}},
 	}
 	resp := admitPod(newPodReview(admissionv1.Create, pod), newFakeMatcher(t, "e2b", "android"))
-	if !resp.Allowed {
-		t.Fatalf("Allowed = false, want true")
+	patches := decodePatches(t, resp)
+	if len(patches) != 1 || patches[0].Path != podRuntimeClassNamePath || patches[0].Value != "android" {
+		t.Fatalf("patches = %+v, want only runtimeClassName=android", patches)
 	}
-	if len(resp.Patch) != 0 {
-		t.Fatalf("patch = %s, want no patch", resp.Patch)
+}
+
+func TestAdmitPod_NoSignalDefaultsToE2B(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Env: []corev1.EnvVar{
+			{Name: "TEMPLATE_NAME", Value: "tmpl"},
+		}}}},
+	}
+	resp := admitPod(newPodReview(admissionv1.Create, pod), newFakeMatcher(t, "e2b", "android"))
+	patches := decodePatches(t, resp)
+	if !patchExists(patches, podRuntimeClassNamePath) {
+		t.Fatalf("runtimeClass patch missing: %+v", patches)
+	}
+	for _, p := range patches {
+		if p.Path == podRuntimeClassNamePath && p.Value != "e2b" {
+			t.Fatalf("runtimeClass = %v, want e2b", p.Value)
+		}
+	}
+	if got := patchedAnnotations(t, podAnnotationsPath, patches)[provider.AnnBackend]; got != "e2b" {
+		t.Fatalf("sandbox.cri/backend = %q, want e2b", got)
+	}
+}
+
+func TestAdmitPod_NoSignalNoTemplateSetsRuntimeClassOnly(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "bare-pod", Namespace: "default"}}
+	matcher := newMatcherFromProviders(t, &fakeProvider{handler: "e2b", nilResult: true})
+	resp := admitPod(newPodReview(admissionv1.Create, pod), matcher)
+	patches := decodePatches(t, resp)
+	if len(patches) != 1 || patches[0].Path != podRuntimeClassNamePath || patches[0].Value != "e2b" {
+		t.Fatalf("patches = %+v, want only runtimeClassName=e2b", patches)
+	}
+}
+
+func TestAdmitPod_AndroidEnvIgnoredWhenRuntimeClassSet(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			RuntimeClassName: strPtr("e2b"),
+			Containers: []corev1.Container{{Name: "main", Env: []corev1.EnvVar{
+				{Name: "ANDROID_SANDBOX", Value: "true"},
+			}}},
+		},
+	}
+	resp := admitPod(newPodReview(admissionv1.Create, pod), newFakeMatcher(t, "e2b", "android"))
+	patches := decodePatches(t, resp)
+	if patchExists(patches, podRuntimeClassNamePath) {
+		t.Fatalf("explicit runtimeClassName must not be overridden: %+v", patches)
+	}
+	if got := patchedAnnotations(t, podAnnotationsPath, patches)[provider.AnnBackend]; got != "e2b" {
+		t.Fatalf("runtimeClass should win over ANDROID_SANDBOX, got backend %q", got)
 	}
 }
 
@@ -499,12 +553,16 @@ func TestAdmitBatchSandbox_RuntimeClassFromTemplate(t *testing.T) {
 	}
 }
 
-func TestAdmitBatchSandbox_NoSignalPassesThrough(t *testing.T) {
+func TestAdmitBatchSandbox_NoSignalDefaultsToE2B(t *testing.T) {
 	obj := newBatchSandboxObj("bs-1", "default", []interface{}{envVar("TEMPLATE_NAME", "tmpl")})
 	raw, _ := json.Marshal(obj)
-	resp := admitBatchSandbox(newAdmissionReview("BatchSandbox", admissionv1.Create, raw), newFakeMatcher(t, "cube"))
-	if !resp.Allowed || len(resp.Patch) != 0 {
-		t.Fatalf("Allowed=%v patch=%s, want pass-through", resp.Allowed, resp.Patch)
+	resp := admitBatchSandbox(newAdmissionReview("BatchSandbox", admissionv1.Create, raw), newFakeMatcher(t, "e2b"))
+	patches := decodePatches(t, resp)
+	if !patchExists(patches, bsRuntimeClassNamePath) {
+		t.Fatalf("runtimeClass patch missing: %+v", patches)
+	}
+	if len(patchedAnnotations(t, bsAnnotationsPath, patches)) == 0 {
+		t.Fatalf("annotations patch missing: %+v", patches)
 	}
 }
 

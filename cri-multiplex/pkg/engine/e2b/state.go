@@ -54,11 +54,11 @@ type E2BPodState struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// E2BOperation 与状态常量暂时复用根包定义（admin v1 仍按根包类型接线）；
-// Task 13 引入中性 Admin DTO 后改为 e2b 自己的类型。
+// E2BOperation 与状态常量复用根包定义：v1 admin 协议按该类型接线（见
+// pkg/engine/admin_v1_compat.go），v2 使用 admin.go 的中性 DTO。
 type E2BOperation = engine.E2BOperation
 
-// RuntimeInfo 暂时复用根包定义（admin v1 仍按根包类型接线）。
+// RuntimeInfo 复用根包定义：仅 v1 GetSandboxRuntime 视图使用。
 type RuntimeInfo = engine.RuntimeInfo
 
 const (
@@ -225,12 +225,6 @@ func deleteE2BPodState(records []E2BPodState, sandboxID string) []E2BPodState {
 			out = append(out, record)
 		}
 	}
-	return out
-}
-
-func cloneE2BPodStates(values []E2BPodState) []E2BPodState {
-	out := make([]E2BPodState, len(values))
-	copy(out, values)
 	return out
 }
 

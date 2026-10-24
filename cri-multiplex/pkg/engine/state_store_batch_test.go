@@ -298,10 +298,6 @@ func runConcurrentStateSaves(t *testing.T, store *JSONStateStore, count int) ([]
 	return timings, wall
 }
 
-func appendString(values []string, v string) []string {
-	return append(values, v)
-}
-
 // upsertE2BPodForTest 在测试里保留旧 typed 方法的 upsert 语义：
 // KV 只有单次调用原子性，读改写需要调用方自己串行化。
 func upsertE2BPodForTest(store *JSONStateStore, mu *sync.Mutex, pod map[string]any) error {

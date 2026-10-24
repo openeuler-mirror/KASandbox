@@ -148,7 +148,16 @@ func NewJSONStateStore(dir string) (*JSONStateStore, error) {
 	store.writeSnapshot = func(data []byte) error { return writeStateSnapshot(store.path, data) }
 	if data, err := os.ReadFile(store.path); err == nil && len(data) > 0 {
 		if err := json.Unmarshal(data, &store.state); err != nil {
+			// 规格：state 读取/解析失败不得阻断启动，必须降级为空状态继续服务。
+			// 但也不丢现场：先按既有日志格式告警（e2b-verify 19/1.4 断言这行），
+			// 再把坏文件改名隔离（best-effort，失败也只告警）。
 			log.Printf("[state] warning: failed to load %s: %v", store.path, err)
+			backup := fmt.Sprintf("%s.corrupt-%d", store.path, time.Now().UnixNano())
+			if renameErr := os.Rename(store.path, backup); renameErr != nil {
+				log.Printf("[state] warning: failed to quarantine corrupt state %s: %v", store.path, renameErr)
+			} else {
+				log.Printf("[state] warning: corrupt state quarantined as %s; continuing with empty state", backup)
+			}
 			store.state = persistedState{Version: 1}
 		}
 	} else if err != nil && !os.IsNotExist(err) {
@@ -228,6 +237,14 @@ func (s *JSONStateStore) LoadCleanupTasks() ([]CleanupTask, error) {
 	return out, nil
 }
 
+// reservedStateSections 是 persistedState 的固定字段，不能被后端 KV 当作 section 占用：
+// MarshalJSON 会用结构体字段覆盖同名 section，写进去的值随后会让下一次反序列化失败。
+var reservedStateSections = map[string]struct{}{
+	"version":       {},
+	"routes":        {},
+	"cleanup_tasks": {},
+}
+
 // splitBackendStatePath 把点分路径拆成 (section, key)；只支持 1 段或 2 段。
 func splitBackendStatePath(path string) (string, string, error) {
 	parts := strings.Split(path, ".")
@@ -236,15 +253,28 @@ func splitBackendStatePath(path string) (string, string, error) {
 		if parts[0] == "" {
 			return "", "", fmt.Errorf("empty backend state path")
 		}
+		if err := checkReservedStateSection(path, parts[0]); err != nil {
+			return "", "", err
+		}
 		return parts[0], "", nil
 	case 2:
 		if parts[0] == "" || parts[1] == "" {
 			return "", "", fmt.Errorf("invalid backend state path %q", path)
 		}
+		if err := checkReservedStateSection(path, parts[0]); err != nil {
+			return "", "", err
+		}
 		return parts[0], parts[1], nil
 	default:
 		return "", "", fmt.Errorf("invalid backend state path %q: only <section> or <section>.<key> is supported", path)
 	}
+}
+
+func checkReservedStateSection(path, section string) error {
+	if _, ok := reservedStateSections[section]; ok {
+		return fmt.Errorf("backend state path %q uses reserved section %q", path, section)
+	}
+	return nil
 }
 
 func (s *JSONStateStore) SaveBackendState(path string, value any) error {
@@ -518,35 +548,6 @@ func deleteCleanupTask(tasks []CleanupTask, id string) []CleanupTask {
 			out = append(out, task)
 		}
 	}
-	return out
-}
-
-func upsertString(values []string, v string) []string {
-	for _, item := range values {
-		if item == v {
-			return values
-		}
-	}
-	return append(values, v)
-}
-
-func deleteString(values []string, v string) []string {
-	out := make([]string, 0, len(values))
-	for _, item := range values {
-		if item == v {
-			continue
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
-func cloneStrings(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make([]string, len(values))
-	copy(out, values)
 	return out
 }
 

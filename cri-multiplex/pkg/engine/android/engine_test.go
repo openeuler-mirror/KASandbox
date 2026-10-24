@@ -12,7 +12,7 @@ import (
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
-func TestNewAndroidEngineDefaults(t *testing.T) {
+func TestNewAndroidDefaults(t *testing.T) {
 	e, _ := New(Config{})
 	if e.cfg.ArtifactsDir != "/home/fjq/cf17" {
 		t.Fatalf("ArtifactsDir = %q", e.cfg.ArtifactsDir)
