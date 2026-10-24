@@ -14,6 +14,8 @@ image:
 # e2b-webhook 开关：true 部署，false 不部署（默认）
 webhook:
   enabled: ${ENABLE_WEBHOOK}
+  # 逗号分隔的 Provider 列表（e2b/android）；空值渲染为 e2b
+  providers: "${WEBHOOK_PROVIDERS}"
 pullPolicy: IfNotPresent
 # postgres 访问地址：默认内置 Service；ENABLE_POSTGRES=false 时由 POSTGRES_URL 环境变量指向外部实例
 postgresUrl: ${POSTGRES_URL}

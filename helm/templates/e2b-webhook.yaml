@@ -63,6 +63,8 @@ spec:
                   optional: true
             - name: E2B_API_TIMEOUT
               value: "4s"
+            - name: WEBHOOK_PROVIDERS
+              value: {{ .Values.webhook.providers | default "e2b" | quote }}
           volumeMounts:
             - name: tls
               mountPath: /tls
