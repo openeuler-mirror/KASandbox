@@ -26,6 +26,10 @@
                 "syscall": "read"
             },
             {
+                "syscall": "pread64",
+                "comment": "GET /memory/dirty reads /proc/self/pagemap positionally to tell dirty pages from clean ones; without it the endpoint trips seccomp and the VM is shut down with BadSyscall"
+            },
+            {
                 "syscall": "write"
             },
             {
@@ -107,8 +111,8 @@
                 "comment": "sigaltstack is used by Rust stdlib to remove alternative signal stack during thread teardown."
             },
             {
-              "syscall": "getrandom",
-              "comment": "getrandom is used by aws-lc library which we consume in virtio-rng"
+                "syscall": "getrandom",
+                "comment": "getrandom is used by aws-lc library which we consume in virtio-rng"
             },
             {
                 "syscall": "accept4",
@@ -210,7 +214,7 @@
             },
             {
                 "syscall": "madvise",
-                "comment": "Used by the VirtIO balloon device and by musl for some customer workloads. It is also used by aws-lc during random number generation. They setup a memory page that mark with MADV_WIPEONFORK to be able to detect forks. They also call it with -1 to see if madvise is supported in certain platforms." 
+                "comment": "Used by the VirtIO balloon device and by musl for some customer workloads. It is also used by aws-lc during random number generation. They setup a memory page that mark with MADV_WIPEONFORK to be able to detect forks. They also call it with -1 to see if madvise is supported in certain platforms."
             },
             {
                 "syscall": "mincore",
@@ -516,8 +520,8 @@
                 "comment": "sigaltstack is used by Rust stdlib to remove alternative signal stack during thread teardown."
             },
             {
-              "syscall": "getrandom",
-              "comment": "getrandom is used by `HttpServer` to reinialize `HashMap` after moving to the API thread"
+                "syscall": "getrandom",
+                "comment": "getrandom is used by `HttpServer` to reinialize `HashMap` after moving to the API thread"
             },
             {
                 "syscall": "accept4",
@@ -1021,6 +1025,58 @@
             {
                 "syscall": "restart_syscall",
                 "comment": "automatically issued by the kernel when specific timing-related syscalls (e.g. nanosleep) get interrupted by SIGSTOP"
+            },
+            {
+                "syscall": "ioctl",
+                "comment": "In-place snapshot rollback writes registers back on the running vcpu fd",
+                "args": [
+                    {
+                        "index": 1,
+                        "type": "dword",
+                        "op": "eq",
+                        "val": 1074835116,
+                        "comment": "KVM_SET_ONE_REG"
+                    }
+                ]
+            },
+            {
+                "syscall": "ioctl",
+                "comment": "In-place snapshot rollback restores the vcpu's mp state",
+                "args": [
+                    {
+                        "index": 1,
+                        "type": "dword",
+                        "op": "eq",
+                        "val": 1074048665,
+                        "comment": "KVM_SET_MP_STATE"
+                    }
+                ]
+            },
+            {
+                "syscall": "ioctl",
+                "comment": "Rollback route A re-inits the vcpu (a KVM-defined reset) before writing registers",
+                "args": [
+                    {
+                        "index": 1,
+                        "type": "dword",
+                        "op": "eq",
+                        "val": 1075883694,
+                        "comment": "KVM_ARM_VCPU_INIT"
+                    }
+                ]
+            },
+            {
+                "syscall": "ioctl",
+                "comment": "Rollback route A re-finalizes SVE state after re-init",
+                "args": [
+                    {
+                        "index": 1,
+                        "type": "dword",
+                        "op": "eq",
+                        "val": 1074048706,
+                        "comment": "KVM_ARM_VCPU_FINALIZE"
+                    }
+                ]
             }
         ]
     }

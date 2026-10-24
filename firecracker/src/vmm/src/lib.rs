@@ -92,6 +92,8 @@ pub mod logger;
 pub mod mmds;
 /// Save/restore utilities.
 pub mod persist;
+/// In-place snapshot rollback.
+pub mod rollback;
 /// Resource store for configured microVM resources.
 pub mod resources;
 /// microVM RPC API adapters.
@@ -205,6 +207,8 @@ pub const HTTP_MAX_PAYLOAD_SIZE: usize = 51200;
 /// have permissions to open the KVM fd).
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
 pub enum VmmError {
+    /// The microVM is faulted from a failed in-place rollback; only queries and exit are allowed
+    VmFaulted,
     /// Failed to allocate guest resource: {0}
     AllocateResources(#[from] vm_allocator::Error),
     #[cfg(target_arch = "aarch64")]
@@ -333,7 +337,9 @@ impl Vmm {
 
     /// Gets Vmm instance info.
     pub fn instance_info(&self) -> InstanceInfo {
-        self.instance_info.clone()
+        let mut info = self.instance_info.clone();
+        info.dirty_tracking = Some(self.vm.dirty_tracking().as_str().to_string());
+        info
     }
 
     /// Provides the Vmm shutdown exit code if there is one.
@@ -399,6 +405,12 @@ impl Vmm {
 
     /// Sends a resume command to the vCPUs.
     pub fn resume_vm(&mut self) -> Result<(), VmmError> {
+        // A faulted VM is torn between two moments in time; letting it run
+        // would execute on corrupt state. The orchestrator replaces it.
+        if self.instance_info.state == VmState::Faulted {
+            return Err(VmmError::VmFaulted);
+        }
+
         self.mmio_device_manager.kick_devices();
 
         // Send the events.
@@ -423,6 +435,17 @@ impl Vmm {
 
     /// Sends a pause command to the vCPUs.
     pub fn pause_vm(&mut self) -> Result<(), VmmError> {
+        // Pausing a faulted VM would overwrite the Faulted marker and reopen
+        // the door to resuming corrupt state.
+        if self.instance_info.state == VmState::Faulted {
+            return Err(VmmError::VmFaulted);
+        }
+
+        // The one legal window to observe queue state; logging it here means
+        // pausing a wedged sandbox yields its live producer/consumer
+        // positions.
+        crate::rollback::log_queue_diagnostics(self);
+
         // Send the events.
         self.vcpus_handles
             .iter()
@@ -499,6 +522,45 @@ impl Vmm {
             .unwrap()
             .trigger_ctrl_alt_del()
             .map_err(VmmError::I8042Error)
+    }
+
+    /// Writes a snapshot's vCPU states back onto the live vCPUs, in their
+    /// own threads, for in-place rollback. Mirrors the SaveState send/collect
+    /// pattern.
+    pub fn restore_vcpu_states_in_place(
+        &mut self,
+        states: Vec<VcpuState>,
+    ) -> Result<(), MicrovmStateError> {
+        if states.len() != self.vcpus_handles.len() {
+            return Err(MicrovmStateError::UnexpectedVcpuResponse);
+        }
+
+        for (handle, state) in self.vcpus_handles.iter().zip(states.into_iter()) {
+            handle
+                .send_event(VcpuEvent::RestoreState(std::sync::Arc::new(state)))
+                .map_err(MicrovmStateError::SignalVcpu)?;
+        }
+
+        let vcpu_responses = self
+            .vcpus_handles
+            .iter()
+            // The boot timer device requires a response from the vcpu
+            .map(|handle| handle.response_receiver().recv_timeout(RECV_TIMEOUT_SEC))
+            .collect::<Result<Vec<VcpuResponse>, RecvTimeoutError>>()
+            .map_err(|_| MicrovmStateError::UnexpectedVcpuResponse)?;
+
+        for response in vcpu_responses {
+            match response {
+                VcpuResponse::RestoredState => (),
+                VcpuResponse::Error(err) => return Err(MicrovmStateError::SaveVcpuState(err)),
+                VcpuResponse::NotAllowed(reason) => {
+                    return Err(MicrovmStateError::NotAllowed(reason));
+                }
+                _ => return Err(MicrovmStateError::UnexpectedVcpuResponse),
+            }
+        }
+
+        Ok(())
     }
 
     /// Saves the state of a paused Microvm.

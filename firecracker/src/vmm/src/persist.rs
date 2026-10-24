@@ -145,6 +145,8 @@ pub enum CreateSnapshotError {
     SerializeMicrovmState(#[from] crate::snapshot::SnapshotError),
     /// Cannot perform {0} on the snapshot backing file: {1}
     SnapshotBackingFile(&'static str, io::Error),
+    /// dirty_bitmap_path requires mem_file_path
+    DirtyBitmapWithoutMemFile,
 }
 
 /// Snapshot version
@@ -162,10 +164,19 @@ pub fn create_snapshot(
 
     snapshot_state_to_file(&microvm_state, &params.snapshot_path)?;
 
+    // The bitmap sidecar records which pages the memory dump wrote; without a
+    // memory dump there is nothing coherent for it to describe.
+    if params.dirty_bitmap_path.is_some() && params.mem_file_path.is_none() {
+        return Err(CreateSnapshotError::DirtyBitmapWithoutMemFile);
+    }
+
     // Dump memory to file only if mem_file_path is specified
     if let Some(ref mem_file_path) = params.mem_file_path {
-        vmm.vm
-            .snapshot_memory_to_file(mem_file_path, params.snapshot_type)?;
+        vmm.vm.snapshot_memory_to_file(
+            mem_file_path,
+            params.snapshot_type,
+            params.dirty_bitmap_path.as_deref(),
+        )?;
     }
 
     // We need to mark queues as dirty again for all activated devices. The reason we
@@ -425,7 +436,7 @@ pub enum SnapshotStateFromFileError {
     UnknownNetworkDevice,
 }
 
-fn snapshot_state_from_file(
+pub(crate) fn snapshot_state_from_file(
     snapshot_path: &Path,
 ) -> Result<MicrovmState, SnapshotStateFromFileError> {
     let snapshot = Snapshot::new(SNAPSHOT_VERSION);

@@ -20,6 +20,13 @@ pub struct EntropyState {
     rate_limiter_state: RateLimiterState,
 }
 
+impl EntropyState {
+    /// The generic virtio half of this state, used by in-place rollback.
+    pub(crate) fn virtio_state(&self) -> &VirtioDeviceState {
+        &self.virtio_state
+    }
+}
+
 #[derive(Debug)]
 pub struct EntropyConstructorArgs(GuestMemoryMmap);
 
