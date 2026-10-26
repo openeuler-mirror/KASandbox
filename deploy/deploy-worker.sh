@@ -215,7 +215,7 @@ deploy_node() {
     # ---------- 步骤 7：设置节点标签 ----------
     log_step "7/${step_total}" "设置节点标签..."
     # sandbox 标签仅 k8s/nomad 模式被 API 节点发现（k8sDiscovery）消费；
-    # systemd 模式节点池改走 E2B_STATIC_ALLOCATIONS 静态清单，跳过打标
+    # systemd 模式节点池改走 ORCHESTRATOR_STATIC_NODES 静态清单，跳过打标
     if [ "${ORCHESTRATOR_TYPE:-k8s}" != "systemd" ]; then
         kubectl label node "$node" node-role.kubernetes.io/sandbox=true --overwrite
         kubectl label node "$node" node-role.kubernetes.io/${BUILD_NODE_POOL}= --overwrite

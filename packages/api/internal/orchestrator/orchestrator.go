@@ -135,7 +135,7 @@ func New(
 
 	switch env.GetEnv("ORCHESTRATOR_TYPE", "nomad") {
 	case "systemd":
-		// systemd 承载：sandbox 节点池与模板构建共用 E2B_STATIC_ALLOCATIONS
+		// systemd 承载：sandbox 节点池与模板构建共用 ORCHESTRATOR_STATIC_NODES
 		// 静态清单（含 grpc_health_v1 探活），不再依赖 K8s sandbox 标签
 		o.discovery = NewStaticNodeDiscovery(ctx)
 	case "k8s":

@@ -6,59 +6,36 @@ DEP_DIR="$WORK_DIR/dep"
 E2B_DIR="/opt/e2b-infra"
 mkdir -p "$DEP_DIR"
 # 定义默认端口（可通过参数覆盖，后续扩展）
-PG_PORT=5432
-MINIO_PORT=9000
-MINIO_CONSOLE_PORT=9001
 NOMAD_PORT=4646
-# Harbor 登录凭证（根据实际情况修改）
-HARBOR_USER="admin"
-HARBOR_PASSWORD="${HARBOR_PASSWORD:-}"
-source ".env"
-# Harbor 协议: http, https, both
-HARBOR_PROTOCOL="${HARBOR_PROTOCOL:-both}"
+# 用绝对路径加载 .env：从任意 CWD 调用脚本都能命中；此处 error() 尚未定义（common.sh 在下方加载），内联 echo+exit
+source "$WORK_DIR/.env" || { echo "❌ .env 加载失败：$WORK_DIR/.env" >&2; exit 1; }
+# build.sh 内部统一使用 HARBOR_USER；.env 中的变量名为 HARBOR_USERNAME（改 .env 即生效）
+HARBOR_USER="${HARBOR_USERNAME:-admin}"
+# PG_PORT 派生自 .env 的 POSTGRES_PORT，保持单一数据源（须在 source .env 之后）
+PG_PORT="${POSTGRES_PORT:-5432}"
 # orchestrator 启动方式：默认容器化（nomad job / DaemonSet）；显式置 systemd 时由节点 e2b-orchestrator.service 承载
 ORCHESTRATOR_TYPE="${ORCHESTRATOR_TYPE:-}"
 # PostgreSQL 组件开关：默认安装内置 postgres；显式置 false 时跳过（使用外部实例，POSTGRES_CONNECTION_STRING 指向外部地址）
 ENABLE_POSTGRES="${ENABLE_POSTGRES:-true}"
 # Redis 组件开关：默认安装内置 redis；显式置 false 时跳过（组件降级运行，edge 域名路由目录不可用）
-ENABLE_REDIS="${ENABLE_REDIS:-true}"
-export ENABLE_REDIS
+export ENABLE_REDIS="${ENABLE_REDIS:-true}"
 # ENABLE_REDIS=false 时组件注入地址置空（REDIS_URL 为空触发代码内 ErrRedisDisabled 降级），存储后端强制 memory
 if [ "$ENABLE_REDIS" = "true" ]; then
-    REDIS_ENDPOINT="${REDIS_ENDPOINT:-${REDIS_URL:-redis.service.consul}:${REDIS_PORT:-6379}}"
+    export REDIS_ENDPOINT="${REDIS_ENDPOINT:-${REDIS_URL:-redis.service.consul}:${REDIS_PORT:-6379}}"
 else
-    REDIS_ENDPOINT=""
+    export REDIS_ENDPOINT=""
     if [ "${SANDBOX_STORAGE_BACKEND:-redis}" = "redis" ]; then
         echo "ENABLE_REDIS=false，SANDBOX_STORAGE_BACKEND 强制降级为 memory（原值 redis 需要 Redis）"
-        SANDBOX_STORAGE_BACKEND="memory"
+        export SANDBOX_STORAGE_BACKEND="memory"
     fi
 fi
-export REDIS_ENDPOINT SANDBOX_STORAGE_BACKEND
 # edge（client-proxy）组件开关：默认安装；显式置 false 时跳过（沙箱域名路由 *.e2b.app 不可用，API 直连功能不受影响）
-ENABLE_EDGE="${ENABLE_EDGE:-true}"
-export ENABLE_EDGE
+export ENABLE_EDGE="${ENABLE_EDGE:-true}"
 # api 组件开关：默认部署内置 api；显式置 false 时 helm 不渲染 api Deployment/Service（API 由外部承载，仅 k8s 模式生效）
-ENABLE_API="${ENABLE_API:-true}"
-export ENABLE_API
+export ENABLE_API="${ENABLE_API:-true}"
 # Nomad/Consul 健康检查端口
 CONSUL_HTTP_PORT=8500
 HOST_IP="$SERVER_IPS"
-# 架构检测
-RAW_ARCH=$(uname -m)
-case "$RAW_ARCH" in
-    x86_64)
-        DEFAULT_ARCH="x86_64"
-        ;;
-    aarch64|arm64)
-        DEFAULT_ARCH="arm64"
-        ;;
-    *)
-        DEFAULT_ARCH="unknown"
-        ;;
-esac
-
-# 设置初始架构为自动检测值
-ARCH="$DEFAULT_ARCH"
 CONTAINER_RUNTIME=""
 
 # 设置容器运行时命令
@@ -112,6 +89,9 @@ set_container_runtime() {
 
 # ===================== 颜色输出函数（公共库，与 deploy.sh 共用）=====================
 source "$WORK_DIR/common.sh"
+
+# 设置初始架构为自动检测值（common.sh::detect_default_arch），可用 --arch 覆盖
+ARCH="$(detect_default_arch)"
 
 # ===================== 安装函数 =====================
 install_base_packages() {
@@ -373,22 +353,31 @@ install_harbor_certs() {
     info "生成 Harbor SSL 证书..."
     mkdir -p "$HARBOR_CERTS_DIR" || error "创建 Harbor 证书目录失败"
 
-    if [ ! -f "$DEP_DIR/harbor.cnf" ]; then
-        error "证书配置文件缺失，请检查 $DEP_DIR/harbor.cnf"
+    # 幂等：证书已存在则跳过重签（重签后新证书与各节点 containerd/docker 已信任的旧证书不一致，Harbor 拉取会 x509 失败）
+    if [ -f "$HARBOR_CERTS_DIR/harbor.crt" ] && [ -f "$HARBOR_CERTS_DIR/harbor.key" ]; then
+        info "Harbor 证书已存在（$HARBOR_CERTS_DIR），跳过生成；如需重签请先删除 crt/key，并向各节点重新分发信任"
+    else
+        if [ ! -f "$DEP_DIR/harbor.cnf" ]; then
+            error "证书配置文件缺失，请检查 $DEP_DIR/harbor.cnf"
+        fi
+        cp -f "$DEP_DIR/harbor.cnf" "$HARBOR_CERTS_DIR/" || error "复制 harbor.cnf 失败"
+        sed -i "s/{ip}/$HOST_IP/" "$HARBOR_CERTS_DIR/harbor.cnf" || error "修改 harbor.cnf 中的 IP 地址失败"
+
+        # 生成 SSL 证书
+        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+            -keyout "$HARBOR_CERTS_DIR/harbor.key" \
+            -out "$HARBOR_CERTS_DIR/harbor.crt" \
+            -config "$HARBOR_CERTS_DIR/harbor.cnf" \
+            -extensions v3_req || error "生成 SSL 证书失败"
+
+        success "Harbor SSL 证书生成完成: $HARBOR_CERTS_DIR/"
     fi
-    cp -f "$DEP_DIR/harbor.cnf" "$HARBOR_CERTS_DIR/" || error "复制 harbor.cnf 失败"
-    sed -i "s/{ip}/$HOST_IP/" "$HARBOR_CERTS_DIR/harbor.cnf" || error "修改 harbor.cnf 中的 IP 地址失败"
-
-    # 生成 SSL 证书
-    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-        -keyout "$HARBOR_CERTS_DIR/harbor.key" \
-        -out "$HARBOR_CERTS_DIR/harbor.crt" \
-        -config "$HARBOR_CERTS_DIR/harbor.cnf" \
-        -extensions v3_req || error "生成 SSL 证书失败"
-
-    success "Harbor SSL 证书生成完成: $HARBOR_CERTS_DIR/"
 
     if [ "$DEPLOY_MODE" = "k8s" ]; then
+        # configmap 创建依赖集群，前置可达性检查避免抛出 kubectl 原始连接错误
+        if ! kubectl cluster-info >/dev/null 2>&1; then
+            error "创建 harbor-ca-cert ConfigMap 需要 K8S 集群就绪，当前 kubectl 无法连接集群"
+        fi
         # 确保 e2b 命名空间存在，不存在则创建
         if ! kubectl get namespace e2b >/dev/null 2>&1; then
             info "命名空间 e2b 不存在，创建 ..."
@@ -1069,38 +1058,24 @@ start_harbor() {
         sed -i "/check_dockercompose/d" install.sh
     fi
 
-    local enable_http=false
-    local enable_https=false
-    case "$HARBOR_PROTOCOL" in
-        http)  enable_http=true ;;
-        https) enable_https=true ;;
-        both)  enable_http=true; enable_https=true ;;
-        *)     enable_http=true; enable_https=true ;;
-    esac
-    info "Harbor 协议: $HARBOR_PROTOCOL (HTTP=$enable_http, HTTPS=$enable_https)"
+    # Harbor 固定 HTTPS-only：http 块整体注释（https 启用时 http 仅 301 跳转，直接关闭不再监听）
+    # 注意顺序：先注释 http 块（port 行变为行首 #），再做 https 替换，避免误改 http 端口
+    sed -i '/^http:/,/^$/ s/^/#/' "$harbor_config"
 
-    # --- 配置 HTTP ---
-    harbor_set_http_port "$harbor_config" "$HARBOR_HTTP_PORT"
-    info "Harbor HTTP 端口已设置为: $HARBOR_HTTP_PORT"
+    # --- 配置 HTTPS（端口/证书路径；模式兼容 # 前缀与任意旧端口号，重复执行幂等） ---
+    info "配置 Harbor HTTPS (端口: $HARBOR_HTTPS_PORT)"
+    sed -i 's/^#\(https:\)/\1/' "$harbor_config"
+    sed -i "s/^  #*port: [0-9][0-9]*/  port: $HARBOR_HTTPS_PORT/" "$harbor_config"
+    sed -i "s|^  #*certificate: .*|  certificate: /etc/harbor/certs/harbor.crt|" "$harbor_config"
+    sed -i "s|^  #*private_key: .*|  private_key: /etc/harbor/certs/harbor.key|" "$harbor_config"
 
-    # --- 配置 HTTPS ---
-    if [ "$enable_https" = true ]; then
-        info "配置 Harbor HTTPS (端口: $HARBOR_HTTPS_PORT)"
-        sed -i 's/^#\(https:\)/\1/' "$harbor_config"
-        sed -i "s/^  #*port: 443/  port: $HARBOR_HTTPS_PORT/" "$harbor_config"
-        sed -i "s|^  #*certificate: .*|  certificate: /etc/harbor/certs/harbor.crt|" "$harbor_config"
-        sed -i "s|^  #*private_key: .*|  private_key: /etc/harbor/certs/harbor.key|" "$harbor_config"
+    # 根据容器运行时配置 HTTPS 证书信任
+    configure_harbor_cert_trust
 
-        # 根据容器运行时配置 HTTPS 证书信任
-        configure_harbor_cert_trust
-    else
-        sed -i '/^https:/,/^$/ s/^/#/' "$harbor_config"
-    fi
-
-    # 修正 /etc/hosts (追加 harbor 映射)
+    # 修正 /etc/hosts (追加 harbor 映射)；匹配独立词 harbor，避免注释行误判
     echo ">>> 正在配置 /etc/hosts..."
-    if ! grep -q "harbor" /etc/hosts; then
-        echo "127.0.0.1 harbor" | sudo tee -a /etc/hosts
+    if ! grep -qE '(^|[[:space:]])harbor([[:space:]]|$)' /etc/hosts; then
+        echo "127.0.0.1 harbor" >> /etc/hosts || error "写入 /etc/hosts 失败"
         echo "[OK] 已追加 127.0.0.1 harbor"
     else
         echo "[SKIP] harbor 已存在于 /etc/hosts"
@@ -1115,22 +1090,44 @@ configure_harbor_cert_trust() {
     if [ "$DEPLOY_MODE" = "k8s" ]; then
         # 1. 准备 certs.d 目录与 hosts.toml（containerd 现代配置方式）
         mkdir -p "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT"
-        cp -f "$HARBOR_CERTS_DIR/harbor.crt" "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.crt" || error "复制 harbor.crt 失败"
-        cat > "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/hosts.toml" << EOF
+        # 幂等：证书内容一致则跳过拷贝
+        local ctr_crt="/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.crt"
+        if [ -f "$ctr_crt" ] && cmp -s "$HARBOR_CERTS_DIR/harbor.crt" "$ctr_crt"; then
+            info "containerd harbor.crt 已存在且内容一致，跳过"
+        else
+            cp -f "$HARBOR_CERTS_DIR/harbor.crt" "$ctr_crt" || error "复制 harbor.crt 失败"
+        fi
+        # 幂等：hosts.toml 内容一致则跳过重写
+        local hosts_toml="/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/hosts.toml"
+        local tmp_hosts_toml
+        tmp_hosts_toml="$(mktemp)"
+        cat > "$tmp_hosts_toml" << EOF
 server = "https://$HOST_IP:$HARBOR_HTTPS_PORT"
 [host."https://$HOST_IP:$HARBOR_HTTPS_PORT"]
   capabilities = ["pull", "resolve", "push"]
   ca = "/etc/containerd/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/harbor.crt"
   skip_verify = false
 EOF
+        if [ -f "$hosts_toml" ] && cmp -s "$tmp_hosts_toml" "$hosts_toml"; then
+            info "hosts.toml 已存在且内容一致，跳过"
+            rm -f "$tmp_hosts_toml"
+        else
+            mv "$tmp_hosts_toml" "$hosts_toml"
+        fi
 
         # 2. 检查 containerd config.toml 是否已配置 config_path 指向 certs.d 目录
         #    只有配置了 config_path，上面的 hosts.toml 才会生效
         info "检查 containerd config_path 配置..."
         local containerd_config="/etc/containerd/config.toml"
         [ ! -f "$containerd_config" ] && containerd config default > "$containerd_config"
-        cp "$containerd_config" "$containerd_config.bak"
         local need_restart=false
+        # 仅在确实需要修改 config.toml 时才备份（幂等：避免每次运行都写 /etc）
+        local backup_containerd_config=false
+        if ! grep -q 'config_path = "/etc/containerd/certs.d"' "$containerd_config" || \
+           grep -qE '^\s*\[plugins\."io\.containerd\.grpc\.v1\.cri"\.registry\.mirrors' "$containerd_config"; then
+            backup_containerd_config=true
+        fi
+        [ "$backup_containerd_config" = true ] && cp "$containerd_config" "$containerd_config.bak"
         if grep -q 'config_path = "/etc/containerd/certs.d"' "$containerd_config"; then
             info "containerd config_path 已指向 certs.d，跳过"
         elif grep -q 'config_path =' "$containerd_config"; then
@@ -1151,6 +1148,18 @@ EOF
                 # 段已存在但缺少 config_path，在段内追加
                 sed -i '/\[plugins."io.containerd.grpc.v1.cri".registry\]/a\  config_path = "/etc/containerd/certs.d"' "$containerd_config"
             fi
+            need_restart=true
+        fi
+
+        # 3. containerd 1.7 起 registry.config_path 与 registry.mirrors 互斥（CRI 插件会加载失败，
+        #    kubelet 报 unknown service runtime.v1.RuntimeService）。kk 生成的 config.toml 自带
+        #    docker.io mirrors，配置 config_path 后必须删除 mirrors 段
+        if grep -qE '^\s*\[plugins\."io\.containerd\.grpc\.v1\.cri"\.registry\.mirrors' "$containerd_config"; then
+            info "删除与 config_path 互斥的 registry.mirrors 配置 ..."
+            # 先删 mirrors."X" 子表及其下一行 endpoint
+            sed -i -E '/^\s*\[plugins\."io\.containerd\.grpc\.v1\.cri"\.registry\.mirrors\."[^"]*"\]/,+1d' "$containerd_config"
+            # 再删 mirrors 父表头
+            sed -i -E '/^\s*\[plugins\."io\.containerd\.grpc\.v1\.cri"\.registry\.mirrors\]\s*$/d' "$containerd_config"
             need_restart=true
         fi
 
@@ -1175,17 +1184,21 @@ EOF
         # Docker 模式：配置 Docker 信任 Harbor HTTPS 证书
         info "配置 Docker 信任 Harbor HTTPS 证书..."
         mkdir -p "/etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT"
-        cp -f "$HARBOR_CERTS_DIR/harbor.crt" "/etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/ca.crt" || error "复制 ca.crt 失败"
-        systemctl restart "$CONTAINERD_SERVICE"
-        info "Docker Harbor HTTPS 证书已配置: /etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/ca.crt"
+        # 幂等：证书内容一致则跳过拷贝与运行时重启
+        local docker_crt="/etc/docker/certs.d/$HOST_IP:$HARBOR_HTTPS_PORT/ca.crt"
+        if [ -f "$docker_crt" ] && cmp -s "$HARBOR_CERTS_DIR/harbor.crt" "$docker_crt"; then
+            info "Docker ca.crt 已存在且内容一致，跳过（不重启运行时）"
+        else
+            cp -f "$HARBOR_CERTS_DIR/harbor.crt" "$docker_crt" || error "复制 ca.crt 失败"
+            systemctl restart "$CONTAINERD_SERVICE"
+            info "Docker Harbor HTTPS 证书已配置: $docker_crt"
+        fi
     fi
 }
 
 harbor_get_url() {
-    case "${HARBOR_PROTOCOL:-https}" in
-        http)  echo "http://$HOST_IP:$HARBOR_HTTP_PORT" ;;
-        *)     echo "https://$HOST_IP:$HARBOR_HTTPS_PORT" ;;
-    esac
+    # Harbor 固定 HTTPS-only
+    echo "https://$HOST_IP:$HARBOR_HTTPS_PORT"
 }
 
 harbor_wait_healthy() {
@@ -1237,29 +1250,6 @@ harbor_create_project() {
     fi
 }
 
-harbor_set_http_port() {
-    local config_file="${1:?请提供 Harbor 配置文件路径}"
-    local http_port="${2:?请提供 HTTP 端口号}"
-    
-    # 修改 HTTP 端口（确保只修改 http: 块下的 port）
-    # 先检查 http: 块下的 port 是否存在，不存在则添加
-    if grep -q "^http:" "$config_file" && ! grep "^http:" -A 5 "$config_file" | grep -q "port:"; then
-        # http: 块存在但没有 port，在 http: 后添加
-        sed -i "/^http:/a\  port: $http_port" "$config_file"
-    elif grep -q "^http:" "$config_file"; then
-        # http: 块存在且有 port，精确匹配 http: 块下的 port 并替换
-        awk -v new_port="$http_port" '
-            /^http:/ { in_http=1 }
-            /^https:/ { in_http=0 }
-            in_http && /^  port:/ { sub(/[0-9]+$/, new_port); in_http=0 }
-            { print }
-        ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
-    else
-        # http: 块不存在，添加整个 http: 块
-        sed -i "/^hostname:/a\\nhttp:\\n  port: $http_port" "$config_file"
-    fi
-}
-
 deploy_harbor() {
     start_harbor
     harbor_wait_healthy
@@ -1267,14 +1257,99 @@ deploy_harbor() {
     harbor_create_project
 }
 
+# ===================== 部署后组件健康自检 =====================
+# start() 收尾时调用：按部署模式逐项检查组件状态并输出摘要。
+# 全部通过返回 0；任一项异常返回 1（由调用方决定整体退出码）。
+check_deployment_health() {
+    info "===== 部署组件健康自检 ====="
+    local pass=0 fail=0
+
+    # 单项检查：check_item <名称> <命令...>
+    check_item() {
+        local name="$1"; shift
+        if "$@" >/dev/null 2>&1; then
+            success "  [正常] $name"
+            pass=$((pass+1))
+        else
+            warn "  [异常] $name"
+            fail=$((fail+1))
+        fi
+    }
+
+    _svc_active() { systemctl is-active --quiet "$1"; }
+    _port_listening() { ss -tln 2>/dev/null | grep -q ":$1 "; }
+    _container_running() { $DOCKER_CMD ps --format '{{.Names}}' 2>/dev/null | grep -qx "$1"; }
+    # Harbor：harbor-core 容器在运行且无 unhealthy 容器
+    _harbor_healthy() {
+        _container_running harbor-core || return 1
+        ! $DOCKER_CMD ps --filter health=unhealthy --format '{{.Names}}' 2>/dev/null | grep -q .
+    }
+    # 命名空间内非 Completed 的 pod 全部 Running 且 N/N Ready（无 pod 视为异常）
+    _ns_pods_ready() {
+        local out
+        out=$(kubectl get pods -n "$1" --no-headers 2>/dev/null) || return 1
+        [ -n "$out" ] || return 1
+        echo "$out" | awk '$3=="Completed"{next} {split($2,a,"/"); if ($3!="Running" || a[1]!=a[2]) bad=1} END{exit bad}'
+    }
+    # API /health：先试 ClusterIP（k8s 模式），再退回本机地址（hostNetwork / nomad 形态）
+    _api_healthy() {
+        local ip
+        ip=$(kubectl get svc api -n e2b -o jsonpath='{.spec.clusterIP}' 2>/dev/null)
+        if [ -n "$ip" ] && [ "$ip" != "None" ] && curl -sf -m 5 "http://$ip:3000/health" >/dev/null 2>&1; then
+            return 0
+        fi
+        curl -sf -m 5 "http://127.0.0.1:3000/health" >/dev/null 2>&1
+    }
+
+    check_item "容器运行时 ($DOCKER_CMD)" $DOCKER_CMD info
+    check_item "Harbor 仓库" _harbor_healthy
+
+    if [ "$DEPLOY_MODE" = "k8s" ]; then
+        check_item "containerd 服务" _svc_active containerd
+        check_item "kubelet 服务" _svc_active kubelet
+        check_item "K8S 节点 Ready" kubectl wait --for=condition=Ready nodes --all --timeout=10s
+        [ "$ENABLE_API" = "true" ] && check_item "API /health" _api_healthy
+        check_item "e2b 命名空间 Pod" _ns_pods_ready e2b
+        # flux-sandbox 已部署时一并检查
+        if kubectl get pods -n flux-system --no-headers 2>/dev/null | grep -q .; then
+            check_item "flux-system 组件 Pod" _ns_pods_ready flux-system
+        fi
+    else
+        check_item "Consul 服务" _svc_active consul
+        check_item "Nomad 服务" _svc_active nomad
+        check_item "Nomad API 端口 $NOMAD_PORT" _port_listening "$NOMAD_PORT"
+        if [ "$ENABLE_POSTGRES" = "true" ]; then
+            check_item "PostgreSQL 容器" _container_running postgres
+        fi
+        [ "$ENABLE_REDIS" = "true" ] && check_item "Redis 端口 ${REDIS_PORT:-6379}" _port_listening "${REDIS_PORT:-6379}"
+        [ "$ENABLE_API" = "true" ] && check_item "API /health" _api_healthy
+        [ "$ENABLE_EDGE" = "true" ] && check_item "edge 端口 3002" _port_listening 3002
+    fi
+
+    # orchestrator：systemd 模式查 unit 状态，两种模式都校验 gRPC 端口
+    if [ "$ORCHESTRATOR_TYPE" = "systemd" ]; then
+        check_item "e2b-orchestrator 服务" _svc_active e2b-orchestrator
+    fi
+    check_item "orchestrator gRPC 端口 5008" _port_listening 5008
+
+    echo
+    if [ "$fail" -eq 0 ]; then
+        success "===== 健康自检通过：$pass 项全部正常 ====="
+        return 0
+    fi
+    warn "===== 健康自检完成：$pass 项正常，$fail 项异常，请检查上述异常项 ====="
+    return 1
+}
+
 start() {
     info "开始启动 e2b-infra 服务（本机IP：$HOST_IP）..."
+
+    # 检查关键目录/文件（init-client.sh / deploy_harbor 均依赖 E2B_DIR，须最先检查）
+    [ ! -d "$E2B_DIR" ] && error "e2b-infra 目录不存在：$E2B_DIR"
+
     bash "$E2B_DIR/init-client.sh" || error "初始化客户端失败"
 
     deploy_harbor
-
-    # 检查关键目录/文件
-    [ ! -d "$E2B_DIR" ] && error "e2b-infra 目录不存在：$E2B_DIR"
 
     cd "$E2B_DIR" || error "进入 $E2B_DIR 目录失败"
 
@@ -1309,23 +1384,21 @@ start() {
             error "节点 $node_name 不存在，请检查节点名是否正确"
         fi
 
-        echo "当前节点名称：$node_name"
         # sandbox 标签仅 k8s/nomad 模式被 API 节点发现（k8sDiscovery）消费；
-        # systemd 模式节点池改走 E2B_STATIC_ALLOCATIONS 静态清单，跳过打标
+        # systemd 模式节点池改走 ORCHESTRATOR_STATIC_NODES 静态清单，跳过打标
         if [ "$ORCHESTRATOR_TYPE" != "systemd" ]; then
-            kubectl label node "$node_name" node-role.kubernetes.io/sandbox=true --overwrite
-            kubectl label node "$node_name" node-role.kubernetes.io/$BUILD_NODE_POOL= --overwrite
+            kubectl label node "$node_name" node-role.kubernetes.io/sandbox=true --overwrite || error "设置 sandbox 节点标签失败"
+            kubectl label node "$node_name" node-role.kubernetes.io/$BUILD_NODE_POOL= --overwrite || error "设置 build 节点池标签失败"
         fi
-        kubectl label node "$node_name" node-role.kubernetes.io/$API_NODE_POOL= --overwrite
+        kubectl label node "$node_name" node-role.kubernetes.io/$API_NODE_POOL= --overwrite || error "设置 API 节点池标签失败"
         # ENABLE_POSTGRES=false 时无需 postgres 节点池标签（helm postgres.yaml 不渲染）
         if [ "$ENABLE_POSTGRES" = "true" ]; then
-            kubectl label node "$node_name" node-role.kubernetes.io/postgres= --overwrite
+            kubectl label node "$node_name" node-role.kubernetes.io/postgres= --overwrite || error "设置 postgres 节点标签失败"
         fi
-        bash deploy.sh --type k8s || error "K8S 模式部署失败"
-        # orchestrator systemd 化：Master 节点部署完成后启动（systemd 模式下 DaemonSet 未渲染，无端口冲突）
+        # orchestrator 须在 API（deploy.sh helm）之前启动：API 启动即按静态清单探测 orchestrator 健康，后启动会导致 API /health 失败
         install_orchestrator_systemd
         start_orchestrator_systemd
-        success "K8S 模式启动完成！"
+        bash deploy.sh --type k8s || error "K8S 模式部署失败"
 
     else
         # ENABLE_POSTGRES=false 时使用外部 PostgreSQL 实例，跳过内置容器启动
@@ -1337,7 +1410,7 @@ start() {
             info "Nomad 和 Consul 已安装，通过 systemctl 启动..."
             systemctl daemon-reload
             systemctl restart consul || error "启动 Consul 服务失败"
-            systemctl restart nomad || error "启动 Nomad 服务失败"
+            # nomad 不在此重启：下方 append_nomad_client_config 后统一重启
         else
             info "Nomad/Consul 尚未安装 systemd 服务，通过 start-server.sh 启动..."
             bash "$E2B_DIR/start-server.sh" "$HOST_IP" || error "启动 Nomad 服务端失败"
@@ -1346,19 +1419,32 @@ start() {
         append_nomad_client_config
 
         # 重启 nomad 服务
-        systemctl restart nomad
+        systemctl restart nomad || error "重启 Nomad 服务失败"
 
-        wait_for_port 4646 tcp 1 0
+        wait_for_port "$NOMAD_PORT" tcp 1 0
         # 删掉服务
         rm -fv "$E2B_DIR/bin/orchestrator.Dockerfile"
-        info "执行部署脚本..."
-        bash "$E2B_DIR/deploy.sh" || error "执行部署脚本失败"
-        # systemd 模式：template-manager nomad job 已被 deploy.sh 跳过，Master 安装并启动 systemd orchestrator（无 nomad job 双跑风险）
+        # orchestrator 须在 API（deploy.sh nomad job）之前启动，原因同 k8s 分支
         install_orchestrator_systemd
         start_orchestrator_systemd
-        iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 3002
-        iptables -t nat -A OUTPUT -p tcp -d 127.0.0.1 --dport 80 -j REDIRECT --to-port 3002
-        success "e2b-infra 服务启动完成！所有组件健康检查通过"
+        info "执行部署脚本..."
+        bash "$E2B_DIR/deploy.sh" || error "执行部署脚本失败"
+        # edge 关闭时 3002 无监听，不能劫持 80；-C 先查保证重复执行不累积规则
+        if [ "$ENABLE_EDGE" = "true" ]; then
+            iptables -t nat -C PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 3002 2>/dev/null \
+                || iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 3002 \
+                || error "配置 80→3002 PREROUTING 重定向失败"
+            iptables -t nat -C OUTPUT -p tcp -d 127.0.0.1 --dport 80 -j REDIRECT --to-port 3002 2>/dev/null \
+                || iptables -t nat -A OUTPUT -p tcp -d 127.0.0.1 --dport 80 -j REDIRECT --to-port 3002 \
+                || error "配置 80→3002 OUTPUT 重定向失败"
+        fi
+    fi
+
+    # 部署后自检：任一项异常则以非零退出，便于自动化识别
+    if check_deployment_health; then
+        success "e2b-infra 服务启动完成（$DEPLOY_MODE 模式），所有组件健康检查通过"
+    else
+        error "e2b-infra 服务启动完成（$DEPLOY_MODE 模式），但部分组件未通过健康自检"
     fi
 }
 
