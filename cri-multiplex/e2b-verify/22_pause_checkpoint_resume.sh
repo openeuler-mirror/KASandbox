@@ -54,8 +54,8 @@ source "${SCRIPT_DIR}/lib/common.sh"
 PASS_COUNT=0
 FAIL_COUNT=0
 START_TS=$(date +%s)
-RESULTS_FILE=$(mktemp /tmp/e2b22-results.XXXXXX)
-DETAIL_LOG=$(mktemp /tmp/e2b22-detail.XXXXXX)
+RESULTS_FILE=$(mktemp ${TMP_ROOT}/e2b22-results.XXXXXX)
+DETAIL_LOG=$(mktemp ${TMP_ROOT}/e2b22-detail.XXXXXX)
 
 log_step()  { echo ""; echo "[$(date +%H:%M:%S)] >>> $*"; }
 log_info()  { echo "    $*"; }
@@ -207,8 +207,8 @@ wait_pod_ready() {
     done
     echo "----- kubectl describe pod ${pod} -----" | tee -a "${DETAIL_LOG}"
     kubectl describe pod "${pod}" 2>&1 | tail -40 | tee -a "${DETAIL_LOG}"
-    echo "----- /tmp/cri-multiplex.log 尾部 30 行 -----" | tee -a "${DETAIL_LOG}"
-    tail -30 /tmp/cri-multiplex.log 2>&1 | tee -a "${DETAIL_LOG}"
+    echo "----- ${MULTIPLEX_LOG} 尾部 30 行 -----" | tee -a "${DETAIL_LOG}"
+    tail -30 ${MULTIPLEX_LOG} 2>&1 | tee -a "${DETAIL_LOG}"
     return 1
 }
 
@@ -350,7 +350,7 @@ SBX_ID=$(gen_sbx_id)                            # [webhook] 稳定 sandbox-id（
 EXEC_ID=$(cat /proc/sys/kernel/random/uuid)     # [webhook] execution-id（每个 Pod 一个新值）
 OP_ID="manual-op-$(date +%s)"                   # [webhook] 本次 Pause 操作的 operation_id（幂等键）
 log_info "SBX_ID=${SBX_ID} EXEC_ID=${EXEC_ID} OP_ID=${OP_ID}"
-Y1=$(mktemp /tmp/sbx-pod-1.XXXXXX.yaml); TMP_YAMLS+=("${Y1}")
+Y1=$(mktemp ${TMP_ROOT}/sbx-pod-1.XXXXXX.yaml); TMP_YAMLS+=("${Y1}")
 render_pod_yaml "${Y1}" "${POD1}" "${SBX_ID}" "false" "${BASE_ENV}" "${BASE_BUILD}" "${EXEC_ID}"
 kubectl apply -f "${Y1}" >>"${DETAIL_LOG}" 2>&1 || die "kubectl apply ${POD1} 失败"
 CREATED_PODS+=("${POD1}")
@@ -463,7 +463,7 @@ log_pass "last-snapshot 200，build/origin_node 匹配"
 
 log_step "3.2 创建 Resume Pod ${POD1R}（snapshot=true，sandbox-id 不变）"
 EXEC_ID2=$(cat /proc/sys/kernel/random/uuid)    # [webhook] 新 Pod 的 execution-id；sandbox-id 沿用 SBX_ID
-Y2=$(mktemp /tmp/sbx-pod-1r.XXXXXX.yaml); TMP_YAMLS+=("${Y2}")
+Y2=$(mktemp ${TMP_ROOT}/sbx-pod-1r.XXXXXX.yaml); TMP_YAMLS+=("${Y2}")
 render_pod_yaml "${Y2}" "${POD1R}" "${SBX_ID}" "true" "${PAUSE_TMPL}" "${PAUSE_BUILD}" "${EXEC_ID2}"
 kubectl apply -f "${Y2}" >>"${DETAIL_LOG}" 2>&1 || die "kubectl apply ${POD1R} 失败"
 CREATED_PODS+=("${POD1R}")
@@ -544,7 +544,7 @@ log_pass "Pod ${POD1R} 仍 Running 且 UID 未变"
 log_step "5.1 创建 Pod ${POD2}（新 sandbox-id，checkpoint template/build）"
 SBX_ID2=$(gen_sbx_id)                           # [webhook] 新沙箱的稳定 sandbox-id；真实链路由 E2B API transform 生成，webhook 获取组装
 EXEC_ID3=$(cat /proc/sys/kernel/random/uuid)    # [webhook] 新 Pod 的 execution-id
-Y3=$(mktemp /tmp/sbx-pod-2.XXXXXX.yaml); TMP_YAMLS+=("${Y3}")
+Y3=$(mktemp ${TMP_ROOT}/sbx-pod-2.XXXXXX.yaml); TMP_YAMLS+=("${Y3}")
 render_pod_yaml "${Y3}" "${POD2}" "${SBX_ID2}" "true" "${CKPT_TMPL}" "${CKPT_BUILD}" "${EXEC_ID3}"
 kubectl apply -f "${Y3}" >>"${DETAIL_LOG}" 2>&1 || die "kubectl apply ${POD2} 失败"
 CREATED_PODS+=("${POD2}")

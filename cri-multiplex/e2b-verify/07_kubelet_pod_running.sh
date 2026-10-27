@@ -28,7 +28,7 @@ ensure_controlled_cni_multiplex "准备 cri-multiplex CNI 验证实例" || exit 
 
 #==================== 配置 ====================#
 POD_NAME="${POD_NAME:-e2b-kubelet-test}"
-POD_YAML="/tmp/e2b-kubelet-pod.yaml"
+POD_YAML="${TMP_ROOT}/e2b-kubelet-pod.yaml"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 OBSERVE_SECONDS="${OBSERVE_SECONDS:-30}"
 
@@ -63,7 +63,7 @@ else
 fi
 
 # 清空旧日志便于后续分析
-: > /tmp/cri-multiplex.log 2>/dev/null || true
+: > ${MULTIPLEX_LOG} 2>/dev/null || true
 
 #==================== 刷新 build_id ====================#
 log_step "2.1 刷新 build_id（每次创建 Pod 前必须执行）"
@@ -153,11 +153,11 @@ log_step "4.2 验证 cri-multiplex 日志无 StopContainer/StopPodSandbox"
 # 只检查本次 Pod 创建后的日志
 LOG_SINCE=$(date -d "@${CREATE_TIME}" '+%Y/%m/%d %H:%M:%S' 2>/dev/null || echo "")
 STOP_COUNT=0
-if [ -f /tmp/cri-multiplex.log ]; then
+if [ -f ${MULTIPLEX_LOG} ]; then
     # 日志中含 StopContainer / StopPodSandbox 的行数
     # 注意：grep -c 在无匹配时退出码为 1，因此仅用 || true 避免脚本中断，
     #       其 stdout 始终为计数数字（空时下面用 :-0 兜底）。
-    STOP_COUNT=$(grep -aE "StopContainer: id=${CONTAINER_ID}|StopPodSandbox: id=${POD_UID}" /tmp/cri-multiplex.log 2>/dev/null | wc -l || true)
+    STOP_COUNT=$(grep -aE "StopContainer: id=${CONTAINER_ID}|StopPodSandbox: id=${POD_UID}" ${MULTIPLEX_LOG} 2>/dev/null | wc -l || true)
 fi
 STOP_COUNT=${STOP_COUNT:-0}
 
@@ -166,14 +166,14 @@ if [ "${STOP_COUNT}" -eq 0 ]; then
 else
     log_fail "检测到 ${STOP_COUNT} 次 Stop 调用，kubelet 可能误判容器需重建"
     log_info "相关日志（最多 10 行）:"
-    grep -aE "StopContainer: id=${CONTAINER_ID}|StopPodSandbox: id=${POD_UID}" /tmp/cri-multiplex.log 2>/dev/null | tail -10 >&2 || true
+    grep -aE "StopContainer: id=${CONTAINER_ID}|StopPodSandbox: id=${POD_UID}" ${MULTIPLEX_LOG} 2>/dev/null | tail -10 >&2 || true
     exit 1
 fi
 
 #==================== 验证 CreateContainer 仅一次 ====================#
 log_step "4.3 验证 CreateContainer 仅被调用一次（无重复创建）"
 
-CREATE_COUNT=$(grep -aE "CreateContainer: pod=${POD_UID}" /tmp/cri-multiplex.log 2>/dev/null | wc -l || true)
+CREATE_COUNT=$(grep -aE "CreateContainer: pod=${POD_UID}" ${MULTIPLEX_LOG} 2>/dev/null | wc -l || true)
 CREATE_COUNT=${CREATE_COUNT:-0}
 if [ "${CREATE_COUNT}" -eq 1 ]; then
     log_pass "CreateContainer 仅调用 1 次（hash 匹配，无重建）"
@@ -185,7 +185,7 @@ fi
 #==================== 验证 sandbox created 仅一次 ====================#
 log_step "4.4 验证 sandbox created 仅一次"
 
-SANDBOX_COUNT=$(grep -aE "sandbox created: cri_id=${POD_UID}" /tmp/cri-multiplex.log 2>/dev/null | wc -l || true)
+SANDBOX_COUNT=$(grep -aE "sandbox created: cri_id=${POD_UID}" ${MULTIPLEX_LOG} 2>/dev/null | wc -l || true)
 SANDBOX_COUNT=${SANDBOX_COUNT:-0}
 if [ "${SANDBOX_COUNT}" -eq 1 ]; then
     log_pass "sandbox created 仅 1 次"
@@ -204,7 +204,7 @@ wait_pod_deleted "${POD_NAME}" 90 || log_fail "Pod 未在 90s 内删除: ${POD_N
 # 等待 RemovePodSandbox 被调用
 REMOVED=0
 for i in $(seq 1 15); do
-    if grep -aqE "RemoveContainer: id=${CONTAINER_ID}" /tmp/cri-multiplex.log 2>/dev/null; then
+    if grep -aqE "RemoveContainer: id=${CONTAINER_ID}" ${MULTIPLEX_LOG} 2>/dev/null; then
         REMOVED=1
         log_pass "RemoveContainer 已被调用（第 ${i} 次轮询）"
         break

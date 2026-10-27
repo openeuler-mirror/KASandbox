@@ -39,7 +39,7 @@ trap cleanup EXIT
 e2b_http_code() {
     local pod="$1"
     local url="$2"
-    kubectl exec "${pod}" -- sh -c "if command -v curl >/dev/null 2>&1; then curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 '${url}'; elif command -v wget >/dev/null 2>&1; then wget -q -T 5 -O /dev/null '${url}' && echo 200 || echo 000; else echo NO_HTTP_CLIENT; fi" 2>/tmp/e2b-egress.err || true
+    kubectl exec "${pod}" -- sh -c "if command -v curl >/dev/null 2>&1; then curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 '${url}'; elif command -v wget >/dev/null 2>&1; then wget -q -T 5 -O /dev/null '${url}' && echo 200 || echo 000; else echo NO_HTTP_CLIENT; fi" 2>${TMP_ROOT}/e2b-egress.err || true
 }
 
 # e2b_netns_name <pod> — 解析 cri-multiplex CNI netns 名
@@ -114,7 +114,7 @@ patch_e2b_firewall_allowlist() {
     local cidr
     for cidr in "$@"; do
         [ -n "${cidr}" ] || continue
-        if ip netns exec "${netns_name}" nft add element inet slot-firewall filtered_always_allowlist "{ ${cidr} }" 2>/tmp/e2b-egress-nft.err; then
+        if ip netns exec "${netns_name}" nft add element inet slot-firewall filtered_always_allowlist "{ ${cidr} }" 2>${TMP_ROOT}/e2b-egress-nft.err; then
             log_pass "临时放通 E2B firewall allowlist: ${netns_name} ${cidr}"
             continue
         fi
@@ -125,7 +125,7 @@ patch_e2b_firewall_allowlist() {
         fi
 
         log_fail "临时放通 E2B firewall allowlist 失败: ${netns_name} ${cidr}"
-        cat /tmp/e2b-egress-nft.err >&2 || true
+        cat ${TMP_ROOT}/e2b-egress-nft.err >&2 || true
         return 1
     done
 }
@@ -144,7 +144,7 @@ POD_IP=$(get_pod_ip_or_fail "${POD_NAME}") || exit 1
 log_pass "E2B Pod A PodIP: ${POD_IP}"
 
 log_step "2.2 创建普通 HTTP target Pod 和 Service"
-cat > "/tmp/${TARGET_POD}.yaml" <<EOF
+cat > "${TMP_ROOT}/${TARGET_POD}.yaml" <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -172,7 +172,7 @@ spec:
       targetPort: ${TARGET_PORT}
       protocol: TCP
 EOF
-kubectl apply -f "/tmp/${TARGET_POD}.yaml" >&2
+kubectl apply -f "${TMP_ROOT}/${TARGET_POD}.yaml" >&2
 if kubectl wait --for=condition=Ready "pod/${TARGET_POD}" --timeout=120s >&2; then
     log_pass "target Pod 已 Ready: ${TARGET_POD}"
 else
@@ -195,8 +195,8 @@ fi
 log_pass "target PodIP: ${TARGET_POD_IP}"
 
 log_step "2.3 创建 E2B CNI Pod B（沙箱互访对端）"
-E2B_CNI_YAML=/tmp/e2b-np-egress-peer.yaml POD_YAML=/tmp/e2b-np-egress-peer.yaml prepare_e2b_cni_pod_yaml "${POD_NAME_B}" "${APP_LABEL}-peer" || exit 1
-apply_and_wait_pod_ready "${POD_NAME_B}" "/tmp/e2b-np-egress-peer.yaml" "120s" || exit 1
+E2B_CNI_YAML=${TMP_ROOT}/e2b-np-egress-peer.yaml POD_YAML=${TMP_ROOT}/e2b-np-egress-peer.yaml prepare_e2b_cni_pod_yaml "${POD_NAME_B}" "${APP_LABEL}-peer" || exit 1
+apply_and_wait_pod_ready "${POD_NAME_B}" "${TMP_ROOT}/e2b-np-egress-peer.yaml" "120s" || exit 1
 POD_B_IP=$(get_pod_ip_or_fail "${POD_NAME_B}") || exit 1
 log_pass "E2B Pod B PodIP: ${POD_B_IP}"
 
@@ -210,7 +210,7 @@ elif [ "${BASE_CODE}" = "NO_HTTP_CLIENT" ]; then
     exit 0
 else
     log_fail "baseline 失败：E2B VM -> target Service HTTP ${BASE_CODE}（ClusterIP 经宿主机 DNAT，不受沙箱隔离影响，应恒通）"
-    cat /tmp/e2b-egress.err >&2 || true
+    cat ${TMP_ROOT}/e2b-egress.err >&2 || true
     exit 1
 fi
 
@@ -266,9 +266,9 @@ else
 fi
 
 log_step "3.5 allow-internet=false 用户级 deny 覆盖 TCP"
-E2B_CNI_YAML=/tmp/e2b-np-egress-noinet.yaml POD_YAML=/tmp/e2b-np-egress-noinet.yaml prepare_e2b_cni_pod_yaml "${POD_NAME_C}" "${APP_LABEL}-noinet" || exit 1
-sed -i 's|e2b.dev/allow-internet: "true"|e2b.dev/allow-internet: "false"|' /tmp/e2b-np-egress-noinet.yaml
-apply_and_wait_pod_ready "${POD_NAME_C}" "/tmp/e2b-np-egress-noinet.yaml" "120s" || exit 1
+E2B_CNI_YAML=${TMP_ROOT}/e2b-np-egress-noinet.yaml POD_YAML=${TMP_ROOT}/e2b-np-egress-noinet.yaml prepare_e2b_cni_pod_yaml "${POD_NAME_C}" "${APP_LABEL}-noinet" || exit 1
+sed -i 's|e2b.dev/allow-internet: "true"|e2b.dev/allow-internet: "false"|' ${TMP_ROOT}/e2b-np-egress-noinet.yaml
+apply_and_wait_pod_ready "${POD_NAME_C}" "${TMP_ROOT}/e2b-np-egress-noinet.yaml" "120s" || exit 1
 NOINET_CODE=$(e2b_http_code "${POD_NAME_C}" "http://${TARGET_CLUSTER_IP}:${TARGET_PORT}/")
 if [ "${NOINET_CODE}" = "000" ]; then
     log_pass "allow-internet=false 沙箱 TCP 出向已被阻断（HTTP ${NOINET_CODE}）"
@@ -280,7 +280,7 @@ else
 fi
 
 log_step "4.1 应用 deny-all egress NetworkPolicy"
-cat > "/tmp/${DENY_POLICY}.yaml" <<EOF
+cat > "${TMP_ROOT}/${DENY_POLICY}.yaml" <<EOF
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -292,7 +292,7 @@ spec:
   policyTypes:
     - Egress
 EOF
-kubectl apply -f "/tmp/${DENY_POLICY}.yaml" >&2
+kubectl apply -f "${TMP_ROOT}/${DENY_POLICY}.yaml" >&2
 log_pass "deny-all egress policy 已应用"
 
 DENY_CODE=""

@@ -5,15 +5,13 @@ from pathlib import Path
 
 
 def load_env() -> None:
-    env_path = Path(__file__).with_name(".env")
-    if not env_path.exists():
-        return
-    for raw in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    """按 lib/python_env.py 的优先级加载凭证（环境变量 > secrets.env > .env > config.json）。"""
+    lib_dir = str(Path(__file__).resolve().parent / "lib")
+    if lib_dir not in sys.path:
+        sys.path.insert(0, lib_dir)
+    from python_env import load_verify_env  # noqa: E402
+
+    load_verify_env()
 
 
 load_env()

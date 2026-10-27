@@ -16,8 +16,8 @@ source "${SCRIPT_DIR}/lib/common.sh"
 log_section "18 — cri-multiplex kubelet 重启恢复验证"
 
 POD_NAME="${POD_NAME:-e2b-state-restore-test}"
-POD_YAML="${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
-WORK_POD_YAML="/tmp/e2b-state-restore-pod.yaml"
+POD_YAML="${POD_YAML:-${TMP_ROOT}/e2b-kubelet-pod.yaml}"
+WORK_POD_YAML="${TMP_ROOT}/e2b-state-restore-pod.yaml"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 # 本用例会 rm -rf 并独占 state-dir（重启恢复测试），必须与共享目录和其它用例隔离。
 # STATE_DIR 在 common.sh 里已经有默认值，这里用 select_state_dir() 切换，
@@ -40,7 +40,7 @@ trap cleanup_all EXIT
 wait_remove_podsandbox_log() {
     local sandbox_id="$1"
     for _ in $(seq 1 90); do
-        if grep -aq "\\[GrpcE2BEngine\\] RemovePodSandbox: id=${sandbox_id}" /tmp/cri-multiplex.log 2>/dev/null; then
+        if grep -aq "\\[GrpcE2BEngine\\] RemovePodSandbox: id=${sandbox_id}" ${MULTIPLEX_LOG} 2>/dev/null; then
             return 0
         fi
         sleep 1
@@ -203,7 +203,7 @@ if wait_remove_podsandbox_log "${POD_UID}"; then
     log_pass "kubelet 已调用 RemovePodSandbox"
 else
     log_fail "未在 90s 内观察到 kubelet 调用 RemovePodSandbox"
-    tail -n 80 /tmp/cri-multiplex.log >&2 || true
+    tail -n 80 ${MULTIPLEX_LOG} >&2 || true
     exit 1
 fi
 

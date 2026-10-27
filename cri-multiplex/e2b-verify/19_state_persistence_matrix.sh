@@ -25,10 +25,10 @@ CRASH_POD_NAME="${CRASH_POD_NAME:-e2b-state-crash-19}"
 CONCURRENT_E2B_PREFIX="${CONCURRENT_E2B_PREFIX:-e2b-state-burst-19}"
 MIXED_E2B_PREFIX="${MIXED_E2B_PREFIX:-e2b-state-mixed-e2b-19}"
 MIXED_DEFAULT_PREFIX="${MIXED_DEFAULT_PREFIX:-e2b-state-mixed-default-19}"
-POD_YAML="${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
-WORK_POD_YAML="/tmp/e2b-state-matrix-pod.yaml"
-BAD_POD_YAML="/tmp/e2b-state-matrix-invalid-annotation-pod.yaml"
-CRASH_POD_YAML="/tmp/e2b-state-crash-19.yaml"
+POD_YAML="${POD_YAML:-${TMP_ROOT}/e2b-kubelet-pod.yaml}"
+WORK_POD_YAML="${TMP_ROOT}/e2b-state-matrix-pod.yaml"
+BAD_POD_YAML="${TMP_ROOT}/e2b-state-matrix-invalid-annotation-pod.yaml"
+CRASH_POD_YAML="${TMP_ROOT}/e2b-state-crash-19.yaml"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 # 本用例要写坏 state.json、反复清空 state-dir，必须使用私有目录：否则会与
 # 上一个用例留下的、仍在运行的实例抢同一个文件（它一次保存就能把故意写坏的
@@ -38,7 +38,7 @@ select_state_dir "${STATE_DIR_MATRIX}"
 STATE_FILE="${STATE_DIR}/state.json"
 # 同 18：私有 state 会让宿主级 reconciler 把别的沙箱 netns/hostport 当孤儿删掉。
 export ORPHAN_RECONCILE_ENABLED=0
-BAD_STATE_PARENT="${BAD_STATE_PARENT:-/tmp/cri-multiplex-state-parent-file}"
+BAD_STATE_PARENT="${BAD_STATE_PARENT:-${TMP_ROOT}/cri-multiplex-state-parent-file}"
 BAD_STATE_DIR="${BAD_STATE_PARENT}/child"
 TEST_LABEL_KEY="cri-multiplex-test"
 TEST_LABEL_VALUE="19"
@@ -47,14 +47,14 @@ DEFAULT_CLIENT_IMAGE="${DEFAULT_CLIENT_IMAGE:-docker.io/library/busybox:latest}"
 cleanup_all() {
     kubectl delete pod "${POD_NAME}" "${BAD_POD_NAME}" "${CRASH_POD_NAME}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
     kubectl delete pod -l "${TEST_LABEL_KEY}=${TEST_LABEL_VALUE}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
-    rm -f "${WORK_POD_YAML}" "${BAD_POD_YAML}" "${CRASH_POD_YAML}" /tmp/e2b-state-burst-19-*.yaml /tmp/e2b-state-mixed-*-19-*.yaml || true
+    rm -f "${WORK_POD_YAML}" "${BAD_POD_YAML}" "${CRASH_POD_YAML}" ${TMP_ROOT}/e2b-state-burst-19-*.yaml ${TMP_ROOT}/e2b-state-mixed-*-19-*.yaml || true
 }
 trap cleanup_all EXIT
 
 wait_remove_podsandbox_log() {
     local sandbox_id="$1"
     local timeout_seconds="${2:-90}"
-    local log_file="${3:-/tmp/cri-multiplex.log}"
+    local log_file="${3:-${TMP_ROOT}/cri-multiplex.log}"
 
     for _ in $(seq 1 "${timeout_seconds}"); do
         if grep -aq "\\[GrpcE2BEngine\\] RemovePodSandbox: id=${sandbox_id}" "${log_file}" 2>/dev/null; then
@@ -416,7 +416,7 @@ log_pass "旧 Pod 和测试 state-dir 已清理"
 log_step "1.4 非法 JSON 启动容错"
 printf '{"version":1,' > "${STATE_FILE}"
 start_cni_android_multiplex "非法 JSON 后启动 cri-multiplex" || exit 1
-if grep -q "failed to load ${STATE_FILE}" /tmp/cri-multiplex.log 2>/dev/null; then
+if grep -q "failed to load ${STATE_FILE}" ${MULTIPLEX_LOG} 2>/dev/null; then
     log_pass "非法 JSON 被识别并降级为空状态"
 else
     log_fail "未发现非法 JSON 降级日志"
@@ -477,7 +477,7 @@ assert_state_json "重启后 state.json 仍保留 Pod/Container/CNI 状态" "k8s
 assert_kubectl_exec "${POD_NAME}" "state_restore_ok" echo "state_restore_ok" || exit 1
 
 log_step "3.2 并发 kubectl get / exec 验证恢复后访问安全"
-concurrent_log="/tmp/cri-multiplex-state-matrix-kubectl-concurrent.log"
+concurrent_log="${TMP_ROOT}/cri-multiplex-state-matrix-kubectl-concurrent.log"
 : > "${concurrent_log}"
 for i in $(seq 1 12); do
     (
@@ -517,7 +517,7 @@ if wait_remove_podsandbox_log "${POD_UID}" 90; then
     log_pass "kubelet 已调用 RemovePodSandbox"
 else
     log_fail "未在 90s 内观察到 kubelet 调用 RemovePodSandbox"
-    tail -n 80 /tmp/cri-multiplex.log >&2 || true
+    tail -n 80 ${MULTIPLEX_LOG} >&2 || true
     exit 1
 fi
 
@@ -540,12 +540,12 @@ burst_names=()
 burst_yamls=()
 for i in $(seq 1 10); do
     name="${CONCURRENT_E2B_PREFIX}-${i}"
-    yaml="/tmp/${name}.yaml"
+    yaml="${TMP_ROOT}/${name}.yaml"
     burst_names+=("${name}")
     burst_yamls+=("${yaml}")
     create_e2b_test_yaml "${name}" "${yaml}"
 done
-apply_yaml_concurrently "/tmp/e2b-state-burst-19-apply.log" "${burst_yamls[@]}" || exit 1
+apply_yaml_concurrently "${TMP_ROOT}/e2b-state-burst-19-apply.log" "${burst_yamls[@]}" || exit 1
 wait_pods_ready 240 "${burst_names[@]}" || exit 1
 mapfile -t burst_e2b_ids < <(collect_e2b_sandbox_ids "${burst_names[@]}")
 mapfile -t burst_route_ids < <(collect_route_ids_for_pods "${burst_names[@]}")
@@ -557,7 +557,7 @@ else
 fi
 assert_state_json "10 个 E2B Pod Running 状态已持久化" "e2b_active" "${burst_e2b_ids[@]}" || exit 1
 assert_state_json "10 个 E2B Pod/Container 路由已持久化" "routes_active" "${burst_route_ids[@]}" || exit 1
-delete_pods_concurrently "/tmp/e2b-state-burst-19-delete.log" "${burst_names[@]}" || exit 1
+delete_pods_concurrently "${TMP_ROOT}/e2b-state-burst-19-delete.log" "${burst_names[@]}" || exit 1
 wait_pods_deleted "${burst_names[@]}" || exit 1
 wait_state_routes_removed 120 "${burst_route_ids[@]}" || {
     assert_state_json "10 个 E2B Pod/Container 路由已清理" "routes_removed" "${burst_route_ids[@]}" || exit 1
@@ -574,15 +574,15 @@ mixed_yamls=()
 for i in $(seq 1 5); do
     e2b_name="${MIXED_E2B_PREFIX}-${i}"
     default_name="${MIXED_DEFAULT_PREFIX}-${i}"
-    e2b_yaml="/tmp/${e2b_name}.yaml"
-    default_yaml="/tmp/${default_name}.yaml"
+    e2b_yaml="${TMP_ROOT}/${e2b_name}.yaml"
+    default_yaml="${TMP_ROOT}/${default_name}.yaml"
     mixed_names+=("${e2b_name}" "${default_name}")
     mixed_e2b_names+=("${e2b_name}")
     mixed_yamls+=("${e2b_yaml}" "${default_yaml}")
     create_e2b_test_yaml "${e2b_name}" "${e2b_yaml}"
     create_default_test_yaml "${default_name}" "${default_yaml}"
 done
-apply_yaml_concurrently "/tmp/e2b-state-mixed-19-apply.log" "${mixed_yamls[@]}" || exit 1
+apply_yaml_concurrently "${TMP_ROOT}/e2b-state-mixed-19-apply.log" "${mixed_yamls[@]}" || exit 1
 wait_pods_ready 240 "${mixed_names[@]}" || exit 1
 mapfile -t mixed_e2b_ids < <(collect_e2b_sandbox_ids "${mixed_e2b_names[@]}")
 mapfile -t mixed_route_ids < <(collect_route_ids_for_pods "${mixed_names[@]}")
@@ -594,7 +594,7 @@ else
 fi
 assert_state_json "混合场景 E2B Pod Running 状态已持久化" "e2b_active" "${mixed_e2b_ids[@]}" || exit 1
 assert_state_json "混合场景 E2B/containerd 路由已持久化" "routes_active" "${mixed_route_ids[@]}" || exit 1
-delete_pods_concurrently "/tmp/e2b-state-mixed-19-delete.log" "${mixed_names[@]}" || exit 1
+delete_pods_concurrently "${TMP_ROOT}/e2b-state-mixed-19-delete.log" "${mixed_names[@]}" || exit 1
 wait_pods_deleted "${mixed_names[@]}" || exit 1
 wait_state_routes_removed 120 "${mixed_route_ids[@]}" || {
     assert_state_json "混合场景 E2B/containerd 路由已清理" "routes_removed" "${mixed_route_ids[@]}" || exit 1
@@ -647,7 +647,7 @@ kubectl apply -f "${BAD_POD_YAML}" >&2 || {
     log_fail "非法参数场景 kubectl apply 失败，预期应提交成功后由 kubelet 报 sandbox 创建失败"
     exit 1
 }
-if kubectl wait --for=condition=Ready "pod/${BAD_POD_NAME}" --timeout=25s >/tmp/e2b-state-matrix-bad-wait.log 2>&1; then
+if kubectl wait --for=condition=Ready "pod/${BAD_POD_NAME}" --timeout=25s >${TMP_ROOT}/e2b-state-matrix-bad-wait.log 2>&1; then
     log_fail "缺少 template-id 时 Pod 不应 Ready"
     kubectl describe pod "${BAD_POD_NAME}" >&2 || true
     exit 1
@@ -665,7 +665,7 @@ wait_pod_deleted "${BAD_POD_NAME}" || true
 log_step "5.2 非法 state-dir 启动失败"
 rm -rf "${BAD_STATE_PARENT}"
 printf 'not-a-dir' > "${BAD_STATE_PARENT}"
-bad_output_file="/tmp/cri-multiplex-state-matrix-bad-state-dir.log"
+bad_output_file="${TMP_ROOT}/cri-multiplex-state-matrix-bad-state-dir.log"
 set +e
 STATE_DIR="${BAD_STATE_DIR}" CNI_ENABLED=1 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh" >"${bad_output_file}" 2>&1
 bad_code=$?

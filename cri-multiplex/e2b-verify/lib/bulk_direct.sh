@@ -149,7 +149,7 @@ prepare_direct_sandbox_batch() {
     local start_ms
     local end_ms
     local result_dir
-    result_dir="$(mktemp -d /tmp/e2b-bulk-result-XXXXXX)"
+    result_dir="$(mktemp -d ${TMP_ROOT}/e2b-bulk-result-XXXXXX)"
 
     # 阶段 1：预生成全部 Pod JSON
     local -a pod_jsons=()
@@ -249,7 +249,7 @@ cleanup_direct_sandbox_batch() {
 # 用法: report_cni_add_stats <prefix>（prefix 如 bulk24-100，匹配 sandbox=e2b<prefix>-*）
 report_cni_add_stats() {
     local prefix="$1"
-    python3 - "/tmp/cri-multiplex.log" "e2b${prefix}-" <<'PY' >&2
+    python3 - "${MULTIPLEX_LOG}" "e2b${prefix}-" <<'PY' >&2
 import re
 import sys
 
@@ -295,7 +295,7 @@ wait_cni_pool_full() {
     local deadline=$(( $(date +%s) + timeout_s ))
     local line ready cur total
     while true; do
-        line=$(grep -a 'CNI pool warm:' /tmp/cri-multiplex.log 2>/dev/null | tail -1 || true)
+        line=$(grep -a 'CNI pool warm:' ${MULTIPLEX_LOG} 2>/dev/null | tail -1 || true)
         ready=$(echo "${line}" | grep -oE 'ready=[0-9]+/[0-9]+' | tail -1 || true)
         if [ -n "${ready}" ]; then
             cur="${ready#ready=}"

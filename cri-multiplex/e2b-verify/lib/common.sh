@@ -27,12 +27,21 @@ default_socket_path() {
     echo "${endpoint:-/run/cri-multiplex.sock}"
 }
 
+# 所有验证脚本用到的临时文件/目录统一挂在 ${TMP_ROOT} 下（两层：
+# /tmp/cri-multiplex/e2b-verify），不再直接散落到 /tmp 根目录：
+#   - 一眼能区分“验证产物”和宿主机上其它临时文件；
+#   - 一轮跑完只清理这一个目录即可；
+#   - 旧版本散落的 /tmp/e2b-*.yaml 等不会再和本轮产物混在一起。
+# 可用 E2B_VERIFY_TMP_ROOT 覆盖（并行调试时各用各的根目录）。
+TMP_ROOT="${E2B_VERIFY_TMP_ROOT:-/tmp/cri-multiplex/e2b-verify}"
+mkdir -p "${TMP_ROOT}" 2>/dev/null || true
+
 SOCKET="$(default_socket_path)"
 CRICTL="crictl --runtime-endpoint unix://${SOCKET}"
-PROTO_DIR="${PROTO_DIR:-/tmp/cri-proto}"
+PROTO_DIR="${PROTO_DIR:-${TMP_ROOT}/cri-proto}"
 PROTO_FILE="${PROTO_DIR}/api.proto"
 GRPCURL="${GRPCURL:-grpcurl -plaintext -proto ${PROTO_FILE} -import-path ${PROTO_DIR}}"
-POD_JSON="${POD_JSON:-/tmp/e2b-pod.json}"
+POD_JSON="${POD_JSON:-${TMP_ROOT}/e2b-pod.json}"
 TEST_PY="${TEST_PY:-${SCRIPT_DIR_COMMON}/test.py}"
 BUILD_PROD_PY="${BUILD_PROD_PY:-${SCRIPT_DIR_COMMON}/build_prod.py}"
 BUILD_IMAGE_NAME="${BUILD_IMAGE_NAME:-ubuntu:22.04-custom}"
@@ -47,15 +56,15 @@ CNI_BIN_DIR="${CNI_BIN_DIR:-/opt/cni/bin}"
 CNI_IFNAME="${CNI_IFNAME:-eth0}"
 CNI_NETNS_DIR="${CNI_NETNS_DIR:-/var/run/netns}"
 E2B_API_NS="${E2B_API_NS:-e2b}"
-MULTIPLEX_LOG="${MULTIPLEX_LOG:-/tmp/cri-multiplex.log}"
+MULTIPLEX_LOG="${MULTIPLEX_LOG:-${TMP_ROOT}/cri-multiplex.log}"
 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-$(for d in /home/fjq/cf17 /opt/android-cuttlefish /opt/cf /root/cf17; do if [ -x "$d/bin/launch_cvd" ]; then echo "$d"; break; fi; done; true)}"
 
 # 所有用例共用同一个 socket（跟随 kubelet，通常是 /run/cri-multiplex.sock）。
 # state-dir 用独立目录，不改动 systemd 实例的持久状态：测试结束后把 systemd
 # 实例原样拉起即可，基线状态不会被测试留下的路由/沙箱记录污染。
-STATE_DIR="${STATE_DIR:-/tmp/cri-multiplex-state}"
+STATE_DIR="${STATE_DIR:-${TMP_ROOT}/cri-multiplex-state}"
 default_state_dir() {
-    echo "/tmp/cri-multiplex-state"
+    echo "${TMP_ROOT}/cri-multiplex-state"
 }
 
 # 用例私有的 state-dir。
@@ -64,12 +73,12 @@ default_state_dir() {
 # 正在运行的实例所用的目录上：否则一边删一边被写，断言会变成竞态，且会把别的
 # 用例的 routes/cleanup task 一起抹掉。因此这三个用例各自使用私有目录。
 #
-# 注意：不能写成 STATE_DIR="${STATE_DIR:-...}" —— 本文件第 56 行已经给 STATE_DIR
-# 赋过默认值，`:-` 永远不会生效（历史上的“统一为 /tmp/cri-multiplex-state”就是
-# 这个坑造成的）。要用下面的 select_state_dir()。
-STATE_DIR_RESTORE="${STATE_DIR_RESTORE:-/tmp/cri-multiplex-state-restore}"
-STATE_DIR_MATRIX="${STATE_DIR_MATRIX:-/tmp/cri-multiplex-state-matrix}"
-STATE_DIR_CLEANUP="${STATE_DIR_CLEANUP:-/tmp/cri-multiplex-cleanup-state}"
+# 注意：不能写成 STATE_DIR="${STATE_DIR:-...}" —— 本文件靠前的位置已经给
+# STATE_DIR 赋过默认值，`:-` 永远不会生效（历史上的“所有用例统一共用
+# /tmp/cri-multiplex-state”就是这个坑造成的）。要用下面的 select_state_dir()。
+STATE_DIR_RESTORE="${STATE_DIR_RESTORE:-${TMP_ROOT}/cri-multiplex-state-restore}"
+STATE_DIR_MATRIX="${STATE_DIR_MATRIX:-${TMP_ROOT}/cri-multiplex-state-matrix}"
+STATE_DIR_CLEANUP="${STATE_DIR_CLEANUP:-${TMP_ROOT}/cri-multiplex-cleanup-state}"
 
 # 把当前用例切到自己的私有 state-dir：仅在使用共享默认值时生效，
 # 外部显式传入的 STATE_DIR 仍然优先（便于并行调试）。
@@ -84,7 +93,7 @@ select_state_dir() {
     fi
 }
 
-export SOCKET STATE_DIR STATE_DIR_RESTORE STATE_DIR_MATRIX STATE_DIR_CLEANUP \
+export SOCKET TMP_ROOT STATE_DIR STATE_DIR_RESTORE STATE_DIR_MATRIX STATE_DIR_CLEANUP \
     MULTIPLEX_LOG KUBELET_FLAGS
 
 # 测试用常量（会被各脚本引用和覆盖）
@@ -112,6 +121,7 @@ UNSUPPORTED_EXIT_CODE=77
 
 #==================== 日志函数（输出到 stderr，避免被 $(...) 捕获） ====================#
 log_info()  { echo -e "${CYAN}[INFO]${NC}  $*" >&2; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $*" >&2; }
 log_pass()  { echo -e "${GREEN}[PASS]${NC}  $*" >&2; PASS_COUNT=$((PASS_COUNT+1)); export PASS_COUNT; }
 log_fail()  { echo -e "${RED}[FAIL]${NC}  $*" >&2; FAIL_COUNT=$((FAIL_COUNT+1)); export FAIL_COUNT; }
 log_skip()  { echo -e "${YELLOW}[SKIP]${NC}  $*" >&2; SKIP_COUNT=$((SKIP_COUNT+1)); export SKIP_COUNT; }
@@ -386,11 +396,11 @@ android_available() {
 }
 
 # kubelet 用例的统一入口：确保 /run socket 由验证脚本直接控制，
-# 这样进程日志固定写入 /tmp/cri-multiplex.log，且启停/state-dir 可控。
+# 这样进程日志固定写入 /tmp/cri-multiplex/e2b-verify/cri-multiplex.log，且启停/state-dir 可控。
 ensure_controlled_cni_multiplex() {
     local desc="${1:-准备 cri-multiplex CNI 验证实例}"
     # systemd 实例虽然可连通，但日志在 journald、启停不受脚本控制，
-    # 而用例断言依赖 /tmp/cri-multiplex.log，必须先换成受控实例。
+    # 而用例断言依赖 /tmp/cri-multiplex/e2b-verify/cri-multiplex.log，必须先换成受控实例。
     if running_multiplex_is_systemd; then
         start_cni_android_multiplex "${desc}" || return 1
         return 0
@@ -621,7 +631,7 @@ prepare_e2b_pod_yaml() {
     local labels="${3:-}"
     local annotations="${4:-}"
     local refresh_script="${REFRESH_SCRIPT:-${SCRIPT_DIR_COMMON}/lib/refresh_build_id.sh}"
-    local base_yaml="${E2B_BASE_POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
+    local base_yaml="${E2B_BASE_POD_YAML:-${TMP_ROOT}/e2b-kubelet-pod.yaml}"
 
     if [ "${E2B_SKIP_BUILD:-0}" = "1" ] && [ "${out_yaml}" != "${base_yaml}" ] && [ -f "${base_yaml}" ]; then
         cp "${base_yaml}" "${out_yaml}"
@@ -887,7 +897,7 @@ PY
 # 因此不能按 UID 截断猜测；优先从 multiplex 日志/状态文件读取实际路径。
 cni_netns_path_for_sandbox() {
     local sandbox_id="$1"
-    local log_file="${MULTIPLEX_LOG:-/tmp/cri-multiplex.log}"
+    local log_file="${MULTIPLEX_LOG:-${TMP_ROOT}/cri-multiplex.log}"
     local state_file="${STATE_DIR:-$(default_state_dir)}/state.json"
     local path=""
 
@@ -973,7 +983,7 @@ wait_android_pod_cleanup() {
 }
 
 sync_e2b_pod_json_from_kubelet_yaml() {
-    local yaml="${1:-/tmp/e2b-kubelet-pod.yaml}"
+    local yaml="${1:-${TMP_ROOT}/e2b-kubelet-pod.yaml}"
     local json="${2:-${POD_JSON}}"
 
     if [ ! -f "${yaml}" ] || [ ! -f "${json}" ]; then
@@ -1066,7 +1076,7 @@ prepare_direct_pod_json() {
 
     local uid
     uid="e2b${prefix}$(date +%s)$RANDOM"
-    local tmp_json="/tmp/e2b-pod-${prefix}-${uid}.json"
+    local tmp_json="${TMP_ROOT}/e2b-pod-${prefix}-${uid}.json"
     cp "${base_json}" "${tmp_json}"
     sed -i \
         -e "s|\"uid\":\\s*\"[^\"]*\"|\"uid\": \"${uid}\"|" \
@@ -1141,9 +1151,9 @@ run_pod_sandbox() {
     }
 
     # kubelet fixture 如果比直连 JSON 新，说明调用方刚刷新过模板，采用其注解。
-    if [ -f /tmp/e2b-kubelet-pod.yaml ] && [ -f "${POD_JSON}" ] &&
-       [ /tmp/e2b-kubelet-pod.yaml -nt "${POD_JSON}" ]; then
-        sync_e2b_pod_json_from_kubelet_yaml /tmp/e2b-kubelet-pod.yaml "${POD_JSON}" || true
+    if [ -f ${TMP_ROOT}/e2b-kubelet-pod.yaml ] && [ -f "${POD_JSON}" ] &&
+       [ ${TMP_ROOT}/e2b-kubelet-pod.yaml -nt "${POD_JSON}" ]; then
+        sync_e2b_pod_json_from_kubelet_yaml ${TMP_ROOT}/e2b-kubelet-pod.yaml "${POD_JSON}" || true
     fi
 
     while [ $attempt -le $max_retries ]; do

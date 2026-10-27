@@ -24,9 +24,9 @@ ANDROID_ADB_WAIT_TIMEOUT="${ANDROID_ADB_WAIT_TIMEOUT:-30}"
 ANDROID_CLEANUP_WAIT_TIMEOUT="${ANDROID_CLEANUP_WAIT_TIMEOUT:-120}"
 POD1="${POD1:-android-cvd-multi-1}"
 POD2="${POD2:-android-cvd-multi-2}"
-YAML1="/tmp/${POD1}.yaml"
-YAML2="/tmp/${POD2}.yaml"
-RUNTIMECLASS_YAML="${RUNTIMECLASS_YAML:-/tmp/runtimeclass-android.yaml}"
+YAML1="${TMP_ROOT}/${POD1}.yaml"
+YAML2="${TMP_ROOT}/${POD2}.yaml"
+RUNTIMECLASS_YAML="${RUNTIMECLASS_YAML:-${TMP_ROOT}/runtimeclass-android.yaml}"
 
 cleanup() {
     kubectl delete pod "${POD1}" "${POD2}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
@@ -72,7 +72,7 @@ wait_ready() {
     else
         log_fail "Pod 未在 ${ANDROID_WAIT_TIMEOUT} 内 Ready: ${pod_name}"
         kubectl describe pod "${pod_name}" >&2 || true
-        tail -n 160 /tmp/cri-multiplex.log >&2 || true
+        tail -n 160 ${MULTIPLEX_LOG} >&2 || true
         exit 1
     fi
 }
@@ -181,11 +181,11 @@ log_step "5.1 删除 Pod 验证清理"
 cleanup
 log_pass "删除请求已提交"
 wait_android_pod_cleanup "${POD1}" "${POD1_UID}" "${POD1_NETNS}" "${POD1_IP}" 6520 "${POD1_PGID}" "${ANDROID_CLEANUP_WAIT_TIMEOUT}" || {
-    tail -n 160 /tmp/cri-multiplex.log >&2 || true
+    tail -n 160 ${MULTIPLEX_LOG} >&2 || true
     exit 1
 }
 wait_android_pod_cleanup "${POD2}" "${POD2_UID}" "${POD2_NETNS}" "${POD2_IP}" 6521 "${POD2_PGID}" "${ANDROID_CLEANUP_WAIT_TIMEOUT}" || {
-    tail -n 160 /tmp/cri-multiplex.log >&2 || true
+    tail -n 160 ${MULTIPLEX_LOG} >&2 || true
     exit 1
 }
 

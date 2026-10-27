@@ -19,9 +19,9 @@ log_section "20 -- 清理与孤儿资源回收验证"
 # 它会扫描宿主机上所有 e2b-* netns / hostport 规则，因此只适合在独占节点上运行。
 select_state_dir "${STATE_DIR_CLEANUP}"
 STATE_FILE="${STATE_DIR}/state.json"
-ANDROID_STATE_DIR="${ANDROID_STATE_DIR:-/tmp/cri-multiplex-cleanup-android}"
+ANDROID_STATE_DIR="${ANDROID_STATE_DIR:-${TMP_ROOT}/cri-multiplex-cleanup-android}"
 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}"
-E2B_POD_JSON="${E2B_POD_JSON:-/tmp/e2b-pod.json}"
+E2B_POD_JSON="${E2B_POD_JSON:-${TMP_ROOT}/e2b-pod.json}"
 POD_JSON="${E2B_POD_JSON}"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 E2B_SKIP_BUILD="${E2B_SKIP_BUILD:-1}"
@@ -29,15 +29,15 @@ CRICTL="${CRICTL} --timeout ${E2B_CREATE_TIMEOUT:-180s}"
 UNKNOWN_WORKDIR="${ANDROID_STATE_DIR}/android-similar-no-owner"
 NONOWNER_COMMENT="cri-multiplex-similar-no-owner-20"
 ORCH_PROTO="${MULTIPLEX_DIR}/proto/orchestrator.proto"
-E2B_POD_TEMPLATE="${E2B_POD_TEMPLATE:-/tmp/e2b-kubelet-pod.yaml}"
+E2B_POD_TEMPLATE="${E2B_POD_TEMPLATE:-${TMP_ROOT}/e2b-kubelet-pod.yaml}"
 ANDROID_WAIT_TIMEOUT="${ANDROID_WAIT_TIMEOUT:-360s}"
-BROKEN_CNI_CONF_DIR="${BROKEN_CNI_CONF_DIR:-/tmp/cri-multiplex-20-empty-cni}"
+BROKEN_CNI_CONF_DIR="${BROKEN_CNI_CONF_DIR:-${TMP_ROOT}/cri-multiplex-20-empty-cni}"
 PRESERVE_ON_FAIL="${PRESERVE_ON_FAIL:-1}"
 
 cleanup_all() {
     local rc=$?
     kubectl delete pod -l cri-multiplex-test=20 --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
-    rm -f /tmp/cri-multiplex-20-*.yaml /tmp/cri-multiplex-20-*.credentials.json || true
+    rm -f ${TMP_ROOT}/cri-multiplex-20-*.yaml ${TMP_ROOT}/cri-multiplex-20-*.credentials.json || true
     iptables -t filter -D OUTPUT -p tcp -d 127.0.0.1 --dport 1 \
         -m comment --comment "${NONOWNER_COMMENT}" -j ACCEPT >/dev/null 2>&1 || true
 
@@ -45,7 +45,7 @@ cleanup_all() {
         log_info "20 号失败，保留现场用于定位："
         log_info "  state-dir: ${STATE_DIR}"
         log_info "  android-state-dir: ${ANDROID_STATE_DIR}"
-        log_info "  cri-multiplex log: /tmp/cri-multiplex.log"
+        log_info "  cri-multiplex log: ${MULTIPLEX_LOG}"
         log_info "  socket: ${SOCKET}"
         return
     fi
@@ -68,7 +68,7 @@ fail_context() {
     echo "--- state.json ---" >&2
     sed -n '1,260p' "${STATE_FILE}" >&2 2>/dev/null || true
     echo "--- cri-multiplex.log ---" >&2
-    tail -n 160 /tmp/cri-multiplex.log >&2 2>/dev/null || true
+    tail -n 160 ${MULTIPLEX_LOG} >&2 2>/dev/null || true
 }
 
 start_cleanup_multiplex() {
@@ -99,14 +99,14 @@ wait_pod_ready() {
     local name="$1"
     if ! kubectl wait --for=condition=Ready "pod/${name}" --timeout="${ANDROID_WAIT_TIMEOUT}" >&2; then
         kubectl describe pod "${name}" >&2 || true
-        tail -n 160 /tmp/cri-multiplex.log >&2 || true
+        tail -n 160 ${MULTIPLEX_LOG} >&2 || true
         return 1
     fi
 }
 
 run_e2b_sandbox() {
     local name="$1"
-    local yaml="/tmp/cri-multiplex-20-${name}.yaml" id
+    local yaml="${TMP_ROOT}/cri-multiplex-20-${name}.yaml" id
     local refresh_script="${REFRESH_SCRIPT}"
 
     # 与 07 号用例保持相同的 build_id/YAML 准备流程。20 号默认跳过
@@ -169,7 +169,7 @@ set_yaml_annotation() {
 
 run_e2b_create_failure_pod() {
     local name="$1"
-    local yaml="/tmp/cri-multiplex-20-${name}.yaml" id
+    local yaml="${TMP_ROOT}/cri-multiplex-20-${name}.yaml" id
     local bad_build_id="missing-build-id-20-${RANDOM}-${RANDOM}"
 
     if [ "${E2B_SKIP_BUILD}" = "1" ]; then
@@ -193,7 +193,7 @@ run_e2b_create_failure_pod() {
 
 submit_e2b_pod_no_wait() {
     local name="$1"
-    local yaml="/tmp/cri-multiplex-20-${name}.yaml" id
+    local yaml="${TMP_ROOT}/cri-multiplex-20-${name}.yaml" id
 
     if [ "${E2B_SKIP_BUILD}" = "1" ]; then
         cp "${E2B_POD_TEMPLATE}" "${yaml}"
@@ -234,7 +234,7 @@ for pod in (state.get("e2b") or {}).get("pods") or []:
         # "HostPort mapping: <node>:<host> -> <sandboxIP>:<port>" 恢复。
         import os, re
         sandbox_ip = pod.get("host_ip") or ""
-        log_path = os.environ.get("MULTIPLEX_LOG", "/tmp/cri-multiplex.log")
+        log_path = os.environ.get("MULTIPLEX_LOG", "/tmp/cri-multiplex/e2b-verify/cri-multiplex.log")
         pattern = re.compile(
             r"HostPort mapping: \S+:(\d+) -> " + re.escape(sandbox_ip) + r":(\d+)"
         )
@@ -278,7 +278,7 @@ effective_node_ip() {
         return 0
     fi
     local detected
-    detected=$(grep -aoP 'auto-detected node-ip: \K[^[:space:]]+' /tmp/cri-multiplex.log 2>/dev/null | tail -1 || true)
+    detected=$(grep -aoP 'auto-detected node-ip: \K[^[:space:]]+' ${MULTIPLEX_LOG} 2>/dev/null | tail -1 || true)
     if [ -n "${detected}" ]; then
         echo "${detected}"
         return 0
@@ -288,7 +288,7 @@ effective_node_ip() {
 
 run_android_sandbox() {
     local name="$1" adb_port="${2:-${ANDROID_ADB_PORT_START:-6520}}"
-    local yaml="/tmp/cri-multiplex-20-${name}.yaml" id
+    local yaml="${TMP_ROOT}/cri-multiplex-20-${name}.yaml" id
     cat > "${yaml}" <<EOF
 apiVersion: v1
 kind: Pod
@@ -377,7 +377,7 @@ wait_e2b_create_failure_observed() {
     for _ in $(seq 1 120); do
         describe_output=$(kubectl describe pod "${name}" 2>&1 || true)
         # 不能用 tail 截断：kubelet 每秒大量 ListPodSandbox 日志会把关键行挤出窗口。
-        log_output=$(grep -aE "CNI ADD: sandbox=${id}|createE2BSandbox: orchestrator.Create FAILED" /tmp/cri-multiplex.log 2>/dev/null || true)
+        log_output=$(grep -aE "CNI ADD: sandbox=${id}|createE2BSandbox: orchestrator.Create FAILED" ${MULTIPLEX_LOG} 2>/dev/null || true)
         if echo "${describe_output}" | grep -qiE "FailedCreatePodSandBox|failed to create sandbox|build|not found|invalid" &&
            echo "${log_output}" | grep -q "CNI ADD: sandbox=${id}" &&
            echo "${log_output}" | grep -q "createE2BSandbox: orchestrator.Create FAILED"; then
@@ -744,7 +744,7 @@ fi
 log_pass "重启后对账并回收 Android CVD、state、CNI netns"
 
 log_step "10. 非 owner 资源保护"
-if ! grep -q "skip unknown owner" /tmp/cri-multiplex.log; then
+if ! grep -q "skip unknown owner" ${MULTIPLEX_LOG}; then
     fail_context
     log_fail "未输出 unknown owner warning"
     exit 1

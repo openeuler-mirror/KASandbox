@@ -33,7 +33,7 @@ cleanup_06() {
 prepare_06_pod_json() {
     POD_UID="e2battach$(date +%s)$RANDOM"
     CONTAINER_ID="${POD_UID}-c"
-    POD_JSON="/tmp/e2b-pod-06-${POD_UID}.json"
+    POD_JSON="${TMP_ROOT}/e2b-pod-06-${POD_UID}.json"
     export POD_UID CONTAINER_ID POD_JSON
 
     cp "${BASE_POD_JSON}" "${POD_JSON}"

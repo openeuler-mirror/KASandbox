@@ -31,7 +31,7 @@ trap 'exit 143' TERM
 #==================== 参数解析 ====================#
 SKIP_SETUP=0
 ONLY=""
-LOG_DIR="${E2B_VERIFY_LOG_DIR:-/tmp}"
+LOG_DIR="${E2B_VERIFY_LOG_DIR:-${TMP_ROOT}}"
 SHARED_E2B_FIXTURE_READY=0
 
 while [[ $# -gt 0 ]]; do
@@ -130,13 +130,13 @@ prepare_shared_e2b_fixture_once() {
         return 0
     fi
 
-    log_info "准备 07 及之后用例共享 E2B fixture: /tmp/e2b-kubelet-pod.yaml"
+    log_info "准备 07 及之后用例共享 E2B fixture: ${TMP_ROOT}/e2b-kubelet-pod.yaml"
     E2B_SKIP_BUILD=0 E2B_YAML_COUNT=0 refresh_or_reuse_e2b_yaml \
         "${SCRIPT_DIR}/lib/refresh_build_id.sh" \
         "e2b-kubelet-test" \
-        "/tmp/e2b-kubelet-pod.yaml" || return 1
+        "${TMP_ROOT}/e2b-kubelet-pod.yaml" || return 1
     export E2B_SKIP_BUILD=1
-    export E2B_BASE_POD_YAML=/tmp/e2b-kubelet-pod.yaml
+    export E2B_BASE_POD_YAML=${TMP_ROOT}/e2b-kubelet-pod.yaml
     SHARED_E2B_FIXTURE_READY=1
 }
 

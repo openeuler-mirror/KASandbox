@@ -116,6 +116,8 @@ ensure_multiplex_binary() {
     fi
     if [ "${need_build}" = "1" ]; then
         log_info "执行 go build -> ${MULTIPLEX_BIN} ..."
+        # Go 构建缓存与其它项目共享，刻意不放进 ${TMP_ROOT}：放进去意味着每次
+        # 清理验证临时目录都会触发全量重编译。
         (cd "${MULTIPLEX_DIR}" && \
             GOWORK=off \
             GOCACHE="${GOCACHE:-/tmp/go-build-cache}" \
@@ -285,7 +287,7 @@ fi
 : > "${MULTIPLEX_LOG}"
 setsid "${MULTIPLEX_BIN}" "${args[@]}" > "${MULTIPLEX_LOG}" 2>&1 < /dev/null &
 start_pid=$!
-echo "${start_pid}" > /tmp/cri-multiplex.pid
+echo "${start_pid}" > ${TMP_ROOT}/cri-multiplex.pid
 
 # 等待 socket 就绪
 retries=15

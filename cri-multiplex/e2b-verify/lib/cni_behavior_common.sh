@@ -8,7 +8,7 @@ SCRIPT_DIR_CNI_COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${SCRIPT_DIR_CNI_COMMON}/lib/common.sh"
 
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR_CNI_COMMON}/lib/refresh_build_id.sh}"
-E2B_CNI_YAML="${E2B_CNI_YAML:-/tmp/e2b-kubelet-pod.yaml}"
+E2B_CNI_YAML="${E2B_CNI_YAML:-${TMP_ROOT}/e2b-kubelet-pod.yaml}"
 ENVD_PORT="${ENVD_PORT:-49983}"
 CLIENT_IMAGE="${CLIENT_IMAGE:-docker.io/library/busybox:latest}"
 CLIENT_NSLOOKUP_CMD="${CLIENT_NSLOOKUP_CMD:-}"
@@ -108,7 +108,7 @@ create_curl_client_pod() {
     local pod_name="$1"
     local label_key="${2:-role}"
     local label_value="${3:-cni-client}"
-    local yaml="/tmp/${pod_name}.yaml"
+    local yaml="${TMP_ROOT}/${pod_name}.yaml"
 
     cat > "${yaml}" <<EOF
 apiVersion: v1
@@ -139,12 +139,12 @@ EOF
 client_curl_code() {
     local client_pod="$1"
     local url="$2"
-    kubectl exec "${client_pod}" -- sh -c "if command -v curl >/dev/null 2>&1; then curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 '${url}'; elif command -v wget >/dev/null 2>&1; then wget -q -T 5 -O /dev/null '${url}' && echo 204 || echo 000; else echo NO_HTTP_CLIENT; fi" 2>/tmp/cni-client-curl.err || true
+    kubectl exec "${client_pod}" -- sh -c "if command -v curl >/dev/null 2>&1; then curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 '${url}'; elif command -v wget >/dev/null 2>&1; then wget -q -T 5 -O /dev/null '${url}' && echo 204 || echo 000; else echo NO_HTTP_CLIENT; fi" 2>${TMP_ROOT}/cni-client-curl.err || true
 }
 
 host_curl_code() {
     local url="$1"
-    curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 5 "${url}" 2>/tmp/cni-host-curl.err || true
+    curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 5 "${url}" 2>${TMP_ROOT}/cni-host-curl.err || true
 }
 
 expect_http_204_from_client() {
@@ -158,7 +158,7 @@ expect_http_204_from_client() {
         return 0
     fi
     log_fail "${desc} 失败: HTTP ${code}"
-    cat /tmp/cni-client-curl.err >&2 || true
+    cat ${TMP_ROOT}/cni-client-curl.err >&2 || true
     return 1
 }
 
@@ -192,7 +192,7 @@ wait_http_204_from_client() {
         fi
         if [ "$(date +%s)" -ge "${deadline}" ]; then
             log_fail "${desc} 失败: HTTP ${code}"
-            cat /tmp/cni-client-curl.err >&2 || true
+            cat ${TMP_ROOT}/cni-client-curl.err >&2 || true
             return 1
         fi
         sleep 1
@@ -225,7 +225,7 @@ create_e2b_service() {
     local svc_name="$1"
     local app_label="$2"
     local port="${3:-${ENVD_PORT}}"
-    local yaml="/tmp/${svc_name}.yaml"
+    local yaml="${TMP_ROOT}/${svc_name}.yaml"
 
     cat > "${yaml}" <<EOF
 apiVersion: v1

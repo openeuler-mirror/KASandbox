@@ -17,7 +17,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "03 — 镜像管理验证"
 
-POD_YAML="/tmp/e2b-kubelet-pod.yaml"
+POD_YAML="${TMP_ROOT}/e2b-kubelet-pod.yaml"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 
 log_step "0.1 刷新 build_id"

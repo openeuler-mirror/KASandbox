@@ -26,9 +26,9 @@ ANDROID_RUNTIMECLASS="${ANDROID_RUNTIMECLASS:-android}"
 ANDROID_RUNTIME_HANDLER="${ANDROID_RUNTIME_HANDLER:-android}"
 ANDROID_ADB_PORT="${ANDROID_ADB_PORT:-6520}"
 ANDROID_BASE_INSTANCE_NUM="${ANDROID_BASE_INSTANCE_NUM:-1}"
-POD_YAML="${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
-E2B_WORK_YAML="${E2B_WORK_YAML:-/tmp/e2b-mux-routing-21.yaml}"
-ANDROID_WORK_YAML="${ANDROID_WORK_YAML:-/tmp/e2b-mux-android-21.yaml}"
+POD_YAML="${POD_YAML:-${TMP_ROOT}/e2b-kubelet-pod.yaml}"
+E2B_WORK_YAML="${E2B_WORK_YAML:-${TMP_ROOT}/e2b-mux-routing-21.yaml}"
+ANDROID_WORK_YAML="${ANDROID_WORK_YAML:-${TMP_ROOT}/e2b-mux-android-21.yaml}"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 CLIENT_IMAGE="${CLIENT_IMAGE:-docker.io/library/busybox:latest}"
 ANDROID_AVAILABLE=1
@@ -41,7 +41,7 @@ cleanup() {
     delete_pod_and_wait_gone "${DEFAULT_POD}" 90 >/dev/null 2>&1 || true
     delete_pod_and_wait_gone "${ANDROID_POD}" 90 >/dev/null 2>&1 || true
     delete_pod_and_wait_gone "${E2B_POD}" 90 >/dev/null 2>&1 || true
-    rm -f "${E2B_WORK_YAML}" "${ANDROID_WORK_YAML}" "/tmp/${DEFAULT_POD}.yaml" "/tmp/${ANDROID_POD}.yaml" || true
+    rm -f "${E2B_WORK_YAML}" "${ANDROID_WORK_YAML}" "${TMP_ROOT}/${DEFAULT_POD}.yaml" "${TMP_ROOT}/${ANDROID_POD}.yaml" || true
 }
 trap cleanup EXIT
 
@@ -49,12 +49,12 @@ assert_log_contains() {
     local pattern="$1"
     local desc="$2"
 
-    if grep -aqE "${pattern}" /tmp/cri-multiplex.log 2>/dev/null; then
+    if grep -aqE "${pattern}" ${MULTIPLEX_LOG} 2>/dev/null; then
         log_pass "${desc}"
         return 0
     fi
     log_fail "${desc}"
-    tail -n 120 /tmp/cri-multiplex.log >&2 || true
+    tail -n 120 ${MULTIPLEX_LOG} >&2 || true
     return 1
 }
 
@@ -180,12 +180,12 @@ log_pass "RuntimeClass e2b 存在"
 
 log_step "1.2 清理旧资源"
 cleanup
-: > /tmp/cri-multiplex.log 2>/dev/null || true
+: > ${MULTIPLEX_LOG} 2>/dev/null || true
 log_pass "旧资源已清理"
 
 log_step "2.1 创建无 RuntimeClass 普通 Pod"
-prepare_default_busybox_pod_yaml "${DEFAULT_POD}" "/tmp/${DEFAULT_POD}.yaml"
-kubectl apply -f "/tmp/${DEFAULT_POD}.yaml" >&2
+prepare_default_busybox_pod_yaml "${DEFAULT_POD}" "${TMP_ROOT}/${DEFAULT_POD}.yaml"
+kubectl apply -f "${TMP_ROOT}/${DEFAULT_POD}.yaml" >&2
 wait_pod_ready "${DEFAULT_POD}" 120s || exit 1
 assert_log_contains "RunPodSandbox routing: handler=\"\" -> container" "无 RuntimeClass Pod 已路由到 containerd" || exit 1
 

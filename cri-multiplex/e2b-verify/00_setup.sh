@@ -108,15 +108,31 @@ else
     log_info "build_prod.py 不存在（仅重建模板时使用）"
 fi
 
-#==================== 7. 检查 .env ====================#
-log_step "1.7 检查 .env"
+#==================== 7. 检查凭证来源 ====================#
+log_step "1.7 检查凭证来源"
 if [ -f "${SCRIPT_DIR}/.env" ]; then
-    log_info ".env 已存在: ${SCRIPT_DIR}/.env"
-    if [ -f /root/.e2b/config.json ]; then
-        log_info "发现 /root/.e2b/config.json，凭证以该文件中的 teamApiKey 为准"
+    _env_plain=$(grep -cE '^E2B_(API_KEY|ACCESS_TOKEN)="?[^"]+' "${SCRIPT_DIR}/.env" 2>/dev/null || true)
+    if [ "${_env_plain:-0}" -gt 0 ] 2>/dev/null; then
+        log_warn ".env 中发现 ${_env_plain} 处非空凭证，建议清空并改用 ${E2B_SECRETS_FILE}"
+    else
+        log_info "本地 .env: ${SCRIPT_DIR}/.env（凭证留空，符合预期）"
     fi
 else
-    log_info ".env 不存在，将回退使用 /root/.e2b/config.json"
+    log_info "本地 .env 不存在（可选；缺失时用内置默认值 + ${E2B_SECRETS_FILE} / ${E2B_CONFIG_JSON}）"
+fi
+if [ -f "${E2B_SECRETS_FILE}" ]; then
+    _sec_mode=$(stat -c '%a' "${E2B_SECRETS_FILE}" 2>/dev/null || echo '?')
+    if [ "${_sec_mode}" = "600" ] || [ "${_sec_mode}" = "400" ]; then
+        log_info "凭证文件: ${E2B_SECRETS_FILE}（权限 ${_sec_mode}）"
+    else
+        log_warn "凭证文件 ${E2B_SECRETS_FILE} 权限为 ${_sec_mode}，建议 chmod 600"
+    fi
+else
+    log_warn "未找到凭证文件 ${E2B_SECRETS_FILE}，将回退使用环境变量或 ${E2B_CONFIG_JSON}"
+fi
+log_info "生效凭证来源: ${E2B_CREDENTIAL_SOURCE:-unknown}"
+if [ -f "${E2B_CONFIG_JSON}" ]; then
+    log_info "发现 ${E2B_CONFIG_JSON}，live 凭证以其中的 teamApiKey 为准"
 fi
 
 #==================== 8. 环境能力检查 ====================#

@@ -11,17 +11,20 @@
 # 策略：
 #   1. 当 SOCKET 命中 systemd socket 且 unit 正在运行时，验证脚本先
 #      `systemctl stop`，并写 marker；
-#   2. 脚本用相同 socket 直接启动受控进程（日志固定 /tmp/cri-multiplex.log）；
+#   2. 脚本用相同 socket 直接启动受控进程（日志固定 /tmp/cri-multiplex/e2b-verify/cri-multiplex.log）；
 #   3. 恢复：run_all.sh 的 EXIT trap 自动执行，也可手动 01_start_multiplex.sh --restore。
 #
 # 这样既保留 kubelet 真实 endpoint，又避免 systemd 的 Restart=always 干扰
 # 18/19/20 这类“停止/重启/kill -9”用例。
 ###############################################################################
 
+# 本文件由 lib/common.sh 引入（TMP_ROOT 已在那边定义并 export）；
+# 单独 source 时兜底成同一默认值，避免拼出 /e2b-verify-systemd-claimed 这种根路径。
+TMP_ROOT="${TMP_ROOT:-/tmp/cri-multiplex/e2b-verify}"
 SYSTEMD_UNIT="${SYSTEMD_UNIT:-cri-multiplex.service}"
 SYSTEMD_SOCKET="${SYSTEMD_SOCKET:-/run/cri-multiplex.sock}"
-SYSTEMD_CLAIM_MARKER="${SYSTEMD_CLAIM_MARKER:-/tmp/e2b-verify-systemd-claimed}"
-MULTIPLEX_LOG="${MULTIPLEX_LOG:-/tmp/cri-multiplex.log}"
+SYSTEMD_CLAIM_MARKER="${SYSTEMD_CLAIM_MARKER:-${TMP_ROOT}/e2b-verify-systemd-claimed}"
+MULTIPLEX_LOG="${MULTIPLEX_LOG:-${TMP_ROOT}/cri-multiplex.log}"
 
 systemd_mux_available() {
     command -v systemctl >/dev/null 2>&1 && systemctl cat "${SYSTEMD_UNIT}" >/dev/null 2>&1
@@ -45,7 +48,7 @@ pid_is_systemd_mux() {
 }
 
 # socket 上正在监听的实例是否由 systemd 管理（而不是脚本启动的受控实例）。
-# 用例断言依赖 /tmp/cri-multiplex.log，而 systemd 实例的日志在 journald，
+# 用例断言依赖 /tmp/cri-multiplex/e2b-verify/cri-multiplex.log，而 systemd 实例的日志在 journald，
 # 所以即使是“可连通”的 systemd 实例也必须接管。
 running_multiplex_is_systemd() {
     systemd_mux_active || return 1

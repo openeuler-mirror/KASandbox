@@ -12,11 +12,16 @@
 
 E2B_VERIFY_DIR="${SCRIPT_DIR_COMMON:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 E2B_ENV_FILE="${E2B_ENV_FILE:-${E2B_VERIFY_DIR}/.env}"
+# 凭证文件默认放在仓库外（600 权限），可用 E2B_VERIFY_SECRETS_FILE 覆盖。
+# 仓库内 .env 只保留非敏感配置，E2B_API_KEY / E2B_ACCESS_TOKEN 留空占位。
+E2B_SECRETS_FILE="${E2B_VERIFY_SECRETS_FILE:-${HOME:-/root}/.config/e2b-verify/secrets.env}"
 E2B_CONFIG_JSON="${E2B_CONFIG_JSON:-/root/.e2b/config.json}"
 E2B_API_URL="${E2B_API_URL:-http://127.0.0.1:3000}"
 E2B_API_URL_FALLBACK="${E2B_API_URL_FALLBACK:-http://127.0.0.1:3000}"
 E2B_API_KEY="${E2B_API_KEY:-}"
 E2B_ACCESS_TOKEN="${E2B_ACCESS_TOKEN:-}"
+E2B_DOMAIN="${E2B_DOMAIN:-e2b.app}"
+E2B_HTTP_SSL="${E2B_HTTP_SSL:-false}"
 E2B_TEAM_ID="${E2B_TEAM_ID:-}"
 E2B_TEMPLATE_ALIAS="${E2B_TEMPLATE_ALIAS:-ubuntu-22-04-custom-1}"
 E2B_TEMPLATE_ID="${E2B_TEMPLATE_ID:-}"
@@ -31,25 +36,79 @@ E2B_MAX_SANDBOX_LENGTH="${E2B_MAX_SANDBOX_LENGTH:-10000}"
 E2B_RESOLVED_API_URL=""
 E2B_METADATA_RESOLVED=0
 E2B_METADATA_LOADED=0
+E2B_CREDENTIAL_SOURCE=""
 
 e2b_log() { echo -e "${CYAN}[E2B]${NC}   $*" >&2; }
 e2b_warn() { echo -e "${YELLOW}[E2B]${NC}   $*" >&2; }
 
-# 读取 .env；环境变量优先于文件（方便 CI/临时覆盖）。
+# 加载一个 KEY=VALUE 文件（文件不存在则静默跳过）；set -a 使其中变量自动导出。
+_load_env_file() {
+    local f="$1"
+    [ -f "${f}" ] || return 0
+    # shellcheck disable=SC1090
+    set -a
+    . "${f}"
+    set +a
+    return 0
+}
+
+# 加载仓库外的凭证文件（默认 ~/.config/e2b-verify/secrets.env，权限 600）。
+# 已显式导出的同名变量优先，不会被文件覆盖。
+load_e2b_secrets() {
+    local f="${E2B_SECRETS_FILE}"
+    [ -f "${f}" ] || return 0
+
+    local mode
+    mode=$(stat -c '%a' "${f}" 2>/dev/null || echo '?')
+    case "${mode}" in
+        600 | 400) ;;
+        *) e2b_warn "凭证文件 ${f} 权限为 ${mode}，建议 chmod 600" ;;
+    esac
+
+    local _keep_key="${E2B_API_KEY}" _keep_token="${E2B_ACCESS_TOKEN}"
+    _load_env_file "${f}"
+    if [ -n "${_keep_key}" ]; then E2B_API_KEY="${_keep_key}"; fi
+    if [ -n "${_keep_token}" ]; then E2B_ACCESS_TOKEN="${_keep_token}"; fi
+    return 0
+}
+
+# 读取配置与凭证。优先级（高 -> 低）：
+#   1. 已显式导出的环境变量（CI / 临时覆盖）；
+#   2. 仓库外凭证文件 ${E2B_SECRETS_FILE}（默认 ~/.config/e2b-verify/secrets.env）；
+#   3. 本地 .env（可选、已 gitignore，仅放非敏感配置）；
+#   4. /root/.e2b/config.json 的 live 凭证（最终覆盖，用于自动纠正过期 key）。
+# 实际生效的来源记录在 E2B_CREDENTIAL_SOURCE（env|secrets.env|.env|config.json|none）。
 load_e2b_env() {
     if [ "${E2B_METADATA_LOADED}" = "1" ]; then
         return 0
     fi
     E2B_METADATA_LOADED=1
 
-    if [ -f "${E2B_ENV_FILE}" ]; then
-        # shellcheck disable=SC1090
-        set -a
-        . "${E2B_ENV_FILE}"
-        set +a
+    E2B_CREDENTIAL_SOURCE="none"
+    if [ -n "${E2B_API_KEY}" ] || [ -n "${E2B_ACCESS_TOKEN}" ]; then
+        E2B_CREDENTIAL_SOURCE="env"
+    fi
+    load_e2b_secrets
+    if [ "${E2B_CREDENTIAL_SOURCE}" = "none" ] && [ -n "${E2B_API_KEY}" ]; then
+        E2B_CREDENTIAL_SOURCE="secrets.env"
     fi
 
-    # .env 中的凭证可能已经过期；config.json 是本机最近一次部署写入的 live 凭证。
+    # .env 中凭证留空（占位），不允许用空值覆盖前面已取到的凭证。
+    local _pre_key="${E2B_API_KEY}" _pre_token="${E2B_ACCESS_TOKEN}"
+    _load_env_file "${E2B_ENV_FILE}"
+    if [ -z "${E2B_API_KEY}" ] && [ -n "${_pre_key}" ]; then E2B_API_KEY="${_pre_key}"; fi
+    if [ -z "${E2B_ACCESS_TOKEN}" ] && [ -n "${_pre_token}" ]; then E2B_ACCESS_TOKEN="${_pre_token}"; fi
+    if [ "${E2B_CREDENTIAL_SOURCE}" = "none" ] && [ -n "${E2B_API_KEY}" ]; then
+        E2B_CREDENTIAL_SOURCE=".env"
+    fi
+
+    # .env 缺少非敏感配置时用内置默认值兜底。
+    E2B_API_URL="${E2B_API_URL:-http://127.0.0.1:3000}"
+    E2B_DOMAIN="${E2B_DOMAIN:-e2b.app}"
+    E2B_HTTP_SSL="${E2B_HTTP_SSL:-false}"
+    E2B_TEMPLATE_ALIAS="${E2B_TEMPLATE_ALIAS:-ubuntu-22-04-custom-1}"
+
+    # config.json 是本机最近一次部署写入的 live 凭证，始终以它为准。
     if [ -f "${E2B_CONFIG_JSON}" ] && command -v jq >/dev/null 2>&1; then
         local cfg_key cfg_token cfg_team
         cfg_key=$(jq -r '.teamApiKey // empty' "${E2B_CONFIG_JSON}" 2>/dev/null || true)
@@ -57,6 +116,7 @@ load_e2b_env() {
         cfg_team=$(jq -r '.teamId // empty' "${E2B_CONFIG_JSON}" 2>/dev/null || true)
         if [ -n "${cfg_key}" ]; then
             E2B_API_KEY="${cfg_key}"
+            E2B_CREDENTIAL_SOURCE="config.json"
         fi
         if [ -n "${cfg_token}" ]; then
             E2B_ACCESS_TOKEN="${cfg_token}"
@@ -67,6 +127,7 @@ load_e2b_env() {
     fi
 
     export E2B_API_URL E2B_API_KEY E2B_ACCESS_TOKEN E2B_TEAM_ID \
+        E2B_DOMAIN E2B_HTTP_SSL E2B_CREDENTIAL_SOURCE E2B_SECRETS_FILE \
         E2B_TEMPLATE_ALIAS E2B_TEMPLATE_ID E2B_BUILD_ID \
         E2B_ENVD_VERSION E2B_KERNEL_VERSION E2B_FIRECRACKER_VERSION \
         E2B_VCPU E2B_RAM_MB E2B_DISK_MB E2B_MAX_SANDBOX_LENGTH
@@ -108,7 +169,7 @@ e2b_api() {
     local url
     url="$(_resolve_api_url)"
     local tmp code
-    tmp=$(mktemp /tmp/e2b-api.XXXXXX)
+    tmp=$(mktemp ${TMP_ROOT}/e2b-api.XXXXXX)
     local args=(-sS -m 20 -X "${method}" "${url}${path}" -H "X-API-Key: ${E2B_API_KEY}")
     if [ -n "${body}" ]; then
         args+=(-H 'Content-Type: application/json' -d "${body}")

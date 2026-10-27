@@ -59,7 +59,7 @@ if [ "${HOST_CODE}" = "204" ]; then
     log_pass "宿主机访问 PodIP:${ENVD_PORT}/health 成功，HTTP ${HOST_CODE}"
 else
     log_fail "宿主机访问 PodIP:${ENVD_PORT}/health 失败，HTTP ${HOST_CODE}"
-    cat /tmp/cni-host-curl.err >&2 || true
+    cat ${TMP_ROOT}/cni-host-curl.err >&2 || true
     exit 1
 fi
 

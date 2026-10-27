@@ -22,7 +22,7 @@ ensure_controlled_cni_multiplex "准备 cri-multiplex CNI 验证实例" || exit 
 
 #==================== 配置 ====================#
 POD_NAME="${POD_NAME:-e2b-exec-test}"
-POD_YAML="/tmp/e2b-kubelet-pod.yaml"
+POD_YAML="${TMP_ROOT}/e2b-kubelet-pod.yaml"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 
 #==================== 前置检查 ====================#
@@ -53,7 +53,7 @@ else
 fi
 
 # 清空旧日志便于后续分析
-: > /tmp/cri-multiplex.log 2>/dev/null || true
+: > ${MULTIPLEX_LOG} 2>/dev/null || true
 
 #==================== 刷新 build_id ====================#
 log_step "2.1 刷新 build_id（每次创建 Pod 前必须执行）"
@@ -135,7 +135,7 @@ else
 fi
 
 log_step "5.2.1 观察 CRI Exec 接口调用日志（非验证点）"
-EXEC_COUNT=$(grep -cE '\[GrpcE2BEngine\] Exec:' /tmp/cri-multiplex.log 2>/dev/null || true)
+EXEC_COUNT=$(grep -cE '\[GrpcE2BEngine\] Exec:' ${MULTIPLEX_LOG} 2>/dev/null || true)
 EXEC_COUNT=${EXEC_COUNT:-0}
 if [ "${EXEC_COUNT}" -ge 1 ]; then
     log_info "CRI Exec 接口被调用 ${EXEC_COUNT} 次"
@@ -212,7 +212,7 @@ else
 fi
 
 log_step "5.12 长耗时 exec + SIGTERM 优雅关闭"
-long_exec_log="/tmp/e2b-exec-sigterm-08.log"
+long_exec_log="${TMP_ROOT}/e2b-exec-sigterm-08.log"
 : > "${long_exec_log}"
 set +e
 timeout 35 kubectl exec "${POD_NAME}" -- sh -c "sleep 20; echo long_exec_done" >"${long_exec_log}" 2>&1 &

@@ -228,7 +228,7 @@ fi
 
 #==================== 边界条件 ====================#
 log_step "6.1 缺失必填 annotation"
-cat > /tmp/e2b-bad.json <<'EOF'
+cat > ${TMP_ROOT}/e2b-bad.json <<'EOF'
 {
   "metadata": {
     "name": "bad-pod",
@@ -241,16 +241,16 @@ cat > /tmp/e2b-bad.json <<'EOF'
   "linux": {}
 }
 EOF
-output=$(${CRICTL} runp -r e2b /tmp/e2b-bad.json 2>&1) || true
+output=$(${CRICTL} runp -r e2b ${TMP_ROOT}/e2b-bad.json 2>&1) || true
 if echo "${output}" | grep -qi "InvalidArgument\|error\|FATA"; then
     log_pass "缺失必填 annotation 返回错误（预期行为）"
 else
     log_fail "缺失必填 annotation 未返回错误: ${output}"
 fi
-rm -f /tmp/e2b-bad.json
+rm -f ${TMP_ROOT}/e2b-bad.json
 
 log_step "6.2 省略可选 annotation 使用默认值"
-python3 - "${BASE_POD_JSON}" /tmp/e2b-defaults.json <<'PY'
+python3 - "${BASE_POD_JSON}" ${TMP_ROOT}/e2b-defaults.json <<'PY'
 import json
 import sys
 import time
@@ -276,7 +276,7 @@ with open(dst, "w", encoding="utf-8") as target:
     json.dump(pod, target, indent=2, ensure_ascii=True)
     target.write("\n")
 PY
-output=$(${CRICTL} runp -r e2b /tmp/e2b-defaults.json 2>&1) || true
+output=$(${CRICTL} runp -r e2b ${TMP_ROOT}/e2b-defaults.json 2>&1) || true
 if echo "${output}" | grep -qE "^[a-zA-Z0-9_-]+$" && ! echo "${output}" | grep -qi "error\\|FATA"; then
     DEFAULTS_POD_ID=$(echo "${output}" | head -1 | tr -d '[:space:]')
     status_output=$(${CRICTL} inspectp "${DEFAULTS_POD_ID}" 2>&1) || true
@@ -289,18 +289,18 @@ if echo "${output}" | grep -qE "^[a-zA-Z0-9_-]+$" && ! echo "${output}" | grep -
 else
     log_fail "只保留必填 annotation 创建失败: ${output}"
 fi
-rm -f /tmp/e2b-defaults.json
+rm -f ${TMP_ROOT}/e2b-defaults.json
 
 run_invalid_annotation_case() {
     local name="$1"
     local key="$2"
     local value="$3"
-    local tmp="/tmp/e2b-invalid-${name}-$$.json"
+    local tmp="${TMP_ROOT}/e2b-invalid-${name}-$$.json"
     local output=""
     local created_id=""
 
     cp "${BASE_POD_JSON}" "${tmp}"
-    sync_e2b_pod_json_from_kubelet_yaml /tmp/e2b-kubelet-pod.yaml "${tmp}" || true
+    sync_e2b_pod_json_from_kubelet_yaml ${TMP_ROOT}/e2b-kubelet-pod.yaml "${tmp}" || true
     python3 - "${tmp}" "${key}" "${value}" <<'PY'
 import json
 import sys

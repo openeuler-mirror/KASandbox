@@ -54,7 +54,7 @@ expect_http_204_from_client "${ALLOWED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/h
 expect_http_204_from_client "${DENIED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "denied client baseline" || exit 1
 
 log_step "4.1 应用 deny-all ingress NetworkPolicy"
-cat > "/tmp/${DENY_POLICY}.yaml" <<EOF
+cat > "${TMP_ROOT}/${DENY_POLICY}.yaml" <<EOF
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -66,7 +66,7 @@ spec:
   policyTypes:
     - Ingress
 EOF
-kubectl apply -f "/tmp/${DENY_POLICY}.yaml" >&2
+kubectl apply -f "${TMP_ROOT}/${DENY_POLICY}.yaml" >&2
 log_pass "deny-all ingress policy 已应用"
 
 DENY_BLOCKED=0
@@ -87,7 +87,7 @@ if [ "${DENY_BLOCKED}" = "0" ]; then
     expect_http_204_from_client "${DENIED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "denied client 入向保留" || exit 1
 else
     log_step "4.2 应用 allow selected client NetworkPolicy"
-    cat > "/tmp/${ALLOW_POLICY}.yaml" <<EOF
+    cat > "${TMP_ROOT}/${ALLOW_POLICY}.yaml" <<EOF
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -107,7 +107,7 @@ spec:
         - protocol: TCP
           port: ${ENVD_PORT}
 EOF
-    kubectl apply -f "/tmp/${ALLOW_POLICY}.yaml" >&2
+    kubectl apply -f "${TMP_ROOT}/${ALLOW_POLICY}.yaml" >&2
     log_pass "allow selected client policy 已应用"
 
     wait_http_204_from_client "${ALLOWED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "allow policy 放行 allowed client" 30 || exit 1

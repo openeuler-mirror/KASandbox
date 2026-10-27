@@ -14,7 +14,7 @@
 #   bash e2b-verify/lib/refresh_build_id.sh [pod_name]
 #
 # 输出:
-#   ${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}
+#   ${POD_YAML:-${TMP_ROOT}/e2b-kubelet-pod.yaml}
 #   stdout: build_id
 ###############################################################################
 set -euo pipefail
@@ -23,7 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 POD_NAME="${1:-e2b-kubelet-test}"
-OUT_YAML="${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
+OUT_YAML="${POD_YAML:-${TMP_ROOT}/e2b-kubelet-pod.yaml}"
 E2B_SKIP_BUILD="${E2B_SKIP_BUILD:-1}"
 
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }

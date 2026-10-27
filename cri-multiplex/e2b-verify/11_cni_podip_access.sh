@@ -22,7 +22,7 @@ ensure_controlled_cni_multiplex "准备 cri-multiplex CNI 验证实例" || exit 
 
 #==================== 配置 ====================#
 POD_NAME="${POD_NAME:-e2b-cni-podip-test}"
-POD_YAML="/tmp/e2b-kubelet-pod.yaml"
+POD_YAML="${TMP_ROOT}/e2b-kubelet-pod.yaml"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 ENVD_PORT="${ENVD_PORT:-49983}"
 NETNS_NAME=""
@@ -80,7 +80,7 @@ else
     log_skip "无旧 Pod 需清理"
 fi
 
-: > /tmp/cri-multiplex.log 2>/dev/null || true
+: > ${MULTIPLEX_LOG} 2>/dev/null || true
 
 #==================== 刷新 build_id ====================#
 log_step "2.1 刷新 build_id（每次创建 Pod 前必须执行）"
@@ -135,7 +135,7 @@ NETNS_PATH=$(cni_netns_path_for_sandbox "${POD_UID}")
 if [ -z "${NETNS_PATH}" ] || [ ! -e "${NETNS_PATH}" ]; then
     log_fail "无法从 multiplex 日志/state 解析到真实 CNI netns 路径（uid=${POD_UID}, 解析结果='${NETNS_PATH}'）；拒绝使用 UID 猜测路径"
     echo "--- 最近的 CNI 相关日志 ---" >&2
-    grep -a "CNI ADD" /tmp/cri-multiplex.log 2>/dev/null | tail -5 >&2 || true
+    grep -a "CNI ADD" ${MULTIPLEX_LOG} 2>/dev/null | tail -5 >&2 || true
     exit 1
 fi
 NETNS_NAME=$(basename "${NETNS_PATH}")
@@ -207,24 +207,24 @@ fi
 #==================== PodIP 访问沙箱验证 ====================#
 log_step "5.1 通过 CNI PodIP 访问沙箱 envd health"
 
-HTTP_CODE=$(curl -sS -o /tmp/e2b-cni-health.out -w "%{http_code}" --max-time 5 "http://${POD_IP}:${ENVD_PORT}/health" 2>/tmp/e2b-cni-health.err || true)
+HTTP_CODE=$(curl -sS -o ${TMP_ROOT}/e2b-cni-health.out -w "%{http_code}" --max-time 5 "http://${POD_IP}:${ENVD_PORT}/health" 2>${TMP_ROOT}/e2b-cni-health.err || true)
 if [ "${HTTP_CODE}" = "204" ]; then
     log_pass "PodIP:${ENVD_PORT}/health 可访问，HTTP ${HTTP_CODE}"
 else
     log_fail "PodIP:${ENVD_PORT}/health 访问失败，HTTP ${HTTP_CODE}"
     log_info "curl stderr:"
-    cat /tmp/e2b-cni-health.err >&2 || true
+    cat ${TMP_ROOT}/e2b-cni-health.err >&2 || true
     log_info "curl body:"
-    cat /tmp/e2b-cni-health.out >&2 || true
+    cat ${TMP_ROOT}/e2b-cni-health.out >&2 || true
 fi
 
 log_step "5.2 E2B 沙箱内经 CNI 访问外网"
 
 EGRESS_OUTPUT=$(kubectl_exec_output_with_retry "${POD_NAME}" 60 sh -c '
 set -eu
-getent hosts example.com >/tmp/e2b-dns.out 2>/tmp/e2b-dns.err || {
+getent hosts example.com >${TMP_ROOT}/e2b-dns.out 2>${TMP_ROOT}/e2b-dns.err || {
   echo "DNS_FAIL"
-  cat /tmp/e2b-dns.err 2>/dev/null || true
+  cat ${TMP_ROOT}/e2b-dns.err 2>/dev/null || true
   exit 11
 }
 if command -v curl >/dev/null 2>&1; then
