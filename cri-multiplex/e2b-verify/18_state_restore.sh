@@ -19,9 +19,17 @@ POD_NAME="${POD_NAME:-e2b-state-restore-test}"
 POD_YAML="${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
 WORK_POD_YAML="/tmp/e2b-state-restore-pod.yaml"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
-STATE_DIR="${STATE_DIR:-/tmp/cri-multiplex-state-restore}"
+# 本用例会 rm -rf 并独占 state-dir（重启恢复测试），必须与共享目录和其它用例隔离。
+# STATE_DIR 在 common.sh 里已经有默认值，这里用 select_state_dir() 切换，
+# 不能写 "${STATE_DIR:-...}"（那永远不会生效）；显式传入的 STATE_DIR 仍然优先。
+select_state_dir "${STATE_DIR_RESTORE}"
 STATE_FILE="${STATE_DIR}/state.json"
 export STATE_DIR
+# 私有 state 里看不到别的用例的沙箱记录，而后台 reconciler 是「宿主级」扫描：
+# 凡不在本实例 state 里的 e2b-* netns / hostport 规则都会被当成孤儿删掉
+# （orphan_reconciler.go 的 scanOrphanNetNS / scanHostPortRules）。本用例不需要
+# 后台回收，直接关闭，避免误伤并发/残留的其它沙箱。
+export ORPHAN_RECONCILE_ENABLED=0
 
 cleanup_all() {
     kubectl delete pod "${POD_NAME}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
@@ -130,6 +138,8 @@ log_pass "RuntimeClass e2b 存在"
 log_step "1.2 切换 cri-multiplex 到 CNI+Android runtime 模式"
 kubectl delete pod "${POD_NAME}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
 wait_pod_deleted "${POD_NAME}" || true
+# 重复执行时上一轮的实例可能还挂在这个私有目录上，先停再清，避免删除与写入竞态。
+stop_multiplex_if_using_state_dir "${STATE_DIR}"
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 START_CNI_ANDROID_COUNT=0 start_cni_android_multiplex "启动 cri-multiplex CNI+Android runtime 模式" || exit 1

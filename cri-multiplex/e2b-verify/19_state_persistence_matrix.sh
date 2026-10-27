@@ -30,8 +30,14 @@ WORK_POD_YAML="/tmp/e2b-state-matrix-pod.yaml"
 BAD_POD_YAML="/tmp/e2b-state-matrix-invalid-annotation-pod.yaml"
 CRASH_POD_YAML="/tmp/e2b-state-crash-19.yaml"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
-STATE_DIR="${STATE_DIR:-/tmp/cri-multiplex-state-matrix}"
+# 本用例要写坏 state.json、反复清空 state-dir，必须使用私有目录：否则会与
+# 上一个用例留下的、仍在运行的实例抢同一个文件（它一次保存就能把故意写坏的
+# JSON 覆盖成合法内容，令「非法 JSON 降级」断言随机失败）。
+# 注意用 select_state_dir()，不能写 "${STATE_DIR:-...}"（common.sh 已赋过值）。
+select_state_dir "${STATE_DIR_MATRIX}"
 STATE_FILE="${STATE_DIR}/state.json"
+# 同 18：私有 state 会让宿主级 reconciler 把别的沙箱 netns/hostport 当孤儿删掉。
+export ORPHAN_RECONCILE_ENABLED=0
 BAD_STATE_PARENT="${BAD_STATE_PARENT:-/tmp/cri-multiplex-state-parent-file}"
 BAD_STATE_DIR="${BAD_STATE_PARENT}/child"
 TEST_LABEL_KEY="cri-multiplex-test"
@@ -400,6 +406,9 @@ kubectl delete pod -l "${TEST_LABEL_KEY}=${TEST_LABEL_VALUE}" --force --grace-pe
 wait_pod_deleted "${POD_NAME}" || true
 wait_pod_deleted "${BAD_POD_NAME}" || true
 wait_pod_deleted "${CRASH_POD_NAME}" || true
+# 重复执行时上一轮的实例可能还挂在这个私有目录上；不先停掉，下面的 rm -rf
+# 和故意写坏的 JSON 都会被它的一次保存覆盖，1.4 的断言就会随机失败。
+stop_multiplex_if_using_state_dir "${STATE_DIR}"
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 log_pass "旧 Pod 和测试 state-dir 已清理"
@@ -669,12 +678,16 @@ else
     exit 1
 fi
 
-log_step "6.1 清理测试状态并恢复 CNI 模式 cri-multiplex"
+log_step "6.1 校验删除后状态并清理测试 state-dir"
+# 必须在清空 STATE_DIR 之前断言：否则「状态已清理」只是自己刚写入空文件的结果，
+# 这条断言会恒真，删除路径坏掉也发现不了。
+assert_state_json "测试结束后目标 Pod/Container 状态已清理" "removed" "${POD_UID}" "${CONTAINER_ID}" || exit 1
+
+stop_multiplex_if_using_state_dir "${STATE_DIR}"
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 write_empty_state
 start_cni_android_multiplex "清理测试状态后重启 cri-multiplex" || exit 1
-assert_state_json "测试结束后目标 Pod/Container 状态已清理" "removed" "${POD_UID}" "${CONTAINER_ID}" || exit 1
 
 print_summary
 

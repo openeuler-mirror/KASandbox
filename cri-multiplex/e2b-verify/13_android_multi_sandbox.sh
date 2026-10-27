@@ -16,6 +16,8 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "13 — Android 多实例 kubelet 沙箱创建验证"
 
+require_android_or_skip
+
 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}"
 ANDROID_WAIT_TIMEOUT="${ANDROID_WAIT_TIMEOUT:-360s}"
 ANDROID_ADB_WAIT_TIMEOUT="${ANDROID_ADB_WAIT_TIMEOUT:-30}"

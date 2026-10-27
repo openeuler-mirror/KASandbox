@@ -22,6 +22,8 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "09 — ExecSync 能力 kubelet 验证"
 
+ensure_controlled_cni_multiplex "准备 cri-multiplex CNI 验证实例" || exit 1
+
 #==================== 配置 ====================#
 POD_NAME="${POD_NAME:-e2b-execsync-test}"
 BASE_POD_YAML="${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"

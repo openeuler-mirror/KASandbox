@@ -80,7 +80,7 @@ else
 fi
 
 if [ "${DENY_BLOCKED}" = "0" ]; then
-    log_skip "NetworkPolicy ingress 未生效或 E2B VM 流量未经过 Calico policy datapath，后续 allow 测试仅记录边界"
+    log_info "NetworkPolicy ingress 未生效，后续 allow 测试无判据，仅做连通性回归（已计 1 条 UNSUPPORTED）"
 
     log_step "4.3 入向连通保留回归：沙箱出向隔离不影响普通 Pod 入向访问"
     expect_http_204_from_client "${ALLOWED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "allowed client 入向保留" || exit 1
@@ -119,9 +119,7 @@ cleanup
 log_pass "资源删除请求已提交"
 
 print_summary
-if [ "${FAIL_COUNT}" -eq 0 ]; then
+if [ "${FAIL_COUNT}" -eq 0 ] && [ "${UNSUPPORTED_COUNT}" -eq 0 ]; then
     log_info "验证完成：E2B CNI NetworkPolicy ingress 行为已检查"
-    exit 0
-else
-    exit 1
 fi
+exit "$(summary_exit_code)"

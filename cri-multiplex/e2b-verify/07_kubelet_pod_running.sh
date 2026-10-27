@@ -24,6 +24,8 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "07 — kubelet 对接：Pod 保持 Running 验证"
 
+ensure_controlled_cni_multiplex "准备 cri-multiplex CNI 验证实例" || exit 1
+
 #==================== 配置 ====================#
 POD_NAME="${POD_NAME:-e2b-kubelet-test}"
 POD_YAML="/tmp/e2b-kubelet-pod.yaml"

@@ -165,14 +165,12 @@ else
 fi
 
 log_step "3.5 ListContainers"
-output=$(${CRICTL} ps 2>&1) || true
-# E2B Container 可能不在 crictl ps 列表中（已退出或沙箱特性），用 grpcurl ListContainers 验证
+# 用 grpcurl 精确按 container_id 过滤：crictl ps 只列 RUNNING，不能作为存在性依据
 grpc_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" "{\"filter\": {\"id\": \"${CONTAINER_ID}\"}}") || true
-if echo "${grpc_output}" | grep -q "${CONTAINER_ID}" || echo "${output}" | grep -q "${CONTAINER_ID:0:12}"; then
+if echo "${grpc_output}" | grep -q "${CONTAINER_ID}"; then
     log_pass "ListContainers 包含目标 Container"
 else
-    # E2B Container 退出后可能不在列表中，这是预期行为
-    log_pass "ListContainers 返回正常（Container 可能已退出不在列表中）"
+    log_fail "ListContainers 未包含目标 Container: ${grpc_output}"
 fi
 
 log_step "3.6 StopContainer"
@@ -200,9 +198,13 @@ else
 fi
 
 log_step "3.9 移除后 ListContainers"
-output=$(${CRICTL} ps 2>&1) || true
-if echo "${output}" | grep -q "${CONTAINER_ID}"; then
-    log_fail "Container 仍存在于列表中"
+# 必须用 ListContainers 精确查询：crictl ps 只列 RUNNING，容器已 EXITED 时必然查不到，
+# 用它判断"已删除"会恒真。
+grpc_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" "{\"filter\": {\"id\": \"${CONTAINER_ID}\"}}") || true
+if echo "${grpc_output}" | grep -q "${CONTAINER_ID}"; then
+    log_fail "Container 仍存在于列表中: ${grpc_output}"
+elif grep -qE '^(ERROR|Failed to dial)|^[[:space:]]*Code:' <<< "${grpc_output}"; then
+    log_fail "ListContainers 调用失败，无法判断容器是否已删除: ${grpc_output}"
 else
     log_pass "Container 已从列表中删除"
 fi
@@ -348,9 +350,13 @@ run_invalid_annotation_case "auto-resume=bad-policy" "e2b.dev/auto-resume" "{\"p
 log_step "6.4 删除不存在的 Pod（幂等）"
 output=$(grpc_call "runtime.v1.RuntimeService/RemovePodSandbox" '{"pod_sandbox_id": "e2b-not-exist-999"}') || true
 if echo "${output}" | grep -q "^{}\|^$"; then
-    log_pass "删除不存在的 Pod 成功（幂等）"
+    log_pass "删除不存在的 Pod 返回空（幂等）"
+elif echo "${output}" | grep -qiE "NotFound|not found"; then
+    log_pass "删除不存在的 Pod 返回 NotFound（幂等语义可接受）"
 else
-    log_pass "删除不存在的 Pod 返回（预期行为）: ${output}"
+    # 只有 {} / NotFound 才算幂等；Unimplemented / Internal / 连接失败都必须失败，
+    # 否则这条用例永远不可能暴露问题。
+    log_fail "删除不存在的 Pod 返回非预期结果: ${output}"
 fi
 
 print_summary

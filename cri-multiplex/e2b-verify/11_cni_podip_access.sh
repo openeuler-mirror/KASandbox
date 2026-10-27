@@ -18,6 +18,8 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "11 — CNI PodIP 访问 E2B 沙箱验证（Calico / bridge 自适应）"
 
+ensure_controlled_cni_multiplex "准备 cri-multiplex CNI 验证实例" || exit 1
+
 #==================== 配置 ====================#
 POD_NAME="${POD_NAME:-e2b-cni-podip-test}"
 POD_YAML="/tmp/e2b-kubelet-pod.yaml"
@@ -127,15 +129,20 @@ if [ -z "${POD_UID}" ] || [ -z "${POD_IP}" ]; then
 fi
 log_pass "Kubernetes PodIP 已分配: ${POD_IP}"
 
-NETNS_NAME="e2b-${POD_UID:0:12}"
-NETNS_PATH="/var/run/netns/${NETNS_NAME}"
-CRI_POD_ID=$(${CRICTL} pods --name "${POD_NAME}" 2>/dev/null | awk -v n="${POD_NAME}" 'NR > 1 && $0 ~ n { print $1; exit }' || true)
-if [ -z "${CRI_POD_ID}" ]; then
-    CRI_POD_ID="${POD_UID}"
-    log_skip "无法从 crictl pods 反查 CRI Pod ID，回退使用 Kubernetes UID"
-else
-    log_pass "CRI Pod ID: ${CRI_POD_ID}"
+# netns 名不是 UID 前缀（随机 12 位后缀），只能从 multiplex 日志/state 解析。
+# 解析失败必须 fail：否则后面所有「netns 已清理」断言都会因为路径不存在而恒真。
+NETNS_PATH=$(cni_netns_path_for_sandbox "${POD_UID}")
+if [ -z "${NETNS_PATH}" ] || [ ! -e "${NETNS_PATH}" ]; then
+    log_fail "无法从 multiplex 日志/state 解析到真实 CNI netns 路径（uid=${POD_UID}, 解析结果='${NETNS_PATH}'）；拒绝使用 UID 猜测路径"
+    echo "--- 最近的 CNI 相关日志 ---" >&2
+    grep -a "CNI ADD" /tmp/cri-multiplex.log 2>/dev/null | tail -5 >&2 || true
+    exit 1
 fi
+NETNS_NAME=$(basename "${NETNS_PATH}")
+log_pass "CNI netns 路径已确认存在: ${NETNS_PATH}"
+# crictl 列表把 ID 截断到 12 位，E2B engine 的 PodSandboxStatus 需要完整 UID。
+CRI_POD_ID="${POD_UID}"
+log_pass "CRI Pod ID: ${CRI_POD_ID}"
 
 #==================== CRI PodSandboxStatus 验证 ====================#
 log_step "4.1 验证 CRI PodSandboxStatus 返回 CNI PodIP"
@@ -167,7 +174,8 @@ log_step "4.2 验证 CNI netns 与 eth0/tap0"
 if [ -e "${NETNS_PATH}" ]; then
     log_pass "CNI netns 存在: ${NETNS_PATH}"
 else
-    log_skip "CNI netns 未在 ${NETNS_PATH} 观察到，跳过 netns 细节检查"
+    # 创建阶段已经确认过路径存在，这里再消失说明 CNI netns 被意外清理
+    log_fail "CNI netns 已消失: ${NETNS_PATH}"
 fi
 
 if ! NETNS_ADDR_OUTPUT=$(ip netns exec "${NETNS_NAME}" ip addr show 2>&1); then

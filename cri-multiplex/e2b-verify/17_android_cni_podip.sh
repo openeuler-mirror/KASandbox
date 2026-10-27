@@ -19,6 +19,8 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "17 — Android CNI PodIP/Netns 访问验证"
 
+require_android_or_skip
+
 POD_NAME="${POD_NAME:-android-cni-podip-test}"
 POD_YAML="${POD_YAML:-/tmp/android-cni-podip.yaml}"
 RUNTIMECLASS_YAML="${RUNTIMECLASS_YAML:-/tmp/runtimeclass-android.yaml}"

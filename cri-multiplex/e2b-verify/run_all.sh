@@ -16,6 +16,18 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "cri-multiplex grpc_e2b 全接口自动化验证"
 
+# 接管 systemd 实例后，无论成功、失败还是 Ctrl-C 都要把生产实例拉回来，
+# 否则当前仓构建的测试二进制会一直占用 kubelet 使用的 socket。
+restore_on_exit() {
+    local rc=$?
+    set +e
+    restore_systemd_multiplex 1 || true
+    exit "${rc}"
+}
+trap restore_on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 #==================== 参数解析 ====================#
 SKIP_SETUP=0
 ONLY=""
@@ -78,6 +90,7 @@ SCRIPTS=(
 TOTAL_PASS=0
 TOTAL_FAIL=0
 TOTAL_SKIP=0
+TOTAL_UNSUPPORTED=0
 MATCHED=0
 RESULTS=()
 mkdir -p "${LOG_DIR}"
@@ -85,9 +98,10 @@ mkdir -p "${LOG_DIR}"
 parse_count_from_log() {
     local log_file="$1"
     local key="$2"
-    # 同时兼容 "PASS: 12"（lib/common.sh print_summary）与 "PASS=12"（22 号自包含汇总）两种格式
+    # 同时兼容 "PASS: 12"（lib/common.sh print_summary）与 "PASS=12"（22 号自包含汇总）两种格式；
+    # "UNSUPPORTED: 2" 用同一套解析。
     local v
-    v=$(grep -aoP "${key}[:=]\\s*\\K[0-9]+" "${log_file}" 2>/dev/null | tail -1)
+    v=$(grep -aoP "(^|[^A-Z])${key}[:=]\\s*\\K[0-9]+" "${log_file}" 2>/dev/null | tail -1)
     echo "${v:-0}"
 }
 
@@ -168,7 +182,11 @@ for entry in "${SCRIPTS[@]}"; do
                 fi
                 ;;
 			18|19|20)
-                log_info "[${num}] 用例内部会以 CNI+Android runtime 模式启动 cri-multiplex，并使用独立 state-dir ..."
+                # 这三个用例会 rm -rf / 伪造脏 state，各自使用私有 state-dir
+                # （STATE_DIR_RESTORE / _MATRIX / _CLEANUP，见 lib/common.sh），
+                # 并关闭宿主级 orphan reconciler（20 除外，它测的就是回收）。
+                # 20 结束后会把实例恢复成共享 state-dir 的标准实例。
+                log_info "[${num}] 用例内部会以 CNI+Android runtime 模式启动 cri-multiplex，并使用私有 state-dir ..."
                 ;;
         esac
     else
@@ -201,16 +219,25 @@ for entry in "${SCRIPTS[@]}"; do
     exit_code=$?
     set -e
 
-    # 解析子脚本的 PASS/FAIL/SKIP 计数
+    # 解析子脚本的 PASS/FAIL/SKIP/UNSUPPORTED 计数
     sub_pass=$(parse_count_from_log "${log_file}" "PASS")
     sub_fail=$(parse_count_from_log "${log_file}" "FAIL")
     sub_skip=$(parse_count_from_log "${log_file}" "SKIP")
+    sub_unsupported=$(parse_count_from_log "${log_file}" "UNSUPPORTED")
 
     TOTAL_PASS=$((TOTAL_PASS + sub_pass))
     TOTAL_FAIL=$((TOTAL_FAIL + sub_fail))
     TOTAL_SKIP=$((TOTAL_SKIP + sub_skip))
+    TOTAL_UNSUPPORTED=$((TOTAL_UNSUPPORTED + sub_unsupported))
 
-    if [ ${exit_code} -eq 0 ]; then
+    if [ ${exit_code} -eq "${UNSUPPORTED_EXIT_CODE}" ]; then
+        # 用例无失败，但当前环境不具备该能力：既不是 PASS 也不是 FAIL。
+        if [ "${sub_unsupported}" = "0" ]; then
+            sub_unsupported=1
+            TOTAL_UNSUPPORTED=$((TOTAL_UNSUPPORTED + 1))
+        fi
+        RESULTS+=("${num}|${desc}|UNSUPPORTED(${sub_pass}/${sub_fail}/${sub_skip}/${sub_unsupported})")
+    elif [ ${exit_code} -eq 0 ]; then
         RESULTS+=("${num}|${desc}|PASS(${sub_pass}/${sub_fail}/${sub_skip})")
     else
         if [ "${sub_fail}" = "0" ]; then
@@ -231,6 +258,7 @@ if [ -n "${ONLY}" ] && [ "${MATCHED}" -eq 0 ]; then
     exit 1
 fi
 
+# 恢复 systemd 实例由 EXIT trap（restore_on_exit）负责。
 #==================== 最终汇总 ====================#
 echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════╗${NC}"
@@ -250,6 +278,8 @@ for r in "${RESULTS[@]}"; do
 
     if echo "${status}" | grep -q "^PASS"; then
         printf "${CYAN}║${NC} [${num}]${pad_num} ${desc}${pad_desc} ${GREEN}%-20s${NC} ${CYAN}║${NC}\n" "${status}"
+    elif echo "${status}" | grep -q "^UNSUPPORTED"; then
+        printf "${CYAN}║${NC} [${num}]${pad_num} ${desc}${pad_desc} ${YELLOW}%-20s${NC} ${CYAN}║${NC}\n" "${status}"
     elif echo "${status}" | grep -q "^SKIP"; then
         printf "${CYAN}║${NC} [${num}]${pad_num} ${desc}${pad_desc} ${YELLOW}%-20s${NC} ${CYAN}║${NC}\n" "${status}"
     else
@@ -258,13 +288,18 @@ for r in "${RESULTS[@]}"; do
 done
 
 echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════╣${NC}"
-printf "${CYAN}║${NC}  ${GREEN}PASS: %-5d${NC}  ${RED}FAIL: %-5d${NC}  ${YELLOW}SKIP: %-5d${NC}  TOTAL: %-5d   ${CYAN}║${NC}\n" \
-    "${TOTAL_PASS}" "${TOTAL_FAIL}" "${TOTAL_SKIP}" "$((TOTAL_PASS+TOTAL_FAIL+TOTAL_SKIP))"
+printf "${CYAN}║${NC}  ${GREEN}PASS: %-5d${NC}  ${RED}FAIL: %-5d${NC}  ${YELLOW}SKIP: %-5d${NC}  ${YELLOW}UNSUP: %-4d${NC}  TOTAL: %-4d ${CYAN}║${NC}\n" \
+    "${TOTAL_PASS}" "${TOTAL_FAIL}" "${TOTAL_SKIP}" "${TOTAL_UNSUPPORTED}" \
+    "$((TOTAL_PASS+TOTAL_FAIL+TOTAL_SKIP+TOTAL_UNSUPPORTED))"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-if [ ${TOTAL_FAIL} -eq 0 ]; then
+if [ ${TOTAL_FAIL} -eq 0 ] && [ ${TOTAL_UNSUPPORTED} -eq 0 ]; then
     echo -e "${GREEN}✓ 全部验证通过！${NC}"
+    exit 0
+elif [ ${TOTAL_FAIL} -eq 0 ]; then
+    echo -e "${YELLOW}△ 无失败，但有 ${TOTAL_UNSUPPORTED} 项因当前环境不具备能力而未能验证（UNSUPPORTED，未计入 PASS）${NC}"
+    echo -e "${YELLOW}  请在这些用例的日志里核对 [UNSUPPORTED] 行，不要把本轮结果当作完整验证。${NC}"
     exit 0
 else
     echo -e "${RED}✗ 有 ${TOTAL_FAIL} 个测试失败${NC}"

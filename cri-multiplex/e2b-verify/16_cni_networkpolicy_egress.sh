@@ -220,7 +220,7 @@ if e2b_deny_set_contains "${POD_NAME}" "${POD_CIDR}"; then
     ISOLATION=1
     log_pass "沙箱 A netns 的 filtered_always_denylist 包含 Pod CIDR ${POD_CIDR}"
 else
-    log_skip "沙箱 A netns 的 predefinedDenySet 不含 ${POD_CIDR}，orchestrator 未注入 SANDBOX_DENIED_POD_CIDR，3.3/3.4 记录为 SKIP"
+    log_unsupported "沙箱 A netns 的 predefinedDenySet 不含 ${POD_CIDR}，orchestrator 未注入 SANDBOX_DENIED_POD_CIDR，3.3/3.4 无法验证"
 fi
 
 log_step "3.3 沙箱间隔离：E2B VM A -> E2B Pod B PodIP（TCP）"
@@ -233,7 +233,7 @@ if [ "${ISOLATION}" = "1" ]; then
         exit 1
     fi
 else
-    log_skip "沙箱隔离未启用，跳过沙箱互访断言"
+    log_info "沙箱隔离未启用，跳过沙箱互访断言（已在 3.2 计 UNSUPPORTED）"
 fi
 
 log_step "3.4 Pod CIDR 默认阻断 + allowlist 例外放通"
@@ -255,13 +255,13 @@ if [ "${ISOLATION}" = "1" ]; then
         exit 1
     fi
 else
-    log_skip "沙箱隔离未启用，跳过默认阻断断言，仅验证 baseline 直连"
+    log_info "沙箱隔离未启用，跳过默认阻断断言，仅验证 baseline 直连（已在 3.2 计 UNSUPPORTED）"
     patch_e2b_firewall_allowlist "${POD_NAME}" "${TARGET_CLUSTER_IP}" "${TARGET_POD_IP}" || exit 1
     DIRECT_CODE=$(e2b_http_code "${POD_NAME}" "http://${TARGET_POD_IP}:${TARGET_PORT}/")
     if [ "${DIRECT_CODE}" = "200" ]; then
         log_pass "baseline 成功：E2B VM -> target PodIP HTTP ${DIRECT_CODE}"
     else
-        log_skip "E2B VM 无法访问 target PodIP，HTTP ${DIRECT_CODE}，当前 CNI POC 暂不具备 egress baseline"
+        log_unsupported "E2B VM 无法访问 target PodIP，HTTP ${DIRECT_CODE}，当前 CNI POC 暂不具备 egress baseline"
     fi
 fi
 
@@ -308,7 +308,7 @@ done
 if [ "${DENY_BLOCKED}" = "1" ]; then
     log_pass "deny-all egress 已阻断 E2B VM -> target"
 else
-    log_skip "deny-all egress 未阻断，HTTP ${DENY_CODE}，bridge 数据面不支持 NetworkPolicy，记为 UNSUPPORTED"
+    log_unsupported "deny-all egress 未阻断（HTTP ${DENY_CODE}），bridge 数据面不支持 NetworkPolicy"
 fi
 
 log_step "5.1 删除资源"
@@ -316,9 +316,7 @@ cleanup
 log_pass "资源删除请求已提交"
 
 print_summary
-if [ "${FAIL_COUNT}" -eq 0 ]; then
+if [ "${FAIL_COUNT}" -eq 0 ] && [ "${UNSUPPORTED_COUNT}" -eq 0 ]; then
     log_info "验证完成：E2B CNI 沙箱出向隔离 / NetworkPolicy egress 行为已检查"
-    exit 0
-else
-    exit 1
 fi
+exit "$(summary_exit_code)"

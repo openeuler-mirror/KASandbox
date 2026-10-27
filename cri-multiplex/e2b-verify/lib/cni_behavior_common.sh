@@ -14,6 +14,7 @@ CLIENT_IMAGE="${CLIENT_IMAGE:-docker.io/library/busybox:latest}"
 CLIENT_NSLOOKUP_CMD="${CLIENT_NSLOOKUP_CMD:-}"
 
 require_cni_behavior_prereqs() {
+    ensure_controlled_cni_multiplex "准备 cri-multiplex CNI 验证实例" || return 1
     require_cri_multiplex_cni_enabled || return 1
 
     if ! kubectl get runtimeclass e2b >/dev/null 2>&1; then
@@ -171,7 +172,7 @@ expect_blocked_from_client() {
         log_pass "${desc}: 已阻断"
         return 0
     fi
-    log_skip "${desc}: 未阻断，HTTP ${code}，当前 CNI POC 暂不承诺该 NetworkPolicy 行为"
+    log_unsupported "${desc}: 未阻断，HTTP ${code}，当前 CNI POC 暂不承诺该 NetworkPolicy 行为"
     return 2
 }
 
@@ -213,7 +214,7 @@ wait_blocked_from_client() {
             return 0
         fi
         if [ "$(date +%s)" -ge "${deadline}" ]; then
-            log_skip "${desc}: 未阻断，HTTP ${code}，当前 CNI POC 暂不承诺该 NetworkPolicy 行为"
+            log_unsupported "${desc}: 未阻断，HTTP ${code}，当前 CNI POC 暂不承诺该 NetworkPolicy 行为"
             return 2
         fi
         sleep 1

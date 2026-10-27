@@ -16,6 +16,8 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "12 — Android RuntimeClass kubelet 沙箱创建验证"
 
+require_android_or_skip
+
 POD_NAME="${POD_NAME:-android-cvd-kubelet-test}"
 POD_YAML="${POD_YAML:-/tmp/android-cvd-kubelet-pod.yaml}"
 RUNTIMECLASS_YAML="${RUNTIMECLASS_YAML:-/tmp/runtimeclass-android.yaml}"
