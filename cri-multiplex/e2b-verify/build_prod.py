@@ -1,5 +1,4 @@
 """Build an E2B template through the local API (optional snapshot-repair fallback)."""
-import os
 import sys
 from pathlib import Path
 
@@ -17,6 +16,7 @@ def load_env() -> None:
 load_env()
 
 from e2b import Template, default_build_logger  # noqa: E402
+from python_env import resolve_template_image_registry  # noqa: E402
 
 
 if __name__ == "__main__":
@@ -27,12 +27,13 @@ if __name__ == "__main__":
 
     image_name = sys.argv[1]
     alias = image_name.replace(":", "-").replace(".", "-")
-    registry = os.environ.get(
-        "E2B_TEMPLATE_IMAGE_REGISTRY", "193.12.7.2:30443/e2b-orchestration"
-    )
+    # 默认使用当前环境节点 IP（<node-ip>:30443/e2b-orchestration），不写死地址；
+    # 可用 E2B_TEMPLATE_IMAGE_REGISTRY 显式覆盖。
+    registry = resolve_template_image_registry()
     dockerfile = f"FROM {registry}/{image_name}"
 
     print(f"Building template: {alias}")
+    print(f"Registry: {registry}")
     print(f"Dockerfile: {dockerfile}")
     Template.build(
         Template().from_dockerfile(dockerfile),

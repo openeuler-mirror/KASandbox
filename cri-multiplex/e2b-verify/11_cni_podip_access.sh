@@ -222,9 +222,9 @@ log_step "5.2 E2B 沙箱内经 CNI 访问外网"
 
 EGRESS_OUTPUT=$(kubectl_exec_output_with_retry "${POD_NAME}" 60 sh -c '
 set -eu
-getent hosts example.com >${TMP_ROOT}/e2b-dns.out 2>${TMP_ROOT}/e2b-dns.err || {
+getent hosts example.com >/tmp/e2b-dns.out 2>/tmp/e2b-dns.err || {
   echo "DNS_FAIL"
-  cat ${TMP_ROOT}/e2b-dns.err 2>/dev/null || true
+  cat /tmp/e2b-dns.err 2>/dev/null || true
   exit 11
 }
 if command -v curl >/dev/null 2>&1; then

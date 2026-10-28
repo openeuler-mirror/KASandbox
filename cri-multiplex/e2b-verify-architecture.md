@@ -106,6 +106,7 @@ e2b-verify/
 | `ORCHESTRATOR_ADDRESS` / `ORCHESTRATOR_PROXY_ADDRESS` | `localhost:5008` / `localhost:5007` | E2B orchestrator / proxy 地址 |
 | `CNI_CONF_DIR` | `/etc/cni/net-e2b.d` | E2B 专用 CNI 配置目录 |
 | `E2B_API_URL` / `E2B_TEMPLATE_ALIAS` | `http://127.0.0.1:3000` / `ubuntu-22-04-custom-1` | E2B API 与模板别名 |
+| `E2B_TEMPLATE_IMAGE_REGISTRY` | `<当前节点IP>:30443/e2b-orchestration`（自动探测） | 模板构建镜像仓库前缀；显式设置优先，不写死 IP |
 | `ANDROID_ARTIFACTS_DIR` | 自动探测 | launch_cvd artifacts 目录 |
 | `HIDE_SANDBOX_LABEL` | 空 | 传给 `-hide-sandbox-label`（23 使用） |
 | `POD_UID` / `CONTAINER_ID` | `irlkuj9aask5hmw37uc51` / `${POD_UID}-c` | 默认值；直连用例会生成唯一 UID |
@@ -702,7 +703,9 @@ Pod 沙箱配置文件，由 `00_setup.sh` / `write_default_pod_json` 按 live �
 python3 build_prod.py ubuntu:22.04-custom
 ```
 - 镜像名 `:` 和 `.` 替换为 `-` 作为 alias
-- Dockerfile: `FROM ${E2B_TEMPLATE_IMAGE_REGISTRY:-193.12.7.2:30443/e2b-orchestration}/{image_name}`
+- Dockerfile: `FROM ${E2B_TEMPLATE_IMAGE_REGISTRY:-<当前节点IP>:30443/e2b-orchestration}/{image_name}`
+  - 默认值不写死 IP：依次按 `NODE_IP`/`SERVER_IP` → k8s Node InternalIP → 默认路由源地址 → `hostname -i` 探测当前环境节点 IP
+  - 探测失败时脚本报错，需显式设置 `E2B_TEMPLATE_IMAGE_REGISTRY`
 - 仅在 `E2B_REBUILD_ON_SNAPSHOT=1` 或 `refresh_build_id.sh` 的回退路径中使用
 
 ### 6.3 test.py

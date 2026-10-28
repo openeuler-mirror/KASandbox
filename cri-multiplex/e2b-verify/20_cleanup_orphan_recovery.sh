@@ -463,8 +463,8 @@ delete_kube_pod() {
 }
 
 log_step "1. 前置检查（20 号默认不构建）"
-if [ ! -x "${MULTIPLEX_DIR}/cri-multiplex" ]; then
-    log_info "cri-multiplex 二进制不存在: ${MULTIPLEX_DIR}/cri-multiplex"
+if [ ! -x "${MULTIPLEX_BIN}" ]; then
+    log_info "cri-multiplex 二进制不存在: ${MULTIPLEX_BIN}"
     exit 1
 fi
 if [ ! -f "${E2B_POD_JSON}" ] || ! grep -q 'e2b.dev/template-id' "${E2B_POD_JSON}"; then
