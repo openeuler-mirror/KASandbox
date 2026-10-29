@@ -12,6 +12,8 @@ spec:
     spec:
       hostPID: true
       hostNetwork: true
+      # 退出时要清理网络池、等暂停快照上传完，默认 30 秒会被强杀，留下 netns 残留
+      terminationGracePeriodSeconds: 600
       dnsPolicy: ClusterFirstWithHostNet
       affinity:
         nodeAffinity:
