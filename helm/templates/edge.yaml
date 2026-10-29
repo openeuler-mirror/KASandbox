@@ -93,6 +93,9 @@ spec:
           value: "{{ .Values.lokiUrl }}"
         - name: API_GRPC_ADDRESS
           value: "{{ .Values.apiGrpcAddress }}"
+        # e2b-infra 2026.30 改用此名，缺失时访问暂停的沙箱不会自动恢复
+        - name: API_INTERNAL_GRPC_ADDRESS
+          value: "{{ .Values.apiGrpcAddress }}"
         resources:
           requests:
             cpu: {{ .Values.clientProxyResourcesCpuCount }}m

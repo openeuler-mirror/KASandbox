@@ -490,7 +490,8 @@ $HARBOR_CERTS_DIR $NODE_ID $GLOG_logtostderr $MOONCAKE_MASTER_ADDR $MOONCAKE_MET
 $MOONCAKE_UPLOAD_SIGNING_SECRET $MOONCAKE_UPLOAD_MAX_BYTES
 $E2B_FC_NETNS_EXEC_HELPER $E2B_USE_FC_NETNS_EXEC_HELPER
 $API_RESOURCES_CPU_COUNT $API_RESOURCES_MEMORY_MB $API_LIMITS_CPU_COUNT $API_LIMITS_MEMORY_MB
-$TEMPLATE_MANAGER_RESOURCES_CPU_COUNT $TEMPLATE_MANAGER_RESOURCES_MEMORY_MB $TEMPLATE_MANAGER_LIMITS_CPU_COUNT $TEMPLATE_MANAGER_LIMITS_MEMORY_MB'
+$TEMPLATE_MANAGER_RESOURCES_CPU_COUNT $TEMPLATE_MANAGER_RESOURCES_MEMORY_MB $TEMPLATE_MANAGER_LIMITS_CPU_COUNT $TEMPLATE_MANAGER_LIMITS_MEMORY_MB
+$COMPRESS_ENABLED $COMPRESS_TYPE $COMPRESS_LEVEL'
 
     local hcl outfile
     for hcl in "$SCRIPT_DIR"/nomad/*.hcl; do
@@ -566,7 +567,8 @@ EOF
         # 从 user.txt 中提取变量
         local team_id token api_key
         team_id=$(grep "Team ID:" "$SCRIPT_DIR/user.txt" | awk -F': ' '{print $2}')
-        token=$(grep "Access Token:" "$SCRIPT_DIR/user.txt" | awk -F': ' '{print $2}')
+        # 2026.30 的 seed-db 不输出 Access Token，grep 无匹配时不能让 pipefail 中断部署
+        token=$(grep "Access Token:" "$SCRIPT_DIR/user.txt" | awk -F': ' '{print $2}' || true)
         api_key=$(grep "Team API Key:" "$SCRIPT_DIR/user.txt" | awk -F': ' '{print $2}')
 
         cat > /root/.e2b/config.json <<EOF
@@ -654,7 +656,8 @@ init_database_k8s() {
     token=$(grep "Access Token:" "$SCRIPT_DIR/user.txt" | awk -F': ' '{print $2}' || true)
     api_key=$(grep "Team API Key:" "$SCRIPT_DIR/user.txt" | awk -F': ' '{print $2}' || true)
 
-    if [ -z "$team_id" ] || [ -z "$token" ] || [ -z "$api_key" ]; then
+    # 2026.30 的 seed-db 只生成 API key，不生成 access token，这里不再强制要求
+    if [ -z "$team_id" ] || [ -z "$api_key" ]; then
         echo "ERROR: Failed to extract credentials from seed-db output:"
         cat "$SCRIPT_DIR/user.txt"
         exit 1
