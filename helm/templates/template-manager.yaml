@@ -40,6 +40,8 @@ spec:
           mountPath: /fc-kernels
         - name: fc-versions
           mountPath: /fc-versions
+        - name: fc-busybox
+          mountPath: /fc-busybox
         - name: fc-vm
           mountPath: /fc-vm
         - name: tmp-templates
@@ -91,6 +93,12 @@ spec:
           value: "{{ .Values.sandboxFirewallAllowedCIDRs }}"
         - name: SHARED_CHUNK_CACHE_PATH
           value: "{{ .Values.sharedChunkCachePath }}"
+        - name: COMPRESS_ENABLED
+          value: "{{ .Values.compressEnabled }}"
+        - name: COMPRESS_TYPE
+          value: "{{ .Values.compressType }}"
+        - name: COMPRESS_LEVEL
+          value: "{{ .Values.compressLevel }}"
         - name: CLICKHOUSE_CONNECTION_STRING
           value: "clickhouse://{{ .Values.clickhouseUsername }}:{{ .Values.clickhousePassword }}@127.0.0.1:{{ .Values.clickhouseServerPort | int }}/{{ .Values.clickhouseDatabase }}"
         - name: STORAGE_PROVIDER
@@ -201,6 +209,10 @@ spec:
       - name: fc-versions
         hostPath:
           path: /fc-versions
+          type: DirectoryOrCreate
+      - name: fc-busybox
+        hostPath:
+          path: /fc-busybox
           type: DirectoryOrCreate
       - name: fc-vm
         hostPath:

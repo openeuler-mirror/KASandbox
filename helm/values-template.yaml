@@ -92,6 +92,10 @@ sandboxFirewallAllowedCIDRs: ${SANDBOX_FIREWALL_ALLOWED_CIDRS}
 sharedChunkCachePath: ${SHARED_CHUNK_CACHE_PATH}
 storageProvider: ${STORAGE_PROVIDER}
 artifactsRegistryProvider: ${ARTIFACTS_REGISTRY_PROVIDER}
+# Template storage compression (read only by e2b-infra 2026.30 binaries)
+compressEnabled: "${COMPRESS_ENABLED}"
+compressType: "${COMPRESS_TYPE}"
+compressLevel: "${COMPRESS_LEVEL}"
 
 # --- otel-collector ---
 otelCollectorResourcesCpuCount: ${OTEL_COLLECTOR_RESOURCES_CPU_COUNT}
