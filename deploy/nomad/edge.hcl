@@ -93,6 +93,8 @@ job "client-proxy" {
 
         # used only when client-proxy is deployed directly in the cluster next to the API
         API_GRPC_ADDRESS = "${API_GRPC_ADDRESS}"
+        # e2b-infra 2026.30 改用此名，缺失时访问暂停的沙箱不会自动恢复
+        API_INTERNAL_GRPC_ADDRESS = "${API_GRPC_ADDRESS}"
 
       }
 

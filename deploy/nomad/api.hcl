@@ -79,6 +79,8 @@ job "api" {
         # systemd 模式静态节点清单（仅 ORCHESTRATOR_TYPE=systemd 时生效，其余模式为空）
         ORCHESTRATOR_STATIC_NODES      = "${ORCHESTRATOR_STATIC_NODES}"
         API_GRPC_PORT                  = "${API_GRPC_PORT}"
+        # 仅 e2b-infra 2026.30 二进制读取，KASandbox 自带二进制忽略
+        VOLUME_TOKEN_ENABLED           = "false"
         ADMIN_TOKEN                    = "${API_ADMIN_TOKEN}"
         SANDBOX_ACCESS_TOKEN_HASH_SEED = "${SANDBOX_ACCESS_TOKEN_HASH_SEED}"
 

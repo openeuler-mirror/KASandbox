@@ -138,6 +138,19 @@ spec:
           value: "{{ .Values.orchestratorPort }}"
         - name: API_GRPC_PORT
           value: "{{ .Values.apiGrpcPort }}"
+        # 以下仅 e2b-infra 2026.30 二进制读取，KASandbox 自带二进制忽略
+        - name: VOLUME_TOKEN_ENABLED
+          value: "false"
+        {{- if eq (.Values.orchestratorType | default "k8s") "k8s" }}
+        - name: SERVICE_DISCOVERY_PROVIDER
+          value: "kubernetes"
+        - name: K8S_NAMESPACE
+          value: "{{ .Release.Namespace }}"
+        - name: K8S_ORCHESTRATOR_POD_LABEL_SELECTOR
+          value: "app in (orchestrator,template-manager)"
+        - name: K8S_TEMPLATE_MANAGER_POD_LABEL_SELECTOR
+          value: "app=template-manager"
+        {{- end }}
         - name: POSTGRES_CONNECTION_STRING
           value: "postgresql://{{ .Values.postgresUser }}:{{ .Values.postgresPassword }}@{{ .Values.postgresUrl }}:{{ .Values.postgresPort | int }}/mydatabase?sslmode=disable"
         - name: SUPABASE_JWT_SECRETS
