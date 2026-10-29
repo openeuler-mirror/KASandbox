@@ -31,17 +31,15 @@ cleanup_06() {
 }
 
 prepare_06_pod_json() {
-    POD_UID="e2battach$(date +%s)$RANDOM"
-    CONTAINER_ID="${POD_UID}-c"
-    POD_JSON="/tmp/e2b-pod-06-${POD_UID}.json"
-    export POD_UID CONTAINER_ID POD_JSON
-
-    cp "${BASE_POD_JSON}" "${POD_JSON}"
-    sed -i \
-        -e "s|\"uid\":\\s*\"[^\"]*\"|\"uid\": \"${POD_UID}\"|" \
-        -e "0,/\"name\":\\s*\"[^\"]*\"/s//\"name\": \"test-e2b-attach-${POD_UID}\"/" \
-        "${POD_JSON}"
-    log_pass "已生成独立 Pod JSON: ${POD_JSON}"
+    # 必须走共享生成函数 prepare_direct_pod_json：它会写 flux-sandbox.io/direct=true
+    # （以及 flux-sandbox.io/runtime=e2b）。缺这个标签时，kubelet 用空 selector 调
+    # ListPodSandbox 能看到本 sandbox，孤儿清理（HandlePodCleanups / runtime GC）
+    # 就会在用例执行中途把它连同容器一起删掉，Attach 随后必然 NotFound。
+    # 历史失败：containerID=e2battach179319334928780-c 被 kubelet RemoveContainer。
+    if ! prepare_direct_pod_json "attach06" "${BASE_POD_JSON}"; then
+        log_fail "生成 Attach 测试 Pod JSON 失败"
+        return 1
+    fi
 }
 
 finish_06() {
@@ -75,7 +73,9 @@ for attempt in 1 2 3; do
         cleanup_06
     fi
     fail_before_attempt="${FAIL_COUNT}"
-    prepare_06_pod_json
+    if ! prepare_06_pod_json; then
+        finish_06
+    fi
     if POD_UID=$(run_pod_sandbox) && CONTAINER_ID=$(create_and_start_container "${POD_UID}"); then
         export POD_UID CONTAINER_ID
         created=1

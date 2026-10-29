@@ -19,9 +19,11 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "17 — Android CNI PodIP/Netns 访问验证"
 
+require_android_or_skip
+
 POD_NAME="${POD_NAME:-android-cni-podip-test}"
-POD_YAML="${POD_YAML:-/tmp/android-cni-podip.yaml}"
-RUNTIMECLASS_YAML="${RUNTIMECLASS_YAML:-/tmp/runtimeclass-android.yaml}"
+POD_YAML="${POD_YAML:-${TMP_ROOT}/android-cni-podip.yaml}"
+RUNTIMECLASS_YAML="${RUNTIMECLASS_YAML:-${TMP_ROOT}/runtimeclass-android.yaml}"
 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}"
 ANDROID_ADB_PORT="${ANDROID_ADB_PORT:-6520}"
 ANDROID_BASE_INSTANCE_NUM="${ANDROID_BASE_INSTANCE_NUM:-1}"
@@ -76,10 +78,10 @@ log_info "旧 Android Pod 已清理"
 
 log_step "1.5 清理旧 CVD 实例"
 if [ -x "${ANDROID_ARTIFACTS_DIR}/bin/cvd" ]; then
-    if HOME="${ANDROID_ARTIFACTS_DIR}" timeout 30 "${ANDROID_ARTIFACTS_DIR}/bin/cvd" stop >/tmp/android-cni-preclean.log 2>&1; then
+    if HOME="${ANDROID_ARTIFACTS_DIR}" timeout 30 "${ANDROID_ARTIFACTS_DIR}/bin/cvd" stop >${TMP_ROOT}/android-cni-preclean.log 2>&1; then
         log_info "旧 CVD 实例已清理"
     else
-        log_info "cvd stop 未成功或无旧实例，继续执行；日志: /tmp/android-cni-preclean.log"
+        log_info "cvd stop 未成功或无旧实例，继续执行；日志: ${TMP_ROOT}/android-cni-preclean.log"
     fi
 else
     log_info "cvd 命令不存在，跳过旧 CVD 实例清理"
@@ -114,7 +116,7 @@ if kubectl wait --for=condition=Ready "pod/${POD_NAME}" --timeout="${ANDROID_WAI
 else
     log_fail "Android Pod 未在 ${ANDROID_WAIT_TIMEOUT} 内 Ready"
     kubectl describe pod "${POD_NAME}" >&2 || true
-    tail -n 160 /tmp/cri-multiplex.log >&2 || true
+    tail -n 160 ${MULTIPLEX_LOG} >&2 || true
     exit 1
 fi
 
@@ -232,12 +234,12 @@ fi
 log_step "3.7 验证 PodIP 到 Android guest 内服务"
 "${ADB_BIN}" -s "${ADB_URL}" shell "su 0 pkill -f 'toybox nc.*${ANDROID_GUEST_SERVICE_PORT}' 2>/dev/null || true" >&2 || true
 "${ADB_BIN}" -s "${ADB_URL}" shell "su 0 sh -c 'toybox nc -L -p ${ANDROID_GUEST_SERVICE_PORT} sh -c '\''printf \"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\nANDROID-CNI-OK\n\"'\'' >/data/local/tmp/cni-guest-http.log 2>&1 &'" >&2
-HTTP_BODY=$(curl -sS --max-time 5 "http://${POD_IP}:${ANDROID_GUEST_SERVICE_PORT}/" 2>/tmp/android-cni-guest-curl.err || true)
+HTTP_BODY=$(curl -sS --max-time 5 "http://${POD_IP}:${ANDROID_GUEST_SERVICE_PORT}/" 2>${TMP_ROOT}/android-cni-guest-curl.err || true)
 if grep -q "ANDROID-CNI-OK" <<< "${HTTP_BODY}"; then
     log_pass "PodIP:${ANDROID_GUEST_SERVICE_PORT} 可访问 Android guest 内服务"
 else
     log_fail "PodIP:${ANDROID_GUEST_SERVICE_PORT} 无法访问 Android guest 内服务"
-    cat /tmp/android-cni-guest-curl.err >&2 || true
+    cat ${TMP_ROOT}/android-cni-guest-curl.err >&2 || true
     echo "${HTTP_BODY}" >&2
     ip netns exec "${NETNS_NAME}" iptables -t nat -S >&2 || true
     ip netns exec "${NETNS_NAME}" iptables -S >&2 || true

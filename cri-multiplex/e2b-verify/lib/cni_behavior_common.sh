@@ -8,12 +8,13 @@ SCRIPT_DIR_CNI_COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${SCRIPT_DIR_CNI_COMMON}/lib/common.sh"
 
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR_CNI_COMMON}/lib/refresh_build_id.sh}"
-E2B_CNI_YAML="${E2B_CNI_YAML:-/tmp/e2b-kubelet-pod.yaml}"
+E2B_CNI_YAML="${E2B_CNI_YAML:-${TMP_ROOT}/e2b-kubelet-pod.yaml}"
 ENVD_PORT="${ENVD_PORT:-49983}"
 CLIENT_IMAGE="${CLIENT_IMAGE:-docker.io/library/busybox:latest}"
 CLIENT_NSLOOKUP_CMD="${CLIENT_NSLOOKUP_CMD:-}"
 
 require_cni_behavior_prereqs() {
+    ensure_controlled_cni_multiplex "准备 cri-multiplex CNI 验证实例" || return 1
     require_cri_multiplex_cni_enabled || return 1
 
     if ! kubectl get runtimeclass e2b >/dev/null 2>&1; then
@@ -62,6 +63,20 @@ prepare_e2b_cni_pod_yaml() {
     local extra_label_key="${3:-}"
     local extra_label_value="${4:-}"
 
+    # run_all 会用 E2B_SKIP_BUILD=1 + E2B_BASE_POD_YAML 把 07 号准备的共享 fixture
+    # 下发给后续用例；此时目标文件名往往和 base 不同（例如 16 号的
+    # e2b-np-egress-peer.yaml），必须先复制一份，否则 refresh_or_reuse_e2b_yaml
+    # 会去校验一个尚不存在的文件并直接 FAIL。
+    # prepare_e2b_pod_yaml 里有同样的逻辑，这里补齐，避免两套实现漂移。
+    if [ "${E2B_SKIP_BUILD:-0}" = "1" ] \
+        && [ "${E2B_CNI_YAML}" != "${E2B_BASE_POD_YAML:-}" ] \
+        && [ -f "${E2B_BASE_POD_YAML:-}" ]; then
+        cp "${E2B_BASE_POD_YAML}" "${E2B_CNI_YAML}" || {
+            log_fail "无法从共享 fixture 复制 Pod YAML: ${E2B_BASE_POD_YAML} -> ${E2B_CNI_YAML}"
+            return 1
+        }
+    fi
+
     if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${pod_name}" "${E2B_CNI_YAML}"; then
         return 1
     fi
@@ -107,7 +122,7 @@ create_curl_client_pod() {
     local pod_name="$1"
     local label_key="${2:-role}"
     local label_value="${3:-cni-client}"
-    local yaml="/tmp/${pod_name}.yaml"
+    local yaml="${TMP_ROOT}/${pod_name}.yaml"
 
     cat > "${yaml}" <<EOF
 apiVersion: v1
@@ -138,12 +153,12 @@ EOF
 client_curl_code() {
     local client_pod="$1"
     local url="$2"
-    kubectl exec "${client_pod}" -- sh -c "if command -v curl >/dev/null 2>&1; then curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 '${url}'; elif command -v wget >/dev/null 2>&1; then wget -q -T 5 -O /dev/null '${url}' && echo 204 || echo 000; else echo NO_HTTP_CLIENT; fi" 2>/tmp/cni-client-curl.err || true
+    kubectl exec "${client_pod}" -- sh -c "if command -v curl >/dev/null 2>&1; then curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 '${url}'; elif command -v wget >/dev/null 2>&1; then wget -q -T 5 -O /dev/null '${url}' && echo 204 || echo 000; else echo NO_HTTP_CLIENT; fi" 2>${TMP_ROOT}/cni-client-curl.err || true
 }
 
 host_curl_code() {
     local url="$1"
-    curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 5 "${url}" 2>/tmp/cni-host-curl.err || true
+    curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 5 "${url}" 2>${TMP_ROOT}/cni-host-curl.err || true
 }
 
 expect_http_204_from_client() {
@@ -157,7 +172,7 @@ expect_http_204_from_client() {
         return 0
     fi
     log_fail "${desc} 失败: HTTP ${code}"
-    cat /tmp/cni-client-curl.err >&2 || true
+    cat ${TMP_ROOT}/cni-client-curl.err >&2 || true
     return 1
 }
 
@@ -171,7 +186,7 @@ expect_blocked_from_client() {
         log_pass "${desc}: 已阻断"
         return 0
     fi
-    log_skip "${desc}: 未阻断，HTTP ${code}，当前 CNI POC 暂不承诺该 NetworkPolicy 行为"
+    log_unsupported "${desc}: 未阻断，HTTP ${code}，当前 CNI POC 暂不承诺该 NetworkPolicy 行为"
     return 2
 }
 
@@ -191,7 +206,7 @@ wait_http_204_from_client() {
         fi
         if [ "$(date +%s)" -ge "${deadline}" ]; then
             log_fail "${desc} 失败: HTTP ${code}"
-            cat /tmp/cni-client-curl.err >&2 || true
+            cat ${TMP_ROOT}/cni-client-curl.err >&2 || true
             return 1
         fi
         sleep 1
@@ -213,7 +228,7 @@ wait_blocked_from_client() {
             return 0
         fi
         if [ "$(date +%s)" -ge "${deadline}" ]; then
-            log_skip "${desc}: 未阻断，HTTP ${code}，当前 CNI POC 暂不承诺该 NetworkPolicy 行为"
+            log_unsupported "${desc}: 未阻断，HTTP ${code}，当前 CNI POC 暂不承诺该 NetworkPolicy 行为"
             return 2
         fi
         sleep 1
@@ -224,7 +239,7 @@ create_e2b_service() {
     local svc_name="$1"
     local app_label="$2"
     local port="${3:-${ENVD_PORT}}"
-    local yaml="/tmp/${svc_name}.yaml"
+    local yaml="${TMP_ROOT}/${svc_name}.yaml"
 
     cat > "${yaml}" <<EOF
 apiVersion: v1

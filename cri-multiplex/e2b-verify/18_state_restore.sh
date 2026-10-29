@@ -16,12 +16,20 @@ source "${SCRIPT_DIR}/lib/common.sh"
 log_section "18 — cri-multiplex kubelet 重启恢复验证"
 
 POD_NAME="${POD_NAME:-e2b-state-restore-test}"
-POD_YAML="${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
-WORK_POD_YAML="/tmp/e2b-state-restore-pod.yaml"
+POD_YAML="${POD_YAML:-${TMP_ROOT}/e2b-kubelet-pod.yaml}"
+WORK_POD_YAML="${TMP_ROOT}/e2b-state-restore-pod.yaml"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
-STATE_DIR="${STATE_DIR:-/tmp/cri-multiplex-state-restore}"
+# 本用例会 rm -rf 并独占 state-dir（重启恢复测试），必须与共享目录和其它用例隔离。
+# STATE_DIR 在 common.sh 里已经有默认值，这里用 select_state_dir() 切换，
+# 不能写 "${STATE_DIR:-...}"（那永远不会生效）；显式传入的 STATE_DIR 仍然优先。
+select_state_dir "${STATE_DIR_RESTORE}"
 STATE_FILE="${STATE_DIR}/state.json"
 export STATE_DIR
+# 私有 state 里看不到别的用例的沙箱记录，而后台 reconciler 是「宿主级」扫描：
+# 凡不在本实例 state 里的 e2b-* netns / hostport 规则都会被当成孤儿删掉
+# （orphan_reconciler.go 的 scanOrphanNetNS / scanHostPortRules）。本用例不需要
+# 后台回收，直接关闭，避免误伤并发/残留的其它沙箱。
+export ORPHAN_RECONCILE_ENABLED=0
 
 cleanup_all() {
     kubectl delete pod "${POD_NAME}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
@@ -32,7 +40,7 @@ trap cleanup_all EXIT
 wait_remove_podsandbox_log() {
     local sandbox_id="$1"
     for _ in $(seq 1 90); do
-        if grep -aq "\\[GrpcE2BEngine\\] RemovePodSandbox: id=${sandbox_id}" /tmp/cri-multiplex.log 2>/dev/null; then
+        if grep -aq "\\[GrpcE2BEngine\\] RemovePodSandbox: id=${sandbox_id}" ${MULTIPLEX_LOG} 2>/dev/null; then
             return 0
         fi
         sleep 1
@@ -130,9 +138,11 @@ log_pass "RuntimeClass e2b 存在"
 log_step "1.2 切换 cri-multiplex 到 CNI+Android runtime 模式"
 kubectl delete pod "${POD_NAME}" --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
 wait_pod_deleted "${POD_NAME}" || true
+# 重复执行时上一轮的实例可能还挂在这个私有目录上，先停再清，避免删除与写入竞态。
+stop_multiplex_if_using_state_dir "${STATE_DIR}"
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
-START_CNI_ANDROID_COUNT=0 start_cni_android_multiplex "启动 cri-multiplex CNI+Android runtime 模式" || exit 1
+E2B_FORCE_RESTART=1 START_CNI_ANDROID_COUNT=0 start_cni_android_multiplex "启动 cri-multiplex CNI+Android runtime 模式" || exit 1
 
 log_step "2.1 刷新 build_id 并准备 Kubernetes Pod YAML"
 if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${POD_NAME}" "${POD_YAML}"; then
@@ -163,7 +173,8 @@ assert_state_json "重启前 state.json 已持久化目标 Pod/Container" "activ
 assert_kubectl_exec "${POD_NAME}" "state_restore_before" echo "state_restore_before" || exit 1
 
 log_step "3.1 重启 cri-multiplex 并恢复状态"
-start_cni_android_multiplex "重启 cri-multiplex CNI+Android runtime 模式" || exit 1
+# 重启本身就是本用例的被测行为（验证重启后状态恢复），必须强制重启。
+E2B_FORCE_RESTART=1 start_cni_android_multiplex "重启 cri-multiplex CNI+Android runtime 模式" || exit 1
 
 PHASE=$(kubectl get pod "${POD_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)
 READY=$(kubectl get pod "${POD_NAME}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || true)
@@ -193,7 +204,7 @@ if wait_remove_podsandbox_log "${POD_UID}"; then
     log_pass "kubelet 已调用 RemovePodSandbox"
 else
     log_fail "未在 90s 内观察到 kubelet 调用 RemovePodSandbox"
-    tail -n 80 /tmp/cri-multiplex.log >&2 || true
+    tail -n 80 ${MULTIPLEX_LOG} >&2 || true
     exit 1
 fi
 

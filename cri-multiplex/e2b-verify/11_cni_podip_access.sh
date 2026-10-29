@@ -18,9 +18,11 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "11 — CNI PodIP 访问 E2B 沙箱验证（Calico / bridge 自适应）"
 
+ensure_controlled_cni_multiplex "准备 cri-multiplex CNI 验证实例" || exit 1
+
 #==================== 配置 ====================#
 POD_NAME="${POD_NAME:-e2b-cni-podip-test}"
-POD_YAML="/tmp/e2b-kubelet-pod.yaml"
+POD_YAML="${TMP_ROOT}/e2b-kubelet-pod.yaml"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 ENVD_PORT="${ENVD_PORT:-49983}"
 NETNS_NAME=""
@@ -75,10 +77,11 @@ if kubectl get pod "${POD_NAME}" > /dev/null 2>&1; then
         exit 1
     fi
 else
-    log_skip "无旧 Pod 需清理"
+    # 这是“前置条件本来就满足”，不是有验证点被跳过，用 info 避免污染 SKIP 统计。
+    log_info "无旧 Pod 需清理"
 fi
 
-: > /tmp/cri-multiplex.log 2>/dev/null || true
+: > ${MULTIPLEX_LOG} 2>/dev/null || true
 
 #==================== 刷新 build_id ====================#
 log_step "2.1 刷新 build_id（每次创建 Pod 前必须执行）"
@@ -127,15 +130,20 @@ if [ -z "${POD_UID}" ] || [ -z "${POD_IP}" ]; then
 fi
 log_pass "Kubernetes PodIP 已分配: ${POD_IP}"
 
-NETNS_NAME="e2b-${POD_UID:0:12}"
-NETNS_PATH="/var/run/netns/${NETNS_NAME}"
-CRI_POD_ID=$(${CRICTL} pods --name "${POD_NAME}" 2>/dev/null | awk -v n="${POD_NAME}" 'NR > 1 && $0 ~ n { print $1; exit }' || true)
-if [ -z "${CRI_POD_ID}" ]; then
-    CRI_POD_ID="${POD_UID}"
-    log_skip "无法从 crictl pods 反查 CRI Pod ID，回退使用 Kubernetes UID"
-else
-    log_pass "CRI Pod ID: ${CRI_POD_ID}"
+# netns 名不是 UID 前缀（随机 12 位后缀），只能从 multiplex 日志/state 解析。
+# 解析失败必须 fail：否则后面所有「netns 已清理」断言都会因为路径不存在而恒真。
+NETNS_PATH=$(cni_netns_path_for_sandbox "${POD_UID}")
+if [ -z "${NETNS_PATH}" ] || [ ! -e "${NETNS_PATH}" ]; then
+    log_fail "无法从 multiplex 日志/state 解析到真实 CNI netns 路径（uid=${POD_UID}, 解析结果='${NETNS_PATH}'）；拒绝使用 UID 猜测路径"
+    echo "--- 最近的 CNI 相关日志 ---" >&2
+    grep -a "CNI ADD" ${MULTIPLEX_LOG} 2>/dev/null | tail -5 >&2 || true
+    exit 1
 fi
+NETNS_NAME=$(basename "${NETNS_PATH}")
+log_pass "CNI netns 路径已确认存在: ${NETNS_PATH}"
+# crictl 列表把 ID 截断到 12 位，E2B engine 的 PodSandboxStatus 需要完整 UID。
+CRI_POD_ID="${POD_UID}"
+log_pass "CRI Pod ID: ${CRI_POD_ID}"
 
 #==================== CRI PodSandboxStatus 验证 ====================#
 log_step "4.1 验证 CRI PodSandboxStatus 返回 CNI PodIP"
@@ -167,7 +175,8 @@ log_step "4.2 验证 CNI netns 与 eth0/tap0"
 if [ -e "${NETNS_PATH}" ]; then
     log_pass "CNI netns 存在: ${NETNS_PATH}"
 else
-    log_skip "CNI netns 未在 ${NETNS_PATH} 观察到，跳过 netns 细节检查"
+    # 创建阶段已经确认过路径存在，这里再消失说明 CNI netns 被意外清理
+    log_fail "CNI netns 已消失: ${NETNS_PATH}"
 fi
 
 if ! NETNS_ADDR_OUTPUT=$(ip netns exec "${NETNS_NAME}" ip addr show 2>&1); then
@@ -199,37 +208,64 @@ fi
 #==================== PodIP 访问沙箱验证 ====================#
 log_step "5.1 通过 CNI PodIP 访问沙箱 envd health"
 
-HTTP_CODE=$(curl -sS -o /tmp/e2b-cni-health.out -w "%{http_code}" --max-time 5 "http://${POD_IP}:${ENVD_PORT}/health" 2>/tmp/e2b-cni-health.err || true)
+HTTP_CODE=$(curl -sS -o ${TMP_ROOT}/e2b-cni-health.out -w "%{http_code}" --max-time 5 "http://${POD_IP}:${ENVD_PORT}/health" 2>${TMP_ROOT}/e2b-cni-health.err || true)
 if [ "${HTTP_CODE}" = "204" ]; then
     log_pass "PodIP:${ENVD_PORT}/health 可访问，HTTP ${HTTP_CODE}"
 else
     log_fail "PodIP:${ENVD_PORT}/health 访问失败，HTTP ${HTTP_CODE}"
     log_info "curl stderr:"
-    cat /tmp/e2b-cni-health.err >&2 || true
+    cat ${TMP_ROOT}/e2b-cni-health.err >&2 || true
     log_info "curl body:"
-    cat /tmp/e2b-cni-health.out >&2 || true
+    cat ${TMP_ROOT}/e2b-cni-health.out >&2 || true
 fi
 
 log_step "5.2 E2B 沙箱内经 CNI 访问外网"
 
-EGRESS_OUTPUT=$(kubectl_exec_output_with_retry "${POD_NAME}" 60 sh -c '
-set -eu
-getent hosts example.com >/tmp/e2b-dns.out 2>/tmp/e2b-dns.err || {
+# guest 的 /etc/resolv.conf 在模板里固定为 nameserver 8.8.8.8，而这条 UDP/53 链路
+# 实测有丢包（约 1/3），单次 5s 超时会把一次抖动放大成用例失败。
+# 这里分两步重试：
+#   1) 解析：最多 3 轮（每轮间隔 2s），拿到全部 IPv4 A 记录；
+#   2) 请求：先让 curl 自己解析（多 A 记录时 curl 会自动回退到下一个），
+#      失败再按解析到的 IP 逐个 --resolve 试（某些 A 记录可能被本网络阻断，
+#      实测 example.com 的两个 Cloudflare 记录里有一个 100% 连不上）。
+# 只有「解析全失败」或「所有地址都失败」才判定失败。
+EGRESS_OUTPUT=$(kubectl_exec_output_with_retry "${POD_NAME}" 90 sh -c '
+set -u
+DNS_ERR=/tmp/e2b-dns.err
+: >"${DNS_ERR}" 2>/dev/null || true
+code=""
+ips=""
+for attempt in 1 2 3; do
+  ips=$( { getent ahostsv4 example.com 2>>"${DNS_ERR}" || getent hosts example.com 2>>"${DNS_ERR}"; } \
+        | cut -d" " -f1 | grep -v ":" | grep -v "^$" | sort -u | head -n5 )
+  if [ -n "${ips}" ]; then
+    break
+  fi
+  echo "DNS_RETRY ${attempt}" >&2
+  sleep 2
+done
+if [ -z "${ips}" ]; then
   echo "DNS_FAIL"
-  cat /tmp/e2b-dns.err 2>/dev/null || true
+  cat "${DNS_ERR}" 2>/dev/null || true
   exit 11
-}
+fi
 if command -v curl >/dev/null 2>&1; then
-  code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 https://example.com)
+  code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 20 \
+         https://example.com 2>>"${DNS_ERR}") || code=000
+  for ip in ${ips}; do
+    case "${code}" in 2*|3*) break ;; esac
+    code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 6 --max-time 12 \
+           --resolve "example.com:443:${ip}" https://example.com 2>>"${DNS_ERR}") || code=000
+  done
 elif command -v wget >/dev/null 2>&1; then
-  wget -q -T 10 -O /dev/null https://example.com && code=200 || code=000
+  wget -q -T 20 -O /dev/null https://example.com 2>>"${DNS_ERR}" && code=200 || code=000
 else
   echo "NO_HTTP_CLIENT"
   exit 12
 fi
 case "${code}" in
-  2*|3*) echo "EXTERNAL_OK ${code}" ;;
-  *) echo "HTTP_FAIL ${code}"; exit 13 ;;
+  2*|3*) echo "EXTERNAL_OK ${code} dns=$(printf "%s" "${ips}" | tr "\n" ",")" ;;
+  *) echo "HTTP_FAIL ${code} dns=$(printf "%s" "${ips}" | tr "\n" ",")"; tail -n3 "${DNS_ERR}" 2>/dev/null || true; exit 13 ;;
 esac
 ' 2>&1) || true
 if grep -q "EXTERNAL_OK" <<< "${EGRESS_OUTPUT}"; then

@@ -45,13 +45,17 @@
 ###############################################################################
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 复用公共库的 E2B 模板/凭证解析能力（随后会用本脚本自己的日志/计数器覆盖）。
+source "${SCRIPT_DIR}/lib/common.sh"
+
 #==================== 基础工具 ====================#
 
 PASS_COUNT=0
 FAIL_COUNT=0
 START_TS=$(date +%s)
-RESULTS_FILE=$(mktemp /tmp/e2b22-results.XXXXXX)
-DETAIL_LOG=$(mktemp /tmp/e2b22-detail.XXXXXX)
+RESULTS_FILE=$(mktemp ${TMP_ROOT}/e2b22-results.XXXXXX)
+DETAIL_LOG=$(mktemp ${TMP_ROOT}/e2b22-detail.XXXXXX)
 
 log_step()  { echo ""; echo "[$(date +%H:%M:%S)] >>> $*"; }
 log_info()  { echo "    $*"; }
@@ -92,7 +96,7 @@ gadmin() {
     pretty_json "$1" | sed 's/^/  [gRPC]     /' >&2
     local out
     out=$(/root/go/bin/grpcurl -plaintext \
-        -import-path /home/zrj/KASandbox/cri-multiplex/proto -proto admin.proto \
+        -import-path "${SCRIPT_DIR}/../proto" -proto admin.proto \
         -d "$1" unix:///run/cri-multiplex/admin.sock \
         "crimultiplex.admin.v1.E2BSandboxAdminService/$2" 2>&1)
     local rc=$?
@@ -138,15 +142,27 @@ dump_pod() {
 #==================== 环境与常量（已核实的 live 事实） ====================#
 
 API="http://127.0.0.1:3000"
-DSN='postgres://postgres:local@127.0.0.1:5432/mydatabase?sslmode=disable'
-TEAM_ID="db8250ab-9929-48a2-8fb6-c4e992d59288"        # webhook 从 E2B API team 元数据获取组装
-BASE_ENV="dqoim7o51k7e89b2s8bl"                      # webhook 从 E2B API 模板元数据获取组装（base template_id）
-BASE_BUILD="d7138a4f-7c26-4bc9-8f00-ff92ccbec71c"    # webhook 从 E2B API 模板元数据获取组装（base build_id）
-NODE_NAME="hostname-6il0x"                           # webhook 从 Pod 调度结果（.spec.nodeName）获取组装
-KERNEL="vmlinux-6.1.158"                             # webhook 从 E2B API 模板元数据获取组装
-FC_VER="v1.13.1"                                     # webhook 从 E2B API 模板元数据获取组装
-ENVD_VER="0.5.3"                                     # webhook 从 E2B API 模板元数据获取组装
+DSN='postgres://postgres:local@10.233.90.40:5432/mydatabase?sslmode=disable'
+# 模板/团队/节点元数据改为从 live 环境解析，避免环境迁移后写死值失效。
+if ! resolve_e2b_template; then
+    echo "[FATAL] 无法解析 E2B 模板元数据（API=${API}）" >&2
+    exit 1
+fi
+TEAM_ID="${E2B_TEAM_ID}"                              # webhook 从 E2B API team 元数据获取组装
+BASE_ENV="${E2B_TEMPLATE_ID}"                         # webhook 从 E2B API 模板元数据获取组装（base template_id）
+BASE_BUILD="${E2B_BUILD_ID}"                          # webhook 从 E2B API 模板元数据获取组装（base build_id）
+NODE_NAME=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+[ -n "${NODE_NAME}" ] || NODE_NAME=$(hostname)
+KERNEL="${E2B_KERNEL_VERSION}"                        # webhook 从 E2B API 模板元数据获取组装
+FC_VER="${E2B_FIRECRACKER_VERSION}"                   # webhook 从 E2B API 模板元数据获取组装
+ENVD_VER="${E2B_ENVD_VERSION}"                        # webhook 从 E2B API 模板元数据获取组装
+VCPU="${E2B_VCPU}"
+RAM_MB="${E2B_RAM_MB}"
+DISK_MB="${E2B_DISK_MB}"
 GOOSE_MIN_VERSION=20260219120000
+# 同一 sandbox 的 resume / checkpoint 新沙箱必须沿用同一个 envd token，
+# 否则恢复出来的 envd 会以 401 拒绝新 Pod（实测）。
+ENVD_TOKEN="$(_new_envd_token)"
 
 POD1="manual-sbx-1"
 POD1R="manual-sbx-1-resumed"
@@ -191,8 +207,8 @@ wait_pod_ready() {
     done
     echo "----- kubectl describe pod ${pod} -----" | tee -a "${DETAIL_LOG}"
     kubectl describe pod "${pod}" 2>&1 | tail -40 | tee -a "${DETAIL_LOG}"
-    echo "----- /tmp/cri-multiplex.log 尾部 30 行 -----" | tee -a "${DETAIL_LOG}"
-    tail -30 /tmp/cri-multiplex.log 2>&1 | tee -a "${DETAIL_LOG}"
+    echo "----- ${MULTIPLEX_LOG} 尾部 30 行 -----" | tee -a "${DETAIL_LOG}"
+    tail -30 ${MULTIPLEX_LOG} 2>&1 | tee -a "${DETAIL_LOG}"
     return 1
 }
 
@@ -220,9 +236,9 @@ metadata:
     e2b.dev/template-id: "${tmpl}"
     e2b.dev/build-id: "${build}"
     e2b.dev/team-id: "${TEAM_ID}"
-    e2b.dev/vcpu: "1"
-    e2b.dev/ram-mb: "1024"
-    e2b.dev/total-disk-size-mb: "942"
+    e2b.dev/vcpu: "${VCPU}"
+    e2b.dev/ram-mb: "${RAM_MB}"
+    e2b.dev/total-disk-size-mb: "${DISK_MB}"
     e2b.dev/max-sandbox-length: "10000"
     e2b.dev/huge-pages: "true"
     e2b.dev/auto-pause: "false"
@@ -232,7 +248,7 @@ metadata:
     e2b.dev/kernel-version: "${KERNEL}"
     e2b.dev/firecracker-version: "${FC_VER}"
     e2b.dev/execution-id: "${exec_id}"
-    e2b.dev/envd-access-token: ""
+    e2b.dev/envd-access-token: "${ENVD_TOKEN}"
     e2b.dev/env-vars: "{}"
     e2b.dev/network: "{\"egress\":{},\"ingress\":{}}"
     e2b.dev/volume-mounts: "[]"
@@ -268,7 +284,7 @@ snapshot_meta_body() {
   "source_pod_uid": "${pod_uid}",
   "source_node_name": "${NODE_NAME}",
   "sandbox_started_at": "${STARTED_AT}",
-  "vcpu": 1, "ram_mb": 1024, "total_disk_size_mb": 942,
+  "vcpu": ${VCPU}, "ram_mb": ${RAM_MB}, "total_disk_size_mb": ${DISK_MB},
   "kernel_version": "${KERNEL}",
   "firecracker_version": "${FC_VER}",
   "envd_version": "${ENVD_VER}",
@@ -298,15 +314,15 @@ code="${resp%%$'\t'*}"
 log_pass "token 有效（带 token 返回 http=${code}，非 401）"
 
 log_step "0.3 goose 迁移检查（需 >= ${GOOSE_MIN_VERSION}，不足则 up）"
-cur_ver=$(docker exec postgres psql -U postgres -d mydatabase -tA -c 'select max(version_id) from "_migrations"') \
+cur_ver=$(kubectl -n e2b exec deploy/postgres -- psql -U postgres -d mydatabase -tA -c 'select max(version_id) from "_migrations"' | tr -d '[:space:]') \
     || die "无法查询 _migrations"
 log_info "当前迁移版本: ${cur_ver}"
 if [ "${cur_ver}" -lt "${GOOSE_MIN_VERSION}" ]; then
     log_info "版本不足，执行 goose up"
-    (cd /home/zrj/KASandbox/packages/db && \
+    (cd "${SCRIPT_DIR}/../../packages/db" && \
         GOOSE_DBSTRING="${DSN}" go tool goose -table _migrations -dir migrations postgres up) \
         >>"${DETAIL_LOG}" 2>&1 || die "goose up 失败，见 ${DETAIL_LOG}"
-    cur_ver=$(docker exec postgres psql -U postgres -d mydatabase -tA -c 'select max(version_id) from "_migrations"')
+    cur_ver=$(kubectl -n e2b exec deploy/postgres -- psql -U postgres -d mydatabase -tA -c 'select max(version_id) from "_migrations"' | tr -d '[:space:]')
 fi
 [ "${cur_ver}" -ge "${GOOSE_MIN_VERSION}" ] || die "迁移后版本仍不足: ${cur_ver}"
 log_pass "迁移版本满足: ${cur_ver}"
@@ -334,7 +350,7 @@ SBX_ID=$(gen_sbx_id)                            # [webhook] 稳定 sandbox-id（
 EXEC_ID=$(cat /proc/sys/kernel/random/uuid)     # [webhook] execution-id（每个 Pod 一个新值）
 OP_ID="manual-op-$(date +%s)"                   # [webhook] 本次 Pause 操作的 operation_id（幂等键）
 log_info "SBX_ID=${SBX_ID} EXEC_ID=${EXEC_ID} OP_ID=${OP_ID}"
-Y1=$(mktemp /tmp/sbx-pod-1.XXXXXX.yaml); TMP_YAMLS+=("${Y1}")
+Y1=$(mktemp ${TMP_ROOT}/sbx-pod-1.XXXXXX.yaml); TMP_YAMLS+=("${Y1}")
 render_pod_yaml "${Y1}" "${POD1}" "${SBX_ID}" "false" "${BASE_ENV}" "${BASE_BUILD}" "${EXEC_ID}"
 kubectl apply -f "${Y1}" >>"${DETAIL_LOG}" 2>&1 || die "kubectl apply ${POD1} 失败"
 CREATED_PODS+=("${POD1}")
@@ -447,7 +463,7 @@ log_pass "last-snapshot 200，build/origin_node 匹配"
 
 log_step "3.2 创建 Resume Pod ${POD1R}（snapshot=true，sandbox-id 不变）"
 EXEC_ID2=$(cat /proc/sys/kernel/random/uuid)    # [webhook] 新 Pod 的 execution-id；sandbox-id 沿用 SBX_ID
-Y2=$(mktemp /tmp/sbx-pod-1r.XXXXXX.yaml); TMP_YAMLS+=("${Y2}")
+Y2=$(mktemp ${TMP_ROOT}/sbx-pod-1r.XXXXXX.yaml); TMP_YAMLS+=("${Y2}")
 render_pod_yaml "${Y2}" "${POD1R}" "${SBX_ID}" "true" "${PAUSE_TMPL}" "${PAUSE_BUILD}" "${EXEC_ID2}"
 kubectl apply -f "${Y2}" >>"${DETAIL_LOG}" 2>&1 || die "kubectl apply ${POD1R} 失败"
 CREATED_PODS+=("${POD1R}")
@@ -528,7 +544,7 @@ log_pass "Pod ${POD1R} 仍 Running 且 UID 未变"
 log_step "5.1 创建 Pod ${POD2}（新 sandbox-id，checkpoint template/build）"
 SBX_ID2=$(gen_sbx_id)                           # [webhook] 新沙箱的稳定 sandbox-id；真实链路由 E2B API transform 生成，webhook 获取组装
 EXEC_ID3=$(cat /proc/sys/kernel/random/uuid)    # [webhook] 新 Pod 的 execution-id
-Y3=$(mktemp /tmp/sbx-pod-2.XXXXXX.yaml); TMP_YAMLS+=("${Y3}")
+Y3=$(mktemp ${TMP_ROOT}/sbx-pod-2.XXXXXX.yaml); TMP_YAMLS+=("${Y3}")
 render_pod_yaml "${Y3}" "${POD2}" "${SBX_ID2}" "true" "${CKPT_TMPL}" "${CKPT_BUILD}" "${EXEC_ID3}"
 kubectl apply -f "${Y3}" >>"${DETAIL_LOG}" 2>&1 || die "kubectl apply ${POD2} 失败"
 CREATED_PODS+=("${POD2}")

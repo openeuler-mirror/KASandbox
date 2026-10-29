@@ -22,10 +22,12 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "09 — ExecSync 能力 kubelet 验证"
 
+ensure_controlled_cni_multiplex "准备 cri-multiplex CNI 验证实例" || exit 1
+
 #==================== 配置 ====================#
 POD_NAME="${POD_NAME:-e2b-execsync-test}"
-BASE_POD_YAML="${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
-POD_YAML="${WORK_POD_YAML:-/tmp/e2b-execsync-kubelet-pod.yaml}"
+BASE_POD_YAML="${POD_YAML:-${TMP_ROOT}/e2b-kubelet-pod.yaml}"
+POD_YAML="${WORK_POD_YAML:-${TMP_ROOT}/e2b-execsync-kubelet-pod.yaml}"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 STARTUP_PROBE_MARK="startup_probe_execsync_ok"
 READINESS_PROBE_MARK="readiness_probe_execsync_ok"
@@ -35,7 +37,7 @@ PRESTOP_MARK="prestop_execsync_ok"
 
 count_execsync_logs() {
     local mark="$1"
-    grep -cE "\\[GrpcE2BEngine\\] ExecSync: .*${mark}" /tmp/cri-multiplex.log 2>/dev/null || true
+    grep -cE "\\[GrpcE2BEngine\\] ExecSync: .*${mark}" ${MULTIPLEX_LOG} 2>/dev/null || true
 }
 
 wait_execsync_log() {
@@ -56,7 +58,7 @@ wait_execsync_log() {
     done
 
     log_fail "${desc} 未在 ${timeout_seconds}s 内触发 CRI ExecSync（${mark}）"
-    tail -n 120 /tmp/cri-multiplex.log >&2 2>/dev/null || true
+    tail -n 120 ${MULTIPLEX_LOG} >&2 2>/dev/null || true
     return 1
 }
 
@@ -84,11 +86,12 @@ if kubectl get pod "${POD_NAME}" > /dev/null 2>&1; then
     }
     log_pass "旧 Pod 已删除"
 else
-    log_skip "无旧 Pod 需清理"
+    # 这是“前置条件本来就满足”，不是有验证点被跳过，用 info 避免污染 SKIP 统计。
+    log_info "无旧 Pod 需清理"
 fi
 
 # 清空旧日志便于后续分析
-: > /tmp/cri-multiplex.log 2>/dev/null || true
+: > ${MULTIPLEX_LOG} 2>/dev/null || true
 
 #==================== 刷新 build_id ====================#
 log_step "2.1 刷新 build_id（每次创建 Pod 前必须执行）"

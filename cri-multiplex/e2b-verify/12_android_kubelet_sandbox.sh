@@ -16,9 +16,11 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "12 — Android RuntimeClass kubelet 沙箱创建验证"
 
+require_android_or_skip
+
 POD_NAME="${POD_NAME:-android-cvd-kubelet-test}"
-POD_YAML="${POD_YAML:-/tmp/android-cvd-kubelet-pod.yaml}"
-RUNTIMECLASS_YAML="${RUNTIMECLASS_YAML:-/tmp/runtimeclass-android.yaml}"
+POD_YAML="${POD_YAML:-${TMP_ROOT}/android-cvd-kubelet-pod.yaml}"
+RUNTIMECLASS_YAML="${RUNTIMECLASS_YAML:-${TMP_ROOT}/runtimeclass-android.yaml}"
 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-/home/fjq/cf17}"
 ANDROID_ADB_PORT="${ANDROID_ADB_PORT:-6520}"
 ANDROID_BASE_INSTANCE_NUM="${ANDROID_BASE_INSTANCE_NUM:-1}"
@@ -73,10 +75,10 @@ log_pass "cri-multiplex 已启用 AndroidEngine"
 log_step "1.3 清理旧 CVD 实例，避免 ADB 端口残留误判"
 
 if [ "${ANDROID_CLEANUP_EXISTING}" = "1" ]; then
-    if HOME="${ANDROID_ARTIFACTS_DIR}" timeout 30 "${ANDROID_ARTIFACTS_DIR}/bin/cvd" stop >/tmp/android-cvd-preclean.log 2>&1; then
+    if HOME="${ANDROID_ARTIFACTS_DIR}" timeout 30 "${ANDROID_ARTIFACTS_DIR}/bin/cvd" stop >${TMP_ROOT}/android-cvd-preclean.log 2>&1; then
         log_pass "旧 CVD 实例已清理"
     else
-        log_skip "cvd stop 未成功或无旧实例，继续执行；日志: /tmp/android-cvd-preclean.log"
+        log_skip "cvd stop 未成功或无旧实例，继续执行；日志: ${TMP_ROOT}/android-cvd-preclean.log"
     fi
 else
     log_skip "ANDROID_CLEANUP_EXISTING=0，跳过旧 CVD 清理"
@@ -104,10 +106,11 @@ if kubectl get pod "${POD_NAME}" >/dev/null 2>&1; then
     sleep 3
     log_pass "旧 Pod 已删除: ${POD_NAME}"
 else
-    log_skip "无旧 Pod 需清理"
+    # 这是“前置条件本来就满足”，不是有验证点被跳过，用 info 避免污染 SKIP 统计。
+    log_info "无旧 Pod 需清理"
 fi
 
-: > /tmp/cri-multiplex.log 2>/dev/null || true
+: > ${MULTIPLEX_LOG} 2>/dev/null || true
 
 log_step "3.1 生成并提交 Android Pod"
 
@@ -139,7 +142,7 @@ if kubectl wait --for=condition=Ready "pod/${POD_NAME}" --timeout="${ANDROID_WAI
 else
     log_fail "Android Pod 未在 ${ANDROID_WAIT_TIMEOUT} 内 Ready"
     kubectl describe pod "${POD_NAME}" >&2 || true
-    tail -n 120 /tmp/cri-multiplex.log >&2 || true
+    tail -n 120 ${MULTIPLEX_LOG} >&2 || true
     exit 1
 fi
 
@@ -202,7 +205,7 @@ if [ "${ADB_HOST}" != "${POD_IP}" ] || [ "${ADB_PORT}" != "${ANDROID_ADB_PORT}" 
 fi
 
 wait_tcp_connect "${ADB_HOST}" "${ADB_PORT}" "${ANDROID_ADB_WAIT_TIMEOUT}" "ADB 端口 ${ADB_URL}" || {
-    tail -n 120 /tmp/cri-multiplex.log >&2 || true
+    tail -n 120 ${MULTIPLEX_LOG} >&2 || true
     exit 1
 }
 
@@ -223,7 +226,7 @@ log_step "5.1 删除 Pod 验证清理"
 ANDROID_PGID=$(android_pgid_from_state "${POD_UID}" || true)
 kubectl delete pod "${POD_NAME}" --force --grace-period=0 >&2 || true
 wait_android_pod_cleanup "${POD_NAME}" "${POD_UID}" "${NETNS_PATH}" "${POD_IP}" "${ANDROID_ADB_PORT}" "${ANDROID_PGID}" "${ANDROID_CLEANUP_WAIT_TIMEOUT}" || {
-    tail -n 160 /tmp/cri-multiplex.log >&2 || true
+    tail -n 160 ${MULTIPLEX_LOG} >&2 || true
     exit 1
 }
 

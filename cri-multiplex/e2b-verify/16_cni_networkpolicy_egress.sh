@@ -9,8 +9,14 @@
 #   4. allow-internet=false 的用户级 deny 覆盖 TCP（CRI 模式修复验证）
 #   5. deny-all egress NetworkPolicy best-effort（bridge 数据面不生效则记 SKIP）
 #
-# 前置：orchestrator 以 SANDBOX_DENIED_POD_CIDR=<podCIDR> 启动（ helm
-#       sandboxDeniedPodCIDR ）。未注入时 2/3 项记录 SKIP（向后兼容）。
+# 前置：orchestrator 以 SANDBOX_DENIED_POD_CIDR 启动，且**必须同时包含两段**：
+#   - 集群 Pod CIDR：10.233.64.0/18（本脚本 POD_CIDR；Calico / kubectl 分配的普通 Pod）
+#   - E2B 沙箱自身地址段：10.13.0.0/22（CNI 网桥 e2b0 的 ipam.subnet，取自
+#     /etc/cni/net-e2b.d/e2b-bridge.conflist）
+# 只注入前者时，沙箱 A -> 沙箱 B 的 PodIP（形如 10.13.2.x）不在 deny 集里，
+# 第 2 项「沙箱间隔离」会拿到 HTTP 204 而判失败——2026-10-28 的实测失败即此原因。
+# 沙箱若走其它网段，SANDBOX_DENIED_POD_CIDR 需同步该网段。
+# 未注入时 2/3 项记录 UNSUPPORTED（向后兼容）。
 ###############################################################################
 set -euo pipefail
 
@@ -39,7 +45,7 @@ trap cleanup EXIT
 e2b_http_code() {
     local pod="$1"
     local url="$2"
-    kubectl exec "${pod}" -- sh -c "if command -v curl >/dev/null 2>&1; then curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 '${url}'; elif command -v wget >/dev/null 2>&1; then wget -q -T 5 -O /dev/null '${url}' && echo 200 || echo 000; else echo NO_HTTP_CLIENT; fi" 2>/tmp/e2b-egress.err || true
+    kubectl exec "${pod}" -- sh -c "if command -v curl >/dev/null 2>&1; then curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 '${url}'; elif command -v wget >/dev/null 2>&1; then wget -q -T 5 -O /dev/null '${url}' && echo 200 || echo 000; else echo NO_HTTP_CLIENT; fi" 2>${TMP_ROOT}/e2b-egress.err || true
 }
 
 # e2b_netns_name <pod> — 解析 cri-multiplex CNI netns 名
@@ -55,7 +61,11 @@ e2b_netns_name() {
         return 1
     fi
 
-    local state_file="${CRI_MULTIPLEX_STATE:-/var/lib/cri-multiplex/state/state.json}"
+    # 必须跟随用例实例实际使用的 state-dir（run_all 全程用 ${STATE_DIR}，
+    # 只有 systemd 生产实例才是 /var/lib/cri-multiplex/state）。写死生产路径会读不到
+    # cni_record，退化成按 UID 推导 netns 名；一旦命中 CNI 预热池（e2b-pool* 命名）
+    # 推导必然失败，3.2 的隔离检测就会被误判成 UNSUPPORTED。
+    local state_file="${CRI_MULTIPLEX_STATE:-${STATE_DIR}/state.json}"
     local from_state
     if [ -f "${state_file}" ]; then
         from_state=$(python3 - "${state_file}" "${pod_uid}" <<'EOF'
@@ -114,7 +124,7 @@ patch_e2b_firewall_allowlist() {
     local cidr
     for cidr in "$@"; do
         [ -n "${cidr}" ] || continue
-        if ip netns exec "${netns_name}" nft add element inet slot-firewall filtered_always_allowlist "{ ${cidr} }" 2>/tmp/e2b-egress-nft.err; then
+        if ip netns exec "${netns_name}" nft add element inet slot-firewall filtered_always_allowlist "{ ${cidr} }" 2>${TMP_ROOT}/e2b-egress-nft.err; then
             log_pass "临时放通 E2B firewall allowlist: ${netns_name} ${cidr}"
             continue
         fi
@@ -125,7 +135,7 @@ patch_e2b_firewall_allowlist() {
         fi
 
         log_fail "临时放通 E2B firewall allowlist 失败: ${netns_name} ${cidr}"
-        cat /tmp/e2b-egress-nft.err >&2 || true
+        cat ${TMP_ROOT}/e2b-egress-nft.err >&2 || true
         return 1
     done
 }
@@ -144,7 +154,7 @@ POD_IP=$(get_pod_ip_or_fail "${POD_NAME}") || exit 1
 log_pass "E2B Pod A PodIP: ${POD_IP}"
 
 log_step "2.2 创建普通 HTTP target Pod 和 Service"
-cat > "/tmp/${TARGET_POD}.yaml" <<EOF
+cat > "${TMP_ROOT}/${TARGET_POD}.yaml" <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -172,7 +182,7 @@ spec:
       targetPort: ${TARGET_PORT}
       protocol: TCP
 EOF
-kubectl apply -f "/tmp/${TARGET_POD}.yaml" >&2
+kubectl apply -f "${TMP_ROOT}/${TARGET_POD}.yaml" >&2
 if kubectl wait --for=condition=Ready "pod/${TARGET_POD}" --timeout=120s >&2; then
     log_pass "target Pod 已 Ready: ${TARGET_POD}"
 else
@@ -195,8 +205,8 @@ fi
 log_pass "target PodIP: ${TARGET_POD_IP}"
 
 log_step "2.3 创建 E2B CNI Pod B（沙箱互访对端）"
-E2B_CNI_YAML=/tmp/e2b-np-egress-peer.yaml POD_YAML=/tmp/e2b-np-egress-peer.yaml prepare_e2b_cni_pod_yaml "${POD_NAME_B}" "${APP_LABEL}-peer" || exit 1
-apply_and_wait_pod_ready "${POD_NAME_B}" "/tmp/e2b-np-egress-peer.yaml" "120s" || exit 1
+E2B_CNI_YAML=${TMP_ROOT}/e2b-np-egress-peer.yaml POD_YAML=${TMP_ROOT}/e2b-np-egress-peer.yaml prepare_e2b_cni_pod_yaml "${POD_NAME_B}" "${APP_LABEL}-peer" || exit 1
+apply_and_wait_pod_ready "${POD_NAME_B}" "${TMP_ROOT}/e2b-np-egress-peer.yaml" "120s" || exit 1
 POD_B_IP=$(get_pod_ip_or_fail "${POD_NAME_B}") || exit 1
 log_pass "E2B Pod B PodIP: ${POD_B_IP}"
 
@@ -210,7 +220,7 @@ elif [ "${BASE_CODE}" = "NO_HTTP_CLIENT" ]; then
     exit 0
 else
     log_fail "baseline 失败：E2B VM -> target Service HTTP ${BASE_CODE}（ClusterIP 经宿主机 DNAT，不受沙箱隔离影响，应恒通）"
-    cat /tmp/e2b-egress.err >&2 || true
+    cat ${TMP_ROOT}/e2b-egress.err >&2 || true
     exit 1
 fi
 
@@ -220,7 +230,7 @@ if e2b_deny_set_contains "${POD_NAME}" "${POD_CIDR}"; then
     ISOLATION=1
     log_pass "沙箱 A netns 的 filtered_always_denylist 包含 Pod CIDR ${POD_CIDR}"
 else
-    log_skip "沙箱 A netns 的 predefinedDenySet 不含 ${POD_CIDR}，orchestrator 未注入 SANDBOX_DENIED_POD_CIDR，3.3/3.4 记录为 SKIP"
+    log_unsupported "沙箱 A netns 的 predefinedDenySet 不含 ${POD_CIDR}，orchestrator 未注入 SANDBOX_DENIED_POD_CIDR，3.3/3.4 无法验证"
 fi
 
 log_step "3.3 沙箱间隔离：E2B VM A -> E2B Pod B PodIP（TCP）"
@@ -233,7 +243,7 @@ if [ "${ISOLATION}" = "1" ]; then
         exit 1
     fi
 else
-    log_skip "沙箱隔离未启用，跳过沙箱互访断言"
+    log_info "沙箱隔离未启用，跳过沙箱互访断言（已在 3.2 计 UNSUPPORTED）"
 fi
 
 log_step "3.4 Pod CIDR 默认阻断 + allowlist 例外放通"
@@ -255,20 +265,20 @@ if [ "${ISOLATION}" = "1" ]; then
         exit 1
     fi
 else
-    log_skip "沙箱隔离未启用，跳过默认阻断断言，仅验证 baseline 直连"
+    log_info "沙箱隔离未启用，跳过默认阻断断言，仅验证 baseline 直连（已在 3.2 计 UNSUPPORTED）"
     patch_e2b_firewall_allowlist "${POD_NAME}" "${TARGET_CLUSTER_IP}" "${TARGET_POD_IP}" || exit 1
     DIRECT_CODE=$(e2b_http_code "${POD_NAME}" "http://${TARGET_POD_IP}:${TARGET_PORT}/")
     if [ "${DIRECT_CODE}" = "200" ]; then
         log_pass "baseline 成功：E2B VM -> target PodIP HTTP ${DIRECT_CODE}"
     else
-        log_skip "E2B VM 无法访问 target PodIP，HTTP ${DIRECT_CODE}，当前 CNI POC 暂不具备 egress baseline"
+        log_unsupported "E2B VM 无法访问 target PodIP，HTTP ${DIRECT_CODE}，当前 CNI POC 暂不具备 egress baseline"
     fi
 fi
 
 log_step "3.5 allow-internet=false 用户级 deny 覆盖 TCP"
-E2B_CNI_YAML=/tmp/e2b-np-egress-noinet.yaml POD_YAML=/tmp/e2b-np-egress-noinet.yaml prepare_e2b_cni_pod_yaml "${POD_NAME_C}" "${APP_LABEL}-noinet" || exit 1
-sed -i 's|e2b.dev/allow-internet: "true"|e2b.dev/allow-internet: "false"|' /tmp/e2b-np-egress-noinet.yaml
-apply_and_wait_pod_ready "${POD_NAME_C}" "/tmp/e2b-np-egress-noinet.yaml" "120s" || exit 1
+E2B_CNI_YAML=${TMP_ROOT}/e2b-np-egress-noinet.yaml POD_YAML=${TMP_ROOT}/e2b-np-egress-noinet.yaml prepare_e2b_cni_pod_yaml "${POD_NAME_C}" "${APP_LABEL}-noinet" || exit 1
+sed -i 's|e2b.dev/allow-internet: "true"|e2b.dev/allow-internet: "false"|' ${TMP_ROOT}/e2b-np-egress-noinet.yaml
+apply_and_wait_pod_ready "${POD_NAME_C}" "${TMP_ROOT}/e2b-np-egress-noinet.yaml" "120s" || exit 1
 NOINET_CODE=$(e2b_http_code "${POD_NAME_C}" "http://${TARGET_CLUSTER_IP}:${TARGET_PORT}/")
 if [ "${NOINET_CODE}" = "000" ]; then
     log_pass "allow-internet=false 沙箱 TCP 出向已被阻断（HTTP ${NOINET_CODE}）"
@@ -280,7 +290,7 @@ else
 fi
 
 log_step "4.1 应用 deny-all egress NetworkPolicy"
-cat > "/tmp/${DENY_POLICY}.yaml" <<EOF
+cat > "${TMP_ROOT}/${DENY_POLICY}.yaml" <<EOF
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -292,7 +302,7 @@ spec:
   policyTypes:
     - Egress
 EOF
-kubectl apply -f "/tmp/${DENY_POLICY}.yaml" >&2
+kubectl apply -f "${TMP_ROOT}/${DENY_POLICY}.yaml" >&2
 log_pass "deny-all egress policy 已应用"
 
 DENY_CODE=""
@@ -308,7 +318,7 @@ done
 if [ "${DENY_BLOCKED}" = "1" ]; then
     log_pass "deny-all egress 已阻断 E2B VM -> target"
 else
-    log_skip "deny-all egress 未阻断，HTTP ${DENY_CODE}，bridge 数据面不支持 NetworkPolicy，记为 UNSUPPORTED"
+    log_unsupported "deny-all egress 未阻断（HTTP ${DENY_CODE}），bridge 数据面不支持 NetworkPolicy"
 fi
 
 log_step "5.1 删除资源"
@@ -316,9 +326,7 @@ cleanup
 log_pass "资源删除请求已提交"
 
 print_summary
-if [ "${FAIL_COUNT}" -eq 0 ]; then
+if [ "${FAIL_COUNT}" -eq 0 ] && [ "${UNSUPPORTED_COUNT}" -eq 0 ]; then
     log_info "验证完成：E2B CNI 沙箱出向隔离 / NetworkPolicy egress 行为已检查"
-    exit 0
-else
-    exit 1
 fi
+exit "$(summary_exit_code)"

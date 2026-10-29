@@ -59,7 +59,7 @@ if [ "${HOST_CODE}" = "204" ]; then
     log_pass "宿主机访问 PodIP:${ENVD_PORT}/health 成功，HTTP ${HOST_CODE}"
 else
     log_fail "宿主机访问 PodIP:${ENVD_PORT}/health 失败，HTTP ${HOST_CODE}"
-    cat /tmp/cni-host-curl.err >&2 || true
+    cat ${TMP_ROOT}/cni-host-curl.err >&2 || true
     exit 1
 fi
 
@@ -79,12 +79,25 @@ else
 fi
 
 log_step "3.5 E2B VM 内 Kubernetes DNS best-effort 验证"
-E2B_DNS_OUTPUT=$(kubectl exec "${POD_NAME}" -- sh -c 'cat /etc/resolv.conf; (getent hosts kubernetes.default.svc.cluster.local || nslookup kubernetes.default.svc.cluster.local || true)' 2>&1 || true)
-if grep -q "kubernetes.default" <<< "${E2B_DNS_OUTPUT}" || grep -Eq '([0-9]{1,3}\.){3}[0-9]{1,3}' <<< "${E2B_DNS_OUTPUT}"; then
-    log_pass "E2B VM 内 Kubernetes DNS 有解析结果"
+# 注意：不能把 resolv.conf 一起抓回来做匹配——它必然含 nameserver IPv4，
+# 会让这条断言恒真。这里只取"真正解析"的输出。
+E2B_RESOLV=$(kubectl exec "${POD_NAME}" -- sh -c 'cat /etc/resolv.conf 2>/dev/null' 2>&1 || true)
+E2B_DNS_OUTPUT=$(kubectl exec "${POD_NAME}" -- sh -c '
+  getent hosts kubernetes.default.svc.cluster.local 2>/dev/null \
+    || getent ahostsv4 kubernetes.default.svc.cluster.local 2>/dev/null \
+    || (nslookup kubernetes.default.svc.cluster.local 2>/dev/null | sed -n "/Name:/,+1p") \
+    || true
+' 2>&1 || true)
+log_info "E2B VM resolv.conf:"; printf '%s\n' "${E2B_RESOLV}" | sed 's/^/    /' >&2
+log_info "E2B VM DNS 解析输出:"; printf '%s\n' "${E2B_DNS_OUTPUT}" | sed 's/^/    /' >&2
+
+# 只认「IP + kubernetes.default...」这种真正的解析结果（getent 格式），
+# 或 nslookup 的 Name/Address 两行组合。
+if grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}[[:space:]].*kubernetes\.default' <<< "${E2B_DNS_OUTPUT}" ||
+   { grep -q 'Name:.*kubernetes\.default' <<< "${E2B_DNS_OUTPUT}" && grep -Eq '([0-9]{1,3}\.){3}[0-9]{1,3}' <<< "${E2B_DNS_OUTPUT}"; }; then
+    log_pass "E2B VM 内 Kubernetes DNS 解析成功"
 else
-    log_skip "E2B VM 内 Kubernetes DNS 未确认，当前 CNI POC 不强制承诺 guest DNS"
-    echo "${E2B_DNS_OUTPUT}" >&2 || true
+    log_unsupported "E2B VM 内 Kubernetes DNS 未解析成功（当前 CNI POC 不承诺 guest DNS）"
 fi
 
 log_step "3.6 E2B VM -> 宿主机连通性保留验证（隔离不应误伤节点 IP）"
@@ -108,9 +121,7 @@ cleanup
 log_pass "资源删除请求已提交"
 
 print_summary
-if [ "${FAIL_COUNT}" -eq 0 ]; then
+if [ "${FAIL_COUNT}" -eq 0 ] && [ "${UNSUPPORTED_COUNT}" -eq 0 ]; then
     log_info "验证完成：E2B CNI Service/DNS 基础行为已检查"
-    exit 0
-else
-    exit 1
 fi
+exit "$(summary_exit_code)"

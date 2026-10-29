@@ -17,6 +17,8 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 log_section "21 -- cri-multiplex 多 Runtime 路由验证"
 
+ensure_controlled_cni_multiplex "准备 cri-multiplex CNI 验证实例" || exit 1
+
 DEFAULT_POD="${DEFAULT_POD:-mux-default-runtime-21}"
 ANDROID_POD="${ANDROID_POD:-mux-android-runtime-21}"
 E2B_POD="${E2B_POD:-mux-e2b-runtime-21}"
@@ -24,17 +26,22 @@ ANDROID_RUNTIMECLASS="${ANDROID_RUNTIMECLASS:-android}"
 ANDROID_RUNTIME_HANDLER="${ANDROID_RUNTIME_HANDLER:-android}"
 ANDROID_ADB_PORT="${ANDROID_ADB_PORT:-6520}"
 ANDROID_BASE_INSTANCE_NUM="${ANDROID_BASE_INSTANCE_NUM:-1}"
-POD_YAML="${POD_YAML:-/tmp/e2b-kubelet-pod.yaml}"
-E2B_WORK_YAML="${E2B_WORK_YAML:-/tmp/e2b-mux-routing-21.yaml}"
-ANDROID_WORK_YAML="${ANDROID_WORK_YAML:-/tmp/e2b-mux-android-21.yaml}"
+POD_YAML="${POD_YAML:-${TMP_ROOT}/e2b-kubelet-pod.yaml}"
+E2B_WORK_YAML="${E2B_WORK_YAML:-${TMP_ROOT}/e2b-mux-routing-21.yaml}"
+ANDROID_WORK_YAML="${ANDROID_WORK_YAML:-${TMP_ROOT}/e2b-mux-android-21.yaml}"
 REFRESH_SCRIPT="${REFRESH_SCRIPT:-${SCRIPT_DIR}/lib/refresh_build_id.sh}"
 CLIENT_IMAGE="${CLIENT_IMAGE:-docker.io/library/busybox:latest}"
+ANDROID_AVAILABLE=1
+if ! android_available; then
+    ANDROID_AVAILABLE=0
+    log_skip "Android artifacts 不可用，21 号仅验证 containerd 默认与 E2B 双 runtime 路由"
+fi
 
 cleanup() {
     delete_pod_and_wait_gone "${DEFAULT_POD}" 90 >/dev/null 2>&1 || true
     delete_pod_and_wait_gone "${ANDROID_POD}" 90 >/dev/null 2>&1 || true
     delete_pod_and_wait_gone "${E2B_POD}" 90 >/dev/null 2>&1 || true
-    rm -f "${E2B_WORK_YAML}" "${ANDROID_WORK_YAML}" "/tmp/${DEFAULT_POD}.yaml" "/tmp/${ANDROID_POD}.yaml" || true
+    rm -f "${E2B_WORK_YAML}" "${ANDROID_WORK_YAML}" "${TMP_ROOT}/${DEFAULT_POD}.yaml" "${TMP_ROOT}/${ANDROID_POD}.yaml" || true
 }
 trap cleanup EXIT
 
@@ -42,12 +49,12 @@ assert_log_contains() {
     local pattern="$1"
     local desc="$2"
 
-    if grep -aqE "${pattern}" /tmp/cri-multiplex.log 2>/dev/null; then
+    if grep -aqE "${pattern}" ${MULTIPLEX_LOG} 2>/dev/null; then
         log_pass "${desc}"
         return 0
     fi
     log_fail "${desc}"
-    tail -n 120 /tmp/cri-multiplex.log >&2 || true
+    tail -n 120 ${MULTIPLEX_LOG} >&2 || true
     return 1
 }
 
@@ -173,27 +180,31 @@ log_pass "RuntimeClass e2b 存在"
 
 log_step "1.2 清理旧资源"
 cleanup
-: > /tmp/cri-multiplex.log 2>/dev/null || true
+: > ${MULTIPLEX_LOG} 2>/dev/null || true
 log_pass "旧资源已清理"
 
 log_step "2.1 创建无 RuntimeClass 普通 Pod"
-prepare_default_busybox_pod_yaml "${DEFAULT_POD}" "/tmp/${DEFAULT_POD}.yaml"
-kubectl apply -f "/tmp/${DEFAULT_POD}.yaml" >&2
+prepare_default_busybox_pod_yaml "${DEFAULT_POD}" "${TMP_ROOT}/${DEFAULT_POD}.yaml"
+kubectl apply -f "${TMP_ROOT}/${DEFAULT_POD}.yaml" >&2
 wait_pod_ready "${DEFAULT_POD}" 120s || exit 1
 assert_log_contains "RunPodSandbox routing: handler=\"\" -> container" "无 RuntimeClass Pod 已路由到 containerd" || exit 1
 
 log_step "2.2 创建 Android Pod"
-kubectl apply -f - >&2 <<EOF
+if [ "${ANDROID_AVAILABLE}" = "1" ]; then
+    kubectl apply -f - >&2 <<EOF
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
   name: ${ANDROID_RUNTIMECLASS}
 handler: ${ANDROID_RUNTIME_HANDLER}
 EOF
-create_android_pod_yaml "${ANDROID_POD}" "${ANDROID_WORK_YAML}"
-kubectl apply -f "${ANDROID_WORK_YAML}" >&2
-wait_pod_ready "${ANDROID_POD}" 240s || exit 1
-assert_log_contains "RunPodSandbox routing: handler=\"${ANDROID_RUNTIME_HANDLER}\" -> android" "RuntimeClass=${ANDROID_RUNTIMECLASS} Pod 已路由到 Android" || exit 1
+    create_android_pod_yaml "${ANDROID_POD}" "${ANDROID_WORK_YAML}"
+    kubectl apply -f "${ANDROID_WORK_YAML}" >&2
+    wait_pod_ready "${ANDROID_POD}" 240s || exit 1
+    assert_log_contains "RunPodSandbox routing: handler=\"${ANDROID_RUNTIME_HANDLER}\" -> android" "RuntimeClass=${ANDROID_RUNTIMECLASS} Pod 已路由到 Android" || exit 1
+else
+    android_gap_notice "Android artifacts 不可用，跳过 Android RuntimeClass 路由验证"
+fi
 
 log_step "2.3 创建 E2B Pod"
 if ! E2B_YAML_COUNT=0 E2B_BASE_POD_YAML="${POD_YAML}" prepare_e2b_pod_yaml "${E2B_POD}" "${E2B_WORK_YAML}"; then
@@ -209,16 +220,20 @@ pods_output=""
 for _ in $(seq 1 30); do
     pods_output=$(${CRICTL} pods 2>&1 || true)
     if echo "${pods_output}" | grep -q "${DEFAULT_POD}" &&
-       echo "${pods_output}" | grep -q "${ANDROID_POD}" &&
-       echo "${pods_output}" | grep -q "${E2B_POD}"; then
+       echo "${pods_output}" | grep -q "${E2B_POD}" &&
+       { [ "${ANDROID_AVAILABLE}" = "0" ] || echo "${pods_output}" | grep -q "${ANDROID_POD}"; }; then
         break
     fi
     sleep 1
 done
 if echo "${pods_output}" | grep -q "${DEFAULT_POD}" &&
-   echo "${pods_output}" | grep -q "${ANDROID_POD}" &&
-   echo "${pods_output}" | grep -q "${E2B_POD}"; then
-    log_pass "ListPodSandbox 同时包含 containerd 默认、Android 和 E2B Pod"
+   echo "${pods_output}" | grep -q "${E2B_POD}" &&
+   { [ "${ANDROID_AVAILABLE}" = "0" ] || echo "${pods_output}" | grep -q "${ANDROID_POD}"; }; then
+    if [ "${ANDROID_AVAILABLE}" = "1" ]; then
+        log_pass "ListPodSandbox 同时包含 containerd 默认、Android 和 E2B Pod"
+    else
+        log_pass "ListPodSandbox 同时包含 containerd 默认和 E2B Pod（Android 跳过）"
+    fi
 else
     log_fail "ListPodSandbox 合并结果缺失: ${pods_output}"
     exit 1
@@ -235,35 +250,42 @@ containers_output=""
 for _ in $(seq 1 30); do
     containers_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" 2>&1 || true)
     if [ -n "${DEFAULT_CID}" ] &&
-       [ -n "${ANDROID_CID}" ] &&
        [ -n "${E2B_CID}" ] &&
        echo "${containers_output}" | grep -q "${DEFAULT_CID}" &&
-       echo "${containers_output}" | grep -q "${ANDROID_CID}" &&
-       echo "${containers_output}" | grep -q "${E2B_CID}"; then
+       echo "${containers_output}" | grep -q "${E2B_CID}" &&
+       { [ "${ANDROID_AVAILABLE}" = "0" ] || { [ -n "${ANDROID_CID}" ] && echo "${containers_output}" | grep -q "${ANDROID_CID}"; }; }; then
         break
     fi
     sleep 1
 done
-if [ -n "${DEFAULT_CID}" ] && [ -n "${ANDROID_CID}" ] && [ -n "${E2B_CID}" ] &&
+if [ -n "${DEFAULT_CID}" ] && [ -n "${E2B_CID}" ] &&
    echo "${containers_output}" | grep -q "${DEFAULT_CID}" &&
-   echo "${containers_output}" | grep -q "${ANDROID_CID}" &&
-   echo "${containers_output}" | grep -q "${E2B_CID}"; then
-    log_pass "ListContainers 同时包含 containerd 默认、Android 和 E2B Container"
+   echo "${containers_output}" | grep -q "${E2B_CID}" &&
+   { [ "${ANDROID_AVAILABLE}" = "0" ] || { [ -n "${ANDROID_CID}" ] && echo "${containers_output}" | grep -q "${ANDROID_CID}"; }; }; then
+    if [ "${ANDROID_AVAILABLE}" = "1" ]; then
+        log_pass "ListContainers 同时包含 containerd 默认、Android 和 E2B Container"
+    else
+        log_pass "ListContainers 同时包含 containerd 默认和 E2B Container（Android 跳过）"
+    fi
 else
     log_fail "ListContainers 合并结果缺失: pod_default=${DEFAULT_CID} android=${ANDROID_CID} e2b=${E2B_CID} output=${containers_output}"
     exit 1
 fi
 
 log_step "3.3 验证 Android PodSandboxStatus 路由"
-ANDROID_UID=$(kubectl get pod "${ANDROID_POD}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
-ANDROID_STATUS=$(${CRICTL} inspectp "${ANDROID_UID}" 2>&1 || true)
-if [ -n "${ANDROID_UID}" ] &&
-   echo "${ANDROID_STATUS}" | grep -q '"android.dev/adb-url"' &&
-   echo "${ANDROID_STATUS}" | grep -q '"android.dev/cvd-state"'; then
-    log_pass "Android PodSandboxStatus 已按 sandboxID 路由到 Android engine"
+if [ "${ANDROID_AVAILABLE}" = "1" ]; then
+    ANDROID_UID=$(kubectl get pod "${ANDROID_POD}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+    ANDROID_STATUS=$(${CRICTL} inspectp "${ANDROID_UID}" 2>&1 || true)
+    if [ -n "${ANDROID_UID}" ] &&
+       echo "${ANDROID_STATUS}" | grep -q '"android.dev/adb-url"' &&
+       echo "${ANDROID_STATUS}" | grep -q '"android.dev/cvd-state"'; then
+        log_pass "Android PodSandboxStatus 已按 sandboxID 路由到 Android engine"
+    else
+        log_fail "Android PodSandboxStatus 路由或 annotations 异常: uid=${ANDROID_UID} output=${ANDROID_STATUS}"
+        exit 1
+    fi
 else
-    log_fail "Android PodSandboxStatus 路由或 annotations 异常: uid=${ANDROID_UID} output=${ANDROID_STATUS}"
-    exit 1
+    android_gap_notice "Android artifacts 不可用，跳过 Android PodSandboxStatus 路由验证"
 fi
 
 log_step "4.1 验证 Exec 按 containerID 路由"

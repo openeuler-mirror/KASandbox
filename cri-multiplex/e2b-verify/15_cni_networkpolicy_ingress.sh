@@ -54,7 +54,7 @@ expect_http_204_from_client "${ALLOWED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/h
 expect_http_204_from_client "${DENIED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "denied client baseline" || exit 1
 
 log_step "4.1 应用 deny-all ingress NetworkPolicy"
-cat > "/tmp/${DENY_POLICY}.yaml" <<EOF
+cat > "${TMP_ROOT}/${DENY_POLICY}.yaml" <<EOF
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -66,7 +66,7 @@ spec:
   policyTypes:
     - Ingress
 EOF
-kubectl apply -f "/tmp/${DENY_POLICY}.yaml" >&2
+kubectl apply -f "${TMP_ROOT}/${DENY_POLICY}.yaml" >&2
 log_pass "deny-all ingress policy 已应用"
 
 DENY_BLOCKED=0
@@ -80,14 +80,14 @@ else
 fi
 
 if [ "${DENY_BLOCKED}" = "0" ]; then
-    log_skip "NetworkPolicy ingress 未生效或 E2B VM 流量未经过 Calico policy datapath，后续 allow 测试仅记录边界"
+    log_info "NetworkPolicy ingress 未生效，后续 allow 测试无判据，仅做连通性回归（已计 1 条 UNSUPPORTED）"
 
     log_step "4.3 入向连通保留回归：沙箱出向隔离不影响普通 Pod 入向访问"
     expect_http_204_from_client "${ALLOWED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "allowed client 入向保留" || exit 1
     expect_http_204_from_client "${DENIED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "denied client 入向保留" || exit 1
 else
     log_step "4.2 应用 allow selected client NetworkPolicy"
-    cat > "/tmp/${ALLOW_POLICY}.yaml" <<EOF
+    cat > "${TMP_ROOT}/${ALLOW_POLICY}.yaml" <<EOF
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -107,7 +107,7 @@ spec:
         - protocol: TCP
           port: ${ENVD_PORT}
 EOF
-    kubectl apply -f "/tmp/${ALLOW_POLICY}.yaml" >&2
+    kubectl apply -f "${TMP_ROOT}/${ALLOW_POLICY}.yaml" >&2
     log_pass "allow selected client policy 已应用"
 
     wait_http_204_from_client "${ALLOWED_CLIENT}" "http://${POD_IP}:${ENVD_PORT}/health" "allow policy 放行 allowed client" 30 || exit 1
@@ -119,9 +119,7 @@ cleanup
 log_pass "资源删除请求已提交"
 
 print_summary
-if [ "${FAIL_COUNT}" -eq 0 ]; then
+if [ "${FAIL_COUNT}" -eq 0 ] && [ "${UNSUPPORTED_COUNT}" -eq 0 ]; then
     log_info "验证完成：E2B CNI NetworkPolicy ingress 行为已检查"
-    exit 0
-else
-    exit 1
 fi
+exit "$(summary_exit_code)"

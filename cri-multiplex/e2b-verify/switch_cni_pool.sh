@@ -62,7 +62,7 @@ export E2B_FORCE_RESTART=1
 cmdline="$(cri_multiplex_cmdline)"
 if [ "${mode}" = "on" ]; then
     if echo "${cmdline}" | grep -q -- "-cni-pool-enabled" && echo "${cmdline}" | grep -q -- "-cni-pool-size ${size}"; then
-        log_pass "已切换到池化模式：-cni-pool-enabled -cni-pool-size ${size}（预热池开始后台灌满，可观察 /tmp/cri-multiplex.log 的 'CNI pool warm' 日志）"
+        log_pass "已切换到池化模式：-cni-pool-enabled -cni-pool-size ${size}（预热池开始后台灌满，可观察 ${MULTIPLEX_LOG} 的 'CNI pool warm' 日志）"
     else
         log_fail "切换失败，启动参数不符合预期: ${cmdline}"
         exit 1

@@ -80,7 +80,9 @@ else
 fi
 
 log_step "2.5 ListPodSandbox"
-output=$(${CRICTL} pods 2>&1) || true
+# 直连 fixture 带 flux-sandbox.io/direct=true：kubelet 的空 selector List 看不到它
+# （避免被 kubelet 孤儿 GC 回收），因此这里要按同样的 label 显式查询。
+output=$(${CRICTL} pods --label "${DIRECT_SANDBOX_LABEL}" 2>&1) || true
 # crictl 默认截断 ID 到 12 位，用前缀匹配
 if echo "${output}" | grep -q "${POD_UID:0:12}"; then
     log_pass "ListPodSandbox 包含目标 Pod"
@@ -120,8 +122,10 @@ export POD_UID CONTAINER_ID
 log_pass "重新创建 Pod 成功，Pod ID: ${POD_UID}"
 
 log_step "3.2 CreateContainer"
+# container 也带上直连标签：ListContainers 里 hidden sandbox 的容器同样被隐藏，
+# 只有带同名 label selector 的查询才会返回它（与 3.5/3.9 的断言保持一致）。
 data=$(cat <<EOF
-{"pod_sandbox_id": "${POD_UID}", "config": {"metadata": {"name": "sandbox"}, "image": {"image": "${IMAGE_E2B}"}}, "sandbox_config": {"metadata": {"name": "test-e2b-pod", "uid": "${POD_UID}"}}}
+{"pod_sandbox_id": "${POD_UID}", "config": {"metadata": {"name": "sandbox"}, "labels": {"${DIRECT_SANDBOX_LABEL_KEY}": "${DIRECT_SANDBOX_LABEL_VALUE}"}, "image": {"image": "${IMAGE_E2B}"}}, "sandbox_config": {"metadata": {"name": "test-e2b-pod", "uid": "${POD_UID}"}}}
 EOF
 )
 output=$(grpc_call "runtime.v1.RuntimeService/CreateContainer" "${data}") || true
@@ -165,14 +169,15 @@ else
 fi
 
 log_step "3.5 ListContainers"
-output=$(${CRICTL} ps 2>&1) || true
-# E2B Container 可能不在 crictl ps 列表中（已退出或沙箱特性），用 grpcurl ListContainers 验证
-grpc_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" "{\"filter\": {\"id\": \"${CONTAINER_ID}\"}}") || true
-if echo "${grpc_output}" | grep -q "${CONTAINER_ID}" || echo "${output}" | grep -q "${CONTAINER_ID:0:12}"; then
+# 用 grpcurl 精确按 container_id 过滤：crictl ps 只列 RUNNING，不能作为存在性依据。
+# 额外带直连 label selector（与 3.2 给 container 打的标签一致），否则被隐藏的
+# sandbox 容器不会出现在结果里。
+grpc_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" \
+    "{\"filter\": {\"id\": \"${CONTAINER_ID}\", \"label_selector\": {\"${DIRECT_SANDBOX_LABEL_KEY}\": \"${DIRECT_SANDBOX_LABEL_VALUE}\"}}}") || true
+if echo "${grpc_output}" | grep -q "${CONTAINER_ID}"; then
     log_pass "ListContainers 包含目标 Container"
 else
-    # E2B Container 退出后可能不在列表中，这是预期行为
-    log_pass "ListContainers 返回正常（Container 可能已退出不在列表中）"
+    log_fail "ListContainers 未包含目标 Container: ${grpc_output}"
 fi
 
 log_step "3.6 StopContainer"
@@ -200,9 +205,14 @@ else
 fi
 
 log_step "3.9 移除后 ListContainers"
-output=$(${CRICTL} ps 2>&1) || true
-if echo "${output}" | grep -q "${CONTAINER_ID}"; then
-    log_fail "Container 仍存在于列表中"
+# 必须用 ListContainers 精确查询：crictl ps 只列 RUNNING，容器已 EXITED 时必然查不到，
+# 用它判断"已删除"会恒真。label selector 只用于放行 hidden sandbox，删除后仍应查不到。
+grpc_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" \
+    "{\"filter\": {\"id\": \"${CONTAINER_ID}\", \"label_selector\": {\"${DIRECT_SANDBOX_LABEL_KEY}\": \"${DIRECT_SANDBOX_LABEL_VALUE}\"}}}") || true
+if echo "${grpc_output}" | grep -q "${CONTAINER_ID}"; then
+    log_fail "Container 仍存在于列表中: ${grpc_output}"
+elif grep -qE '^(ERROR|Failed to dial)|^[[:space:]]*Code:' <<< "${grpc_output}"; then
+    log_fail "ListContainers 调用失败，无法判断容器是否已删除: ${grpc_output}"
 else
     log_pass "Container 已从列表中删除"
 fi
@@ -217,7 +227,7 @@ else
 fi
 
 log_step "删除后查列表"
-output=$(${CRICTL} pods 2>&1) || true
+output=$(${CRICTL} pods --label "${DIRECT_SANDBOX_LABEL}" 2>&1) || true
 if echo "${output}" | grep -q "${POD_UID}"; then
     log_fail "Pod 仍存在于列表中"
 else
@@ -226,7 +236,7 @@ fi
 
 #==================== 边界条件 ====================#
 log_step "6.1 缺失必填 annotation"
-cat > /tmp/e2b-bad.json <<'EOF'
+cat > ${TMP_ROOT}/e2b-bad.json <<'EOF'
 {
   "metadata": {
     "name": "bad-pod",
@@ -239,16 +249,16 @@ cat > /tmp/e2b-bad.json <<'EOF'
   "linux": {}
 }
 EOF
-output=$(${CRICTL} runp -r e2b /tmp/e2b-bad.json 2>&1) || true
+output=$(${CRICTL} runp -r e2b ${TMP_ROOT}/e2b-bad.json 2>&1) || true
 if echo "${output}" | grep -qi "InvalidArgument\|error\|FATA"; then
     log_pass "缺失必填 annotation 返回错误（预期行为）"
 else
     log_fail "缺失必填 annotation 未返回错误: ${output}"
 fi
-rm -f /tmp/e2b-bad.json
+rm -f ${TMP_ROOT}/e2b-bad.json
 
 log_step "6.2 省略可选 annotation 使用默认值"
-python3 - "${BASE_POD_JSON}" /tmp/e2b-defaults.json <<'PY'
+python3 - "${BASE_POD_JSON}" ${TMP_ROOT}/e2b-defaults.json <<'PY'
 import json
 import sys
 import time
@@ -274,7 +284,7 @@ with open(dst, "w", encoding="utf-8") as target:
     json.dump(pod, target, indent=2, ensure_ascii=True)
     target.write("\n")
 PY
-output=$(${CRICTL} runp -r e2b /tmp/e2b-defaults.json 2>&1) || true
+output=$(${CRICTL} runp -r e2b ${TMP_ROOT}/e2b-defaults.json 2>&1) || true
 if echo "${output}" | grep -qE "^[a-zA-Z0-9_-]+$" && ! echo "${output}" | grep -qi "error\\|FATA"; then
     DEFAULTS_POD_ID=$(echo "${output}" | head -1 | tr -d '[:space:]')
     status_output=$(${CRICTL} inspectp "${DEFAULTS_POD_ID}" 2>&1) || true
@@ -287,18 +297,18 @@ if echo "${output}" | grep -qE "^[a-zA-Z0-9_-]+$" && ! echo "${output}" | grep -
 else
     log_fail "只保留必填 annotation 创建失败: ${output}"
 fi
-rm -f /tmp/e2b-defaults.json
+rm -f ${TMP_ROOT}/e2b-defaults.json
 
 run_invalid_annotation_case() {
     local name="$1"
     local key="$2"
     local value="$3"
-    local tmp="/tmp/e2b-invalid-${name}-$$.json"
+    local tmp="${TMP_ROOT}/e2b-invalid-${name}-$$.json"
     local output=""
     local created_id=""
 
     cp "${BASE_POD_JSON}" "${tmp}"
-    sync_e2b_pod_json_from_kubelet_yaml /tmp/e2b-kubelet-pod.yaml "${tmp}" || true
+    sync_e2b_pod_json_from_kubelet_yaml ${TMP_ROOT}/e2b-kubelet-pod.yaml "${tmp}" || true
     python3 - "${tmp}" "${key}" "${value}" <<'PY'
 import json
 import sys
@@ -348,9 +358,13 @@ run_invalid_annotation_case "auto-resume=bad-policy" "e2b.dev/auto-resume" "{\"p
 log_step "6.4 删除不存在的 Pod（幂等）"
 output=$(grpc_call "runtime.v1.RuntimeService/RemovePodSandbox" '{"pod_sandbox_id": "e2b-not-exist-999"}') || true
 if echo "${output}" | grep -q "^{}\|^$"; then
-    log_pass "删除不存在的 Pod 成功（幂等）"
+    log_pass "删除不存在的 Pod 返回空（幂等）"
+elif echo "${output}" | grep -qiE "NotFound|not found"; then
+    log_pass "删除不存在的 Pod 返回 NotFound（幂等语义可接受）"
 else
-    log_pass "删除不存在的 Pod 返回（预期行为）: ${output}"
+    # 只有 {} / NotFound 才算幂等；Unimplemented / Internal / 连接失败都必须失败，
+    # 否则这条用例永远不可能暴露问题。
+    log_fail "删除不存在的 Pod 返回非预期结果: ${output}"
 fi
 
 print_summary
