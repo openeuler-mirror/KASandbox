@@ -59,6 +59,43 @@ E2B_API_NS="${E2B_API_NS:-e2b}"
 MULTIPLEX_LOG="${MULTIPLEX_LOG:-${TMP_ROOT}/cri-multiplex.log}"
 ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-$(for d in /home/fjq/cf17 /opt/android-cuttlefish /opt/cf /root/cf17; do if [ -x "$d/bin/launch_cvd" ]; then echo "$d"; break; fi; done; true)}"
 
+# 直连（非 kubelet）sandbox 的隐藏标签，取值必须与 cri-multiplex 的
+# -hide-sandbox-label 一致（01_start_multiplex.sh 默认从 systemd unit 继承）。
+#
+# 直连 sandbox 是用 crictl/grpc 直接 RunPodSandbox 造出来的，没有对应的
+# Kubernetes Pod 对象。它对 kubelet 的 ListPodSandbox 可见时，会被 kubelet 的
+# 孤儿清理（HandlePodCleanups / runtime GC）当成垃圾回收：sandbox 中途消失、
+# mux 的 podRoutes/containerRoutes 被删，之后任何按 containerID 的调用都会
+# fallback 到 containerd 并返回 NotFound。给直连 fixture 打上该标签后，kubelet 空 selector 的
+# List 就看不到它，从而不会被回收。
+DIRECT_SANDBOX_LABEL_KEY="${DIRECT_SANDBOX_LABEL_KEY:-flux-sandbox.io/direct}"
+DIRECT_SANDBOX_LABEL_VALUE="${DIRECT_SANDBOX_LABEL_VALUE:-true}"
+DIRECT_SANDBOX_LABEL="${DIRECT_SANDBOX_LABEL_KEY}=${DIRECT_SANDBOX_LABEL_VALUE}"
+
+# 给 Pod JSON 加直连 sandbox 标签（幂等）。23/24/25 由 lib/bulk_direct.sh 调用，
+# 02/04/05/06 由 prepare_direct_pod_json 自动调用。
+add_direct_sandbox_labels() {
+    local pod_json="$1"
+    command -v python3 >/dev/null 2>&1 || {
+        log_fail "python3 不可用，无法写入直连 sandbox 标签: ${pod_json}"
+        return 1
+    }
+    python3 - "${pod_json}" "${DIRECT_SANDBOX_LABEL_KEY}" "${DIRECT_SANDBOX_LABEL_VALUE}" <<'PY'
+import json
+import sys
+
+path, key, value = sys.argv[1:4]
+with open(path, encoding="utf-8") as source:
+    pod = json.load(source)
+labels = pod.setdefault("labels", {})
+labels[key] = value
+labels.setdefault("flux-sandbox.io/runtime", "e2b")
+with open(path, "w", encoding="utf-8") as target:
+    json.dump(pod, target, indent=2, ensure_ascii=True)
+    target.write("\n")
+PY
+}
+
 # 所有用例共用同一个 socket（跟随 kubelet，通常是 /run/cri-multiplex.sock）。
 # state-dir 用独立目录，不改动 systemd 实例的持久状态：测试结束后把 systemd
 # 实例原样拉起即可，基线状态不会被测试留下的路由/沙箱记录污染。
@@ -94,7 +131,8 @@ select_state_dir() {
 }
 
 export SOCKET TMP_ROOT STATE_DIR STATE_DIR_RESTORE STATE_DIR_MATRIX STATE_DIR_CLEANUP \
-    MULTIPLEX_LOG KUBELET_FLAGS
+    MULTIPLEX_LOG KUBELET_FLAGS \
+    DIRECT_SANDBOX_LABEL_KEY DIRECT_SANDBOX_LABEL_VALUE DIRECT_SANDBOX_LABEL
 
 # 测试用常量（会被各脚本引用和覆盖）
 export POD_UID="${POD_UID:-irlkuj9aask5hmw37uc51}"
@@ -332,32 +370,42 @@ start_cni_android_multiplex() {
     local base_instance_start="${ANDROID_BASE_INSTANCE_NUM_START:-${ANDROID_BASE_INSTANCE_NUM:-1}}"
     local count_startup="${START_CNI_ANDROID_COUNT:-1}"
     local android_enabled=1
+    local force_restart="${E2B_FORCE_RESTART:-0}"
 
     # Android 用例依赖 cuttlefish 运行时。当前主机没有 artifacts 时不要强行
     # 传 -android-enabled（否则所有后续 CNI/kubelet 用例都会被启动失败拖垮），
     # 而是降级为 CNI-only，Android 用例自身会输出 SKIP。
     if ! android_available; then
         android_enabled=0
-        log_skip "未找到 Android cuttlefish artifacts（launch_cvd），本次以 CNI-only 模式启动"
+        android_gap_notice "未找到 Android cuttlefish artifacts（launch_cvd），本次以 CNI-only 模式启动"
     fi
 
-    log_info "${desc} ..."
-    if ! STATE_DIR="${STATE_DIR:-$(default_state_dir)}" \
-        ANDROID_ENABLED="${android_enabled}" \
-        CNI_ENABLED=1 \
-        ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-}" \
-        ANDROID_ADB_PORT_START="${adb_port_start}" \
-        ANDROID_BASE_INSTANCE_NUM_START="${base_instance_start}" \
-        E2B_FORCE_RESTART=1 \
-        E2B_NON_VALIDATION_STARTUP="$([ "${count_startup}" = "0" ] && echo 1 || echo 0)" \
-        "${SCRIPT_DIR_COMMON}/01_start_multiplex.sh" >&2; then
-        if [ "${count_startup}" = "0" ]; then
-            log_info "${desc} 失败"
-        else
-            log_fail "${desc} 失败"
+    # 已经是目标模式就直接复用，不再重启：避免每次重启都让 kubelet 看到 socket
+    # 消失（触发 pod 清理、干扰用例），也避免同一环境缺口被反复统计。
+    # 重启本身就是被测行为的用例，自行导出 E2B_FORCE_RESTART=1。
+    if [ "${force_restart}" != "1" ] && multiplex_mode_matches 1 "${android_enabled}"; then
+        log_info "${desc}：cri-multiplex 已处于目标模式（CNI$([ "${android_enabled}" = "1" ] && echo "+Android" || echo "-only")），跳过重启"
+    else
+        log_info "${desc} ..."
+        if ! STATE_DIR="${STATE_DIR:-$(default_state_dir)}" \
+            ANDROID_ENABLED="${android_enabled}" \
+            CNI_ENABLED=1 \
+            ANDROID_ARTIFACTS_DIR="${ANDROID_ARTIFACTS_DIR:-}" \
+            ANDROID_ADB_PORT_START="${adb_port_start}" \
+            ANDROID_BASE_INSTANCE_NUM_START="${base_instance_start}" \
+            E2B_FORCE_RESTART=1 \
+            E2B_NON_VALIDATION_STARTUP="$([ "${count_startup}" = "0" ] && echo 1 || echo 0)" \
+            "${SCRIPT_DIR_COMMON}/01_start_multiplex.sh" >&2; then
+            if [ "${count_startup}" = "0" ]; then
+                log_info "${desc} 失败"
+            else
+                log_fail "${desc} 失败"
+            fi
+            return 1
         fi
-        return 1
     fi
+
+    # 无论复用还是新启动，都做同一套模式断言，保证结论不依赖“刚好已经启动”。
     if [ "${count_startup}" = "0" ]; then
         require_cri_multiplex_cni_enabled_quiet || return 1
     else
@@ -391,8 +439,63 @@ start_cni_android_multiplex() {
     fi
 }
 
+# Android 能力由 run_all 统一探测一次，再通过环境变量下发给各用例：
+#   E2B_VERIFY_ANDROID_AVAILABLE=1/0  — 探测结果
+#   E2B_VERIFY_ANDROID_CHECKED=1      — 表示 run_all 已经统一判断过（缺口已汇报）
 android_available() {
+    if [ -n "${E2B_VERIFY_ANDROID_AVAILABLE:-}" ]; then
+        if [ "${E2B_VERIFY_ANDROID_AVAILABLE}" = "1" ]; then
+            return 0
+        fi
+        return 1
+    fi
     [ -n "${ANDROID_ARTIFACTS_DIR:-}" ] && [ -x "${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd" ]
+}
+
+# 环境级能力缺口的统一提示：
+#   - run_all 已统一探测过（E2B_VERIFY_ANDROID_CHECKED=1）→ 只提示，不重复计 SKIP；
+#   - 单独执行脚本 → 仍然记 SKIP，单跑时能直接看到原因。
+android_gap_notice() {
+    local message="$1"
+    if [ "${E2B_VERIFY_ANDROID_CHECKED:-0}" = "1" ]; then
+        log_info "${message}"
+    else
+        log_skip "${message}"
+    fi
+}
+
+# 判断运行中的实例是否已经处于期望模式（CNI / Android / state-dir 三者都匹配）。
+#
+# 用途：不必要的重启会让 kubelet 看到 socket 消失，既拖慢全量验证，也会触发
+# kubelet 的 pod 清理，干扰正在跑的用例；因此只有模式真的不匹配时才重启。
+# 需要“必须重启”的用例（重启本身就是被测行为，例如 18/19 的状态恢复、08 的
+# SIGTERM 后重启）自己导出 E2B_FORCE_RESTART=1 即可。
+multiplex_mode_matches() {
+    local want_cni="$1"
+    local want_android="$2"
+    local cur_cni=0
+    local cur_android=0
+    local cur_state=""
+
+    cri_multiplex_ready || return 1
+    # systemd 管理的实例日志在 journald、启停不受脚本控制，必须换成受控实例。
+    running_multiplex_is_systemd && return 1
+
+    if cri_multiplex_cni_enabled; then
+        cur_cni=1
+    fi
+    if cri_multiplex_cmdline 2>/dev/null | grep -q -- "-android-enabled"; then
+        cur_android=1
+    fi
+
+    [ "${cur_cni}" = "${want_cni}" ] || return 1
+    [ "${cur_android}" = "${want_android}" ] || return 1
+
+    cur_state="$(cri_multiplex_state_dir 2>/dev/null || true)"
+    if [ -n "${cur_state}" ] && [ -n "${STATE_DIR:-}" ] && [ "${cur_state}" != "${STATE_DIR}" ]; then
+        return 1
+    fi
+    return 0
 }
 
 # kubelet 用例的统一入口：确保 /run socket 由验证脚本直接控制，
@@ -435,7 +538,7 @@ require_android_or_skip() {
     if android_available; then
         return 0
     fi
-    log_skip "Android artifacts 不可用（未找到 ${ANDROID_ARTIFACTS_DIR:-<unset>}/bin/launch_cvd），跳过本用例"
+    log_skip "Android artifacts 不可用（未找到 ${ANDROID_ARTIFACTS_DIR:-<unset>}/bin/launch_cvd，E2B_VERIFY_ANDROID_AVAILABLE=${E2B_VERIFY_ANDROID_AVAILABLE:-unset}），跳过本用例"
     print_summary
     exit 0
 }
@@ -443,15 +546,21 @@ require_android_or_skip() {
 
 start_non_cni_multiplex() {
     local desc="${1:-启动 cri-multiplex 非 CNI runtime 模式}"
+    local force_restart="${E2B_FORCE_RESTART:-0}"
 
-    log_info "${desc} ..."
-    if ! STATE_DIR="${STATE_DIR:-$(default_state_dir)}" \
-        ANDROID_ENABLED=0 \
-        CNI_ENABLED=0 \
-        E2B_FORCE_RESTART=1 \
-        "${SCRIPT_DIR_COMMON}/01_start_multiplex.sh" >&2; then
-        log_fail "${desc} 失败"
-        return 1
+    # 已是非 CNI 模式就复用，不重启（02/04/05/06 连续执行时只需在 01 号切换一次）。
+    if [ "${force_restart}" != "1" ] && multiplex_mode_matches 0 0; then
+        log_info "${desc}：cri-multiplex 已处于非 CNI 模式，跳过重启"
+    else
+        log_info "${desc} ..."
+        if ! STATE_DIR="${STATE_DIR:-$(default_state_dir)}" \
+            ANDROID_ENABLED=0 \
+            CNI_ENABLED=0 \
+            E2B_FORCE_RESTART=1 \
+            "${SCRIPT_DIR_COMMON}/01_start_multiplex.sh" >&2; then
+            log_fail "${desc} 失败"
+            return 1
+        fi
     fi
 
     require_cri_multiplex_ready_quiet || return 1
@@ -1083,10 +1192,19 @@ prepare_direct_pod_json() {
         -e "0,/\"name\":\\s*\"[^\"]*\"/s//\"name\": \"test-e2b-${prefix}-${uid}\"/" \
         "${tmp_json}"
 
+    # 打上直连 sandbox 标签：kubelet 的空 selector List 看不到它，孤儿清理（runtime
+    # GC / HandlePodCleanups）就不会在用例执行中途把 sandbox 删掉；同时保持
+    # “带该 label 的定向查询仍可见”（23 号用例覆盖该行为）。
+    if ! add_direct_sandbox_labels "${tmp_json}"; then
+        rm -f "${tmp_json}" 2>/dev/null || true
+        log_fail "写入直连 sandbox 标签失败: ${tmp_json}"
+        return 1
+    fi
+
     export POD_UID="${uid}"
     export CONTAINER_ID="${uid}-c"
     export POD_JSON="${tmp_json}"
-    log_pass "已生成独立 Pod JSON: ${POD_JSON}"
+    log_pass "已生成独立 Pod JSON（含 ${DIRECT_SANDBOX_LABEL}）: ${POD_JSON}"
 }
 
 #==================== grpcurl 统一封装 ====================#

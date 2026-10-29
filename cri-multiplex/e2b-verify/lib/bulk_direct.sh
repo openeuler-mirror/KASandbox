@@ -32,8 +32,14 @@ fmt_ms() {
     printf '%d.%03ds' "$((ms / 1000))" "$((ms % 1000))"
 }
 
+# 直连 sandbox 标签统一由 lib/common.sh 实现（与 -hide-sandbox-label 取值同源），
+# 这里保留旧函数名做兼容，避免两份 python 实现各自漂移。
 add_direct_label_to_pod_json() {
     local pod_json="$1"
+    if declare -F add_direct_sandbox_labels >/dev/null 2>&1; then
+        add_direct_sandbox_labels "${pod_json}"
+        return $?
+    fi
     python3 - "${pod_json}" <<'PY'
 import json
 import sys

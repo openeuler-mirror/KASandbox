@@ -86,7 +86,8 @@ if kubectl get pod "${POD_NAME}" > /dev/null 2>&1; then
     }
     log_pass "旧 Pod 已删除"
 else
-    log_skip "无旧 Pod 需清理"
+    # 这是“前置条件本来就满足”，不是有验证点被跳过，用 info 避免污染 SKIP 统计。
+    log_info "无旧 Pod 需清理"
 fi
 
 # 清空旧日志便于后续分析

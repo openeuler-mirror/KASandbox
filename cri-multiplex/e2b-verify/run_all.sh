@@ -14,7 +14,58 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
+#==================== 耗时统计辅助 ====================#
+# 毫秒时间戳（GNU date），格式化成 "12.3s" / "2m05s"。
+now_ms() { date +%s%3N; }
+
+format_ms() {
+    local ms="${1:-0}"
+    if [ -z "${ms}" ]; then
+        ms=0
+    fi
+    local s=$((ms / 1000))
+    local d=$(((ms % 1000) / 100))
+    if [ "${s}" -ge 60 ]; then
+        printf '%dm%02ds' $((s / 60)) $((s % 60))
+    else
+        printf '%d.%ds' "${s}" "${d}"
+    fi
+}
+
+RUN_ALL_START_MS=$(now_ms)
+RUN_ALL_START_AT=$(date '+%F %T')
+
 log_section "cri-multiplex grpc_e2b 全接口自动化验证"
+
+#==================== Android 能力：全量只探测一次 ====================#
+# 各用例不再各自扫描 cuttlefish 目录：
+#   1. 结论一致——所有用例用同一份探测结果，不会出现“某个脚本认为可用、
+#      另一个认为不可用”的分裂；
+#   2. 统计不重复——同一个环境缺口只在这里说明一次，18/19/20/21 内部反复
+#      重启实例时不会再各记一条 SKIP；
+#   3. 单跑某个脚本时没有这些变量，脚本会自行探测，行为不变。
+detect_android_availability() {
+    if [ -z "${E2B_VERIFY_ANDROID_AVAILABLE:-}" ]; then
+        if android_available; then
+            E2B_VERIFY_ANDROID_AVAILABLE=1
+        else
+            E2B_VERIFY_ANDROID_AVAILABLE=0
+        fi
+    fi
+    E2B_VERIFY_ANDROID_CHECKED=1
+    # 一并下发探测到的 artifacts 路径，保证子脚本打印/校验用的是同一份事实。
+    export E2B_VERIFY_ANDROID_AVAILABLE E2B_VERIFY_ANDROID_CHECKED ANDROID_ARTIFACTS_DIR
+
+    if [ "${E2B_VERIFY_ANDROID_AVAILABLE}" = "1" ]; then
+        log_info "Android cuttlefish artifacts 可用: ${ANDROID_ARTIFACTS_DIR}（12/13/17 及 18-21 的 Android 场景将执行）"
+    else
+        log_warn "Android cuttlefish artifacts 不可用：12/13/17 与 18-21 的 Android 场景将跳过"
+        log_warn "  该判断只做一次，后续脚本不再重复探测、也不再重复计 SKIP"
+        log_warn "  如需启用：把 cuttlefish 装到 /opt/android-cuttlefish（含 bin/launch_cvd），或设置 ANDROID_ARTIFACTS_DIR"
+    fi
+}
+
+detect_android_availability
 
 # 接管 systemd 实例后，无论成功、失败还是 Ctrl-C 都要把生产实例拉回来，
 # 否则当前仓构建的测试二进制会一直占用 kubelet 使用的 socket。
@@ -148,11 +199,12 @@ for entry in "${SCRIPTS[@]}"; do
         continue
     fi
     MATCHED=$((MATCHED+1))
+    case_start_ms=$(now_ms)
 
     # --skip-setup 过滤
     if [ "${SKIP_SETUP}" = "1" ] && [ "${num}" = "00" ]; then
         log_skip "${desc}（--skip-setup）"
-        RESULTS+=("${num}|${desc}|SKIP")
+        RESULTS+=("${num}|${desc}|SKIP|0")
         TOTAL_SKIP=$((TOTAL_SKIP+1))
         continue
     fi
@@ -167,7 +219,7 @@ for entry in "${SCRIPTS[@]}"; do
                 log_info "切换 cri-multiplex 到非 CNI 模式，用于 crictl 直连用例 ..."
                 switch_log="${LOG_DIR}/e2b-verify-switch-non-cni.log"
                 if ! run_streamed "${switch_log}" env CNI_ENABLED=0 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh"; then
-                    RESULTS+=("01-non-cni|切换 cri-multiplex 到非 CNI 模式|FAIL(0/0/0)")
+                    RESULTS+=("01-non-cni|切换 cri-multiplex 到非 CNI 模式|FAIL(0/0/0)|$(( $(now_ms) - case_start_ms ))")
                     TOTAL_FAIL=$((TOTAL_FAIL+1))
                     continue
                 fi
@@ -176,7 +228,7 @@ for entry in "${SCRIPTS[@]}"; do
                 log_info "切换 cri-multiplex 到 CNI+Android runtime 模式，用于 07 及之后用例 ..."
                 switch_log="${LOG_DIR}/e2b-verify-switch-cni-android.log"
                 if ! run_streamed "${switch_log}" start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式"; then
-                    RESULTS+=("01-cni-android|切换 cri-multiplex 到 CNI+Android runtime 模式|FAIL(0/0/0)")
+                    RESULTS+=("01-cni-android|切换 cri-multiplex 到 CNI+Android runtime 模式|FAIL(0/0/0)|$(( $(now_ms) - case_start_ms ))")
                     TOTAL_FAIL=$((TOTAL_FAIL+1))
                     continue
                 fi
@@ -196,12 +248,12 @@ for entry in "${SCRIPTS[@]}"; do
             log_info "切换 cri-multiplex 到 CNI+Android runtime 模式，用于 07 及之后用例 ..."
             switch_log="${LOG_DIR}/e2b-verify-switch-cni-android.log"
             if ! run_streamed "${switch_log}" start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式"; then
-                RESULTS+=("01-cni-android|切换 cri-multiplex 到 CNI+Android runtime 模式|FAIL(0/0/0)")
+                RESULTS+=("01-cni-android|切换 cri-multiplex 到 CNI+Android runtime 模式|FAIL(0/0/0)|$(( $(now_ms) - case_start_ms ))")
                 TOTAL_FAIL=$((TOTAL_FAIL+1))
                 continue
             fi
             if ! prepare_shared_e2b_fixture_once; then
-                RESULTS+=("fixture-e2b|准备 07 及之后共享 E2B fixture|FAIL(0/0/0)")
+                RESULTS+=("fixture-e2b|准备 07 及之后共享 E2B fixture|FAIL(0/0/0)|$(( $(now_ms) - case_start_ms ))")
                 TOTAL_FAIL=$((TOTAL_FAIL+1))
                 continue
             fi
@@ -230,21 +282,24 @@ for entry in "${SCRIPTS[@]}"; do
     TOTAL_SKIP=$((TOTAL_SKIP + sub_skip))
     TOTAL_UNSUPPORTED=$((TOTAL_UNSUPPORTED + sub_unsupported))
 
+    case_ms=$(( $(now_ms) - case_start_ms ))
+    log_info "[${num}] 耗时 $(format_ms "${case_ms}")"
+
     if [ ${exit_code} -eq "${UNSUPPORTED_EXIT_CODE}" ]; then
         # 用例无失败，但当前环境不具备该能力：既不是 PASS 也不是 FAIL。
         if [ "${sub_unsupported}" = "0" ]; then
             sub_unsupported=1
             TOTAL_UNSUPPORTED=$((TOTAL_UNSUPPORTED + 1))
         fi
-        RESULTS+=("${num}|${desc}|UNSUPPORTED(${sub_pass}/${sub_fail}/${sub_skip}/${sub_unsupported})")
+        RESULTS+=("${num}|${desc}|UNSUPPORTED(${sub_pass}/${sub_fail}/${sub_skip}/${sub_unsupported})|${case_ms}")
     elif [ ${exit_code} -eq 0 ]; then
-        RESULTS+=("${num}|${desc}|PASS(${sub_pass}/${sub_fail}/${sub_skip})")
+        RESULTS+=("${num}|${desc}|PASS(${sub_pass}/${sub_fail}/${sub_skip})|${case_ms}")
     else
         if [ "${sub_fail}" = "0" ]; then
             TOTAL_FAIL=$((TOTAL_FAIL + 1))
             sub_fail=1
         fi
-        RESULTS+=("${num}|${desc}|FAIL(${sub_pass}/${sub_fail}/${sub_skip})")
+        RESULTS+=("${num}|${desc}|FAIL(${sub_pass}/${sub_fail}/${sub_skip})|${case_ms}")
     fi
 done
 
@@ -267,7 +322,7 @@ echo -e "${CYAN}╠════════════════════�
 echo -e "${CYAN}║                                                                  ║${NC}"
 
 for r in "${RESULTS[@]}"; do
-    IFS='|' read -r num desc status <<< "${r}"
+    IFS='|' read -r num desc status _case_ms <<< "${r}"
     # 计算填充空格
     padding_num=$((3 - ${#num}))
     padding_desc=$((30 - ${#desc}))
@@ -292,6 +347,38 @@ printf "${CYAN}║${NC}  ${GREEN}PASS: %-5d${NC}  ${RED}FAIL: %-5d${NC}  ${YELLO
     "${TOTAL_PASS}" "${TOTAL_FAIL}" "${TOTAL_SKIP}" "${TOTAL_UNSUPPORTED}" \
     "$((TOTAL_PASS+TOTAL_FAIL+TOTAL_SKIP+TOTAL_UNSUPPORTED))"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+#==================== 耗时统计 ====================#
+RUN_ALL_TOTAL_MS=$(( $(now_ms) - RUN_ALL_START_MS ))
+echo -e "${CYAN}──────────────────── 用例耗时明细（按执行顺序）────────────────────${NC}"
+for r in "${RESULTS[@]}"; do
+    IFS='|' read -r num desc status case_ms <<< "${r}"
+    if [ -z "${case_ms}" ]; then
+        case_ms=0
+    fi
+    printf "  [%s] %8s  %s\n" "${num}" "$(format_ms "${case_ms}")" "${desc}"
+done
+
+# 最慢 3 项（毫秒补零后排序，避免 head 触发 SIGPIPE 与 pipefail 冲突）
+slows=$(printf '%s\n' "${RESULTS[@]}" \
+    | awk -F'|' '{printf "%010d|%s|%s\n", (($4=="")?0:$4), $1, $2}' \
+    | sort -t'|' -k1,1 -rn)
+slow_idx=0
+echo -e "${CYAN}  —— 最慢 3 项 ——${NC}"
+while IFS='|' read -r ms num desc; do
+    if [ -z "${ms}" ]; then
+        continue
+    fi
+    if [ "${slow_idx}" -ge 3 ]; then
+        break
+    fi
+    printf "  %8s  [%s] %s\n" "$(format_ms "$((10#${ms}))")" "${num}" "${desc}"
+    slow_idx=$((slow_idx + 1))
+done <<< "${slows}"
+
+echo -e "${CYAN}──────────────────────────────────────────────────────────────────${NC}"
+echo -e "${CYAN}⏱  总耗时 $(format_ms "${RUN_ALL_TOTAL_MS}")（${RUN_ALL_TOTAL_MS} ms）  ${RUN_ALL_START_AT} → $(date '+%F %T')${NC}"
 echo ""
 
 if [ ${TOTAL_FAIL} -eq 0 ] && [ ${TOTAL_UNSUPPORTED} -eq 0 ]; then

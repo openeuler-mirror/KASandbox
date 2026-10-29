@@ -247,7 +247,8 @@ else
     else
         log_fail "cri-multiplex 收到 SIGTERM 后未退出"
     fi
-    START_CNI_ANDROID_COUNT=0 start_cni_android_multiplex "SIGTERM 验证后重启 cri-multiplex" || exit 1
+    # 进程刚被 SIGTERM 杀掉，必须重新拉起（不能走“模式已匹配就复用”的捷径）。
+    E2B_FORCE_RESTART=1 START_CNI_ANDROID_COUNT=0 start_cni_android_multiplex "SIGTERM 验证后重启 cri-multiplex" || exit 1
 fi
 
 #==================== 清理 ====================#

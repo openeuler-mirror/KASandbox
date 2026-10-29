@@ -458,8 +458,14 @@ remove_sandbox() {
 
 delete_kube_pod() {
     local name="$1"
-    kubectl delete pod "${name}" --wait=true --timeout=120s >&2 || true
-    wait_pod_deleted "${name}" 60
+    # 调用点（§2 Orchestrator 不可用 / §3 CNI 不可用）的 Pod 永远不可能 Ready，
+    # kubelet 也就永远无法确认删除：实测 `--wait --timeout=120s` 等满 120s 超时，
+    # 之后还要再等 63.2s 对象才从 API 消失（合计 183s，单用例最大头）。
+    # 这类“运行时不可用”的 Pod 只能靠 force 清掉；teardown 由 kubelet 异步做，
+    # 残留由后面的 state/routes/netns 断言（state_has_no_e2b、[ -e netns ]）兜底，
+    # 因此 wait_pod_deleted 从 60s 收到 30s（收尾实测 20~30s 量级）。
+    kubectl delete pod "${name}" --force --grace-period=0 --wait=false >&2 || true
+    wait_pod_deleted "${name}" 30
 }
 
 log_step "1. 前置检查（20 号默认不构建）"
@@ -479,8 +485,9 @@ if [ "${E2B_SKIP_BUILD}" = "1" ] && ! validate_reusable_e2b_yaml_quiet "${E2B_PO
     exit 1
 fi
 ANDROID_CASES_AVAILABLE=1
-if [ ! -x "${ANDROID_ARTIFACTS_DIR}/bin/launch_cvd" ]; then
-    log_skip "launch_cvd 不存在或不可执行: ${ANDROID_ARTIFACTS_DIR:-<unset>}/bin/launch_cvd，Android 清理场景将 SKIP"
+if ! android_available; then
+    # run_all 已统一探测过 Android 能力时这里只提示，不再重复计 SKIP。
+    android_gap_notice "launch_cvd 不存在或不可执行: ${ANDROID_ARTIFACTS_DIR:-<unset>}/bin/launch_cvd，Android 清理场景将 SKIP"
     ANDROID_CASES_AVAILABLE=0
 fi
 if [ "${ANDROID_CASES_AVAILABLE}" = "1" ] && { [ ! -e /dev/kvm ] || [ ! -e /dev/net/tun ]; }; then

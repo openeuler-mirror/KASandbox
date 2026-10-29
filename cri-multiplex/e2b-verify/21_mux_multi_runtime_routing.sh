@@ -203,7 +203,7 @@ EOF
     wait_pod_ready "${ANDROID_POD}" 240s || exit 1
     assert_log_contains "RunPodSandbox routing: handler=\"${ANDROID_RUNTIME_HANDLER}\" -> android" "RuntimeClass=${ANDROID_RUNTIMECLASS} Pod 已路由到 Android" || exit 1
 else
-    log_skip "Android artifacts 不可用，跳过 Android RuntimeClass 路由验证"
+    android_gap_notice "Android artifacts 不可用，跳过 Android RuntimeClass 路由验证"
 fi
 
 log_step "2.3 创建 E2B Pod"
@@ -285,7 +285,7 @@ if [ "${ANDROID_AVAILABLE}" = "1" ]; then
         exit 1
     fi
 else
-    log_skip "Android artifacts 不可用，跳过 Android PodSandboxStatus 路由验证"
+    android_gap_notice "Android artifacts 不可用，跳过 Android PodSandboxStatus 路由验证"
 fi
 
 log_step "4.1 验证 Exec 按 containerID 路由"

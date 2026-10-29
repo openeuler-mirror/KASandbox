@@ -415,7 +415,8 @@ log_pass "旧 Pod 和测试 state-dir 已清理"
 
 log_step "1.4 非法 JSON 启动容错"
 printf '{"version":1,' > "${STATE_FILE}"
-start_cni_android_multiplex "非法 JSON 后启动 cri-multiplex" || exit 1
+# 故意写入坏 state.json 后必须重启，让实例重新加载它；复用旧进程会看不到坏状态。
+E2B_FORCE_RESTART=1 start_cni_android_multiplex "非法 JSON 后启动 cri-multiplex" || exit 1
 if grep -q "failed to load ${STATE_FILE}" ${MULTIPLEX_LOG} 2>/dev/null; then
     log_pass "非法 JSON 被识别并降级为空状态"
 else
@@ -462,7 +463,8 @@ assert_state_json "单 Pod/单 Container Running 状态已持久化" "k8s_active
 assert_kubectl_exec "${POD_NAME}" "state_create_ok" echo "state_create_ok" || exit 1
 
 log_step "3.1 重启 cri-multiplex 后通过 kubectl 查询和 exec 验证恢复"
-start_cni_android_multiplex "重启 cri-multiplex 恢复 Kubernetes Pod 状态" || exit 1
+# 重启本身是被测行为（验证重启后状态恢复），必须强制重启。
+E2B_FORCE_RESTART=1 start_cni_android_multiplex "重启 cri-multiplex 恢复 Kubernetes Pod 状态" || exit 1
 
 PHASE=$(kubectl get pod "${POD_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)
 READY=$(kubectl get pod "${POD_NAME}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || true)
@@ -623,7 +625,7 @@ fi
 log_info "kill -9 cri-multiplex 进程: ${crash_pids}"
 kill -9 ${crash_pids} 2>/dev/null || true
 sleep 2
-start_cni_android_multiplex "kill -9 后重启 cri-multiplex 恢复状态" || exit 1
+E2B_FORCE_RESTART=1 start_cni_android_multiplex "kill -9 后重启 cri-multiplex 恢复状态" || exit 1
 assert_state_json "kill -9 重启后 Pod/Container 状态已恢复" "k8s_active" "${CRASH_UID}" "${CRASH_CONTAINER_ID}" || exit 1
 assert_kubectl_exec "${CRASH_POD_NAME}" "crash_restore_ok" echo "crash_restore_ok" || exit 1
 kubectl delete pod "${CRASH_POD_NAME}" --wait=true --timeout=90s >&2 || {
@@ -687,7 +689,8 @@ stop_multiplex_if_using_state_dir "${STATE_DIR}"
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 write_empty_state
-start_cni_android_multiplex "清理测试状态后重启 cri-multiplex" || exit 1
+# state-dir 刚被清空，必须重启让实例重新落盘，否则内存态会覆盖“已清理”的断言。
+E2B_FORCE_RESTART=1 start_cni_android_multiplex "清理测试状态后重启 cri-multiplex" || exit 1
 
 print_summary
 

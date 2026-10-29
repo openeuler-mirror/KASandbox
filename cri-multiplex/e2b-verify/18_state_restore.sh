@@ -142,7 +142,7 @@ wait_pod_deleted "${POD_NAME}" || true
 stop_multiplex_if_using_state_dir "${STATE_DIR}"
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
-START_CNI_ANDROID_COUNT=0 start_cni_android_multiplex "启动 cri-multiplex CNI+Android runtime 模式" || exit 1
+E2B_FORCE_RESTART=1 START_CNI_ANDROID_COUNT=0 start_cni_android_multiplex "启动 cri-multiplex CNI+Android runtime 模式" || exit 1
 
 log_step "2.1 刷新 build_id 并准备 Kubernetes Pod YAML"
 if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${POD_NAME}" "${POD_YAML}"; then
@@ -173,7 +173,8 @@ assert_state_json "重启前 state.json 已持久化目标 Pod/Container" "activ
 assert_kubectl_exec "${POD_NAME}" "state_restore_before" echo "state_restore_before" || exit 1
 
 log_step "3.1 重启 cri-multiplex 并恢复状态"
-start_cni_android_multiplex "重启 cri-multiplex CNI+Android runtime 模式" || exit 1
+# 重启本身就是本用例的被测行为（验证重启后状态恢复），必须强制重启。
+E2B_FORCE_RESTART=1 start_cni_android_multiplex "重启 cri-multiplex CNI+Android runtime 模式" || exit 1
 
 PHASE=$(kubectl get pod "${POD_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)
 READY=$(kubectl get pod "${POD_NAME}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || true)

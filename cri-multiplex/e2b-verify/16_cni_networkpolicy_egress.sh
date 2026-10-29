@@ -9,8 +9,14 @@
 #   4. allow-internet=false 的用户级 deny 覆盖 TCP（CRI 模式修复验证）
 #   5. deny-all egress NetworkPolicy best-effort（bridge 数据面不生效则记 SKIP）
 #
-# 前置：orchestrator 以 SANDBOX_DENIED_POD_CIDR=<podCIDR> 启动（ helm
-#       sandboxDeniedPodCIDR ）。未注入时 2/3 项记录 SKIP（向后兼容）。
+# 前置：orchestrator 以 SANDBOX_DENIED_POD_CIDR 启动，且**必须同时包含两段**：
+#   - 集群 Pod CIDR：10.233.64.0/18（本脚本 POD_CIDR；Calico / kubectl 分配的普通 Pod）
+#   - E2B 沙箱自身地址段：10.13.0.0/22（CNI 网桥 e2b0 的 ipam.subnet，取自
+#     /etc/cni/net-e2b.d/e2b-bridge.conflist）
+# 只注入前者时，沙箱 A -> 沙箱 B 的 PodIP（形如 10.13.2.x）不在 deny 集里，
+# 第 2 项「沙箱间隔离」会拿到 HTTP 204 而判失败——2026-10-28 的实测失败即此原因。
+# 沙箱若走其它网段，SANDBOX_DENIED_POD_CIDR 需同步该网段。
+# 未注入时 2/3 项记录 UNSUPPORTED（向后兼容）。
 ###############################################################################
 set -euo pipefail
 
@@ -55,7 +61,11 @@ e2b_netns_name() {
         return 1
     fi
 
-    local state_file="${CRI_MULTIPLEX_STATE:-/var/lib/cri-multiplex/state/state.json}"
+    # 必须跟随用例实例实际使用的 state-dir（run_all 全程用 ${STATE_DIR}，
+    # 只有 systemd 生产实例才是 /var/lib/cri-multiplex/state）。写死生产路径会读不到
+    # cni_record，退化成按 UID 推导 netns 名；一旦命中 CNI 预热池（e2b-pool* 命名）
+    # 推导必然失败，3.2 的隔离检测就会被误判成 UNSUPPORTED。
+    local state_file="${CRI_MULTIPLEX_STATE:-${STATE_DIR}/state.json}"
     local from_state
     if [ -f "${state_file}" ]; then
         from_state=$(python3 - "${state_file}" "${pod_uid}" <<'EOF'

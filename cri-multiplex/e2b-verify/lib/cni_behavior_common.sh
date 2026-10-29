@@ -63,6 +63,20 @@ prepare_e2b_cni_pod_yaml() {
     local extra_label_key="${3:-}"
     local extra_label_value="${4:-}"
 
+    # run_all 会用 E2B_SKIP_BUILD=1 + E2B_BASE_POD_YAML 把 07 号准备的共享 fixture
+    # 下发给后续用例；此时目标文件名往往和 base 不同（例如 16 号的
+    # e2b-np-egress-peer.yaml），必须先复制一份，否则 refresh_or_reuse_e2b_yaml
+    # 会去校验一个尚不存在的文件并直接 FAIL。
+    # prepare_e2b_pod_yaml 里有同样的逻辑，这里补齐，避免两套实现漂移。
+    if [ "${E2B_SKIP_BUILD:-0}" = "1" ] \
+        && [ "${E2B_CNI_YAML}" != "${E2B_BASE_POD_YAML:-}" ] \
+        && [ -f "${E2B_BASE_POD_YAML:-}" ]; then
+        cp "${E2B_BASE_POD_YAML}" "${E2B_CNI_YAML}" || {
+            log_fail "无法从共享 fixture 复制 Pod YAML: ${E2B_BASE_POD_YAML} -> ${E2B_CNI_YAML}"
+            return 1
+        }
+    fi
+
     if ! refresh_or_reuse_e2b_yaml "${REFRESH_SCRIPT}" "${pod_name}" "${E2B_CNI_YAML}"; then
         return 1
     fi

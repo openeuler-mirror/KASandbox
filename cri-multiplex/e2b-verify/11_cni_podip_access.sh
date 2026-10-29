@@ -77,7 +77,8 @@ if kubectl get pod "${POD_NAME}" > /dev/null 2>&1; then
         exit 1
     fi
 else
-    log_skip "无旧 Pod 需清理"
+    # 这是“前置条件本来就满足”，不是有验证点被跳过，用 info 避免污染 SKIP 统计。
+    log_info "无旧 Pod 需清理"
 fi
 
 : > ${MULTIPLEX_LOG} 2>/dev/null || true
@@ -220,24 +221,51 @@ fi
 
 log_step "5.2 E2B 沙箱内经 CNI 访问外网"
 
-EGRESS_OUTPUT=$(kubectl_exec_output_with_retry "${POD_NAME}" 60 sh -c '
-set -eu
-getent hosts example.com >/tmp/e2b-dns.out 2>/tmp/e2b-dns.err || {
+# guest 的 /etc/resolv.conf 在模板里固定为 nameserver 8.8.8.8，而这条 UDP/53 链路
+# 实测有丢包（约 1/3），单次 5s 超时会把一次抖动放大成用例失败。
+# 这里分两步重试：
+#   1) 解析：最多 3 轮（每轮间隔 2s），拿到全部 IPv4 A 记录；
+#   2) 请求：先让 curl 自己解析（多 A 记录时 curl 会自动回退到下一个），
+#      失败再按解析到的 IP 逐个 --resolve 试（某些 A 记录可能被本网络阻断，
+#      实测 example.com 的两个 Cloudflare 记录里有一个 100% 连不上）。
+# 只有「解析全失败」或「所有地址都失败」才判定失败。
+EGRESS_OUTPUT=$(kubectl_exec_output_with_retry "${POD_NAME}" 90 sh -c '
+set -u
+DNS_ERR=/tmp/e2b-dns.err
+: >"${DNS_ERR}" 2>/dev/null || true
+code=""
+ips=""
+for attempt in 1 2 3; do
+  ips=$( { getent ahostsv4 example.com 2>>"${DNS_ERR}" || getent hosts example.com 2>>"${DNS_ERR}"; } \
+        | cut -d" " -f1 | grep -v ":" | grep -v "^$" | sort -u | head -n5 )
+  if [ -n "${ips}" ]; then
+    break
+  fi
+  echo "DNS_RETRY ${attempt}" >&2
+  sleep 2
+done
+if [ -z "${ips}" ]; then
   echo "DNS_FAIL"
-  cat /tmp/e2b-dns.err 2>/dev/null || true
+  cat "${DNS_ERR}" 2>/dev/null || true
   exit 11
-}
+fi
 if command -v curl >/dev/null 2>&1; then
-  code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 https://example.com)
+  code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 20 \
+         https://example.com 2>>"${DNS_ERR}") || code=000
+  for ip in ${ips}; do
+    case "${code}" in 2*|3*) break ;; esac
+    code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 6 --max-time 12 \
+           --resolve "example.com:443:${ip}" https://example.com 2>>"${DNS_ERR}") || code=000
+  done
 elif command -v wget >/dev/null 2>&1; then
-  wget -q -T 10 -O /dev/null https://example.com && code=200 || code=000
+  wget -q -T 20 -O /dev/null https://example.com 2>>"${DNS_ERR}" && code=200 || code=000
 else
   echo "NO_HTTP_CLIENT"
   exit 12
 fi
 case "${code}" in
-  2*|3*) echo "EXTERNAL_OK ${code}" ;;
-  *) echo "HTTP_FAIL ${code}"; exit 13 ;;
+  2*|3*) echo "EXTERNAL_OK ${code} dns=$(printf "%s" "${ips}" | tr "\n" ",")" ;;
+  *) echo "HTTP_FAIL ${code} dns=$(printf "%s" "${ips}" | tr "\n" ",")"; tail -n3 "${DNS_ERR}" 2>/dev/null || true; exit 13 ;;
 esac
 ' 2>&1) || true
 if grep -q "EXTERNAL_OK" <<< "${EGRESS_OUTPUT}"; then

@@ -80,7 +80,9 @@ else
 fi
 
 log_step "2.5 ListPodSandbox"
-output=$(${CRICTL} pods 2>&1) || true
+# 直连 fixture 带 flux-sandbox.io/direct=true：kubelet 的空 selector List 看不到它
+# （避免被 kubelet 孤儿 GC 回收），因此这里要按同样的 label 显式查询。
+output=$(${CRICTL} pods --label "${DIRECT_SANDBOX_LABEL}" 2>&1) || true
 # crictl 默认截断 ID 到 12 位，用前缀匹配
 if echo "${output}" | grep -q "${POD_UID:0:12}"; then
     log_pass "ListPodSandbox 包含目标 Pod"
@@ -120,8 +122,10 @@ export POD_UID CONTAINER_ID
 log_pass "重新创建 Pod 成功，Pod ID: ${POD_UID}"
 
 log_step "3.2 CreateContainer"
+# container 也带上直连标签：ListContainers 里 hidden sandbox 的容器同样被隐藏，
+# 只有带同名 label selector 的查询才会返回它（与 3.5/3.9 的断言保持一致）。
 data=$(cat <<EOF
-{"pod_sandbox_id": "${POD_UID}", "config": {"metadata": {"name": "sandbox"}, "image": {"image": "${IMAGE_E2B}"}}, "sandbox_config": {"metadata": {"name": "test-e2b-pod", "uid": "${POD_UID}"}}}
+{"pod_sandbox_id": "${POD_UID}", "config": {"metadata": {"name": "sandbox"}, "labels": {"${DIRECT_SANDBOX_LABEL_KEY}": "${DIRECT_SANDBOX_LABEL_VALUE}"}, "image": {"image": "${IMAGE_E2B}"}}, "sandbox_config": {"metadata": {"name": "test-e2b-pod", "uid": "${POD_UID}"}}}
 EOF
 )
 output=$(grpc_call "runtime.v1.RuntimeService/CreateContainer" "${data}") || true
@@ -165,8 +169,11 @@ else
 fi
 
 log_step "3.5 ListContainers"
-# 用 grpcurl 精确按 container_id 过滤：crictl ps 只列 RUNNING，不能作为存在性依据
-grpc_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" "{\"filter\": {\"id\": \"${CONTAINER_ID}\"}}") || true
+# 用 grpcurl 精确按 container_id 过滤：crictl ps 只列 RUNNING，不能作为存在性依据。
+# 额外带直连 label selector（与 3.2 给 container 打的标签一致），否则被隐藏的
+# sandbox 容器不会出现在结果里。
+grpc_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" \
+    "{\"filter\": {\"id\": \"${CONTAINER_ID}\", \"label_selector\": {\"${DIRECT_SANDBOX_LABEL_KEY}\": \"${DIRECT_SANDBOX_LABEL_VALUE}\"}}}") || true
 if echo "${grpc_output}" | grep -q "${CONTAINER_ID}"; then
     log_pass "ListContainers 包含目标 Container"
 else
@@ -199,8 +206,9 @@ fi
 
 log_step "3.9 移除后 ListContainers"
 # 必须用 ListContainers 精确查询：crictl ps 只列 RUNNING，容器已 EXITED 时必然查不到，
-# 用它判断"已删除"会恒真。
-grpc_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" "{\"filter\": {\"id\": \"${CONTAINER_ID}\"}}") || true
+# 用它判断"已删除"会恒真。label selector 只用于放行 hidden sandbox，删除后仍应查不到。
+grpc_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" \
+    "{\"filter\": {\"id\": \"${CONTAINER_ID}\", \"label_selector\": {\"${DIRECT_SANDBOX_LABEL_KEY}\": \"${DIRECT_SANDBOX_LABEL_VALUE}\"}}}") || true
 if echo "${grpc_output}" | grep -q "${CONTAINER_ID}"; then
     log_fail "Container 仍存在于列表中: ${grpc_output}"
 elif grep -qE '^(ERROR|Failed to dial)|^[[:space:]]*Code:' <<< "${grpc_output}"; then
@@ -219,7 +227,7 @@ else
 fi
 
 log_step "删除后查列表"
-output=$(${CRICTL} pods 2>&1) || true
+output=$(${CRICTL} pods --label "${DIRECT_SANDBOX_LABEL}" 2>&1) || true
 if echo "${output}" | grep -q "${POD_UID}"; then
     log_fail "Pod 仍存在于列表中"
 else
