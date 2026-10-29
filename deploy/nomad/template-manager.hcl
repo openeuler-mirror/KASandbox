@@ -50,6 +50,9 @@ job "template-manager" {
         LOGS_COLLECTOR_PUBLIC_IP      = "${LOGS_COLLECTOR_PUBLIC_IP}"
         ALLOW_SANDBOX_INTERNET        = "${ALLOW_SANDBOX_INTERNET}"
         SHARED_CHUNK_CACHE_PATH       = "${SHARED_CHUNK_CACHE_PATH}"
+        COMPRESS_ENABLED              = "${COMPRESS_ENABLED}"
+        COMPRESS_TYPE                 = "${COMPRESS_TYPE}"
+        COMPRESS_LEVEL                = "${COMPRESS_LEVEL}"
         E2B_FC_NETNS_EXEC_HELPER      = "${E2B_FC_NETNS_EXEC_HELPER}"
         E2B_USE_FC_NETNS_EXEC_HELPER  = "${E2B_USE_FC_NETNS_EXEC_HELPER}"
         GRPC_PORT                     = "${TEMPLATE_MANAGER_PORT}"
@@ -58,6 +61,8 @@ job "template-manager" {
         ARTIFACTS_REGISTRY_PROVIDER   = "${ARTIFACTS_REGISTRY_PROVIDER}"
         MINIO_ENDPOINT                = "${MINIO_ENDPOINT}"
         MINIO_ACCESS_KEY              = "${MINIO_ACCESS_KEY}"
+        # 2026.30 没有内置默认密钥（KASandbox 二进制默认 minioadmin），用 MinIO 时必须传
+        MINIO_SECRET_KEY              = "${MINIO_SECRET_KEY}"
         SSL_CERT_FILE                 = "${HARBOR_CERTS_DIR}/harbor.crt"
         # --- Mooncake ---
         GLOG_logtostderr              = "${GLOG_logtostderr}"

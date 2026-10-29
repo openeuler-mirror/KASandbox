@@ -50,10 +50,12 @@ def setup_e2b_env(server_ip: str) -> None:
 
     access_token = data.get("accessToken")
     team_api_key = data.get("teamApiKey")
-    if not access_token or not team_api_key:
-        raise RuntimeError(f"配置文件 {E2B_CONFIG_PATH} 中未找到 accessToken 或 teamApiKey 字段")
+    if not team_api_key:
+        raise RuntimeError(f"配置文件 {E2B_CONFIG_PATH} 中未找到 teamApiKey 字段")
 
-    os.environ["E2B_ACCESS_TOKEN"] = access_token
+    # e2b-infra 2026.30 只有 API key，seed 写出的 accessToken 为空
+    if access_token:
+        os.environ["E2B_ACCESS_TOKEN"] = access_token
     os.environ["E2B_API_KEY"] = team_api_key
 
 

@@ -44,13 +44,14 @@ if __name__ == '__main__':
     print(f"teamApiKey: {team_api_key}")
 
     # 验证字段是否存在
-    if not access_token or not team_api_key:
-        print("警告：文件中未找到 accessToken 或 teamApiKey 字段！")
+    if not team_api_key:
+        print("警告：文件中未找到 teamApiKey 字段！")
         # 字段缺失时直接退出，避免后续执行失败
         exit(1)
 
-    # 设置 E2B 相关环境变量
-    os.environ["E2B_ACCESS_TOKEN"] = access_token
+    # 设置 E2B 相关环境变量；e2b-infra 2026.30 只有 API key，seed 写出的 accessToken 为空
+    if access_token:
+        os.environ["E2B_ACCESS_TOKEN"] = access_token
     os.environ["E2B_API_KEY"] = team_api_key
     sbx = Sandbox.create(TEMPLATE)
     print(sbx.sandbox_id)

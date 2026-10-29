@@ -13,6 +13,8 @@ spec:
     spec:
       hostPID: true
       hostNetwork: true
+      # 退出时要清理网络池、等暂停快照上传完，默认 30 秒会被强杀，留下 netns 残留
+      terminationGracePeriodSeconds: 600
       dnsPolicy: ClusterFirstWithHostNet
       affinity:
         nodeAffinity:
@@ -49,6 +51,8 @@ spec:
         - name: lib-pixman
           mountPath: /usr/lib64/libpixman-1.so.0
           readOnly: true
+        - name: fc-busybox
+          mountPath: /fc-busybox
         - name: fc-vm
           mountPath: /fc-vm
         - name: tmp-templates
@@ -149,6 +153,12 @@ spec:
           value: "{{ .Values.sandboxProxyCaAuto }}"
         - name: SHARED_CHUNK_CACHE_PATH
           value: "{{ .Values.sharedChunkCachePath }}"
+        - name: COMPRESS_ENABLED
+          value: "{{ .Values.compressEnabled }}"
+        - name: COMPRESS_TYPE
+          value: "{{ .Values.compressType }}"
+        - name: COMPRESS_LEVEL
+          value: "{{ .Values.compressLevel }}"
         - name: CLICKHOUSE_CONNECTION_STRING
           value: "clickhouse://{{ .Values.clickhouseUsername }}:{{ .Values.clickhousePassword }}@127.0.0.1:{{ .Values.clickhouseServerPort | int }}/{{ .Values.clickhouseDatabase }}"
         - name: STORAGE_PROVIDER
@@ -278,6 +288,10 @@ spec:
         hostPath:
           path: /usr/lib64/libpixman-1.so.0.42.2
           type: File
+      - name: fc-busybox
+        hostPath:
+          path: /fc-busybox
+          type: DirectoryOrCreate
       - name: fc-vm
         hostPath:
           path: /fc-vm
