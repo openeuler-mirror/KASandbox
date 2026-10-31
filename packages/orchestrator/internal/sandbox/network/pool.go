@@ -57,13 +57,14 @@ type Config struct {
 	ReusedSlotsPoolSize int `env:"NETWORK_POOL_REUSED_SLOTS_SIZE" envDefault:"1000"`
 
 	// IsolateNetNSDir 控制启动时是否把 /run/netns 私有化（isolateNetNSDir）。
-	// 取值 auto（默认）/ true / false：
-	//   auto —— k8s Pod 内（存在 KUBERNETES_SERVICE_HOST）自动跳过隔离，裸机 native 照常隔离；
-	//   true/false —— 强制开启/关闭。
-	// 原生模式需要隔离，防止 netns bind mount 经 shared /run 传播出叠加副本而泄漏；CNI/外部
-	// netns 部署（orchestrator 在独立 mount namespace 内，靠宿主传播接收 cri-multiplex 创建的
-	// 命名 netns）必须关闭，否则私有化会切断该传播，导致 setns 报 EINVAL。
-	IsolateNetNSDir string `env:"ORCHESTRATOR_ISOLATE_NETNS_DIR" envDefault:"auto"`
+	// 取值 false（默认）/ auto / true：
+	//   false —— 不隔离，所有部署方式下 /run/netns 保持原样；
+	//   auto —— k8s Pod 内（存在 KUBERNETES_SERVICE_HOST）跳过隔离，裸机 native 隔离；
+	//   true —— 强制隔离。
+	// 默认关闭：隔离会把 /run/netns bind 到自身并设为 private，启动前已存在的命名 netns
+	// 被压在下层，cri-multiplex 删除时只卸掉上层，删 netns 文件报 EBUSY；CNI/外部 netns
+	// 部署还会因传播被切断导致 setns 报 EINVAL。
+	IsolateNetNSDir string `env:"ORCHESTRATOR_ISOLATE_NETNS_DIR" envDefault:"false"`
 
 	// Using reserver IPv4 in range that is used for experiments and documentation
 	// https://en.wikipedia.org/wiki/Reserved_IP_addresses
