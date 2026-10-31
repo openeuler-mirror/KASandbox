@@ -88,11 +88,8 @@ func requestFromBatchSandbox(obj *unstructured.Unstructured) (provider.Request, 
 	return req, nil
 }
 
-// sandboxIDFromAnnotations 优先 sandbox.cri/sandbox-id，回退历史的 e2b.dev/sandbox-id。
+// sandboxIDFromAnnotations 读取对象上已有的 e2b.dev/sandbox-id。
 func sandboxIDFromAnnotations(annotations map[string]string) string {
-	if id := annotations[provider.AnnSandboxID]; id != "" {
-		return id
-	}
 	return annotations["e2b.dev/sandbox-id"]
 }
 
@@ -180,21 +177,17 @@ func admitObject(ar *admissionv1.AdmissionReview, matcher *provider.Matcher, req
 
 	selection, ok := matcher.Select(req)
 	if !ok {
-		explicit := strings.TrimSpace(req.RuntimeClass)
-		if explicit == "" {
-			explicit = strings.TrimSpace(req.Annotations[provider.AnnBackend])
-		}
-		if explicit != "" {
-			klog.Warningf("%s %s/%s requests backend %q but no provider is registered; passing through without mutation",
+		if explicit := strings.TrimSpace(req.RuntimeClass); explicit != "" {
+			klog.Warningf("%s %s/%s requests runtimeClass %q but no provider is registered; passing through without mutation",
 				req.Kind, req.Namespace, req.Name, explicit)
 			return allowResponse(ar.Request.UID)
 		}
-		// 没有任何显式信号时才走旧版默认选路：ANDROID_SANDBOX=true → android，否则 e2b。
+		// 没有 runtimeClass 时才走旧版默认选路：ANDROID_SANDBOX=true → android，否则 e2b。
 		fallback, found := defaultProvider(matcher, req)
 		if !found {
 			return allowResponse(ar.Request.UID)
 		}
-		klog.V(2).Infof("%s %s/%s has no backend signal; defaulting to %s",
+		klog.V(2).Infof("%s %s/%s has no runtimeClass; defaulting to %s",
 			req.Kind, req.Namespace, req.Name, fallback.Handler())
 		selection = &provider.Selection{Provider: fallback, Source: "default"}
 	}
@@ -219,7 +212,7 @@ func admitObject(ar *admissionv1.AdmissionReview, matcher *provider.Matcher, req
 }
 
 // defaultProvider 复刻旧版入口逻辑：只带 ANDROID_SANDBOX=true 的 Pod 走 android，
-// 其余没有 runtimeClass/backend 注解的对象默认 e2b。对应 Provider 未注册时返回 false（放行）。
+// 其余没有 runtimeClass 的对象默认 e2b。对应 Provider 未注册时返回 false（放行）。
 func defaultProvider(matcher *provider.Matcher, req provider.Request) (provider.Provider, bool) {
 	if strings.EqualFold(strings.TrimSpace(req.Env[legacyAndroidEnvName]), "true") {
 		if p, ok := matcher.Resolve(legacyAndroidBackend); ok {

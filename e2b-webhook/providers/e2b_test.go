@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func newTestTransformer(t *testing.T, body string) *SandboxTransformer {
 	return NewSandboxTransformer(server.URL, "", time.Second)
 }
 
-func TestE2BProviderProducesUnifiedAndLegacyAnnotations(t *testing.T) {
+func TestE2BProviderProducesE2BAnnotations(t *testing.T) {
 	transformer := newTestTransformer(t, `{"sandbox":{"templateId":"tmpl","buildId":"build","teamId":"team","vcpu":2,"ramMb":1024,"totalDiskSizeMb":4096,"envdVersion":"0.2.0","sandboxId":"sb1"}}`)
 	p := NewE2BProvider(transformer)
 
@@ -33,20 +34,21 @@ func TestE2BProviderProducesUnifiedAndLegacyAnnotations(t *testing.T) {
 		t.Fatalf("RuntimeClass = %q", result.RuntimeClass)
 	}
 	for key, want := range map[string]string{
-		"e2b.dev/template-id":   "tmpl",
-		"e2b.dev/build-id":      "build",
-		"e2b.dev/team-id":       "team",
-		provider.AnnBackend:     "e2b",
-		provider.AnnSandboxID:   "sb1",
-		provider.AnnTemplate:    "tmpl",
-		provider.AnnBuild:       "build",
-		provider.AnnVCPU:        "2",
-		provider.AnnMemoryMB:    "1024",
-		provider.AnnDiskMB:      "4096",
-		provider.AnnEnvdVersion: "0.2.0",
+		"e2b.dev/template-id":  "tmpl",
+		"e2b.dev/build-id":     "build",
+		"e2b.dev/team-id":      "team",
+		"e2b.dev/vcpu":         "2",
+		"e2b.dev/ram-mb":       "1024",
+		"e2b.dev/envd-version": "0.2.0",
+		"e2b.dev/sandbox-id":   "sb1",
 	} {
 		if result.Annotations[key] != want {
 			t.Fatalf("%s = %q, want %q (annotations=%v)", key, result.Annotations[key], want, result.Annotations)
+		}
+	}
+	for key := range result.Annotations {
+		if strings.HasPrefix(key, "sandbox.cri/") {
+			t.Fatalf("unexpected unified annotation %q (annotations=%v)", key, result.Annotations)
 		}
 	}
 }

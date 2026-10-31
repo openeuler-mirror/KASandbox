@@ -84,7 +84,7 @@ func envVar(name, value string) map[string]interface{} {
 }
 
 // fakeProvider 是测试用的 Provider：handler 决定选中的后端，默认产出
-// e2b.dev/template-id 与 sandbox.cri/backend 两个注解；android 不产出注解。
+// e2b.dev/template-id 注解；android 不产出注解。
 type fakeProvider struct {
 	handler      string
 	annotations  map[string]string
@@ -108,7 +108,6 @@ func (f *fakeProvider) Resolve(_ context.Context, _ provider.Request) (*provider
 	annotations := map[string]string{}
 	if f.handler != "android" {
 		annotations["e2b.dev/template-id"] = "provider-template"
-		annotations[provider.AnnBackend] = f.handler
 	}
 	for key, value := range f.annotations {
 		annotations[key] = value
@@ -378,8 +377,8 @@ func TestAdmitPod_NoSignalDefaultsToE2B(t *testing.T) {
 			t.Fatalf("runtimeClass = %v, want e2b", p.Value)
 		}
 	}
-	if got := patchedAnnotations(t, podAnnotationsPath, patches)[provider.AnnBackend]; got != "e2b" {
-		t.Fatalf("sandbox.cri/backend = %q, want e2b", got)
+	if got := patchedAnnotations(t, podAnnotationsPath, patches)["e2b.dev/template-id"]; got != "provider-template" {
+		t.Fatalf("e2b.dev/template-id = %q, want default e2b provider annotations", got)
 	}
 }
 
@@ -408,8 +407,8 @@ func TestAdmitPod_AndroidEnvIgnoredWhenRuntimeClassSet(t *testing.T) {
 	if patchExists(patches, podRuntimeClassNamePath) {
 		t.Fatalf("explicit runtimeClassName must not be overridden: %+v", patches)
 	}
-	if got := patchedAnnotations(t, podAnnotationsPath, patches)[provider.AnnBackend]; got != "e2b" {
-		t.Fatalf("runtimeClass should win over ANDROID_SANDBOX, got backend %q", got)
+	if got := patchedAnnotations(t, podAnnotationsPath, patches)["e2b.dev/template-id"]; got != "provider-template" {
+		t.Fatalf("runtimeClass should win over ANDROID_SANDBOX, got template-id %q", got)
 	}
 }
 
@@ -427,7 +426,7 @@ func TestAdmitPod_RuntimeClassSelectsProvider(t *testing.T) {
 	}
 	patches := decodePatches(t, resp)
 	annotations := patchedAnnotations(t, podAnnotationsPath, patches)
-	if annotations["e2b.dev/template-id"] != "provider-template" || annotations[provider.AnnBackend] != "e2b" {
+	if annotations["e2b.dev/template-id"] != "provider-template" {
 		t.Fatalf("annotations = %v", annotations)
 	}
 	if patchExists(patches, podRuntimeClassNamePath) {
@@ -449,29 +448,27 @@ func TestAdmitPod_AndroidRuntimeClassInjectsNothing(t *testing.T) {
 	}
 }
 
-func TestAdmitPod_AnnotationSelectsBackendAndInjectsRuntimeClass(t *testing.T) {
+func TestAdmitPod_AnnotationsNeverSelectProvider(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "pod-1", Namespace: "default",
-			Annotations: map[string]string{provider.AnnBackend: "cube"},
+			Annotations: map[string]string{"example.com/backend": "cube"},
 		},
 	}
 	resp := admitPod(newPodReview(admissionv1.Create, pod), newFakeMatcher(t, "e2b", "cube"))
 	patches := decodePatches(t, resp)
+	// 注解不参与选路：没有 runtimeClass 时回落到默认 e2b。
 	if !patchExists(patches, podRuntimeClassNamePath) {
 		t.Fatalf("runtimeClass patch missing: %+v", patches)
 	}
 	for _, p := range patches {
-		if p.Path == podRuntimeClassNamePath && p.Value != "cube" {
-			t.Fatalf("runtimeClass value = %v, want cube", p.Value)
+		if p.Path == podRuntimeClassNamePath && p.Value != "e2b" {
+			t.Fatalf("runtimeClass value = %v, want default e2b", p.Value)
 		}
 	}
 	annotations := patchedAnnotations(t, podAnnotationsPath, patches)
 	if annotations["e2b.dev/template-id"] != "provider-template" {
-		t.Fatalf("annotations = %v, want provider template injected", annotations)
-	}
-	if _, ok := annotations[provider.AnnBackend]; ok {
-		t.Fatal("sandbox.cri/backend already set by the user, must not be re-patched")
+		t.Fatalf("annotations = %v, want e2b provider template injected", annotations)
 	}
 }
 
@@ -489,10 +486,7 @@ func TestAdmitPod_UnregisteredRuntimeClassPassesThrough(t *testing.T) {
 func TestAdmitPod_ResolveErrorOnlySetsRuntimeClass(t *testing.T) {
 	matcher := newMatcherFromProviders(t, &fakeProvider{handler: "e2b", err: errors.New("boom")})
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "pod-1", Namespace: "default",
-			Annotations: map[string]string{provider.AnnBackend: "e2b"},
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
 	}
 	resp := admitPod(newPodReview(admissionv1.Create, pod), matcher)
 	patches := decodePatches(t, resp)
@@ -507,7 +501,7 @@ func TestAdmitPod_UserAnnotationsWin(t *testing.T) {
 			Name: "pod-1", Namespace: "default",
 			Annotations: map[string]string{
 				"e2b.dev/template-id": "user",
-				provider.AnnBackend:   "e2b",
+				"e2b.dev/team-id":     "user-team",
 			},
 		},
 	}
@@ -529,7 +523,7 @@ func TestAdmitPod_OversizedAnnotationsDropped(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "pod-1", Namespace: "default",
-			Annotations: map[string]string{provider.AnnBackend: "e2b"},
+			Annotations: map[string]string{"e2b.dev/team-id": "team"},
 		},
 	}
 	resp := admitPod(newPodReview(admissionv1.Create, pod), matcher)
@@ -1056,36 +1050,37 @@ func BenchmarkAdmitPod(b *testing.B) {
 }
 
 // =============================================================================
-// WEBHOOK_PROVIDERS 启动期校验
+// Provider 装配：启动时注册全部已实现 provider
 // =============================================================================
 
-func TestBuildMatcherRejectsUnknownProvider(t *testing.T) {
-	if _, err := buildMatcher("e2b,cube", providers.NewSandboxTransformer("http://example.invalid", "", time.Second)); err == nil {
-		t.Fatal("unknown provider accepted")
-	}
-}
-
-func TestBuildMatcherRejectsDuplicateProvider(t *testing.T) {
-	if _, err := buildMatcher("e2b,e2b", providers.NewSandboxTransformer("http://example.invalid", "", time.Second)); err == nil {
-		t.Fatal("duplicate provider accepted")
-	}
-}
-
-func TestBuildMatcherRejectsEmptyList(t *testing.T) {
-	if _, err := buildMatcher(" , ", providers.NewSandboxTransformer("http://example.invalid", "", time.Second)); err == nil {
-		t.Fatal("empty provider list accepted")
-	}
-}
-
-func TestBuildMatcherAcceptsE2BAndAndroid(t *testing.T) {
-	m, err := buildMatcher("e2b,android", providers.NewSandboxTransformer("http://example.invalid", "", time.Second))
+func TestBuildMatcherRegistersAllImplementedProviders(t *testing.T) {
+	matcher, err := buildMatcher(providers.NewSandboxTransformer("http://example.invalid", "", time.Second))
 	if err != nil {
 		t.Fatalf("buildMatcher: %v", err)
 	}
-	if sel, ok := m.Select(provider.Request{RuntimeClass: "e2b"}); !ok || sel.Provider.Handler() != "e2b" {
-		t.Fatalf("e2b selection = (%v, %v)", sel, ok)
+	for _, handler := range []string{"e2b", "android"} {
+		if _, ok := matcher.Resolve(handler); !ok {
+			t.Fatalf("provider %q is not registered", handler)
+		}
 	}
-	if sel, ok := m.Select(provider.Request{RuntimeClass: "android"}); !ok || sel.Provider.Handler() != "android" {
-		t.Fatalf("android selection = (%v, %v)", sel, ok)
+}
+
+// Android 场景：ANDROID_SANDBOX=true 的对象必须走 android，不能被改判成 e2b。
+func TestAdmitPod_AndroidEnvSelectsAndroid(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Env: []corev1.EnvVar{
+			{Name: "TEMPLATE_NAME", Value: "android-tpl-001"},
+			{Name: "ANDROID_SANDBOX", Value: "true"},
+		}}}},
+	}
+	matcher, err := buildMatcher(providers.NewSandboxTransformer("http://127.0.0.1:1", "", 200*time.Millisecond))
+	if err != nil {
+		t.Fatalf("buildMatcher: %v", err)
+	}
+	resp := admitPod(newPodReview(admissionv1.Create, pod), matcher)
+	patches := decodePatches(t, resp)
+	if len(patches) != 1 || patches[0].Path != podRuntimeClassNamePath || patches[0].Value != "android" {
+		t.Fatalf("patches = %+v, want only runtimeClassName=android", patches)
 	}
 }

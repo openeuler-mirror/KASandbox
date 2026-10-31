@@ -6,8 +6,7 @@ import (
 	"github.com/e2b/e2b-webhook/provider"
 )
 
-// E2BProvider 把 e2b API 的 transform 结果翻译成注解：
-// e2b.dev/*（与历史逐字一致）+ sandbox.cri/* 统一键子集。
+// E2BProvider 把 e2b API 的 transform 结果翻译成 e2b.dev/* 注解。
 type E2BProvider struct {
 	transformer *SandboxTransformer
 }
@@ -30,11 +29,5 @@ func (p *E2BProvider) Resolve(ctx context.Context, req provider.Request) (*provi
 	if cfg == nil {
 		return nil, nil
 	}
-	sandboxID := req.SandboxID
-	if sandboxID == "" {
-		sandboxID = cfg.SandboxID
-	}
-	annotations := cfg.toE2BAnnotations()
-	provider.Merge(annotations, cfg.toUnifiedAnnotations(p.Handler(), sandboxID))
-	return &provider.Result{Annotations: annotations, RuntimeClass: p.Handler()}, nil
+	return &provider.Result{Annotations: cfg.toE2BAnnotations(), RuntimeClass: p.Handler()}, nil
 }

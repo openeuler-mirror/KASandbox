@@ -1,7 +1,6 @@
 // Package providers 实现 webhook 的各后端 Provider。
 //
-// 本文件承载 e2b API 的 transform 客户端与 sandboxConfig→注解映射；
-// 它只认识 e2b 自己的键，sandbox.cri/* 统一键由 provider 包定义。
+// 本文件承载 e2b API 的 transform 客户端与 sandboxConfig→e2b.dev/* 注解映射。
 package providers
 
 import (
@@ -16,8 +15,6 @@ import (
 	"time"
 
 	"k8s.io/klog/v2"
-
-	"github.com/e2b/e2b-webhook/provider"
 )
 
 // sandboxTransformRequest 是 POST /sandboxes/transform 的请求体。
@@ -185,37 +182,6 @@ func (cfg *sandboxConfig) toE2BAnnotations() map[string]string {
 // ToE2BAnnotations 是 toE2BAnnotations 的导出别名，供过渡期的 webhook 适配器使用。
 func (cfg *sandboxConfig) ToE2BAnnotations() map[string]string {
 	return cfg.toE2BAnnotations()
-}
-
-// toUnifiedAnnotations 产出 sandbox.cri/* 子集；只填非空字段。
-func (cfg *sandboxConfig) toUnifiedAnnotations(backend, sandboxID string) map[string]string {
-	out := provider.Unified(backend, sandboxID, cfg.TemplateID)
-	if cfg.BuildID != "" {
-		out[provider.AnnBuild] = cfg.BuildID
-	}
-	if cfg.Vcpu > 0 {
-		out[provider.AnnVCPU] = strconv.Itoa(cfg.Vcpu)
-	}
-	if cfg.RAMMB > 0 {
-		out[provider.AnnMemoryMB] = strconv.Itoa(cfg.RAMMB)
-	}
-	if cfg.TotalDiskSizeMB > 0 {
-		out[provider.AnnDiskMB] = strconv.Itoa(cfg.TotalDiskSizeMB)
-	}
-	if cfg.EnvdVersion != "" {
-		out[provider.AnnEnvdVersion] = cfg.EnvdVersion
-	}
-	if len(cfg.EnvVars) > 0 {
-		if b, err := json.Marshal(cfg.EnvVars); err == nil {
-			out[provider.AnnEnvVars] = string(b)
-		}
-	}
-	if len(cfg.Metadata) > 0 {
-		if b, err := json.Marshal(cfg.Metadata); err == nil {
-			out[provider.AnnMetadata] = string(b)
-		}
-	}
-	return out
 }
 
 // ────────────────────────────────────────────

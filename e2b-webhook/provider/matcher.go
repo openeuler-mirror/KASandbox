@@ -3,11 +3,9 @@ package provider
 import (
 	"fmt"
 	"strings"
-
-	"k8s.io/klog/v2"
 )
 
-// Matcher 按 P1 runtimeClass、P2 sandbox.cri/backend 的顺序选择 Provider。
+// Matcher 按 runtimeClass 选择 Provider
 type Matcher struct {
 	providers []Provider
 	byHandler map[string]Provider
@@ -45,27 +43,15 @@ func (m *Matcher) Resolve(handler string) (Provider, bool) {
 	return p, ok
 }
 
-// Select 返回命中的 Provider 与来源；都没有命中时返回 false（放行且不注入）。
+// Select 只按 runtimeClass 返回命中的 Provider；未命中时返回 false，
+// 由调用方决定走旧版默认选路还是放行。
 func (m *Matcher) Select(req Request) (*Selection, bool) {
 	if m == nil {
 		return nil, false
 	}
 	runtimeClass := strings.TrimSpace(req.RuntimeClass)
-	annotation := ""
-	if req.Annotations != nil {
-		annotation = strings.TrimSpace(req.Annotations[AnnBackend])
-	}
-
-	byRuntimeClass, runtimeClassHit := m.byHandler[runtimeClass]
-	byAnnotation, annotationHit := m.byHandler[annotation]
-	if runtimeClassHit && annotationHit && byRuntimeClass != byAnnotation {
-		klog.Warningf("webhook backend conflict: runtimeClass=%s annotation=%s (runtimeClass wins)", runtimeClass, annotation)
-	}
-	if runtimeClassHit {
-		return &Selection{Provider: byRuntimeClass, Source: "runtimeClass"}, true
-	}
-	if annotationHit {
-		return &Selection{Provider: byAnnotation, Source: "annotation"}, true
+	if p, ok := m.byHandler[runtimeClass]; ok {
+		return &Selection{Provider: p, Source: "runtimeClass"}, true
 	}
 	return nil, false
 }

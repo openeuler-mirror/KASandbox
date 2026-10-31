@@ -202,10 +202,9 @@ func main() {
 
 	// 创建沙箱转换器 (调用 POST /sandboxes/transform, 每次发起新请求)
 	transformer := providers.NewSandboxTransformer(apiURL, apiKey, apiTimeout)
-	providersSpec := envOr("WEBHOOK_PROVIDERS", "e2b")
-	matcher, err := buildMatcher(providersSpec, transformer)
+	matcher, err := buildMatcher(transformer)
 	if err != nil {
-		klog.Fatalf("invalid WEBHOOK_PROVIDERS=%q: %v", providersSpec, err)
+		klog.Fatalf("failed to build provider matcher: %v", err)
 	}
 	admissionMatcher = matcher
 
@@ -227,7 +226,6 @@ func main() {
 
 	klog.Infof("starting e2b-webhook server on :%s (cert=%s key=%s)", port, certFile, keyFile)
 	klog.Infof("transform API: %s/sandboxes/transform (timeout=%s)", apiURL, apiTimeout)
-	klog.Infof("webhook providers: %s (legacy default: android env → android, else e2b)", providersSpec)
 
 	// 监听 SIGINT/SIGTERM 信号，触发优雅退出
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -260,31 +258,21 @@ func main() {
 	}
 }
 
-// buildMatcher 按 WEBHOOK_PROVIDERS（逗号分隔）构造 Provider 列表与 Matcher。
-// 未实现的名字、重复 Handler、空列表都是启动期配置错误。
-func buildMatcher(spec string, transformer *providers.SandboxTransformer) (*provider.Matcher, error) {
-	var list []provider.Provider
-	for _, raw := range strings.Split(spec, ",") {
-		name := strings.TrimSpace(raw)
-		if name == "" {
-			continue
-		}
-		switch name {
-		case "e2b":
-			list = append(list, providers.NewE2BProvider(transformer))
-		case "android":
-			list = append(list, providers.NewAndroidProvider())
-		default:
-			return nil, fmt.Errorf("provider %q is not implemented", name)
-		}
-	}
-	if len(list) == 0 {
-		return nil, fmt.Errorf("no providers configured")
+// buildMatcher 注册全部已实现的 Provider。
+func buildMatcher(transformer *providers.SandboxTransformer) (*provider.Matcher, error) {
+	list := []provider.Provider{
+		providers.NewE2BProvider(transformer),
+		providers.NewAndroidProvider(),
 	}
 	matcher, err := provider.NewMatcher(list...)
 	if err != nil {
 		return nil, err
 	}
+	names := make([]string, 0, len(list))
+	for _, p := range list {
+		names = append(names, p.Handler())
+	}
+	klog.Infof("registered webhook providers: %s", strings.Join(names, ","))
 	return matcher, nil
 }
 

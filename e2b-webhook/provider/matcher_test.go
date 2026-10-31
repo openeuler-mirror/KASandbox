@@ -10,10 +10,10 @@ type fakeProvider struct{ handler string }
 func (f *fakeProvider) Name() string    { return f.handler }
 func (f *fakeProvider) Handler() string { return f.handler }
 func (f *fakeProvider) Resolve(context.Context, Request) (*Result, error) {
-	return &Result{Annotations: map[string]string{AnnBackend: f.handler}}, nil
+	return &Result{Annotations: map[string]string{"test/handler": f.handler}}, nil
 }
 
-func TestMatcherSelectsByRuntimeClassThenAnnotation(t *testing.T) {
+func TestMatcherSelectsByRuntimeClass(t *testing.T) {
 	e2b := &fakeProvider{handler: "e2b"}
 	cube := &fakeProvider{handler: "cube"}
 	m, err := NewMatcher(e2b, cube)
@@ -24,18 +24,19 @@ func TestMatcherSelectsByRuntimeClassThenAnnotation(t *testing.T) {
 	if sel, ok := m.Select(Request{RuntimeClass: "cube"}); !ok || sel.Provider != cube || sel.Source != "runtimeClass" {
 		t.Fatalf("runtimeClass selection = (%v, %v)", sel, ok)
 	}
-	if sel, ok := m.Select(Request{Annotations: map[string]string{AnnBackend: "cube"}}); !ok || sel.Provider != cube || sel.Source != "annotation" {
-		t.Fatalf("annotation selection = (%v, %v)", sel, ok)
+	// 注解不参与选路，只有注解时放行。
+	if sel, ok := m.Select(Request{Annotations: map[string]string{"test/handler": "cube"}}); ok {
+		t.Fatalf("annotation-only selection = %v, want pass-through", sel)
 	}
 }
 
-func TestMatcherRuntimeClassWinsConflict(t *testing.T) {
+func TestMatcherRuntimeClassWinsOverAnnotations(t *testing.T) {
 	e2b := &fakeProvider{handler: "e2b"}
 	cube := &fakeProvider{handler: "cube"}
 	m, _ := NewMatcher(e2b, cube)
-	sel, ok := m.Select(Request{RuntimeClass: "e2b", Annotations: map[string]string{AnnBackend: "cube"}})
+	sel, ok := m.Select(Request{RuntimeClass: "e2b", Annotations: map[string]string{"test/handler": "cube"}})
 	if !ok || sel.Provider != e2b || sel.Source != "runtimeClass" {
-		t.Fatalf("conflict selection = (%v, %v), want e2b", sel, ok)
+		t.Fatalf("selection = (%v, %v), want e2b by runtimeClass", sel, ok)
 	}
 }
 
@@ -44,7 +45,8 @@ func TestMatcherPassesThroughUnknownSignals(t *testing.T) {
 	for _, req := range []Request{
 		{RuntimeClass: "runc"},
 		{},
-		{Annotations: map[string]string{AnnBackend: "unknown"}},
+		{Annotations: map[string]string{"test/handler": "unknown"}},
+		{Annotations: map[string]string{"test/handler": "e2b"}},
 	} {
 		if sel, ok := m.Select(req); ok {
 			t.Fatalf("Select(%+v) = %v, want pass-through", req, sel)
@@ -55,24 +57,5 @@ func TestMatcherPassesThroughUnknownSignals(t *testing.T) {
 func TestNewMatcherRejectsDuplicateHandler(t *testing.T) {
 	if _, err := NewMatcher(&fakeProvider{handler: "e2b"}, &fakeProvider{handler: "e2b"}); err == nil {
 		t.Fatal("duplicate handler accepted")
-	}
-}
-
-func TestUnifiedSkipsEmptyValues(t *testing.T) {
-	got := Unified("cube", "", "tmpl")
-	want := map[string]string{AnnBackend: "cube", AnnTemplate: "tmpl"}
-	if len(got) != len(want) || got[AnnBackend] != "cube" || got[AnnTemplate] != "tmpl" {
-		t.Fatalf("Unified = %v, want %v", got, want)
-	}
-	if _, ok := got[AnnSandboxID]; ok {
-		t.Fatal("empty sandbox id must be skipped, not emitted empty")
-	}
-}
-
-func TestMergeKeepsExistingKeys(t *testing.T) {
-	dst := map[string]string{"user": "keep"}
-	Merge(dst, map[string]string{"user": "override", "new": "v"})
-	if dst["user"] != "keep" || dst["new"] != "v" {
-		t.Fatalf("Merge = %v", dst)
 	}
 }
