@@ -7,18 +7,15 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/cri-multiplex/pkg/orchestrator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-const (
-	cleanupResourceE2BSandbox     = "e2b-sandbox"
-	cleanupResourceAndroidSandbox = "android-sandbox"
-)
+const defaultCleanupTimeout = 2 * time.Minute
 
 type CleanupConfig struct {
 	Enabled     bool
@@ -26,6 +23,8 @@ type CleanupConfig struct {
 	GracePeriod time.Duration
 	MaxRetries  int
 	DryRun      bool
+	// CleanupTimeout 限制单次 Schedule 调后端 Cleaner 的时长，默认 2 分钟。
+	CleanupTimeout time.Duration
 }
 
 type CleanupResult struct {
@@ -35,19 +34,17 @@ type CleanupResult struct {
 
 type CleanupManager struct {
 	stateStore StateStore
-	e2b        *grpcE2BEngine
-	android    *AndroidEngine
+	reg        *Registry
 	cfg        CleanupConfig
 	now        func() time.Time
-	hostOps    hostResourceOps
-
-	cleanupE2BFunc     func(context.Context, string) error
-	cleanupAndroidFunc func(context.Context, string) error
+	// taskMu 串行化 cleanup_tasks 的 load-modify-save，避免并发 Schedule 丢 Attempts 更新
+	// （等效 singleflight；Reconcile 仍由单协程驱动）。
+	taskMu sync.Mutex
 
 	cancel context.CancelFunc
 }
 
-func NewCleanupManager(store StateStore, e2b E2BEngine, android *AndroidEngine, cfg CleanupConfig) *CleanupManager {
+func NewCleanupManager(store StateStore, reg *Registry, cfg CleanupConfig) *CleanupManager {
 	if cfg.Interval <= 0 {
 		cfg.Interval = 60 * time.Second
 	}
@@ -57,87 +54,142 @@ func NewCleanupManager(store StateStore, e2b E2BEngine, android *AndroidEngine, 
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = 10
 	}
-	m := &CleanupManager{stateStore: store, android: android, cfg: cfg, now: time.Now, hostOps: defaultHostResourceOps()}
-	if concrete, ok := e2b.(*grpcE2BEngine); ok {
-		m.e2b = concrete
-		concrete.cleanupManager = m
+	if cfg.CleanupTimeout <= 0 {
+		cfg.CleanupTimeout = defaultCleanupTimeout
 	}
-	if android != nil {
-		android.cleanupManager = m
+	return &CleanupManager{
+		stateStore: store,
+		reg:        reg,
+		cfg:        cfg,
+		now:        time.Now,
 	}
-	m.cleanupE2BFunc = m.cleanupE2BSandbox
-	m.cleanupAndroidFunc = m.cleanupAndroidSandbox
-	return m
 }
 
-func (m *CleanupManager) CleanupE2BSandbox(ctx context.Context, sandboxID, reason string) CleanupResult {
-	return m.runSandboxCleanup(ctx, EngineTypeE2B, sandboxID, cleanupResourceE2BSandbox, reason, m.cleanupE2BFunc)
+// NewCleanupManagerLegacy 用旧的两引擎签名构造临时注册表，供过渡期与测试使用。
+func NewCleanupManagerLegacy(store StateStore, e2b, android RuntimeEngine, cfg CleanupConfig) *CleanupManager {
+	reg := NewRegistry("")
+	for _, eng := range []RuntimeEngine{e2b, android} {
+		if eng == nil {
+			continue
+		}
+		mod := BackendModule{Descriptor: BackendDescriptor{Type: eng.Type(), Handler: string(eng.Type())}, Engine: eng}
+		if cleaner, ok := eng.(Cleaner); ok {
+			mod.Cleaner = cleaner
+		}
+		if reconciler, ok := eng.(Reconciler); ok {
+			mod.Reconciler = reconciler
+		}
+		if restorer, ok := eng.(StateRestorer); ok {
+			mod.Restorer = restorer
+		}
+		if err := reg.Register(mod); err != nil {
+			log.Printf("[Cleanup] WARNING: register legacy backend %s: %v", eng.Type(), err)
+		}
+	}
+	if err := reg.Freeze(); err != nil {
+		log.Printf("[Cleanup] WARNING: freeze legacy registry: %v", err)
+	}
+	return NewCleanupManager(store, reg, cfg)
 }
 
-func (m *CleanupManager) CleanupAndroidSandbox(ctx context.Context, sandboxID, reason string) CleanupResult {
-	return m.runSandboxCleanup(ctx, EngineTypeAndroid, sandboxID, cleanupResourceAndroidSandbox, reason, m.cleanupAndroidFunc)
-}
-
-func (m *CleanupManager) CleanupRoute(_ context.Context, kind, id string) CleanupResult {
-	if m == nil || m.stateStore == nil || id == "" {
+// Schedule 通过注册表里的 Cleaner 回收一个 sandbox 的后端资源。
+// 约定：未知后端与清理失败都必须把任务留在 cleanup_tasks 里，成功才删任务。
+func (m *CleanupManager) Schedule(ctx context.Context, backend EngineType, sandboxID, resourceType, reason string) CleanupResult {
+	if m == nil || sandboxID == "" {
 		return CleanupResult{Succeeded: true}
 	}
-	if err := m.stateStore.DeleteRoute(kind, id); err != nil {
+	log.Printf("[Cleanup] start backend=%s sandbox=%s resource=%s reason=%s", backend, sandboxID, resourceType, reason)
+	if m.cfg.DryRun {
+		log.Printf("[Cleanup] dry-run backend=%s sandbox=%s resource=%s reason=%s", backend, sandboxID, resourceType, reason)
+		return CleanupResult{Succeeded: true}
+	}
+
+	taskID := cleanupTaskID(backend, sandboxID, resourceType)
+	mod, ok := m.module(backend)
+	if !ok {
+		// 未知后端的任务必须保留：后端上线后还能重试，且不能误删别的后端资源。
+		err := fmt.Errorf("cleanup backend %q is not registered", backend)
+		if saveErr := m.saveRetryTask(CleanupTask{
+			ID:           taskID,
+			Runtime:      backend,
+			SandboxID:    sandboxID,
+			ResourceType: resourceType,
+			Reason:       reason,
+		}, err); saveErr != nil {
+			err = errors.Join(err, fmt.Errorf("persist cleanup task: %w", saveErr))
+		}
+		log.Printf("[Cleanup] retry backend=%s sandbox=%s resource=%s err=%v", backend, sandboxID, resourceType, err)
 		return CleanupResult{Err: err}
 	}
-	return CleanupResult{Succeeded: true}
-}
+	if mod.Cleaner == nil {
+		return CleanupResult{Succeeded: true}
+	}
 
-func (m *CleanupManager) runSandboxCleanup(
-	ctx context.Context,
-	runtimeType EngineType,
-	sandboxID, resourceType, reason string,
-	cleanup func(context.Context, string) error,
-) CleanupResult {
-	if m == nil || sandboxID == "" || cleanup == nil {
-		return CleanupResult{Succeeded: true}
-	}
-	log.Printf("[Cleanup] start runtime=%s sandbox=%s reason=%s", runtimeType, sandboxID, reason)
-	if m.cfg.DryRun {
-		log.Printf("[Cleanup] dry-run runtime=%s sandbox=%s reason=%s", runtimeType, sandboxID, reason)
-		return CleanupResult{Succeeded: true}
-	}
-	err := cleanup(ctx, sandboxID)
+	cleanupCtx, cancel := context.WithTimeout(ctx, m.cfg.CleanupTimeout)
+	err := mod.Cleaner.CleanupSandbox(cleanupCtx, sandboxID, reason)
+	cancel()
 	if isCleanupNotFound(err) {
 		err = nil
 	}
-	taskID := cleanupTaskID(runtimeType, sandboxID, resourceType)
 	if err == nil {
-		if m.stateStore != nil {
-			if deleteErr := m.stateStore.DeleteCleanupTask(taskID); deleteErr != nil {
-				return CleanupResult{Err: deleteErr}
-			}
+		if deleteErr := m.deleteTask(taskID); deleteErr != nil {
+			return CleanupResult{Err: deleteErr}
 		}
-		log.Printf("[Cleanup] done runtime=%s sandbox=%s", runtimeType, sandboxID)
+		log.Printf("[Cleanup] done backend=%s sandbox=%s", backend, sandboxID)
 		return CleanupResult{Succeeded: true}
 	}
 	if saveErr := m.saveRetryTask(CleanupTask{
 		ID:           taskID,
-		Runtime:      runtimeType,
+		Runtime:      backend,
 		SandboxID:    sandboxID,
 		ResourceType: resourceType,
-		ResourceID:   sandboxID,
 		Reason:       reason,
 	}, err); saveErr != nil {
 		err = errors.Join(err, fmt.Errorf("persist cleanup task: %w", saveErr))
 	}
-	log.Printf("[Cleanup] retry runtime=%s sandbox=%s resource=%s err=%v", runtimeType, sandboxID, resourceType, err)
+	log.Printf("[Cleanup] retry backend=%s sandbox=%s resource=%s err=%v", backend, sandboxID, resourceType, err)
 	return CleanupResult{Err: err}
 }
 
-func cleanupTaskID(runtimeType EngineType, sandboxID, resourceType string) string {
-	return fmt.Sprintf("%s:%s:%s", runtimeType, resourceType, sandboxID)
+func (m *CleanupManager) module(backend EngineType) (*BackendModule, bool) {
+	if m == nil || m.reg == nil {
+		return nil, false
+	}
+	return m.reg.Get(backend)
+}
+
+// Reconcile 先重试到期任务，再让每个后端自己的 Reconciler 做对账。
+func (m *CleanupManager) Reconcile(ctx context.Context) error {
+	if m == nil || !m.cfg.Enabled || m.reg == nil {
+		return nil
+	}
+	var errs []error
+	if err := m.RetryPending(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	opts := ReconcileOptions{GracePeriod: m.cfg.GracePeriod, DryRun: m.cfg.DryRun}
+	for _, mod := range m.reg.Modules() {
+		if mod.Reconciler == nil {
+			continue
+		}
+		if err := mod.Reconciler.Reconcile(ctx, opts); err != nil {
+			errs = append(errs, fmt.Errorf("%s reconcile: %w", mod.Descriptor.Type, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func cleanupTaskID(backend EngineType, sandboxID, resourceType string) string {
+	return fmt.Sprintf("%s:%s:%s", backend, resourceType, sandboxID)
 }
 
 func (m *CleanupManager) saveRetryTask(task CleanupTask, cleanupErr error) error {
 	if m == nil || m.stateStore == nil {
 		return nil
 	}
+	m.taskMu.Lock()
+	defer m.taskMu.Unlock()
+
 	now := m.now()
 	existing, err := m.stateStore.LoadCleanupTasks()
 	if err != nil {
@@ -163,6 +215,16 @@ func (m *CleanupManager) saveRetryTask(task CleanupTask, cleanupErr error) error
 	return m.stateStore.SaveCleanupTask(task)
 }
 
+func (m *CleanupManager) deleteTask(taskID string) error {
+	if m == nil || m.stateStore == nil {
+		return nil
+	}
+	m.taskMu.Lock()
+	defer m.taskMu.Unlock()
+
+	return m.stateStore.DeleteCleanupTask(taskID)
+}
+
 func (m *CleanupManager) RetryPending(ctx context.Context) error {
 	if m == nil || m.stateStore == nil {
 		return nil
@@ -177,17 +239,7 @@ func (m *CleanupManager) RetryPending(ctx context.Context) error {
 		if task.Attempts >= m.cfg.MaxRetries || (!task.NextRetryAt.IsZero() && task.NextRetryAt.After(now)) {
 			continue
 		}
-		var result CleanupResult
-		switch task.Runtime {
-		case EngineTypeE2B:
-			result = m.CleanupE2BSandbox(ctx, task.SandboxID, "retry")
-		case EngineTypeAndroid:
-			result = m.CleanupAndroidSandbox(ctx, task.SandboxID, "retry")
-		default:
-			errs = append(errs, fmt.Errorf("unknown cleanup task runtime %q", task.Runtime))
-			continue
-		}
-		if result.Err != nil {
+		if result := m.Schedule(ctx, task.Runtime, task.SandboxID, task.ResourceType, "retry"); result.Err != nil {
 			errs = append(errs, result.Err)
 		}
 	}
@@ -224,20 +276,6 @@ func (m *CleanupManager) Close() {
 	}
 }
 
-func (m *CleanupManager) cleanupE2BSandbox(ctx context.Context, sandboxID string) error {
-	if m.e2b == nil {
-		return nil
-	}
-	return m.e2b.cleanupSandboxResources(ctx, sandboxID)
-}
-
-func (m *CleanupManager) cleanupAndroidSandbox(ctx context.Context, sandboxID string) error {
-	if m.android == nil {
-		return nil
-	}
-	return m.android.cleanupSandboxResources(ctx, sandboxID)
-}
-
 func isCleanupNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -266,173 +304,4 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
-}
-
-func (e *grpcE2BEngine) cleanupSandboxResources(ctx context.Context, sandboxID string) error {
-	pod, ok := e.tracker.Get(sandboxID)
-	if !ok && e.stateStore != nil {
-		states, err := e.stateStore.LoadE2BPods()
-		if err != nil {
-			return err
-		}
-		for _, state := range states {
-			if state.SandboxID == sandboxID {
-				pod = podInfoFromPersistedState(state)
-				ok = true
-				break
-			}
-		}
-	}
-	if !ok {
-		return e.deleteE2BStateAndRoutes(sandboxID, sandboxID+"-c")
-	}
-
-	var errs []error
-	if pod.hostIP != "" {
-		mappings := append([]PortMapping(nil), pod.portMappings...)
-		if len(mappings) == 0 && pod.hostPort > 0 {
-			mappings = []PortMapping{{HostPort: pod.hostPort, SandboxPort: envdSandboxPort}}
-		}
-		for _, mapping := range mappings {
-			collectCleanupError(&errs, "hostport", e.hostPortOps.cleanup(e.nodeIP, mapping.HostPort, pod.hostIP, mapping.SandboxPort))
-		}
-	}
-	if err := e.ensureConn(); err != nil {
-		collectCleanupError(&errs, "orchestrator connection", err)
-	} else {
-		_, err := e.client.Delete(ctx, &orchestrator.SandboxDeleteRequest{SandboxId: pod.envdSandboxID()})
-		collectCleanupError(&errs, "orchestrator delete", err)
-	}
-	if pod.cniRecord != nil && e.cniManager != nil {
-		collectCleanupError(&errs, "cni del", e.cniManager.Del(ctx, pod.cniRecord, pod.toPodSandboxConfig()))
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-
-	ports := make([]int, 0, len(pod.portMappings))
-	for _, mapping := range pod.portMappings {
-		ports = append(ports, mapping.SandboxPort)
-	}
-	if len(ports) == 0 && pod.hostPort > 0 {
-		ports = append(ports, envdSandboxPort)
-	}
-	e.hostPortManager.ReleasePorts(sandboxID, ports)
-	containerID := sandboxID + "-c"
-	if pod.containerName == "" {
-		containerID = ""
-	}
-	if err := e.deleteE2BStateAndRoutes(sandboxID, containerID); err != nil {
-		return err
-	}
-	e.tracker.Delete(sandboxID)
-	return nil
-}
-
-func (e *grpcE2BEngine) deleteE2BStateAndRoutes(sandboxID, containerID string) error {
-	if e.stateStore == nil {
-		e.tracker.Delete(sandboxID)
-		return nil
-	}
-	var errs []error
-	collectCleanupError(&errs, "pod route", e.stateStore.DeleteRoute("pod", sandboxID))
-	if containerID != "" {
-		collectCleanupError(&errs, "container route", e.stateStore.DeleteRoute("container", containerID))
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return e.stateStore.DeleteE2BPod(sandboxID)
-}
-
-func (e *AndroidEngine) cleanupSandboxResources(ctx context.Context, sandboxID string) error {
-	e.mu.Lock()
-	rec := e.pods[sandboxID]
-	container := e.firstContainerLocked(sandboxID)
-	e.mu.Unlock()
-	if rec == nil && e.stateStore != nil {
-		states, err := e.stateStore.LoadAndroidPods()
-		if err != nil {
-			return err
-		}
-		for _, state := range states {
-			if state.SandboxID == sandboxID {
-				rec = androidSandboxRecordFromState(state)
-				container = androidContainerRecordFromState(state)
-				break
-			}
-		}
-	}
-	if rec == nil {
-		return e.deleteAndroidStateAndRoutes(sandboxID, "")
-	}
-
-	e.mu.Lock()
-	e.expectedStops[sandboxID] = true
-	e.mu.Unlock()
-	defer func() {
-		e.mu.Lock()
-		delete(e.expectedStops, sandboxID)
-		e.mu.Unlock()
-	}()
-
-	var errs []error
-	if e.ops.cleanupGuestNetwork != nil {
-		e.ops.cleanupGuestNetwork(e, ctx, rec)
-	}
-	if e.ops.stopCVD != nil {
-		collectCleanupError(&errs, "android process group", e.ops.stopCVD(e, ctx, rec))
-	}
-	if rec.CNIRecord != nil && e.cniManager != nil {
-		collectCleanupError(&errs, "cni del", e.cniManager.Del(ctx, rec.CNIRecord, rec.toPodSandboxConfig()))
-	}
-	owner := androidResourceOwner(rec)
-	collectCleanupError(&errs, "android workdir", removeOwnedAndroidPath(rec.WorkDir, owner, e.cfg, false, true))
-	if rec.ArtifactsDir != "" && filepathClean(rec.ArtifactsDir) != filepathClean(e.cfg.ArtifactsDir) {
-		collectCleanupError(&errs, "android artifacts", removeOwnedAndroidPath(rec.ArtifactsDir, owner, e.cfg, true, true))
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	containerID := ""
-	if container != nil {
-		containerID = container.ContainerID
-	}
-	if err := e.deleteAndroidStateAndRoutes(sandboxID, containerID); err != nil {
-		return err
-	}
-	e.mu.Lock()
-	delete(e.portOwners, rec.ADBPort)
-	delete(e.portOwners, rec.WebRTCPort)
-	delete(e.instanceOwners, rec.BaseInstanceNum)
-	for id, item := range e.containers {
-		if item.CRISandboxID == sandboxID {
-			delete(e.containers, id)
-		}
-	}
-	delete(e.pods, sandboxID)
-	e.mu.Unlock()
-	return nil
-}
-
-func (e *AndroidEngine) deleteAndroidStateAndRoutes(sandboxID, containerID string) error {
-	if e.stateStore == nil {
-		return nil
-	}
-	var errs []error
-	collectCleanupError(&errs, "pod route", e.stateStore.DeleteRoute("pod", sandboxID))
-	if containerID != "" {
-		collectCleanupError(&errs, "container route", e.stateStore.DeleteRoute("container", containerID))
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return e.stateStore.DeleteAndroidPod(sandboxID)
-}
-
-func filepathClean(path string) string {
-	if path == "" {
-		return ""
-	}
-	return strings.TrimRight(path, string(os.PathSeparator))
 }

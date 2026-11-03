@@ -11,7 +11,7 @@
 
 ```
 e2b-verify/
-├── run_all.sh                # 全量顺序执行调度脚本（入口，00–23）
+├── run_all.sh                # 全量顺序执行调度脚本（入口，00–26）
 ├── 00_setup.sh               # 环境准备：工具 / proto / E2B 模板 / Pod fixture / 能力检查
 ├── 01_start_multiplex.sh     # 构建 & 启动 cri-multiplex（非 CNI / CNI / Android / 池化）
 ├── 02_lifecycle.sh           # PodSandbox + Container 生命周期 + annotation 校验
@@ -38,6 +38,7 @@ e2b-verify/
 ├── 23_restart_multiplex_hide_direct.sh # 隐藏 direct sandbox
 ├── 24_bulk_direct_concurrency.sh      # 性能：100/200 并发（无池）
 ├── 25_bulk_direct_concurrency_pool.sh # 性能：100/200 并发（带池）
+├── 26_adminv2_e2b_lifecycle.sh        # admin v2 创建/暂停/恢复/检查点（63 条用例）
 ├── p01_bulk_cni_start_100.sh          # 性能：kubelet 批量创建（默认 95）
 ├── configure_network_mode.sh # 切换 non-CNI / CNI
 ├── switch_cni_pool.sh        # 切换 CNI 预热池
@@ -65,7 +66,7 @@ e2b-verify/
                      │
 ┌────────────────────▼────────────────────────────┐
 │           run_all.sh（调度层）                   │
-│   顺序执行 00–23 + 汇总最终报告                  │
+│   顺序执行 00–26 + 汇总最终报告                  │
 │   按用例切换运行模式 / 准备共享 E2B fixture      │
 └────────────────────┬────────────────────────────┘
                      │ source
@@ -356,6 +357,33 @@ e2b-verify/
   等待 `CNI pool warm: ready=N/M` 后执行同样批次
 - `p01_bulk_cni_start_100.sh`：通过 kubelet 批量 apply（默认 95 个），统计 apply/Ready 总耗时
 
+### 26_adminv2_e2b_lifecycle.sh — admin v2 创建/暂停/恢复/检查点（63 条用例）
+
+前置：业务面全走 admin v2；暂停/检查点所需的快照产物由 E2B 控制面预分配，失败即退出。
+
+- P1–P7 预检 — 工具链、proto、受控实例、admin socket、v2 已注册、模板元数据、鉴权与迁移
+- C1–C5 创建 — 返回标识与接入信息；重复创建幂等、列表不重复；重试携带不同起止时间不改写已生效时间；
+  同 ID 不同模板/构建重试不重建沙箱（参数不参与幂等键）
+- V1–V6 读一致性 — 运行事实、列表与 orchestrator 一致、数据面端口、netns；
+  `cri_sandbox_id` 与 `sandbox_id` 两种定位等价；v2 创建不写 CRI 路由，kubelet 侧 Stop/Remove 不误删
+- U1 修改 TTL — 列表反映新到期时间，状态/模板不变
+- L1 构建缓存 — 列出本节点已缓存的构建
+- PZ1–PZ7 暂停 — 预分配快照、暂停并持久化、状态变 Paused、重试幂等、暂停后数据面关闭但端口/netns
+  仍登记、已暂停沙箱用新 op 再操作被拒绝、删源沙箱
+- R1–R3 恢复 — 从暂停快照恢复同一沙箱、指向快照模板且 Running、数据面重新可达
+- K1–K4 检查点 — 预分配模板、打检查点并持久化、源沙箱网络身份不变、重试幂等
+- KC1–KC5 检查点派生 — 新沙箱、运行事实来自检查点模板、数据面可达、列表可见、删除后查不到
+- N1–N16 负向与能力分发 — 缺沙箱/团队/操作/模板/构建标识被拒；未实现 v2 的后端对 8 个方法
+  Unimplemented、未注册后端 NotFound；backend 空/大写/空白等价；operation_id 跨动作复用被拒；
+  Update 缺 ID/未知 ID；CRI 归属校验；空白 ID 拒绝；Create 失败回滚无 netns 残留；
+  Checkpoint 缺 operation_id/target 被拒
+- D1–D6 删除 — 删除运行中沙箱、重复删除幂等、查询 NotFound、列表消失、CRI 回收、缺标识被拒
+- Z1–Z2 收尾 — 无残留沙箱、汇总统计
+
+不覆盖：`crictl inspectp`（admin 路径不写 mux 路由，V6 已用 Stop/Remove 钉住隔离性）、
+`List` 里的 `Paused`（恒报 Running，暂停状态只能由 `GetSandboxRuntime` 观察）。
+待契约确认后再补：`max_sandbox_length_hours=0`（proto 注释 0=不限制，实现回落 24h）。
+
 ### 环境与模式切换脚本
 
 - `configure_network_mode.sh non-cni|cni`：只切换 CNI 开关
@@ -545,7 +573,7 @@ bash ./run_all.sh --only 16
 bash ./run_all.sh --skip-setup
 ```
 
-`--only` 会按编号预切换模式；18/19/20 在用例内部自行启动，23 自己重启。
+`--only` 会按编号预切换模式；18/19/20 在用例内部自行启动，23 自己重启，26 在 `--only` 的 CNI 分支内（内部仍会调 `ensure_controlled_cni_multiplex` 兜底）。
 
 ### 4.3 直接运行单个脚本
 
@@ -553,6 +581,7 @@ bash ./run_all.sh --skip-setup
 bash ./02_lifecycle.sh
 bash ./07_kubelet_pod_running.sh
 bash ./22_pause_checkpoint_resume.sh
+bash ./26_adminv2_e2b_lifecycle.sh
 ```
 
 直接运行时不会自动做 `run_all.sh` 的全局模式切换；多数 kubelet/CNI 用例会自行准备实例。
@@ -655,7 +684,33 @@ COUNT=20 bash ./p01_bulk_cni_start_100.sh
 | PauseSandbox | 22 | 快照持久化、operation_id 幂等 |
 | CheckpointSandbox | 22 | 原地快照、persisted + vm_resumed |
 
-Admin socket：`unix:///run/cri-multiplex/admin.sock`（22 号固定使用）。
+Admin socket：`unix:///run/cri-multiplex/admin.sock`（v1：22 号；v2：26 号）。
+
+### Admin gRPC v2（crimultiplex.admin.v2）
+
+| 接口 | 验证模块 | 验证内容 |
+|------|----------|----------|
+| SandboxService/Create | 26 | 首次创建、省略 `backend` 的幂等重试、`snapshot=true` 恢复、从 checkpoint 创建 |
+| SandboxService/Delete | 26 | 删除源沙箱、幂等（`backend=E2B` 大写）、删除后 `NotFound` |
+| SandboxService/List | 26 | orchestrator 视图（template/build/Running/podIp）、不重复、删除后消失、TTL 更新可见 |
+| SandboxService/Update | 26 | `end_time` 改 TTL 后 `List` 立即生效，状态/模板不变（egress 无读接口，不测） |
+| SandboxService/ListCachedBuilds | 26 | 返回本节点模板缓存（buildId/expirationTime 非空，含刚用过的 build） |
+| SandboxAdminService/PauseSandbox | 26 | `target=sandbox_id`、metadata→`E2BOperation`、persisted、`Paused`、幂等 |
+| SandboxAdminService/CheckpointSandbox | 26 | `target=cri_sandbox_id`、persisted+vmResumed、源沙箱不重建、幂等 |
+| SandboxAdminService/GetSandboxRuntime | 26 | 运行事实（podName/podUid/netns/hostports）、`Paused` 判定、删除后 `NotFound` |
+
+v2 的能力分发语义：`backend` 为空默认 `e2b`；未注册返回 `NotFound`；后端未实现对应能力返回
+`Unimplemented`（26 用 `backend=container` 验证后者）。v2 的 8 个方法现已全部被 26 端到端覆盖：
+`Update` 只能从 `List` 顶层 `end_time` 观察（`Runtime` 与 `spec` 都不含 TTL），`egress` 更新在
+v2 视图里不可见，仍由 `pkg/admin/v2_server_test.go` 单测兜底。
+
+**验证边界（26 号能测到什么）**：v2 与 v1 共用同一套 `Engine.Admin*` 实现——v1
+（`pkg/admin/server.go`）直接调，v2 经 `pkg/admin/v2_server.go` + `pkg/engine/e2b/admin_adapter.go`
+两层转换后调同样的方法。因此 26 验证的是「v2 协议与字段映射 + 两层转换 + v1 核心行为」的组合，
+无法单独定位核心回归（这部分由 22 号 v1 链路对照）。另外 v2 回传字段有限：`List` 的 `spec` 只回
+`sandboxId/templateId/buildId`，`vcpu/ram/disk/env_vars/metadata/network/volume_mounts` 都不回传；
+`SandboxSpec` 也没有 `start_time/end_time` 字段，所以 TTL 只能断言顶层 `end_time`。这些字段的
+转换正确性由 `pkg/admin/v2_server_test.go` 与 `pkg/engine/e2b/admin_adapter_test.go` 兜底。
 
 ### E2B API internal 接口（22 号）
 

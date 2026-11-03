@@ -11,13 +11,17 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	adminv2 "github.com/cri-multiplex/pkg/admin/v2"
 	"github.com/cri-multiplex/pkg/engine"
 	"github.com/cri-multiplex/pkg/orchestrator"
 )
 
-// Engine 是 admin server 依赖的 engine 管理操作小接口（由 grpcE2BEngine 实现），
-// 避免把管理接口混入 MuxServer CRI 路由代码。
+// Engine 是 v1 admin server 依赖的 E2B 管理操作小接口。
+//
+// Deprecated: v1 两个 service 仅服务 E2B，保留以兼容既有调用方（至少两个版本）；
+// 新后端只实现 v2 的 engine.Admin* 接口，通过 V2Server 分发。
 type Engine interface {
 	AdminPause(ctx context.Context, op engine.E2BOperation, timeoutSeconds uint64) (startedAt, finishedAt time.Time, err error)
 	AdminCheckpoint(ctx context.Context, op engine.E2BOperation, timeoutSeconds uint64) (vmResumed bool, startedAt, finishedAt time.Time, err error)
@@ -26,20 +30,27 @@ type Engine interface {
 	AdminUpdate(ctx context.Context, req *orchestrator.SandboxUpdateRequest) (*emptypb.Empty, error)
 	AdminList(ctx context.Context) (*orchestrator.SandboxListResponse, error)
 	AdminDelete(ctx context.Context, req *orchestrator.SandboxDeleteRequest) (*emptypb.Empty, error)
-	AdminListCachedBuilds(ctx context.Context) (*orchestrator.SandboxListCachedBuildsResponse, error)
+	AdminListCachedBuilds(ctx context.Context) ([]engine.CachedBuild, error)
 }
 
+// Server 同时承载 v1（E2B 专用，deprecated）与可选的 v2（后端中性）两个管理面。
 type Server struct {
 	UnimplementedE2BSandboxAdminServiceServer
 	UnimplementedE2BSandboxServiceServer
 	sockPath string
 	eng      Engine
+	v2       *V2Server
 	listener net.Listener
 	grpcSrv  *grpc.Server
 }
 
-func NewServer(sockPath string, eng Engine) *Server {
-	return &Server{sockPath: sockPath, eng: eng}
+// NewServer 创建 admin server；v2 为可变参数以保证既有 NewServer(path, eng) 调用不变。
+func NewServer(sockPath string, eng Engine, v2 ...*V2Server) *Server {
+	s := &Server{sockPath: sockPath, eng: eng}
+	if len(v2) > 0 {
+		s.v2 = v2[0]
+	}
+	return s
 }
 
 func (s *Server) Start() error {
@@ -64,6 +75,10 @@ func (s *Server) Start() error {
 	s.grpcSrv = grpc.NewServer()
 	RegisterE2BSandboxAdminServiceServer(s.grpcSrv, s)
 	RegisterE2BSandboxServiceServer(s.grpcSrv, s)
+	if s.v2 != nil {
+		adminv2.RegisterSandboxServiceServer(s.grpcSrv, s.v2)
+		adminv2.RegisterSandboxAdminServiceServer(s.grpcSrv, s.v2)
+	}
 	go func() {
 		_ = s.grpcSrv.Serve(listener)
 	}()
@@ -152,9 +167,21 @@ func (s *Server) Delete(ctx context.Context, req *orchestrator.SandboxDeleteRequ
 	return s.eng.AdminDelete(ctx, req)
 }
 
-// ListCachedBuilds 薄转发 orchestrator。
+// ListCachedBuilds 薄转发 orchestrator（中性 DTO → v1 proto）。
 func (s *Server) ListCachedBuilds(ctx context.Context, _ *emptypb.Empty) (*orchestrator.SandboxListCachedBuildsResponse, error) {
-	return s.eng.AdminListCachedBuilds(ctx)
+	builds, err := s.eng.AdminListCachedBuilds(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resp := &orchestrator.SandboxListCachedBuildsResponse{}
+	for _, b := range builds {
+		item := &orchestrator.CachedBuildInfo{BuildId: b.BuildID}
+		if !b.ExpirationTime.IsZero() {
+			item.ExpirationTime = timestamppb.New(b.ExpirationTime)
+		}
+		resp.Builds = append(resp.Builds, item)
+	}
+	return resp, nil
 }
 
 func runtimeInfoToProto(info *engine.RuntimeInfo, activeOps []engine.E2BOperation) *GetSandboxRuntimeResponse {
@@ -171,13 +198,13 @@ func runtimeInfoToProto(info *engine.RuntimeInfo, activeOps []engine.E2BOperatio
 		ExecutionId:  info.ExecutionID,
 		RuntimeState: info.RuntimeState,
 	}
-	if info.CNI != nil {
+	if info.CNIEnabled {
 		resp.Cni = &CNIRecord{
-			NetnsPath:  info.CNI.NetNSPath,
-			IfName:     info.CNI.IfName,
-			PodIp:      info.CNI.PodIP,
-			Gateway:    info.CNI.Gateway,
-			DnsServers: append([]string(nil), info.CNI.DNS...),
+			NetnsPath:  info.NetNSPath,
+			IfName:     info.IfName,
+			PodIp:      info.PodIP,
+			Gateway:    info.Gateway,
+			DnsServers: append([]string(nil), info.DNS...),
 		}
 	}
 	for _, m := range info.HostPorts {

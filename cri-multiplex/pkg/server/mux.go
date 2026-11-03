@@ -2,11 +2,11 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,123 +18,113 @@ import (
 	"github.com/cri-multiplex/pkg/engine"
 )
 
+// UnknownHandlerPolicy 决定 RunPodSandbox 收到未注册 runtime handler 时的行为。
+type UnknownHandlerPolicy string
+
+const (
+	// UnknownHandlerPassthrough 回退到默认后端（保持历史行为：kubelet 用 "runc" 等标准 handler）。
+	UnknownHandlerPassthrough UnknownHandlerPolicy = "passthrough"
+	// UnknownHandlerReject 直接拒绝，避免把未知后端的负载悄悄落到默认后端。
+	UnknownHandlerReject UnknownHandlerPolicy = "reject"
+)
+
+// MuxOptions 收敛 Mux 的启动参数，避免构造函数参数列表继续膨胀。
+type MuxOptions struct {
+	UnknownHandlerPolicy UnknownHandlerPolicy
+	RuntimeName          string
+	Cleanup              engine.CleanupScheduler
+}
+
+const defaultRuntimeName = "e2b-cri-shim"
+
 type MuxServer struct {
 	runtime.UnimplementedRuntimeServiceServer
 	runtime.UnimplementedImageServiceServer
 
-	containerEngine engine.RuntimeEngine
-	e2bEngine       engine.RuntimeEngine
-	androidEngine   engine.RuntimeEngine
-	stateStore      engine.StateStore
-
-	podRoutes       sync.Map // podSandboxID -> engine.EngineType
-	containerRoutes sync.Map // containerID -> engine.EngineType
+	reg    *engine.Registry
+	routes *engine.RouteTable
+	opts   MuxOptions
 
 	grpcServer *grpc.Server
 }
 
-func NewMuxServer(containerEngine, e2bEngine, androidEngine engine.RuntimeEngine, stores ...engine.StateStore) *MuxServer {
+// NewMuxServer 用注册表装配 Mux：之后所有路由都由 Registry 与 RouteTable 决定。
+func NewMuxServer(reg *engine.Registry, store engine.StateStore, opts MuxOptions) *MuxServer {
+	return &MuxServer{
+		reg:    reg,
+		routes: engine.NewRouteTable(store),
+		opts:   opts,
+	}
+}
+
+// NewMuxServerLegacy 保留旧的三个引擎签名，供过渡期与测试使用。
+func NewMuxServerLegacy(container, e2b, android engine.RuntimeEngine, stores ...engine.StateStore) *MuxServer {
 	var store engine.StateStore
 	if len(stores) > 0 {
 		store = stores[0]
 	}
-	return &MuxServer{
-		containerEngine: containerEngine,
-		e2bEngine:       e2bEngine,
-		androidEngine:   androidEngine,
-		stateStore:      store,
+
+	reg := engine.NewRegistry(engine.EngineTypeContainer)
+	for _, mod := range []engine.BackendModule{
+		{
+			Descriptor: engine.BackendDescriptor{Type: engine.EngineTypeContainer, Handler: string(engine.EngineTypeContainer)},
+			Engine:     container,
+		},
+		{
+			Descriptor: engine.BackendDescriptor{Type: engine.EngineTypeE2B, Handler: string(engine.EngineTypeE2B), ImagePrefixes: []string{"e2b.dev/"}},
+			Engine:     e2b,
+		},
+		{
+			Descriptor: engine.BackendDescriptor{Type: engine.EngineTypeAndroid, Handler: string(engine.EngineTypeAndroid), ImagePrefixes: []string{"android.dev/"}},
+			Engine:     android,
+		},
+	} {
+		if mod.Engine == nil {
+			continue
+		}
+		if cleaner, ok := mod.Engine.(engine.Cleaner); ok {
+			mod.Cleaner = cleaner
+		}
+		if reconciler, ok := mod.Engine.(engine.Reconciler); ok {
+			mod.Reconciler = reconciler
+		}
+		if restorer, ok := mod.Engine.(engine.StateRestorer); ok {
+			mod.Restorer = restorer
+		}
+		if health, ok := mod.Engine.(engine.HealthChecker); ok {
+			mod.Health = health
+		}
+		if err := reg.Register(mod); err != nil {
+			log.Printf("[MuxServer] WARNING: register legacy backend %s: %v", mod.Descriptor.Type, err)
+		}
 	}
+	if err := reg.Freeze(); err != nil {
+		log.Printf("[MuxServer] WARNING: freeze legacy registry: %v", err)
+	}
+
+	return NewMuxServer(reg, store, MuxOptions{})
 }
 
-func (s *MuxServer) RestoreState() error {
-	if s == nil || s.stateStore == nil {
-		return nil
+// Routes 暴露路由表给 main 与 Admin v2 使用。
+func (s *MuxServer) Routes() *engine.RouteTable {
+	return s.routes
+}
+
+// RestoreState 先让各后端恢复自身状态（含路由派生），再加载路由表。
+func (s *MuxServer) RestoreState(ctx context.Context) error {
+	for _, mod := range s.reg.Modules() {
+		if mod.Restorer == nil {
+			continue
+		}
+		if err := mod.Restorer.RestoreState(ctx); err != nil {
+			return fmt.Errorf("%s restore state: %w", mod.Descriptor.Type, err)
+		}
 	}
-	routes, err := s.stateStore.LoadRoutes()
-	if err != nil {
+	if err := s.routes.Restore(); err != nil {
 		return fmt.Errorf("load routes: %w", err)
 	}
-	for _, route := range routes {
-		if route.ID == "" {
-			continue
-		}
-		switch route.Kind {
-		case "pod":
-			s.podRoutes.Store(route.ID, route.Engine)
-		case "container":
-			s.containerRoutes.Store(route.ID, route.Engine)
-		default:
-			log.Printf("[MuxServer] skip unknown persisted route kind=%q id=%s engine=%s", route.Kind, route.ID, route.Engine)
-		}
-	}
-	e2bPods, err := s.stateStore.LoadE2BPods()
-	if err != nil {
-		return fmt.Errorf("load e2b pod routes: %w", err)
-	}
-	for _, pod := range e2bPods {
-		if pod.SandboxID == "" {
-			continue
-		}
-		s.podRoutes.Store(pod.SandboxID, engine.EngineTypeE2B)
-		if pod.ContainerName != "" {
-			s.containerRoutes.Store(pod.SandboxID+"-c", engine.EngineTypeE2B)
-		}
-	}
-	androidPods, err := s.stateStore.LoadAndroidPods()
-	if err != nil {
-		return fmt.Errorf("load android pod routes: %w", err)
-	}
-	for _, pod := range androidPods {
-		if pod.SandboxID == "" {
-			continue
-		}
-		s.podRoutes.Store(pod.SandboxID, engine.EngineTypeAndroid)
-		if pod.ContainerID != "" {
-			s.containerRoutes.Store(pod.ContainerID, engine.EngineTypeAndroid)
-		}
-	}
-	log.Printf("[MuxServer] restored %d route records, derived %d e2b pod routes and %d android pod routes",
-		len(routes), len(e2bPods), len(androidPods))
+
 	return nil
-}
-
-func (s *MuxServer) saveRoute(kind, id string, engineType engine.EngineType) {
-	if s == nil || s.stateStore == nil || id == "" {
-		return
-	}
-	if err := s.stateStore.SaveRoute(engine.RouteRecord{
-		Kind:   kind,
-		ID:     id,
-		Engine: engineType,
-	}); err != nil {
-		log.Printf("[MuxServer] WARNING: persist route failed kind=%s id=%s engine=%s: %v", kind, id, engineType, err)
-	}
-}
-
-func (s *MuxServer) deleteRoute(kind, id string) {
-	if s == nil || s.stateStore == nil || id == "" {
-		return
-	}
-	if err := s.stateStore.DeleteRoute(kind, id); err != nil {
-		log.Printf("[MuxServer] WARNING: delete route failed kind=%s id=%s: %v", kind, id, err)
-	}
-}
-
-func (s *MuxServer) cleanupPending(sandboxID string) bool {
-	if s == nil || s.stateStore == nil || sandboxID == "" {
-		return false
-	}
-	tasks, err := s.stateStore.LoadCleanupTasks()
-	if err != nil {
-		log.Printf("[MuxServer] WARNING: load cleanup tasks for sandbox=%s: %v", sandboxID, err)
-		return true
-	}
-	for _, task := range tasks {
-		if task.SandboxID == sandboxID {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *MuxServer) Start(socketPath string) error {
@@ -161,70 +151,81 @@ func (s *MuxServer) Stop() {
 	}
 }
 
-func (s *MuxServer) allEngines() []engine.RuntimeEngine {
-	engines := []engine.RuntimeEngine{s.containerEngine, s.e2bEngine}
-	if s.androidEngine != nil {
-		engines = append(engines, s.androidEngine)
+// defaultEngine 返回默认后端；没有默认后端时返回 Internal。
+func (s *MuxServer) defaultEngine() (engine.RuntimeEngine, error) {
+	mod := s.reg.Default()
+	if mod == nil {
+		return nil, status.Error(codes.Internal, "no default backend registered")
 	}
-	return engines
+
+	return mod.Engine, nil
+}
+
+// engineByType 按类型取后端；类型未注册时回退默认后端。
+func (s *MuxServer) engineByType(typ engine.EngineType) (engine.RuntimeEngine, error) {
+	if mod, ok := s.reg.Get(typ); ok {
+		return mod.Engine, nil
+	}
+	log.Printf("[MuxServer] backend %s not registered, fallback to default backend", typ)
+
+	return s.defaultEngine()
 }
 
 // resolveEngineByPod 按路由表查找 Pod 所属 engine；
-// 路由表未命中时回退到 containerEngine（containerd）。
-// 原因：E2B Pod 只能通过 cri-multiplex 的 RunPodSandbox(handler=e2b) 创建，
+// 路由表未命中时回退到默认后端（containerd）。
+// 原因：E2B/Android Pod 只能通过 cri-multiplex 的 RunPodSandbox 创建，
 // 创建时会注册到路由表；未注册的 Pod 一定是 containerd 既有的，
-// 因此回退到 containerEngine 是安全的，避免 kubelet 切换后对既有 Pod 调用
+// 因此回退到默认后端是安全的，避免 kubelet 切换后对既有 Pod 调用
 // PodSandboxStatus/StopPodSandbox 等接口报 "no engine found"。
 func (s *MuxServer) resolveEngineByPod(podSandboxID string) (engine.RuntimeEngine, error) {
-	val, ok := s.podRoutes.Load(podSandboxID)
+	typ, ok := s.routes.PodBackend(podSandboxID)
 	if !ok {
-		log.Printf("[MuxServer] pod %s not in route table, fallback to container engine", podSandboxID)
-		return s.containerEngine, nil
+		log.Printf("[MuxServer] pod %s not in route table, fallback to default backend", podSandboxID)
+		return s.defaultEngine()
 	}
-	engineType := val.(engine.EngineType)
-	switch engineType {
-	case engine.EngineTypeE2B:
-		return s.e2bEngine, nil
-	case engine.EngineTypeAndroid:
-		return s.androidEngine, nil
-	default:
-		return s.containerEngine, nil
-	}
+
+	return s.engineByType(typ)
 }
 
-// resolveEngineByContainer 按路由表查找 Container 所属 engine；
-// 路由表未命中时回退到 containerEngine（containerd），原因同上。
+// resolveEngineByContainer 按路由表查找 Container 所属 engine；未命中同样回退默认后端。
 func (s *MuxServer) resolveEngineByContainer(containerID string) (engine.RuntimeEngine, error) {
-	val, ok := s.containerRoutes.Load(containerID)
+	typ, ok := s.routes.ContainerBackend(containerID)
 	if !ok {
-		log.Printf("[MuxServer] container %s not in route table, fallback to container engine", containerID)
-		return s.containerEngine, nil
+		log.Printf("[MuxServer] container %s not in route table, fallback to default backend", containerID)
+		return s.defaultEngine()
 	}
-	engineType := val.(engine.EngineType)
-	switch engineType {
-	case engine.EngineTypeE2B:
-		return s.e2bEngine, nil
-	case engine.EngineTypeAndroid:
-		return s.androidEngine, nil
-	default:
-		return s.containerEngine, nil
+
+	return s.engineByType(typ)
+}
+
+func (s *MuxServer) scheduleCleanup(ctx context.Context, typ engine.EngineType, sandboxID, resourceType, reason string) {
+	if s.opts.Cleanup == nil {
+		return
+	}
+	result := s.opts.Cleanup.Schedule(ctx, typ, sandboxID, resourceType, reason)
+	if result.Err != nil {
+		log.Printf("[MuxServer] WARNING: schedule cleanup failed sandbox=%s backend=%s resource=%s reason=%s: %v",
+			sandboxID, typ, resourceType, reason, result.Err)
 	}
 }
 
 // ========== RuntimeService ==========
 
 func (s *MuxServer) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRequest) (*runtime.RunPodSandboxResponse, error) {
-	handler := req.RuntimeHandler
-	var eng engine.RuntimeEngine
+	handler := req.GetRuntimeHandler()
 
-	if handler == "e2b" {
-		eng = s.e2bEngine
-	} else if handler == "android" {
-		eng = s.androidEngine
-	} else {
-		eng = s.containerEngine
+	mod, ok := s.reg.ResolveHandler(handler)
+	if !ok {
+		if s.opts.UnknownHandlerPolicy == UnknownHandlerReject {
+			return nil, status.Errorf(codes.InvalidArgument, "unknown runtime handler %q", handler)
+		}
+		mod = s.reg.Default()
+		if mod == nil {
+			return nil, status.Error(codes.Internal, "no default backend registered")
+		}
 	}
 
+	eng := mod.Engine
 	log.Printf("[MuxServer] RunPodSandbox routing: handler=%q -> %s", handler, eng.Type())
 
 	resp, err := eng.RunPodSandbox(ctx, req)
@@ -232,11 +233,15 @@ func (s *MuxServer) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandbo
 		return nil, err
 	}
 
-	s.podRoutes.Store(resp.PodSandboxId, eng.Type())
 	routePersistStart := time.Now()
-	s.saveRoute("pod", resp.PodSandboxId, eng.Type())
+	if err := s.routes.SetPod(resp.PodSandboxId, eng.Type()); err != nil {
+		log.Printf("[MuxServer] ERROR: persist pod route failed sandbox=%s engine=%s: %v", resp.PodSandboxId, eng.Type(), err)
+		s.scheduleCleanup(ctx, eng.Type(), resp.PodSandboxId, "route", "persist-route-failed")
+		return nil, status.Errorf(codes.Internal, "persist route for pod sandbox %s: %v", resp.PodSandboxId, err)
+	}
 	log.Printf("[PerfTrace] sandbox=%s route_persist_ms=%d", resp.PodSandboxId, time.Since(routePersistStart).Milliseconds())
 	log.Printf("[MuxServer] registered pod %s -> %s", resp.PodSandboxId, eng.Type())
+
 	return resp, nil
 }
 
@@ -251,9 +256,13 @@ func (s *MuxServer) CreateContainer(ctx context.Context, req *runtime.CreateCont
 		return nil, err
 	}
 
-	s.containerRoutes.Store(resp.ContainerId, eng.Type())
-	s.saveRoute("container", resp.ContainerId, eng.Type())
+	if err := s.routes.SetContainer(resp.ContainerId, req.PodSandboxId, eng.Type()); err != nil {
+		log.Printf("[MuxServer] ERROR: persist container route failed container=%s engine=%s: %v", resp.ContainerId, eng.Type(), err)
+		s.scheduleCleanup(ctx, eng.Type(), req.PodSandboxId, "route", "persist-route-failed")
+		return nil, status.Errorf(codes.Internal, "persist route for container %s: %v", resp.ContainerId, err)
+	}
 	log.Printf("[MuxServer] registered container %s -> %s", resp.ContainerId, eng.Type())
+
 	return resp, nil
 }
 
@@ -281,8 +290,9 @@ func (s *MuxServer) RemoveContainer(ctx context.Context, req *runtime.RemoveCont
 
 	resp, err := eng.RemoveContainer(ctx, req)
 	if err == nil {
-		s.containerRoutes.Delete(req.ContainerId)
-		s.deleteRoute("container", req.ContainerId)
+		if derr := s.routes.DeleteContainer(req.ContainerId); derr != nil {
+			log.Printf("[MuxServer] WARNING: delete route for container %s: %v", req.ContainerId, derr)
+		}
 	}
 	return resp, err
 }
@@ -304,7 +314,7 @@ func (s *MuxServer) StopPodSandbox(ctx context.Context, req *runtime.StopPodSand
 }
 
 func (s *MuxServer) RemovePodSandbox(ctx context.Context, req *runtime.RemovePodSandboxRequest) (*runtime.RemovePodSandboxResponse, error) {
-	_, routed := s.podRoutes.Load(req.PodSandboxId)
+	_, routed := s.routes.PodBackend(req.PodSandboxId)
 	eng, err := s.resolveEngineByPod(req.PodSandboxId)
 	if err != nil {
 		return nil, err
@@ -315,16 +325,15 @@ func (s *MuxServer) RemovePodSandbox(ctx context.Context, req *runtime.RemovePod
 		log.Printf("[MuxServer] RemovePodSandbox: sandbox %s already absent, treating as success", req.PodSandboxId)
 		return &runtime.RemovePodSandboxResponse{}, nil
 	}
-	if err == nil && !s.cleanupPending(req.PodSandboxId) {
-		s.podRoutes.Delete(req.PodSandboxId)
-		s.deleteRoute("pod", req.PodSandboxId)
-		defaultContainerID := req.PodSandboxId + "-c"
-		s.containerRoutes.Delete(defaultContainerID)
-		s.deleteRoute("container", defaultContainerID)
+	if err != nil {
+		s.scheduleCleanup(ctx, eng.Type(), req.PodSandboxId, "sandbox", "remove-failed")
 	}
-	if err == nil && s.cleanupPending(req.PodSandboxId) {
-		log.Printf("[MuxServer] retaining routes while cleanup is pending sandbox=%s", req.PodSandboxId)
+	if err == nil {
+		if derr := s.routes.DeleteSandbox(req.PodSandboxId); derr != nil {
+			log.Printf("[MuxServer] WARNING: delete routes for sandbox %s: %v", req.PodSandboxId, derr)
+		}
 	}
+
 	return resp, err
 }
 
@@ -344,8 +353,7 @@ func (s *MuxServer) ListPodSandbox(ctx context.Context, req *runtime.ListPodSand
 		errs     []error
 	)
 
-	engines := s.allEngines()
-	for _, eng := range engines {
+	for _, mod := range s.reg.Modules() {
 		wg.Add(1)
 		go func(e engine.RuntimeEngine) {
 			defer wg.Done()
@@ -357,12 +365,12 @@ func (s *MuxServer) ListPodSandbox(ctx context.Context, req *runtime.ListPodSand
 				allItems = append(allItems, resp.Items...)
 			}
 			mu.Unlock()
-		}(eng)
+		}(mod.Engine)
 	}
 
 	wg.Wait()
 	if len(errs) > 0 && len(allItems) == 0 {
-		return nil, fmt.Errorf("all engines failed: %v", errs)
+		return nil, fmt.Errorf("all engines failed: %w", errors.Join(errs...))
 	}
 	return &runtime.ListPodSandboxResponse{Items: allItems}, nil
 }
@@ -375,8 +383,7 @@ func (s *MuxServer) ListContainers(ctx context.Context, req *runtime.ListContain
 		errs          []error
 	)
 
-	engines := s.allEngines()
-	for _, eng := range engines {
+	for _, mod := range s.reg.Modules() {
 		wg.Add(1)
 		go func(e engine.RuntimeEngine) {
 			defer wg.Done()
@@ -388,12 +395,12 @@ func (s *MuxServer) ListContainers(ctx context.Context, req *runtime.ListContain
 				allContainers = append(allContainers, resp.Containers...)
 			}
 			mu.Unlock()
-		}(eng)
+		}(mod.Engine)
 	}
 
 	wg.Wait()
 	if len(errs) > 0 && len(allContainers) == 0 {
-		return nil, fmt.Errorf("all engines failed: %v", errs)
+		return nil, fmt.Errorf("all engines failed: %w", errors.Join(errs...))
 	}
 	return &runtime.ListContainersResponse{Containers: allContainers}, nil
 }
@@ -414,8 +421,7 @@ func (s *MuxServer) ListContainerStats(ctx context.Context, req *runtime.ListCon
 		errs     []error
 	)
 
-	engines := s.allEngines()
-	for _, eng := range engines {
+	for _, mod := range s.reg.Modules() {
 		wg.Add(1)
 		go func(e engine.RuntimeEngine) {
 			defer wg.Done()
@@ -427,12 +433,12 @@ func (s *MuxServer) ListContainerStats(ctx context.Context, req *runtime.ListCon
 				allStats = append(allStats, resp.Stats...)
 			}
 			mu.Unlock()
-		}(eng)
+		}(mod.Engine)
 	}
 
 	wg.Wait()
 	if len(errs) > 0 && len(allStats) == 0 {
-		return nil, fmt.Errorf("all engines failed: %v", errs)
+		return nil, fmt.Errorf("all engines failed: %w", errors.Join(errs...))
 	}
 	return &runtime.ListContainerStatsResponse{Stats: allStats}, nil
 }
@@ -486,15 +492,32 @@ func (s *MuxServer) PortForward(ctx context.Context, req *runtime.PortForwardReq
 }
 
 func (s *MuxServer) Version(ctx context.Context, req *runtime.VersionRequest) (*runtime.VersionResponse, error) {
+	runtimeName := s.opts.RuntimeName
+	if runtimeName == "" {
+		runtimeName = defaultRuntimeName
+	}
+
 	return &runtime.VersionResponse{
 		Version:           "0.1.0",
-		RuntimeName:       "e2b-cri-shim",
+		RuntimeName:       runtimeName,
 		RuntimeVersion:    "0.1.0",
 		RuntimeApiVersion: "v1",
 	}, nil
 }
 
 func (s *MuxServer) Status(ctx context.Context, req *runtime.StatusRequest) (*runtime.StatusResponse, error) {
+	for _, mod := range s.reg.Modules() {
+		if mod.Health == nil {
+			continue
+		}
+		healthCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err := mod.Health.Health(healthCtx)
+		cancel()
+		if err != nil {
+			log.Printf("[MuxServer] WARNING: backend %s health check failed: %v", mod.Descriptor.Type, err)
+		}
+	}
+
 	return &runtime.StatusResponse{
 		Status: &runtime.RuntimeStatus{
 			Conditions: []*runtime.RuntimeCondition{
@@ -513,7 +536,7 @@ func (s *MuxServer) GetContainerEvents(req *runtime.GetEventsRequest, srv runtim
 	return fmt.Errorf("GetContainerEvents not supported by multiplexer")
 }
 
-// ========== ImageService：按前缀路由 ==========
+// ========== ImageService：按注册的前缀路由 ==========
 
 func (s *MuxServer) ListImages(ctx context.Context, req *runtime.ListImagesRequest) (*runtime.ListImagesResponse, error) {
 	var (
@@ -523,8 +546,7 @@ func (s *MuxServer) ListImages(ctx context.Context, req *runtime.ListImagesReque
 		errs      []error
 	)
 
-	engines := s.allEngines()
-	for _, eng := range engines {
+	for _, mod := range s.reg.Modules() {
 		wg.Add(1)
 		go func(e engine.RuntimeEngine) {
 			defer wg.Done()
@@ -536,53 +558,75 @@ func (s *MuxServer) ListImages(ctx context.Context, req *runtime.ListImagesReque
 				allImages = append(allImages, resp.Images...)
 			}
 			mu.Unlock()
-		}(eng)
+		}(mod.Engine)
 	}
 
 	wg.Wait()
 	if len(errs) > 0 && len(allImages) == 0 {
-		return nil, fmt.Errorf("all engines failed: %v", errs)
+		return nil, fmt.Errorf("all engines failed: %w", errors.Join(errs...))
 	}
 	return &runtime.ListImagesResponse{Images: allImages}, nil
 }
 
+// imageEngine 按镜像前缀解析后端；未命中走默认后端。
+func (s *MuxServer) imageEngine(image string) (engine.RuntimeEngine, error) {
+	if mod, ok := s.reg.ResolveImage(image); ok {
+		return mod.Engine, nil
+	}
+
+	return s.defaultEngine()
+}
+
 func (s *MuxServer) ImageStatus(ctx context.Context, req *runtime.ImageStatusRequest) (*runtime.ImageStatusResponse, error) {
-	if strings.HasPrefix(req.Image.Image, "e2b.dev/") {
-		return s.e2bEngine.ImageStatus(ctx, req)
+	eng, err := s.imageEngine(req.GetImage().GetImage())
+	if err != nil {
+		return nil, err
 	}
-	if strings.HasPrefix(req.Image.Image, "android.dev/") {
-		return s.androidEngine.ImageStatus(ctx, req)
-	}
-	return s.containerEngine.ImageStatus(ctx, req)
+
+	return eng.ImageStatus(ctx, req)
 }
 
 func (s *MuxServer) PullImage(ctx context.Context, req *runtime.PullImageRequest) (*runtime.PullImageResponse, error) {
-	if strings.HasPrefix(req.Image.Image, "e2b.dev/") {
-		return s.e2bEngine.PullImage(ctx, req)
+	eng, err := s.imageEngine(req.GetImage().GetImage())
+	if err != nil {
+		return nil, err
 	}
-	if strings.HasPrefix(req.Image.Image, "android.dev/") {
-		return s.androidEngine.PullImage(ctx, req)
-	}
-	return s.containerEngine.PullImage(ctx, req)
+
+	return eng.PullImage(ctx, req)
 }
 
 func (s *MuxServer) RemoveImage(ctx context.Context, req *runtime.RemoveImageRequest) (*runtime.RemoveImageResponse, error) {
-	if strings.HasPrefix(req.Image.Image, "e2b.dev/") {
-		return s.e2bEngine.RemoveImage(ctx, req)
+	eng, err := s.imageEngine(req.GetImage().GetImage())
+	if err != nil {
+		return nil, err
 	}
-	if strings.HasPrefix(req.Image.Image, "android.dev/") {
-		return s.androidEngine.RemoveImage(ctx, req)
-	}
-	return s.containerEngine.RemoveImage(ctx, req)
+
+	return eng.RemoveImage(ctx, req)
 }
 
 func (s *MuxServer) ImageFsInfo(ctx context.Context, req *runtime.ImageFsInfoRequest) (*runtime.ImageFsInfoResponse, error) {
-	resp, err := s.containerEngine.ImageFsInfo(ctx, req)
-	if err != nil {
-		if e2bResp, e2bErr := s.e2bEngine.ImageFsInfo(ctx, req); e2bErr == nil {
-			return e2bResp, nil
+	var errs []error
+	tried := make(map[engine.EngineType]struct{}, len(s.reg.Modules()))
+
+	if def := s.reg.Default(); def != nil {
+		tried[def.Descriptor.Type] = struct{}{}
+		resp, err := def.Engine.ImageFsInfo(ctx, req)
+		if err == nil {
+			return resp, nil
 		}
-		return s.androidEngine.ImageFsInfo(ctx, req)
+		errs = append(errs, fmt.Errorf("%s.ImageFsInfo: %w", def.Descriptor.Type, err))
 	}
-	return resp, nil
+
+	for _, mod := range s.reg.Modules() {
+		if _, ok := tried[mod.Descriptor.Type]; ok {
+			continue
+		}
+		resp, err := mod.Engine.ImageFsInfo(ctx, req)
+		if err == nil {
+			return resp, nil
+		}
+		errs = append(errs, fmt.Errorf("%s.ImageFsInfo: %w", mod.Descriptor.Type, err))
+	}
+
+	return nil, fmt.Errorf("all engines failed: %w", errors.Join(errs...))
 }

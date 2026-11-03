@@ -55,3 +55,11 @@ type RuntimeEngine interface {
 
 	Close() error
 }
+
+// defaultString 返回 value，空值时返回 fallback。
+func defaultString(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}

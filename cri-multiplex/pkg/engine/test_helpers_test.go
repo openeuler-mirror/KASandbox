@@ -9,12 +9,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/cri-multiplex/pkg/engine/util"
 	"github.com/cri-multiplex/pkg/orchestrator"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
 type fakeCNIManager struct {
-	addRecord *CNIRecord
+	addRecord *util.CNIRecord
 	addErr    error
 	delErr    error
 
@@ -25,7 +26,7 @@ type fakeCNIManager struct {
 	delCtxErr error
 }
 
-func (f *fakeCNIManager) Add(ctx context.Context, sandboxID string, podCfg *runtime.PodSandboxConfig) (*CNIRecord, error) {
+func (f *fakeCNIManager) Add(ctx context.Context, sandboxID string, podCfg *runtime.PodSandboxConfig) (*util.CNIRecord, error) {
 	f.addCalls++
 	f.addIDs = append(f.addIDs, sandboxID)
 	if f.addErr != nil {
@@ -34,12 +35,12 @@ func (f *fakeCNIManager) Add(ctx context.Context, sandboxID string, podCfg *runt
 	if f.addRecord != nil {
 		return f.addRecord, nil
 	}
-	return &CNIRecord{
+	return &util.CNIRecord{
 		SandboxID: sandboxID,
 		Network:   "test-net",
 		IfName:    "eth0",
-		NetNSName: "test-" + shortID(sandboxID),
-		NetNSPath: "/var/run/netns/test-" + shortID(sandboxID),
+		NetNSName: "test-" + util.ShortID(sandboxID),
+		NetNSPath: "/var/run/netns/test-" + util.ShortID(sandboxID),
 		PodIP:     "10.0.0.10",
 		Gateway:   "10.0.0.1",
 		DNS:       []string{"10.96.0.10"},
@@ -50,10 +51,10 @@ func (f *fakeCNIManager) NetNSName(sandboxID string) string {
 	if f.addRecord != nil && f.addRecord.NetNSName != "" {
 		return f.addRecord.NetNSName
 	}
-	return "test-" + shortID(sandboxID)
+	return "test-" + util.ShortID(sandboxID)
 }
 
-func (f *fakeCNIManager) Del(ctx context.Context, rec *CNIRecord, podCfg *runtime.PodSandboxConfig) error {
+func (f *fakeCNIManager) Del(ctx context.Context, rec *util.CNIRecord, podCfg *runtime.PodSandboxConfig) error {
 	f.delCalls++
 	f.delCtxErr = ctx.Err()
 	if rec != nil {

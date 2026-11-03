@@ -1,0 +1,220 @@
+syntax = "proto3";
+
+package crimultiplex.admin.v2;
+
+option go_package = "github.com/cri-multiplex/pkg/admin/v2;adminv2";
+
+// proto/admin_v2.proto —— package crimultiplex.admin.v2
+// 不 import orchestrator.proto
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// SandboxService 提供沙箱生命周期管理（agent-direct 场景）。
+service SandboxService {
+  // Create 创建沙箱；sandbox_id 必填且幂等。
+  rpc Create(SandboxCreateRequest) returns (SandboxCreateResponse);
+  // Update 更新 TTL/出网策略；仅设置字段生效。
+  rpc Update(SandboxUpdateRequest) returns (google.protobuf.Empty);
+  // List 按 backend 列出沙箱。
+  rpc List(SandboxListRequest) returns (SandboxListResponse);
+  // Delete 删除沙箱；不存在时幂等成功。
+  rpc Delete(SandboxDeleteRequest) returns (google.protobuf.Empty);
+  // ListCachedBuilds 列出后端缓存的构建；无缓存的后端返回空。
+  rpc ListCachedBuilds(SandboxListCachedBuildsRequest) returns (SandboxListCachedBuildsResponse);
+}
+
+// SandboxAdminService 提供节点本地的暂停/快照/运行事实查询。
+service SandboxAdminService {
+  // PauseSandbox 暂停沙箱，可等待快照持久化。
+  rpc PauseSandbox(PauseSandboxRequest) returns (PauseSandboxResponse);
+  // CheckpointSandbox 创建检查点并恢复运行。
+  rpc CheckpointSandbox(CheckpointSandboxRequest) returns (CheckpointSandboxResponse);
+  // GetSandboxRuntime 查询沙箱在节点上的运行事实。
+  rpc GetSandboxRuntime(GetSandboxRuntimeRequest) returns (GetSandboxRuntimeResponse);
+}
+
+// ---- lifecycle ----
+// SandboxSpec 是创建沙箱的通用描述；后端专有字段放入 extra。
+message SandboxSpec {
+  string sandbox_id = 1;               // 必填；同时作为 CRI id 与产品 id，幂等键
+  string template_id = 2;              // 模板 ID；模板型后端使用
+  string build_id = 3;                 // 构建 ID；模板构建产物标识
+  string image = 4;                    // 镜像引用；非模板型后端使用
+  string alias = 5;                    // 沙箱别名，便于排障
+  int64 vcpu = 6;                      // vCPU 数量
+  int64 ram_mb = 7;                    // 内存 MiB
+  int64 disk_mb = 8;                   // 磁盘 MiB
+  int64 max_sandbox_length_hours = 9;  // 最长存活小时数；0 表示不限制
+  optional bool allow_internet = 10;   // 是否允许出网；未设置由后端默认
+  map<string, string> env_vars = 11;   // 注入沙箱的环境变量
+  map<string, string> metadata = 12;   // 业务元数据/标签
+  repeated VolumeMount volume_mounts = 13; // 卷挂载
+  NetworkPolicy network = 14;          // 出网/入网策略
+  map<string, string> extra = 15;      // 后端专有字段；值为 JSON 字符串
+}
+
+// VolumeMount 描述一个卷挂载。
+message VolumeMount {
+  string id = 1;    // 卷 ID
+  string name = 2;  // 卷名
+  string path = 3;  // 挂载路径
+  string type = 4;  // 卷类型
+}
+
+// NetworkPolicy 是跨后端的网络策略子集。
+message NetworkPolicy {
+  repeated string allowed_cidrs = 1;     // 允许出网的 CIDR
+  repeated string denied_cidrs = 2;      // 禁止出网的 CIDR
+  repeated string allowed_domains = 3;   // 允许出网的域名
+  string traffic_access_token = 4;       // 入网鉴权 token
+  optional string mask_request_host = 5; // 是否改写 Host 头
+}
+
+// SandboxCreateRequest 是创建请求。
+message SandboxCreateRequest {
+  string backend = 1;                        // 目标后端；空 = e2b（兼容 v1）
+  SandboxSpec sandbox = 2;                   // 沙箱描述
+  google.protobuf.Timestamp start_time = 3;  // 期望开始时间；可空
+  google.protobuf.Timestamp end_time = 4;    // 期望结束时间；可空
+}
+
+// SandboxCreateResponse 是创建结果。
+message SandboxCreateResponse {
+  string backend = 1;     // 实际后端
+  string sandbox_id = 2;  // 产品侧沙箱 ID
+  string client_id = 3;   // 后端返回的客户端 ID
+  string host_ip = 4;     // 沙箱宿主 IP
+}
+
+// SandboxUpdateRequest 更新 TTL 或出网策略；仅设置字段生效。
+message SandboxUpdateRequest {
+  string backend = 1;                             // 目标后端
+  string sandbox_id = 2;                          // 沙箱 ID
+  optional google.protobuf.Timestamp end_time = 3; // 新的结束时间
+  NetworkPolicy egress = 4;                       // 新的出网策略
+}
+
+// SandboxListRequest 按后端列出沙箱。
+message SandboxListRequest { string backend = 1; } // 目标后端；空 = e2b
+
+// Sandbox 是 List 返回的沙箱视图。
+message Sandbox {
+  string backend = 1;                        // 所属后端
+  SandboxSpec spec = 2;                      // 沙箱描述
+  string client_id = 3;                      // 后端客户端 ID
+  string runtime_state = 4;                  // 运行状态：Running/Stopped/Paused/Removed
+  string pod_ip = 5;                         // Pod IP；可空
+  string host_ip = 6;                        // 宿主机 IP；可空
+  google.protobuf.Timestamp start_time = 7;  // 启动时间
+  google.protobuf.Timestamp end_time = 8;    // 结束时间
+}
+
+// SandboxListResponse 是 List 结果。
+message SandboxListResponse { repeated Sandbox sandboxes = 1; }
+
+// SandboxDeleteRequest 删除沙箱；不存在时幂等成功。
+message SandboxDeleteRequest {
+  string backend = 1;     // 目标后端
+  string sandbox_id = 2;  // 沙箱 ID
+}
+
+// SandboxListCachedBuildsRequest 列出后端缓存的构建。
+message SandboxListCachedBuildsRequest { string backend = 1; } // 目标后端
+
+// CachedBuild 是一条构建缓存记录。
+message CachedBuild {
+  string build_id = 1;                            // 构建 ID
+  google.protobuf.Timestamp expiration_time = 2;  // 缓存过期时间
+}
+
+// SandboxListCachedBuildsResponse 是构建缓存列表。
+message SandboxListCachedBuildsResponse { repeated CachedBuild builds = 1; }
+
+// ---- 运维 ----
+
+// PauseSandboxRequest 暂停沙箱；operation_id 用于幂等。
+message PauseSandboxRequest {
+  string backend = 1;      // 目标后端
+  string operation_id = 2; // 幂等键；同一 ID 重试不重复执行
+  oneof target {           // 沙箱定位：CRI ID 或产品 ID 二选一
+    string cri_sandbox_id = 3;
+    string sandbox_id = 4;
+  }
+  uint64 timeout_seconds = 5;       // 操作超时；默认 60s，上限 300s
+  map<string, string> metadata = 6; // 后端专有参数：team_id/template_id/build_id...
+}
+
+// PauseSandboxResponse 是暂停结果。
+message PauseSandboxResponse {
+  bool snapshot_persisted = 1; // 快照是否已持久化
+  int64 started_at_unix = 2;   // 开始时间（Unix 秒）
+  int64 finished_at_unix = 3;  // 结束时间（Unix 秒）
+}
+
+// CheckpointSandboxRequest 创建检查点并恢复运行；operation_id 用于幂等。
+message CheckpointSandboxRequest {
+  string backend = 1;      // 目标后端
+  string operation_id = 2; // 幂等键
+  oneof target {           // 沙箱定位：CRI ID 或产品 ID 二选一
+    string cri_sandbox_id = 3;
+    string sandbox_id = 4;
+  }
+  uint64 timeout_seconds = 5;       // 操作超时
+  map<string, string> metadata = 6; // 后端专有参数
+}
+
+// CheckpointSandboxResponse 是检查点结果。
+message CheckpointSandboxResponse {
+  bool snapshot_persisted = 1; // 快照是否已持久化
+  bool vm_resumed = 2;         // VM 是否已恢复运行
+  int64 started_at_unix = 3;   // 开始时间（Unix 秒）
+  int64 finished_at_unix = 4;  // 结束时间（Unix 秒）
+}
+
+// GetSandboxRuntimeRequest 查询运行事实。
+message GetSandboxRuntimeRequest {
+  string backend = 1; // 目标后端
+  oneof target {      // 沙箱定位：CRI ID 或产品 ID 二选一
+    string cri_sandbox_id = 2;
+    string sandbox_id = 3;
+  }
+}
+
+// Runtime 是节点运行事实的中性视图。
+message Runtime {
+  string backend = 1;                      // 所属后端
+  string cri_sandbox_id = 2;               // CRI 沙箱 ID
+  string sandbox_id = 3;                   // 产品侧沙箱 ID
+  string runtime_state = 4;                // 状态：Running/Stopped/Paused/Removed
+  string pod_name = 5;                     // Pod 名
+  string pod_namespace = 6;                // Pod 命名空间
+  string pod_uid = 7;                      // Pod UID
+  string node_name = 8;                    // 节点名
+  string pod_ip = 9;                       // Pod IP
+  string host_ip = 10;                     // 宿主 IP
+  string netns_path = 11;                  // netns 路径
+  repeated HostPort hostports = 12;        // 端口映射
+  repeated Operation active_operations = 13; // 进行中的操作
+  map<string, string> extra = 14;          // 后端专有事实
+  string template_id = 15;                 // 模板 ID
+  string build_id = 16;                    // 构建 ID
+}
+
+// HostPort 是一条宿主端口映射。
+message HostPort {
+  uint32 host_port = 1;    // 宿主端口
+  uint32 sandbox_port = 2; // 沙箱内端口
+}
+
+// Operation 是一条进行中的管理操作。
+message Operation {
+  string operation_id = 1;     // 幂等键
+  string action = 2;           // 操作类型：pause/checkpoint...
+  string state = 3;            // 操作状态
+  string error = 4;            // 错误信息；成功时为空
+  int64 started_at_unix = 5;   // 开始时间（Unix 秒）
+  int64 finished_at_unix = 6;  // 结束时间（Unix 秒）
+}
+
+// GetSandboxRuntimeResponse 是运行事实查询结果。
+message GetSandboxRuntimeResponse { Runtime runtime = 1; }

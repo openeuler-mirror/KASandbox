@@ -219,7 +219,7 @@ func TestMuxRunPodSandboxRoutesByRuntimeHandler(t *testing.T) {
 	container := newFakeEngine(engine.EngineTypeContainer)
 	e2b := newFakeEngine(engine.EngineTypeE2B)
 	android := newFakeEngine(engine.EngineTypeAndroid)
-	s := NewMuxServer(container, e2b, android)
+	s := NewMuxServerLegacy(container, e2b, android)
 
 	cases := []struct {
 		handler string
@@ -241,7 +241,7 @@ func TestMuxRunPodSandboxRoutesByRuntimeHandler(t *testing.T) {
 		if tc.want.calls["RunPodSandbox"] == 0 {
 			t.Fatalf("handler %q did not call expected engine %s", tc.handler, tc.want.typ)
 		}
-		if val, ok := s.podRoutes.Load(resp.PodSandboxId); !ok || val != tc.want.typ {
+		if val, ok := s.Routes().PodBackend(resp.PodSandboxId); !ok || val != tc.want.typ {
 			t.Fatalf("pod route = (%v, %v), want %s", val, ok, tc.want.typ)
 		}
 	}
@@ -251,8 +251,8 @@ func TestMuxContainerRouteLifecycle(t *testing.T) {
 	container := newFakeEngine(engine.EngineTypeContainer)
 	e2b := newFakeEngine(engine.EngineTypeE2B)
 	android := newFakeEngine(engine.EngineTypeAndroid)
-	s := NewMuxServer(container, e2b, android)
-	s.podRoutes.Store("pod-e2b", engine.EngineTypeE2B)
+	s := NewMuxServerLegacy(container, e2b, android)
+	setPod(t, s, "pod-e2b", engine.EngineTypeE2B)
 
 	createResp, err := s.CreateContainer(context.Background(), &runtime.CreateContainerRequest{PodSandboxId: "pod-e2b"})
 	if err != nil {
@@ -261,7 +261,7 @@ func TestMuxContainerRouteLifecycle(t *testing.T) {
 	if e2b.calls["CreateContainer"] != 1 {
 		t.Fatalf("CreateContainer calls: e2b=%d", e2b.calls["CreateContainer"])
 	}
-	if val, ok := s.containerRoutes.Load(createResp.ContainerId); !ok || val != engine.EngineTypeE2B {
+	if val, ok := s.Routes().ContainerBackend(createResp.ContainerId); !ok || val != engine.EngineTypeE2B {
 		t.Fatalf("container route = (%v, %v)", val, ok)
 	}
 
@@ -275,14 +275,14 @@ func TestMuxContainerRouteLifecycle(t *testing.T) {
 	if _, err := s.RemoveContainer(context.Background(), &runtime.RemoveContainerRequest{ContainerId: createResp.ContainerId}); err != nil {
 		t.Fatalf("RemoveContainer: %v", err)
 	}
-	if _, ok := s.containerRoutes.Load(createResp.ContainerId); ok {
+	if _, ok := s.Routes().ContainerBackend(createResp.ContainerId); ok {
 		t.Fatal("container route should be removed after successful RemoveContainer")
 	}
 }
 
 func TestMuxRouteMissFallsBackToContainer(t *testing.T) {
 	container := newFakeEngine(engine.EngineTypeContainer)
-	s := NewMuxServer(container, newFakeEngine(engine.EngineTypeE2B), newFakeEngine(engine.EngineTypeAndroid))
+	s := NewMuxServerLegacy(container, newFakeEngine(engine.EngineTypeE2B), newFakeEngine(engine.EngineTypeAndroid))
 
 	if _, err := s.PodSandboxStatus(context.Background(), &runtime.PodSandboxStatusRequest{PodSandboxId: "unknown"}); err != nil {
 		t.Fatalf("PodSandboxStatus fallback: %v", err)
@@ -298,7 +298,7 @@ func TestMuxRouteMissFallsBackToContainer(t *testing.T) {
 func TestMuxRemovePodSandboxRouteMissNotFoundIsIdempotent(t *testing.T) {
 	container := newFakeEngine(engine.EngineTypeContainer)
 	container.err = status.Error(codes.NotFound, "sandbox does not exist")
-	s := NewMuxServer(container, newFakeEngine(engine.EngineTypeE2B), newFakeEngine(engine.EngineTypeAndroid))
+	s := NewMuxServerLegacy(container, newFakeEngine(engine.EngineTypeE2B), newFakeEngine(engine.EngineTypeAndroid))
 
 	resp, err := s.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "already-removed"})
 	if err != nil {
@@ -316,9 +316,9 @@ func TestMuxDelegatesPodContainerAndStreamingMethods(t *testing.T) {
 	container := newFakeEngine(engine.EngineTypeContainer)
 	e2b := newFakeEngine(engine.EngineTypeE2B)
 	android := newFakeEngine(engine.EngineTypeAndroid)
-	s := NewMuxServer(container, e2b, android)
-	s.podRoutes.Store("pod-android", engine.EngineTypeAndroid)
-	s.containerRoutes.Store("ctr-android", engine.EngineTypeAndroid)
+	s := NewMuxServerLegacy(container, e2b, android)
+	setPod(t, s, "pod-android", engine.EngineTypeAndroid)
+	setContainer(t, s, "ctr-android", "pod-android", engine.EngineTypeAndroid)
 
 	ctx := context.Background()
 	containerMethods := []struct {
@@ -388,7 +388,7 @@ func TestMuxDelegatesPodContainerAndStreamingMethods(t *testing.T) {
 	if android.calls["RemovePodSandbox"] != 1 {
 		t.Fatalf("RemovePodSandbox calls on android = %d, want 1", android.calls["RemovePodSandbox"])
 	}
-	if _, ok := s.podRoutes.Load("pod-android"); ok {
+	if _, ok := s.Routes().PodBackend("pod-android"); ok {
 		t.Fatal("pod route should be removed after successful RemovePodSandbox")
 	}
 }
@@ -406,7 +406,7 @@ func TestMuxFanOutListsForContainersStatsAndImages(t *testing.T) {
 	android.listContainers = []*runtime.Container{{Id: "android-c"}}
 	android.listStats = []*runtime.ContainerStats{{Attributes: &runtime.ContainerAttributes{Id: "android-c"}}}
 	android.listImages = []*runtime.Image{{Id: "android-image"}}
-	s := NewMuxServer(container, e2b, android)
+	s := NewMuxServerLegacy(container, e2b, android)
 
 	containers, err := s.ListContainers(context.Background(), &runtime.ListContainersRequest{})
 	if err != nil {
@@ -438,7 +438,7 @@ func TestMuxFanOutListPartialAndAllFailure(t *testing.T) {
 	e2b.err = errors.New("e2b failed")
 	android := newFakeEngine(engine.EngineTypeAndroid)
 	android.listPods = []*runtime.PodSandbox{{Id: "android-pod"}}
-	s := NewMuxServer(container, e2b, android)
+	s := NewMuxServerLegacy(container, e2b, android)
 
 	resp, err := s.ListPodSandbox(context.Background(), &runtime.ListPodSandboxRequest{})
 	if err != nil {
@@ -459,7 +459,7 @@ func TestMuxImageRouting(t *testing.T) {
 	container := newFakeEngine(engine.EngineTypeContainer)
 	e2b := newFakeEngine(engine.EngineTypeE2B)
 	android := newFakeEngine(engine.EngineTypeAndroid)
-	s := NewMuxServer(container, e2b, android)
+	s := NewMuxServerLegacy(container, e2b, android)
 
 	if _, err := s.ImageStatus(context.Background(), &runtime.ImageStatusRequest{Image: &runtime.ImageSpec{Image: "e2b.dev/t:b"}}); err != nil {
 		t.Fatalf("ImageStatus e2b: %v", err)
@@ -481,7 +481,8 @@ func TestMuxImageFsInfoFallback(t *testing.T) {
 	e2b := newFakeEngine(engine.EngineTypeE2B)
 	e2b.imageFsInfo = &runtime.ImageFsInfoResponse{ImageFilesystems: []*runtime.FilesystemUsage{{Timestamp: 1}}}
 	android := newFakeEngine(engine.EngineTypeAndroid)
-	s := NewMuxServer(container, e2b, android)
+	android.err = errors.New("android failed")
+	s := NewMuxServerLegacy(container, e2b, android)
 
 	resp, err := s.ImageFsInfo(context.Background(), &runtime.ImageFsInfoRequest{})
 	if err != nil {
@@ -492,6 +493,7 @@ func TestMuxImageFsInfoFallback(t *testing.T) {
 	}
 
 	e2b.err = errors.New("e2b failed")
+	android.err = nil
 	android.imageFsInfo = &runtime.ImageFsInfoResponse{ImageFilesystems: []*runtime.FilesystemUsage{{Timestamp: 2}}}
 	resp, err = s.ImageFsInfo(context.Background(), &runtime.ImageFsInfoRequest{})
 	if err != nil {
@@ -503,7 +505,7 @@ func TestMuxImageFsInfoFallback(t *testing.T) {
 }
 
 func TestMuxLocalStatusVersionAndEvents(t *testing.T) {
-	s := NewMuxServer(newFakeEngine(engine.EngineTypeContainer), newFakeEngine(engine.EngineTypeE2B), newFakeEngine(engine.EngineTypeAndroid))
+	s := NewMuxServerLegacy(newFakeEngine(engine.EngineTypeContainer), newFakeEngine(engine.EngineTypeE2B), newFakeEngine(engine.EngineTypeAndroid))
 
 	statusResp, err := s.Status(context.Background(), &runtime.StatusRequest{})
 	if err != nil {
@@ -532,7 +534,7 @@ func TestMuxImageRoutingAllPrefixes(t *testing.T) {
 	container := newFakeEngine(engine.EngineTypeContainer)
 	e2b := newFakeEngine(engine.EngineTypeE2B)
 	android := newFakeEngine(engine.EngineTypeAndroid)
-	s := NewMuxServer(container, e2b, android)
+	s := NewMuxServerLegacy(container, e2b, android)
 
 	imageCalls := []struct {
 		name  string
@@ -586,6 +588,153 @@ func TestMuxImageRoutingAllPrefixes(t *testing.T) {
 		}
 		if tc.want.calls[methodName] != countBefore+1 {
 			t.Fatalf("%s did not call expected engine %s", tc.name, tc.want.typ)
+		}
+	}
+}
+
+func setPod(t *testing.T, s *MuxServer, id string, typ engine.EngineType) {
+	t.Helper()
+	if err := s.Routes().SetPod(id, typ); err != nil {
+		t.Fatalf("SetPod(%s): %v", id, err)
+	}
+}
+
+func setContainer(t *testing.T, s *MuxServer, id, sandboxID string, typ engine.EngineType) {
+	t.Helper()
+	if err := s.Routes().SetContainer(id, sandboxID, typ); err != nil {
+		t.Fatalf("SetContainer(%s): %v", id, err)
+	}
+}
+
+type fakeScheduler struct {
+	calls      []engine.EngineType
+	sandboxIDs []string
+	result     engine.CleanupResult
+}
+
+func (f *fakeScheduler) Schedule(_ context.Context, backend engine.EngineType, sandboxID, resourceType, reason string) engine.CleanupResult {
+	f.calls = append(f.calls, backend)
+	f.sandboxIDs = append(f.sandboxIDs, sandboxID)
+	return f.result
+}
+
+type failingStore struct {
+	engine.StateStore
+	err error
+}
+
+func (f *failingStore) SaveRoute(engine.RouteRecord) error              { return f.err }
+func (f *failingStore) DeleteRoute(string, string) error                { return f.err }
+func (f *failingStore) LoadRoutes() ([]engine.RouteRecord, error)       { return nil, nil }
+func (f *failingStore) LoadCleanupTasks() ([]engine.CleanupTask, error) { return nil, nil }
+
+func testRegistry(t *testing.T, container, e2b, android engine.RuntimeEngine) *engine.Registry {
+	t.Helper()
+	reg := engine.NewRegistry(engine.EngineTypeContainer)
+	for _, mod := range []engine.BackendModule{
+		{Descriptor: engine.BackendDescriptor{Type: engine.EngineTypeContainer, Handler: "container"}, Engine: container},
+		{Descriptor: engine.BackendDescriptor{Type: engine.EngineTypeE2B, Handler: "e2b", ImagePrefixes: []string{"e2b.dev/"}}, Engine: e2b},
+		{Descriptor: engine.BackendDescriptor{Type: engine.EngineTypeAndroid, Handler: "android", ImagePrefixes: []string{"android.dev/"}}, Engine: android},
+	} {
+		if mod.Engine == nil {
+			continue
+		}
+		if err := reg.Register(mod); err != nil {
+			t.Fatalf("register %s: %v", mod.Descriptor.Type, err)
+		}
+	}
+	if err := reg.Freeze(); err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+	return reg
+}
+
+func TestMuxRunPodSandboxRoutePersistFailureReturnsInternal(t *testing.T) {
+	container := newFakeEngine(engine.EngineTypeContainer)
+	reg := testRegistry(t, container, newFakeEngine(engine.EngineTypeE2B), nil)
+	sched := &fakeScheduler{}
+	s := NewMuxServer(reg, &failingStore{err: errors.New("disk full")}, MuxOptions{Cleanup: sched})
+
+	_, err := s.RunPodSandbox(context.Background(), &runtime.RunPodSandboxRequest{RuntimeHandler: "e2b"})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("code = %v, want Internal (%v)", status.Code(err), err)
+	}
+	if len(sched.calls) != 1 || sched.calls[0] != engine.EngineTypeE2B {
+		t.Fatalf("cleanup scheduler calls = %+v", sched.calls)
+	}
+}
+
+func TestMuxUnknownHandlerRejectReturnsInvalidArgument(t *testing.T) {
+	container := newFakeEngine(engine.EngineTypeContainer)
+	s := NewMuxServer(testRegistry(t, container, newFakeEngine(engine.EngineTypeE2B), nil), nil,
+		MuxOptions{UnknownHandlerPolicy: UnknownHandlerReject})
+
+	_, err := s.RunPodSandbox(context.Background(), &runtime.RunPodSandboxRequest{RuntimeHandler: "runc"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
+	}
+	if container.calls["RunPodSandbox"] != 0 {
+		t.Fatal("rejected handler reached the default engine")
+	}
+}
+
+func TestMuxRemovePodSandboxDeletesAllSandboxRoutes(t *testing.T) {
+	s := NewMuxServer(testRegistry(t, newFakeEngine(engine.EngineTypeContainer), newFakeEngine(engine.EngineTypeE2B), nil), nil, MuxOptions{})
+	setPod(t, s, "pod-1", engine.EngineTypeE2B)
+	for _, id := range []string{"pod-1-app", "pod-1-sidecar"} {
+		setContainer(t, s, id, "pod-1", engine.EngineTypeE2B)
+	}
+	if _, err := s.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "pod-1"}); err != nil {
+		t.Fatalf("RemovePodSandbox: %v", err)
+	}
+	if _, ok := s.Routes().PodBackend("pod-1"); ok {
+		t.Fatal("pod route survived remove")
+	}
+	for _, id := range []string{"pod-1-app", "pod-1-sidecar"} {
+		if _, ok := s.Routes().ContainerBackend(id); ok {
+			t.Fatalf("container route %s survived remove", id)
+		}
+	}
+}
+
+func TestMuxVersionReportsConfiguredRuntimeName(t *testing.T) {
+	s := NewMuxServer(testRegistry(t, newFakeEngine(engine.EngineTypeContainer), nil, nil), nil,
+		MuxOptions{RuntimeName: "custom-shim"})
+	resp, err := s.Version(context.Background(), &runtime.VersionRequest{})
+	if err != nil {
+		t.Fatalf("Version: %v", err)
+	}
+	if resp.RuntimeName != "custom-shim" {
+		t.Fatalf("RuntimeName = %q", resp.RuntimeName)
+	}
+}
+
+type healthFunc func(context.Context) error
+
+func (f healthFunc) Health(ctx context.Context) error { return f(ctx) }
+
+func TestMuxStatusCallsHealthButStaysReady(t *testing.T) {
+	container := newFakeEngine(engine.EngineTypeContainer)
+	called := false
+	reg := engine.NewRegistry(engine.EngineTypeContainer)
+	_ = reg.Register(engine.BackendModule{Descriptor: engine.BackendDescriptor{Type: engine.EngineTypeContainer, Handler: "container"}, Engine: container})
+	_ = reg.Register(engine.BackendModule{
+		Descriptor: engine.BackendDescriptor{Type: "cube", Handler: "cube"},
+		Engine:     newFakeEngine("cube"),
+		Health:     healthFunc(func(context.Context) error { called = true; return errors.New("down") }),
+	})
+	_ = reg.Freeze()
+
+	resp, err := NewMuxServer(reg, nil, MuxOptions{}).Status(context.Background(), &runtime.StatusRequest{})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !called {
+		t.Fatal("Health was not called")
+	}
+	for _, cond := range resp.GetStatus().GetConditions() {
+		if !cond.Status {
+			t.Fatalf("condition %s = false, want true (health must not flip readiness)", cond.Type)
 		}
 	}
 }

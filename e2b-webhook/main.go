@@ -16,11 +16,13 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
+
+	"github.com/e2b/e2b-webhook/provider"
+	"github.com/e2b/e2b-webhook/providers"
 )
 
 var (
@@ -29,8 +31,9 @@ var (
 	deserializer  = codecs.UniversalDeserializer()
 )
 
-// annotationFetcher 是全局的注解获取器, 在 main 中初始化。
-var annotationFetcher annotationTransformer
+// admissionMatcher 是全局的 Provider 选择器, 在 main 中初始化。
+// 为 nil 时 serveMutate 放行所有请求（不阻塞准入）。
+var admissionMatcher *provider.Matcher
 
 // patchOperation 描述一个 JSON Patch 操作。
 type patchOperation struct {
@@ -120,115 +123,6 @@ func patchResponse(uid types.UID, patches []patchOperation) *admissionv1.Admissi
 	}
 }
 
-// annotationTransformer 将 Pod / BatchSandbox 转换为 e2b 注解。
-type annotationTransformer interface {
-	FetchForPod(pod *corev1.Pod) (map[string]string, error)
-	FetchForBatchSandbox(obj *unstructured.Unstructured) (map[string]string, error)
-}
-
-// admitPod 处理 Pod 的 AdmissionReview，返回 AdmissionResponse。
-func admitPod(ar *admissionv1.AdmissionReview, transformer annotationTransformer) *admissionv1.AdmissionResponse {
-	klog.V(2).Infof("admitPod: kind=%s operation=%s uid=%s",
-		ar.Request.Kind, ar.Request.Operation, ar.Request.UID)
-
-	if ar.Request.Operation != admissionv1.Create {
-		klog.V(3).Infof("skip non-create operation: %s", ar.Request.Operation)
-		return &admissionv1.AdmissionResponse{Allowed: true, UID: ar.Request.UID}
-	}
-
-	var pod corev1.Pod
-	if _, _, err := deserializer.Decode(ar.Request.Object.Raw, nil, &pod); err != nil {
-		klog.Errorf("failed to decode pod object: %v", err)
-		return errorResponse(ar.Request.UID, fmt.Sprintf("failed to decode pod: %v", err))
-	}
-
-	klog.V(2).Infof("handling pod %s/%s", pod.Namespace, pod.Name)
-
-	// 根据 ANDROID_SANDBOX 环境变量决定 runtimeClassName:
-	//   - android: 跳过 e2b API 调用与注解注入
-	//   - e2b:     调用 e2b API 获取注解
-	runtimeClass := "e2b"
-	var patches []patchOperation
-	if hasAndroidSandboxEnv(&pod) {
-		runtimeClass = "android"
-		klog.V(2).Infof("pod %s/%s marked as android sandbox (skip e2b annotations)", pod.Namespace, pod.Name)
-	} else {
-		// 从 e2b API 动态获取注解 (带容错, 失败时返回空注解)
-		e2bAnnotations, err := transformer.FetchForPod(&pod)
-		if err != nil {
-			klog.Warningf("fetch annotations with error (using fallback): %v", err)
-		}
-		patches = buildPatch(pod.Annotations, e2bAnnotations, "/metadata/annotations")
-	}
-
-	// 注入 runtimeClassName (若未设置)
-	if pod.Spec.RuntimeClassName == nil {
-		patches = append(patches, patchOperation{
-			Op: "add", Path: "/spec/runtimeClassName", Value: runtimeClass,
-		})
-		klog.V(2).Infof("injecting runtimeClassName=%s for pod %s/%s", runtimeClass, pod.Namespace, pod.Name)
-	}
-
-	if len(patches) == 0 {
-		klog.V(3).Infof("no patches needed for pod %s/%s", pod.Namespace, pod.Name)
-		return &admissionv1.AdmissionResponse{Allowed: true, UID: ar.Request.UID}
-	}
-
-	klog.V(2).Infof("injecting %d patches into pod %s/%s", len(patches), pod.Namespace, pod.Name)
-	return patchResponse(ar.Request.UID, patches)
-}
-
-// admitBatchSandbox 处理 BatchSandbox 的 AdmissionReview，返回 AdmissionResponse。
-// BatchSandbox 是 CRD, 使用 unstructured 解码; 注解注入到
-// spec.template.metadata.annotations, 以便传播到其创建的 Pod。
-func admitBatchSandbox(ar *admissionv1.AdmissionReview, transformer annotationTransformer) *admissionv1.AdmissionResponse {
-	klog.V(2).Infof("admitBatchSandbox: kind=%s operation=%s uid=%s",
-		ar.Request.Kind, ar.Request.Operation, ar.Request.UID)
-
-	if ar.Request.Operation != admissionv1.Create {
-		klog.V(3).Infof("skip non-create operation: %s", ar.Request.Operation)
-		return &admissionv1.AdmissionResponse{Allowed: true, UID: ar.Request.UID}
-	}
-
-	// 解析 BatchSandbox 对象 (unstructured, 因为是 CRD 未注册到 scheme)
-	var obj unstructured.Unstructured
-	if _, _, err := deserializer.Decode(ar.Request.Object.Raw, nil, &obj); err != nil {
-		klog.Errorf("failed to decode batchsandbox object: %v", err)
-		return errorResponse(ar.Request.UID, fmt.Sprintf("failed to decode batchsandbox: %v", err))
-	}
-
-	klog.V(2).Infof("handling batchsandbox %s/%s", obj.GetNamespace(), obj.GetName())
-
-	// 调用 e2b API 获取沙箱配置 (带容错, 失败时返回空注解)
-	e2bAnnotations, err := transformer.FetchForBatchSandbox(&obj)
-	if err != nil {
-		klog.Warningf("fetch annotations with error (using fallback): %v", err)
-	}
-
-	// 注解注入到 Pod 模板的 annotations, 以便传播到 BatchSandbox 创建的 Pod
-	existingAnnotations := getNestedStringMap(&obj, "spec", "template", "metadata", "annotations")
-	patches := buildPatch(existingAnnotations, e2bAnnotations, "/spec/template/metadata/annotations")
-
-	if len(patches) == 0 {
-		klog.V(3).Infof("no patches needed for batchsandbox %s/%s", obj.GetNamespace(), obj.GetName())
-		return &admissionv1.AdmissionResponse{Allowed: true, UID: ar.Request.UID}
-	}
-
-	klog.V(2).Infof("injecting %d patches into batchsandbox %s/%s",
-		len(patches), obj.GetNamespace(), obj.GetName())
-	return patchResponse(ar.Request.UID, patches)
-}
-
-// getNestedStringMap 从 unstructured 对象中按路径获取 map[string]string。
-// 路径不存在或类型不匹配时返回 nil。
-func getNestedStringMap(obj *unstructured.Unstructured, fields ...string) map[string]string {
-	nested, found, err := unstructured.NestedStringMap(obj.Object, fields...)
-	if err != nil || !found {
-		return nil
-	}
-	return nested
-}
-
 // serveMutate 是 /mutate 端点的 HTTP handler。
 func serveMutate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -266,9 +160,9 @@ func serveMutate(w http.ResponseWriter, r *http.Request) {
 	// 处理 Pod 和 BatchSandbox, 其它类型直接放行
 	switch admissionReview.Request.Kind.Kind {
 	case "Pod":
-		admissionReview.Response = admitPod(&admissionReview, annotationFetcher)
+		admissionReview.Response = admitPod(&admissionReview, admissionMatcher)
 	case "BatchSandbox":
-		admissionReview.Response = admitBatchSandbox(&admissionReview, annotationFetcher)
+		admissionReview.Response = admitBatchSandbox(&admissionReview, admissionMatcher)
 	default:
 		klog.V(3).Infof("skip unhandled kind: %s", admissionReview.Request.Kind.Kind)
 		admissionReview.Response = &admissionv1.AdmissionResponse{
@@ -307,8 +201,12 @@ func main() {
 	apiTimeout := envDurationOr("E2B_API_TIMEOUT", 5*time.Second)
 
 	// 创建沙箱转换器 (调用 POST /sandboxes/transform, 每次发起新请求)
-	transformer := NewSandboxTransformer(apiURL, apiKey, apiTimeout)
-	annotationFetcher = transformer
+	transformer := providers.NewSandboxTransformer(apiURL, apiKey, apiTimeout)
+	matcher, err := buildMatcher(transformer)
+	if err != nil {
+		klog.Fatalf("failed to build provider matcher: %v", err)
+	}
+	admissionMatcher = matcher
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", serveMutate)
@@ -327,8 +225,7 @@ func main() {
 	}
 
 	klog.Infof("starting e2b-webhook server on :%s (cert=%s key=%s)", port, certFile, keyFile)
-	klog.Infof("transform API: %s/sandboxes/transform (timeout=%s)",
-		apiURL, apiTimeout)
+	klog.Infof("transform API: %s/sandboxes/transform (timeout=%s)", apiURL, apiTimeout)
 
 	// 监听 SIGINT/SIGTERM 信号，触发优雅退出
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -359,6 +256,24 @@ func main() {
 		}
 		klog.Infof("server stopped")
 	}
+}
+
+// buildMatcher 注册全部已实现的 Provider。
+func buildMatcher(transformer *providers.SandboxTransformer) (*provider.Matcher, error) {
+	list := []provider.Provider{
+		providers.NewE2BProvider(transformer),
+		providers.NewAndroidProvider(),
+	}
+	matcher, err := provider.NewMatcher(list...)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(list))
+	for _, p := range list {
+		names = append(names, p.Handler())
+	}
+	klog.Infof("registered webhook providers: %s", strings.Join(names, ","))
+	return matcher, nil
 }
 
 func envOr(key, def string) string {

@@ -193,6 +193,29 @@ metadata.annotations (Pod)
 | **用 unstructured 处理 CRD** | 避免在 Scheme 注册 BatchSandbox 类型，降低耦合 |
 | **annotations 注入而非 env** | 下游控制器已约定从 annotations 读取，且 annotations 不会被容器进程可见，更安全 |
 | **从 `containers[0].env[TEMPLATE_NAME]` 提取** | 与 e2b 现有 CLI/SDK 约定一致，用户在模板里写 env 即可 |
+| **后端由 Provider 列表 + Matcher 选择** | 启动时注册全部已实现 Provider；新增后端 = 一个 Provider 文件 + 注册一行，部署侧无需配置 |
+
+### 6.1、Provider 选择（仅 runtimeClass）
+
+只按 `runtimeClassName` 判断：
+
+| 信号 | 命中方式 | 未命中处理 |
+| :-- | :-- | :-- |
+| `runtimeClassName` | 等于某个已注册 `Provider.Handler()`（`e2b`/`android`） | 无 runtimeClass → 旧版默认选路；显式未注册 → 放行 |
+
+- 注解不参与选路；Webhook 也不对注解做任何推断。
+- 没有 runtimeClass → 走旧版默认选路（见下），保证存量负载不被改道。
+- 显式指定 runtimeClass 但对应 Provider 未注册（含 `runc`/`kata`）→ 放行并告警，不注入。
+- BatchSandbox 从模板字段读取 `spec.template.spec.runtimeClassName`；`spec.template.metadata.annotations` 仅用于读取 `e2b.dev/sandbox-id`，不参与选路。
+
+**选路变更与兼容性**：选路只看 `runtimeClassName`。没有 runtimeClass 时保留旧行为：
+`containers[0].env[ANDROID_SANDBOX] == "true"` → `android`，否则默认 `e2b`（再走对应 Provider 的注解注入），
+存量 E2B/Android Pod 升级后行为不变。只有**显式**写成未注册值（如 `runc`）才会放行并告警。
+`SANDBOX_BACKEND` 不再参与选路；`TEMPLATE_NAME` 只作为 e2b Provider 的输入参数（调用 transform API），不再决定后端。
+BatchSandbox 同样按此规则默认 `e2b`，并把 runtimeClass 写进模板（旧版不写，属于新增的显式化）。
+
+**发布顺序**：先发 `e2b-webhook`（默认选路兼容存量负载），再发 `cri-multiplex`（Admin v2 + 注册表）。
+回滚顺序相反；v2 admin 与 v1 并存，回滚 cri-multiplex 不需要回滚 webhook。
 
 ---
 
@@ -288,9 +311,11 @@ kubectl get mutatingwebhookconfiguration e2b-webhook -o yaml
 
 ```
 e2b-webhook/
-├── main.go                  # 入口，HTTP server + Admission handler
-├── annotations.go           # 核心逻辑：提取 templateID、调用 API、生成注解
-├── main_test.go             # 单元测试
+├── main.go                  # 入口，HTTP server + Provider 全量装配
+├── admission.go             # 归一化（Pod/BatchSandbox）+ 选择/合并/降级 + patch
+├── provider/                # Provider 契约与 Matcher
+├── providers/               # e2b（transform API + 注解）、android（仅 runtimeClass）
+├── main_test.go             # 准入流程单元测试
 ├── go.mod                   # Go 模块定义
 ├── Dockerfile.scratch       # 镜像构建（scratch 基础）
 ├── batchsandbox.yaml        # BatchSandbox 资源示例
@@ -305,15 +330,17 @@ e2b-webhook/
 | 函数 | 位置 | 说明 |
 |------|------|------|
 | `serveMutate` | main.go | HTTP handler，分发 Pod / BatchSandbox 请求 |
-| `admitPod` | main.go | 处理 Pod AdmissionReview |
-| `admitBatchSandbox` | main.go | 处理 BatchSandbox AdmissionReview |
-| `FetchForPod` | annotations.go | 从 Pod env 提取 TEMPLATE_NAME 并调用 API |
-| `FetchForBatchSandbox` | annotations.go | 从 BatchSandbox 提取 TEMPLATE_NAME 并调用 API |
-| `callTransformAPI` | annotations.go | 调用 `POST /sandboxes/transform` |
-| `toE2BAnnotations` | annotations.go | SandboxConfig → e2b 注解 map |
+| `buildMatcher` | main.go | 注册全部已实现 Provider，构造 Matcher |
+| `requestFromPod` | admission.go | Pod → `provider.Request` 归一化 |
+| `requestFromBatchSandbox` | admission.go | BatchSandbox → `provider.Request` 归一化 |
+| `admitPod` / `admitBatchSandbox` | admission.go | 处理 AdmissionReview（选择、合并、降级、patch） |
+| `buildMergedPatch` | admission.go | runtimeClass + 注解增量（用户键优先、200KB 上限） |
+| `Matcher.Select` | provider/matcher.go | 只按 runtimeClass 选择 Provider |
+| `E2BProvider.Resolve` | providers/e2b.go | 调 transform API，产出 `e2b.dev/*` |
+| `SandboxTransformer.Transform` | providers/transform.go | 调用 `POST /sandboxes/transform` |
+| `toE2BAnnotations` | providers/transform.go | SandboxConfig → e2b 注解 map（零回归） |
 | `buildPatch` | main.go | 构建 JSONPatch 操作 |
-| `extractTemplateNameFromPodEnv` | annotations.go | 从 Pod containers[0].env 提取 TEMPLATE_NAME |
-| `extractTemplateNameFromBatchSandbox` | annotations.go | 从 BatchSandbox unstructured 提取 TEMPLATE_NAME |
+| `extractTemplateNameFromBatchSandbox` | admission.go | 从 BatchSandbox unstructured 提取 TEMPLATE_NAME |
 
 ---
 
