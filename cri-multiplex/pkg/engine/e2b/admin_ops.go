@@ -116,6 +116,24 @@ func (e *Engine) validateAdminOpTarget(op E2BOperation) (*podInfo, error) {
 	return pod, nil
 }
 
+// operationReuseError 校验 operation_id 没有被其它动作或其它沙箱占用。
+// 幂等键的作用域是 (动作, 沙箱)，不能只按 operation_id 复用终态：否则把 Pause
+// 的 op 拿去调 Checkpoint 会直接返回“成功”，调用方会误以为检查点已执行。
+// 旧版本落盘的记录可能没有 Action（legacy），此时保持原有幂等语义。
+func operationReuseError(req, rec E2BOperation) error {
+	if rec.Action != "" && req.Action != "" && rec.Action != req.Action {
+		return status.Errorf(codes.FailedPrecondition,
+			"operation %s was recorded for action %s, cannot be reused for %s",
+			req.OperationID, rec.Action, req.Action)
+	}
+	if rec.CRISandboxID != "" && req.CRISandboxID != "" && rec.CRISandboxID != req.CRISandboxID {
+		return status.Errorf(codes.FailedPrecondition,
+			"operation %s belongs to sandbox %s, not %s",
+			req.OperationID, rec.CRISandboxID, req.CRISandboxID)
+	}
+	return nil
+}
+
 // beginAdminOperation 做 operation_id 幂等检查、sandbox 锁、写入 Running 记录。
 // 返回 (lock, startedAt, done)；done 为 nil 表示命中幂等/冲突，直接按返回错误处理。
 func (e *Engine) beginAdminOperation(op E2BOperation) (*sync.Mutex, E2BOperation, error) {
@@ -123,6 +141,9 @@ func (e *Engine) beginAdminOperation(op E2BOperation) (*sync.Mutex, E2BOperation
 		return nil, op, status.Error(codes.InvalidArgument, "operation_id, cri_sandbox_id and e2b_sandbox_id are required")
 	}
 	if rec, ok := e.lookupOperation(op.OperationID); ok {
+		if err := operationReuseError(op, rec); err != nil {
+			return nil, op, err
+		}
 		switch rec.State {
 		case OperationStateSucceeded:
 			return nil, rec, errOperationAlreadySucceeded

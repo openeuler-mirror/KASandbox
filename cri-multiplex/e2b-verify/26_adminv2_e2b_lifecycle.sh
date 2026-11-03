@@ -30,12 +30,14 @@
 # | P6   | E2B 模板元数据完整（模板、规格、内核、envd） | —        |
 # | P7   | E2B 控制面鉴权生效、数据库迁移满足前置       | API.Auth |
 #
-# §1 Create（首次创建 → 幂等重试 → 不重复创建）
-# | 用例 | 测试的功能场景                            | 验证接口 |
-# |------|-------------------------------------------|----------|
-# | C1   | 首次创建 E2B 沙箱，返回沙箱标识与接入信息 | S.Create |
-# | C2   | 重复的创建请求不会新建沙箱（幂等）        | S.Create |
-# | C3   | 幂等重试后列表中该沙箱只有一条            | S.List   |
+# §1 Create（首次创建 → 幂等重试 → 不重复创建 → 时间字段 → 参数不参与幂等）
+# | 用例 | 测试的功能场景                            | 验证接口          |
+# |------|-------------------------------------------|-------------------|
+# | C1   | 首次创建 E2B 沙箱，返回沙箱标识与接入信息 | S.Create          |
+# | C2   | 重复的创建请求不会新建沙箱（幂等）        | S.Create          |
+# | C3   | 幂等重试后列表中该沙箱只有一条            | S.List            |
+# | C4   | 幂等重试携带不同起止时间不改变已生效时间  | S.Create + S.List |
+# | C5   | 同 ID 不同模板/构建重试不改变既有沙箱     | S.Create + S.List |
 #
 # §2 读一致性与数据面
 # | 用例 | 测试的功能场景                                 | 验证接口 |
@@ -44,6 +46,8 @@
 # | V2   | 列表视图与 orchestrator 侧真实状态一致         | S.List   |
 # | V3   | 沙箱数据面端口可从节点访问                     | SA.Get   |
 # | V4   | 沙箱网络命名空间已建立                         | SA.Get   |
+# | V5   | cri_sandbox_id 与 sandbox_id 两种定位等价       | SA.Get   |
+# | V6   | v2 创建不写 CRI 路由，kubelet 停止/删除不误删  | —（CRI + state.json） |
 #
 # §2.1 Update 与构建缓存
 # | 用例 | 测试的功能场景                                             | 验证接口          |
@@ -51,14 +55,16 @@
 # | U1   | 更新沙箱存活时长（TTL），列表反映新到期时间且状态/模板不变 | S.Update + S.List |
 # | L1   | 查询本节点已缓存的构建，返回构建 ID 与到期时间             | S.Cached          |
 #
-# §3 Pause（预分配 → 暂停 → 状态 → 幂等 → 删源沙箱）
-# | 用例 | 测试的功能场景                     | 验证接口          |
-# |------|------------------------------------|-------------------|
-# | PZ1  | 暂停前预分配暂停快照产物           | API.Pause         |
-# | PZ2  | 暂停沙箱并持久化快照               | SA.Pause          |
-# | PZ3  | 暂停后沙箱状态为 Paused            | SA.Get            |
-# | PZ4  | 同一操作重试不重复暂停（幂等）     | SA.Pause          |
-# | PZ5  | 删除已暂停的源沙箱，删除后查询不到 | S.Delete + SA.Get |
+# §3 Pause（预分配 → 暂停 → 状态 → 幂等 → 数据面 → 状态守卫 → 删源沙箱）
+# | 用例 | 测试的功能场景                            | 验证接口           |
+# |------|-------------------------------------------|--------------------|
+# | PZ1  | 暂停前预分配暂停快照产物                  | API.Pause          |
+# | PZ2  | 暂停沙箱并持久化快照                      | SA.Pause           |
+# | PZ3  | 暂停后沙箱状态为 Paused                   | SA.Get             |
+# | PZ4  | 同一操作重试不重复暂停（幂等）            | SA.Pause           |
+# | PZ5  | 暂停后数据面关闭，端口/netns 仍登记待回收 | SA.Get             |
+# | PZ6  | 已暂停沙箱用新操作标识再暂停/检查点被拒绝 | SA.Pause + SA.Ckpt |
+# | PZ7  | 删除已暂停的源沙箱，删除后查询不到        | S.Delete + SA.Get  |
 #
 # §4 Resume（基于暂停快照恢复）
 # | 用例 | 测试的功能场景                             | 验证接口 |
@@ -76,13 +82,13 @@
 # | K4   | 同一操作重试不重复检查点（幂等）   | SA.Ckpt  |
 #
 # §6 从检查点创建新沙箱
-# | 用例 | 测试的功能场景               | 验证接口          |
-# |------|------------------------------|-------------------|
-# | KC1  | 从检查点创建新沙箱           | S.Create          |
-# | KC2  | 新沙箱运行事实来自检查点模板 | SA.Get            |
-# | KC3  | 新沙箱数据面可访问           | SA.Get            |
-# | KC4  | 列表视图反映新沙箱的模板来源 | S.List            |
-# | KC5  | 删除新沙箱后查询不到         | S.Delete + SA.Get |
+# | 用例 | 测试的功能场景                         | 验证接口          |
+# |------|----------------------------------------|-------------------|
+# | KC1  | 从检查点创建新沙箱                     | S.Create          |
+# | KC2  | 新沙箱运行事实来自检查点模板           | SA.Get            |
+# | KC3  | 新沙箱数据面可访问                     | SA.Get            |
+# | KC4  | 列表视图反映新沙箱的模板来源           | S.List            |
+# | KC5  | 删除新沙箱后查询不到                   | S.Delete + SA.Get |
 #
 # §7 负向与能力分发
 # | 用例 | 测试的功能场景                               | 验证接口          |
@@ -93,6 +99,16 @@
 # | N4   | 暂停请求缺少操作标识时被拒绝，且沙箱状态不变 | SA.Pause + SA.Get |
 # | N5   | 创建请求指向未注册的后端时返回不存在         | S.Create          |
 # | N6   | 暂停请求的团队标识与沙箱归属不符时被拒绝     | SA.Pause + SA.Get |
+# | N7   | 创建请求缺少模板/构建标识时被拒绝，且不产生半创建 | S.Create + S.List |
+# | N8   | 暂停/检查点请求指向不存在的沙箱时返回不存在  | SA.Pause + SA.Ckpt |
+# | N9   | 复用暂停的操作标识打检查点被拒绝（幂等键按动作隔离） | SA.Ckpt   |
+# | N10  | 未实现 v2 的后端对全部 8 个方法返回未实现；未注册后端返回不存在 | 全部 8 个接口 |
+# | N11  | 后端名省略/大写/含空白时解析到同一后端       | 8 个接口（抽样）  |
+# | N12  | 更新请求缺少沙箱标识被拒绝、未知沙箱返回不存在 | S.Update        |
+# | N13  | CRI 归属其他后端的沙箱不能用 e2b 后端查询    | SA.Get            |
+# | N14  | 空白沙箱标识被协议层拒绝                     | SA.Get + S.Delete |
+# | N15  | 创建失败时不残留 netns / 列表记录（回滚）    | S.Create + S.List + SA.Get |
+# | N16  | 检查点请求缺少操作/定位标识时被拒绝          | SA.Ckpt + SA.Get |
 #
 # §8 Delete 与回收
 # | 用例 | 测试的功能场景                             | 验证接口                |
@@ -110,7 +126,7 @@
 # | Z1   | 用例结束无残留沙箱 | S.List   |
 # | Z2   | 汇总统计与退出码   | —        |
 #
-# 说明：§0.1 残留清理与各处 E2B API 收尾属于步骤，不计入 47 条用例；
+# 说明：§0.1 残留清理与各处 E2B API 收尾属于步骤，不计入 63 条用例；
 #       本集覆盖 v2 全部 8 个方法：SandboxService 的 Create/Update/List/Delete/
 #       ListCachedBuilds，SandboxAdminService 的 PauseSandbox/CheckpointSandbox/
 #       GetSandboxRuntime。
@@ -125,10 +141,15 @@
 # 注意：admin 沙箱没有 K8s Pod 对象，也不能用 crictl inspectp
 # （v2 创建不写 mux 路由，会回退 containerd 并 NotFound）。
 #
-# 用例集固定 47 条（每段内连号）：
-#   P1 P2 P3 P4 P5 P6 P7 | C1 C2 C3 | V1 V2 V3 V4 | U1 L1 |
-#   PZ1 PZ2 PZ3 PZ4 PZ5 | R1 R2 R3 | K1 K2 K3 K4 |
-#   KC1 KC2 KC3 KC4 KC5 | N1 N2 N3 N4 N5 N6 | D1 D2 D3 D4 D5 D6 | Z1 Z2
+# 用例集固定 63 条（每段内连号；V4 在非 CNI 环境、N13 在无 container 路由时
+# 记 SKIP，属预期）：
+#   P1 P2 P3 P4 P5 P6 P7 | C1 C2 C3 C4 C5 | V1 V2 V3 V4 V5 V6 | U1 L1 |
+#   PZ1 PZ2 PZ3 PZ4 PZ5 PZ6 PZ7 | R1 R2 R3 | K1 K2 K3 K4 |
+#   KC1 KC2 KC3 KC4 KC5 | N1 N2 N3 N4 N5 N6 N7 N8 N9 N10 N11 N12 N13 N14 N15 N16 |
+#   D1 D2 D3 D4 D5 D6 | Z1 Z2
+#
+# P0（异常/契约，能直接暴露实现缺口）：N7 N8 N9 N10 N11 N12 N13 N14 N16 PZ6
+# P1（接口功能补全）：C4 C5 V5 V6 PZ5 N15
 #
 # 用法:
 #   ./26_adminv2_e2b_lifecycle.sh
@@ -207,7 +228,8 @@ redact_json() {
 jqr() { printf '%s' "${1:-}" | jq -r "($2) | if . == null then empty else . end" 2>/dev/null || true; }
 
 #==================== 用例断言收集 ====================#
-# 每条用例最终只产生 1 个 PASS 或 1 个 FAIL（保证 47 条用例 ↔ 47 个计数）。
+# 每条用例最终只产生 1 个 PASS 或 1 个 FAIL（保证 63 条用例 ↔ 63 个计数；
+# V4/N13 环境不满足时记 SKIP，不产生 PASS/FAIL）。
 CASE_ERRS=()
 
 ck() {
@@ -445,6 +467,34 @@ wait_tcp() {
     return 1
 }
 
+# tcp_probe_once <host> <port>：单次连接探测，最多 3s（对端 DROP 时 /dev/tcp 会阻塞很久）
+tcp_probe_once() {
+    local host="$1" port="$2"
+    timeout 3 bash -c "exec 3<>/dev/tcp/${host}/${port}" 2>/dev/null
+}
+
+# wait_tcp_closed <host> <port> <seconds>：轮询直到连接失败（VM 已停）
+wait_tcp_closed() {
+    local host="$1" port="$2" secs="$3"
+    local deadline=$(( $(date +%s) + secs ))
+    while [ "$(date +%s)" -lt "${deadline}" ]; do
+        if ! tcp_probe_once "${host}" "${port}"; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+# route_engine <id>：state.json 中该 pod 的 CRI 路由后端名；无路由输出空
+route_engine() {
+    local id="$1" state_file="${STATE_DIR}/state.json"
+    [ -f "${state_file}" ] || return 0
+    jq -r --arg id "${id}" \
+        '[.routes[]? | select(.kind == "pod" and .id == $id) | .engine] | first // empty' \
+        "${state_file}" 2>/dev/null || true
+}
+
 # list_ids：v2 List 中所有 sandboxId（每行一个）
 list_ids() {
     v2_rpc "SandboxService/List" '{"backend":"e2b"}' 30 >/dev/null
@@ -625,11 +675,11 @@ trap 'exit 143' TERM
 log_step "0. 预检（P1-P7）"
 
 # --- P1 工具 ---
-for tool in grpcurl jq openssl curl; do
+for tool in grpcurl jq openssl curl timeout; do
     command -v "${tool}" >/dev/null 2>&1 || CASE_ERRS+=("${tool} 不可用")
 done
 ck_nonempty "grpcurl 路径" "$(command -v grpcurl || true)"
-finish_case "P1" "工具可用（grpcurl/jq/openssl/curl）"
+finish_case "P1" "工具可用（grpcurl/jq/openssl/curl/timeout）"
 command -v jq >/dev/null 2>&1 || die "jq 不可用，无法继续"
 command -v grpcurl >/dev/null 2>&1 || die "grpcurl 不可用，无法继续"
 
@@ -791,8 +841,17 @@ ENVD_TOKEN="$(_new_envd_token)"
 EXEC_ID="$(_new_execution_id)"
 log_info "SBX_ID=${SBX_ID} ALIAS=${ALIAS} EXEC_ID=${EXEC_ID}"
 
+# C1 显式带顶层 start_time / end_time，覆盖 v2 Create 的时间字段映射；
+# C4 复用这两组值验证“幂等重试不修改已生效时间”。
+C1_START_S="$(date +%s)"
+C1_START="$(date -u -d "@${C1_START_S}" +%Y-%m-%dT%H:%M:%SZ)"
+C1_END_S=$(( C1_START_S + 3600 ))
+C1_END="$(date -u -d "@${C1_END_S}" +%Y-%m-%dT%H:%M:%SZ)"
+log_info "C1 时间字段: start=${C1_START} end=${C1_END}"
+
 # --- C1 首次创建（完整创建请求） ---
-CREATE_JSON="$(create_payload "${SBX_ID}" "${BASE_ENV}" "${BASE_BUILD}" "false" "e2b" "${ENVD_TOKEN}" "${EXEC_ID}")"
+CREATE_JSON="$(create_payload "${SBX_ID}" "${BASE_ENV}" "${BASE_BUILD}" "false" "e2b" "${ENVD_TOKEN}" "${EXEC_ID}" \
+    | jq -c --arg st "${C1_START}" --arg et "${C1_END}" '. + {start_time: $st, end_time: $et}')"
 t0="$(now_ms)"
 v2_rpc "SandboxService/Create" "${CREATE_JSON}" "${CREATE_TIMEOUT}"
 CREATE_MS=$(( $(now_ms) - t0 ))
@@ -829,9 +888,46 @@ count="$(list_count "${SBX_ID}" || echo "-1")"
 ck "List 中该 ID 条数" "${count}" "1"
 finish_case "C3" "v2 List 中该 ID 恰好 1 条"
 
-#==================== §2 读一致性 + 数据面（V1-V4） ====================#
+# --- C4 幂等重试携带不同 start/end_time：已生效时间不得被改写 ---
+# 注意：orchestrator 在 envd 就绪后会 SetStartedAt(time.Now())，因此 List.startTime
+# 是“实际启动时间”而非 Create 入参，只能拿重试前后的观测值做比对；endTime 才是
+# 由 Create 入参决定的（V2 已断言其等于 C1_END）。
+v2_rpc "SandboxService/List" '{"backend":"e2b"}' "${OP_TIMEOUT}"
+C4_BEFORE="$(jqr "${V2_OUT}" "[.sandboxes[]? | select(.spec.sandboxId == \"${SBX_ID}\")] | first")"
+C4_BEFORE_START="$(jqr "${C4_BEFORE}" '.startTime')"
+C4_BEFORE_END="$(jqr "${C4_BEFORE}" '.endTime')"
+C4_START="$(date -u -d "@$(( C1_START_S - 3600 ))" +%Y-%m-%dT%H:%M:%SZ)"
+C4_END="$(date -u -d "@$(( C1_START_S + 18000 ))" +%Y-%m-%dT%H:%M:%SZ)"
+C4_JSON="$(printf '%s' "${CREATE_JSON}" \
+    | jq -c --arg st "${C4_START}" --arg et "${C4_END}" '.start_time = $st | .end_time = $et')"
+v2_rpc "SandboxService/Create" "${C4_JSON}" "${OP_TIMEOUT}"
+ck "退出码" "${V2_RC}" "0"
+ck ".sandboxId" "$(jqr "${V2_OUT}" '.sandboxId')" "${SBX_ID}"
+ck ".hostIp 与首次相同" "$(jqr "${V2_OUT}" '.hostIp')" "${HOST_IP}"
+v2_rpc "SandboxService/List" '{"backend":"e2b"}' "${OP_TIMEOUT}"
+C4_ONE="$(jqr "${V2_OUT}" "[.sandboxes[]? | select(.spec.sandboxId == \"${SBX_ID}\")] | first")"
+ck "List .startTime 未被重试改写" "$(jqr "${C4_ONE}" '.startTime')" "${C4_BEFORE_START}"
+ck "List .endTime 未被重试改写" "$(jqr "${C4_ONE}" '.endTime')" "${C4_BEFORE_END}"
+finish_case "C4" "幂等重试携带不同起止时间不改变已生效时间"
 
-log_step "2. 读一致性与数据面（V1-V4）"
+# --- C5 同 ID、不同 template/build 重试：参数不参与幂等键，既有沙箱不被重建 ---
+# 契约选择：ID 命中即幂等成功，返回既有沙箱；不同参数不会改绑模板/构建。
+C5_JSON="$(printf '%s' "${CREATE_JSON}" \
+    | jq -c '.sandbox.template_id = "v2-alt-template" | .sandbox.build_id = "v2-alt-build"')"
+v2_rpc "SandboxService/Create" "${C5_JSON}" "${OP_TIMEOUT}"
+ck "退出码（幂等命中）" "${V2_RC}" "0"
+ck ".sandboxId" "$(jqr "${V2_OUT}" '.sandboxId')" "${SBX_ID}"
+ck ".hostIp 与首次相同" "$(jqr "${V2_OUT}" '.hostIp')" "${HOST_IP}"
+v2_rpc "SandboxService/List" '{"backend":"e2b"}' "${OP_TIMEOUT}"
+C5_ONE="$(jqr "${V2_OUT}" "[.sandboxes[]? | select(.spec.sandboxId == \"${SBX_ID}\")] | first")"
+ck "List 中该 ID 条数" "$(jqr "${V2_OUT}" "[.sandboxes[]? | select(.spec.sandboxId == \"${SBX_ID}\")] | length")" "1"
+ck "既有模板未被改写" "$(jqr "${C5_ONE}" '.spec.templateId')" "${BASE_ENV}"
+ck "既有构建未被改写" "$(jqr "${C5_ONE}" '.spec.buildId')" "${BASE_BUILD}"
+finish_case "C5" "同 ID 不同模板/构建重试不重建沙箱（参数不参与幂等键）"
+
+#==================== §2 读一致性 + 数据面（V1-V6） ====================#
+
+log_step "2. 读一致性与数据面（V1-V6）"
 
 if [ "${HOLD_SECONDS}" -gt 0 ] 2>/dev/null; then
     log_info "HOLD_SECONDS=${HOLD_SECONDS}：等待后再复查（仅排障用，不计用例）"
@@ -874,7 +970,11 @@ if [ "${CNI_MODE}" = "1" ]; then
 else
     log_warn "CNI 未开启，跳过 List .podIp 断言"
 fi
-finish_case "V2" "v2 List 反映 orchestrator 视图（template/build/Running/podIp）"
+# C1 显式传入的 end_time 必须反映到列表视图（v2_server.Create 的时间映射）。
+# start_time 会在 envd 就绪后被 orchestrator 改写为实际启动时间，故不断言。
+V2_END_S="$(date -u -d "$(jqr "${LIST_ONE}" '.endTime')" +%s 2>/dev/null || true)"
+ck "List .endTime 与 Create 入参一致" "${V2_END_S}" "${C1_END_S}"
+finish_case "V2" "v2 List 反映 orchestrator 视图（template/build/Running/podIp/时间）"
 
 # --- V3 数据面（hostport 硬断言；podIP 软断言） ---
 # 用 runtime.hostIp（节点 IP），不能用 Create.hostIp（orchestrator slot IP）
@@ -911,6 +1011,43 @@ if [ "${CNI_MODE}" = "1" ]; then
 else
     log_skip "V4 netns：CNI 未开启，跳过"
 fi
+
+# --- V5 Get 的 cri_sandbox_id arm 与 sandbox_id arm 等价 ---
+v2_rpc "SandboxAdminService/GetSandboxRuntime" "{\"backend\":\"e2b\",\"cri_sandbox_id\":\"${SBX_ID}\"}" "${OP_TIMEOUT}"
+V5_RT="${V2_OUT}"
+ck "退出码" "${V2_RC}" "0"
+ck ".runtime.criSandboxId" "$(jqr "${V5_RT}" '.runtime.criSandboxId')" "${SBX_ID}"
+ck ".runtime.sandboxId" "$(jqr "${V5_RT}" '.runtime.sandboxId')" "${SBX_ID}"
+ck ".runtime.runtimeState" "$(jqr "${V5_RT}" '.runtime.runtimeState')" "Running"
+ck ".runtime.templateId" "$(jqr "${V5_RT}" '.runtime.templateId')" "${BASE_ENV}"
+ck ".runtime.netnsPath 与 sandbox_id arm 一致" "$(jqr "${V5_RT}" '.runtime.netnsPath')" "${NETNS_PATH}"
+finish_case "V5" "Get 用 cri_sandbox_id arm 与 sandbox_id arm 等价"
+
+# --- V6 v2 Create 不写 mux 路由：kubelet 侧 Stop/Remove 不应误删 admin 沙箱 ---
+# 契约：agent-direct 沙箱只存在于 e2b 后端；CRI 单操作按路由分发，路由缺失时回落
+# containerd 并返回 NotFound，因此 kubelet 的 GC 不会真的删掉它（但会在 CRI 列表里
+# 看见它并反复尝试，属已知噪声，这里只告警不判失败）。
+V6_ROUTE="$(route_engine "${SBX_ID}")"
+ck "state.json 中无该 pod 路由" "${V6_ROUTE:-<none>}" "<none>"
+V6_VISIBLE="$(${CRICTL} pods -q 2>/dev/null | grep -c -x -- "${SBX_ID}" || true)"
+if [ "${V6_VISIBLE}" != "0" ]; then
+    log_warn "admin 沙箱出现在 CRI ListPodSandbox（kubelet GC 会反复 NotFound，建议加 labels/hide 支持）"
+fi
+if [ -n "${V6_ROUTE}" ]; then
+    CASE_ERRS+=("存在路由(${V6_ROUTE})，跳过 stopp/rmp 以免误删沙箱")
+else
+    if ${CRICTL} stopp "${SBX_ID}" >/dev/null 2>&1; then
+        CASE_ERRS+=("CRI StopPodSandbox 意外成功（路由应缺失）")
+    fi
+    v2_rpc "SandboxAdminService/GetSandboxRuntime" "{\"backend\":\"e2b\",\"sandbox_id\":\"${SBX_ID}\"}" "${OP_TIMEOUT}"
+    ck "StopPodSandbox 后仍为 Running" "$(jqr "${V2_OUT}" '.runtime.runtimeState')" "Running"
+    if ${CRICTL} rmp "${SBX_ID}" >/dev/null 2>&1; then
+        CASE_ERRS+=("CRI RemovePodSandbox 意外成功（路由应缺失）")
+    fi
+    v2_rpc "SandboxAdminService/GetSandboxRuntime" "{\"backend\":\"e2b\",\"sandbox_id\":\"${SBX_ID}\"}" "${OP_TIMEOUT}"
+    ck "RemovePodSandbox 后仍为 Running" "$(jqr "${V2_OUT}" '.runtime.runtimeState')" "Running"
+fi
+finish_case "V6" "v2 创建不写 CRI 路由，kubelet 停止/删除不误删 admin 沙箱"
 
 # STARTED_AT 供 Pause 的 API meta 使用（v2 List.startTime）
 STARTED_AT="$(jqr "${LIST_ONE}" '.startTime')"
@@ -963,9 +1100,9 @@ ck "expirationTime 齐全" "$(jqr "${LCB}" '[.builds[]? | select(.expirationTime
 ck_contains "缓存包含 BASE_BUILD" "$(jqr "${LCB}" '[.builds[]?.buildId] | join(",")')" "${BASE_BUILD}"
 finish_case "L1" "ListCachedBuilds 返回本节点缓存（${LCB_N:-?} 条，含 BASE_BUILD）"
 
-#==================== §3 Pause（PZ1-PZ5） ====================#
+#==================== §3 Pause（PZ1-PZ7） ====================#
 
-log_step "3. Pause（API 预分配 → v2 PauseSandbox → Paused → 幂等 → 删源沙箱）"
+log_step "3. Pause（API 预分配 → v2 PauseSandbox → Paused → 幂等 → 数据面 → 状态守卫 → 删源沙箱）"
 
 # --- PZ1 API 预分配（硬前置，失败即 die） ---
 OP1="v2-pause-$(date +%s)"
@@ -1018,16 +1155,60 @@ ck_true "snapshotPersisted" "$(jqr "${PZ4_RESP}" '.snapshotPersisted')"
 ck "startedAtUnix 沿用首次" "$(jqr "${PZ4_RESP}" '.startedAtUnix')" "${PZ2_STARTED}"
 finish_case "PZ4" "同 operation_id 幂等重试成功（时间沿用首次）"
 
-# --- PZ5 删除源沙箱 + Get NotFound ---
+# --- PZ5 暂停后数据面关闭、资源仍登记（端口/netns 留待 Delete 回收） ---
+v2_rpc "SandboxAdminService/GetSandboxRuntime" "{\"backend\":\"e2b\",\"sandbox_id\":\"${SBX_ID}\"}" "${OP_TIMEOUT}"
+PZ5_RT="${V2_OUT}"
+PZ5_HOST_IP="$(jqr "${PZ5_RT}" '.runtime.hostIp')"
+PZ5_PORT="$(jqr "${PZ5_RT}" '[.runtime.hostports[]? | select(.sandboxPort == 49983) | .hostPort] | first')"
+PZ5_NETNS="$(jqr "${PZ5_RT}" '.runtime.netnsPath')"
+ck ".runtime.runtimeState" "$(jqr "${PZ5_RT}" '.runtime.runtimeState')" "Paused"
+ck_nonempty "暂停后仍登记 hostports(49983)" "${PZ5_PORT}"
+if [ "${CNI_MODE}" = "1" ]; then
+    ck_nonempty "暂停后仍登记 netnsPath" "${PZ5_NETNS}"
+    if [ -n "${PZ5_NETNS}" ] && [ ! -e "${PZ5_NETNS}" ]; then
+        CASE_ERRS+=("netns ${PZ5_NETNS} 已消失（预期保留到 Delete）")
+    fi
+fi
+if [ -n "${PZ5_PORT}" ]; then
+    if wait_tcp_closed "${PZ5_HOST_IP}" "${PZ5_PORT}" "${TCP_TIMEOUT}"; then
+        :
+    else
+        CASE_ERRS+=("暂停后 ${TCP_TIMEOUT}s 内 ${PZ5_HOST_IP}:${PZ5_PORT} 仍可连接（VM 未停或端口未收回）")
+    fi
+fi
+finish_case "PZ5" "暂停后数据面关闭（${PZ5_HOST_IP}:${PZ5_PORT:-?}），hostports/netns 仍登记"
+
+# --- PZ6 状态守卫：已 Paused 的沙箱用新 operation_id 再 Pause/Checkpoint 必须被拒绝 ---
+PZ6_OP="v2-state-$(date +%s)"
+PZ6_PAUSE_JSON="$(jq -n \
+    --arg op "${PZ6_OP}" --arg id "${SBX_ID}" --argjson t "${PAUSE_TIMEOUT}" \
+    --arg team "${TEAM_ID}" --arg tmpl "${PAUSE_TMPL}" --arg build "${PAUSE_BUILD}" \
+    '{backend: "e2b", operation_id: $op, timeout_seconds: $t, sandbox_id: $id,
+      metadata: {team_id: $team, template_id: $tmpl, build_id: $build}}')"
+v2_rpc "SandboxAdminService/PauseSandbox" "${PZ6_PAUSE_JSON}" "${PAUSE_RPC_TIMEOUT}"
+ck "Pause 已暂停沙箱的 Code" "${V2_CODE}" "FailedPrecondition"
+ck_contains "message" "${V2_ERR}" "does not allow the operation"
+PZ6_CKPT_JSON="$(jq -n \
+    --arg op "${PZ6_OP}-ckpt" --arg id "${SBX_ID}" --argjson t "${PAUSE_TIMEOUT}" \
+    --arg team "${TEAM_ID}" --arg build "${PAUSE_BUILD}" \
+    '{backend: "e2b", operation_id: $op, timeout_seconds: $t, cri_sandbox_id: $id,
+      metadata: {team_id: $team, build_id: $build}}')"
+v2_rpc "SandboxAdminService/CheckpointSandbox" "${PZ6_CKPT_JSON}" "${PAUSE_RPC_TIMEOUT}"
+ck "Checkpoint 已暂停沙箱的 Code" "${V2_CODE}" "FailedPrecondition"
+v2_rpc "SandboxAdminService/GetSandboxRuntime" "{\"backend\":\"e2b\",\"sandbox_id\":\"${SBX_ID}\"}" "${OP_TIMEOUT}"
+ck "A 状态仍为 Paused" "$(jqr "${V2_OUT}" '.runtime.runtimeState')" "Paused"
+finish_case "PZ6" "已 Paused 再 Pause/Checkpoint → FailedPrecondition（状态保持 Paused）"
+
+# --- PZ7 删除源沙箱 + Get NotFound ---
 t0="$(now_ms)"
 if v2_delete "${SBX_ID}"; then
-    PZ5_MS=$(( $(now_ms) - t0 ))
+    PZ7_MS=$(( $(now_ms) - t0 ))
     v2_rpc "SandboxAdminService/GetSandboxRuntime" "{\"backend\":\"e2b\",\"sandbox_id\":\"${SBX_ID}\"}" "${OP_TIMEOUT}"
     ck "Get 已删 A 的 Code" "${V2_CODE}" "NotFound"
-    finish_case "PZ5" "v2 Delete 源沙箱成功（$(fmt_ms "${PZ5_MS}")），Get → NotFound"
+    finish_case "PZ7" "v2 Delete 源沙箱成功（$(fmt_ms "${PZ7_MS}")），Get → NotFound"
 else
     CASE_ERRS+=("Delete 失败 code=${V2_CODE} msg=${V2_MSG}")
-    finish_case "PZ5" "v2 Delete 源沙箱 + Get NotFound"
+    finish_case "PZ7" "v2 Delete 源沙箱 + Get NotFound"
     die "删除源沙箱失败，无法继续 Resume"
 fi
 
@@ -1274,9 +1455,9 @@ else
     finish_case "KC5" "v2 Delete B + Get NotFound"
 fi
 
-#==================== §7 负向与能力分发（N1-N6） ====================#
+#==================== §7 负向与能力分发（N1-N16） ====================#
 
-log_step "7. 负向与能力分发（N1-N6）"
+log_step "7. 负向与能力分发（N1-N16）"
 
 # 负向调用前后比对 v2e2b 前缀 ID 集合，抓“半创建”
 prefix_id_set() {
@@ -1359,6 +1540,153 @@ ck_contains "message" "${V2_ERR}" "team mismatch"
 v2_rpc "SandboxAdminService/GetSandboxRuntime" "{\"backend\":\"e2b\",\"sandbox_id\":\"${SBX_ID}\"}" "${OP_TIMEOUT}"
 ck "A 状态未变" "$(jqr "${V2_OUT}" '.runtime.runtimeState')" "${n6_state_before:-Running}"
 finish_case "N6" "Pause 的 team 归属不符 → FailedPrecondition（A 状态不变）"
+
+# --- N7 Create 缺 template_id / build_id（AdminCreate 的组合必填校验） ---
+set_before="$(prefix_id_set)"
+for n7_field in template_id build_id; do
+    N7_JSON="$(printf '%s' "${CREATE_JSON}" | jq -c --arg f "${n7_field}" 'del(.sandbox[$f])')"
+    v2_rpc "SandboxService/Create" "${N7_JSON}" "${OP_TIMEOUT}"
+    if [ "${V2_CODE}" != "InvalidArgument" ]; then
+        CASE_ERRS+=("缺 ${n7_field} 期望 InvalidArgument，实际 ${V2_CODE:-rc=${V2_RC}}: ${V2_MSG}")
+    elif ! printf '%s' "${V2_ERR}" | grep -q -- "${n7_field}"; then
+        CASE_ERRS+=("缺 ${n7_field} 的错误信息未包含字段名: ${V2_MSG}")
+    fi
+done
+set_after="$(prefix_id_set)"
+ck "List 中 v2e2b 集合不变" "${set_after}" "${set_before}"
+finish_case "N7" "Create 缺 template_id/build_id → InvalidArgument（无半创建）"
+
+# --- N8 Pause / Checkpoint 指向不存在的 sandbox_id ---
+N8_ID="v2e2bmissing$(date +%s)"
+v2_rpc "SandboxAdminService/PauseSandbox" "{\"backend\":\"e2b\",\"operation_id\":\"v2-miss-pause\",\"sandbox_id\":\"${N8_ID}\",\"timeout_seconds\":60,\"metadata\":{\"team_id\":\"${TEAM_ID}\"}}" "${PAUSE_RPC_TIMEOUT}"
+ck "Pause 未知沙箱 Code" "${V2_CODE}" "NotFound"
+v2_rpc "SandboxAdminService/CheckpointSandbox" "{\"backend\":\"e2b\",\"operation_id\":\"v2-miss-ckpt\",\"cri_sandbox_id\":\"${N8_ID}\",\"timeout_seconds\":60,\"metadata\":{\"team_id\":\"${TEAM_ID}\",\"build_id\":\"${BASE_BUILD}\"}}" "${PAUSE_RPC_TIMEOUT}"
+ck "Checkpoint 未知沙箱 Code" "${V2_CODE}" "NotFound"
+finish_case "N8" "Pause/Checkpoint 未知 sandbox_id → NotFound"
+
+# --- N9 operation_id 跨动作复用：Pause 成功的 op 不能当 Checkpoint 的幂等键 ---
+# 复用只按 operation_id 查终态、不区分 action/sandbox，会直接返回“成功”但没打检查点。
+v2_rpc "SandboxAdminService/CheckpointSandbox" "{\"backend\":\"e2b\",\"operation_id\":\"${OP1}\",\"cri_sandbox_id\":\"${SBX_ID}\",\"timeout_seconds\":60,\"metadata\":{\"team_id\":\"${TEAM_ID}\",\"build_id\":\"${CKPT_BUILD}\"}}" "${OP_TIMEOUT}"
+case "${V2_CODE}" in
+    Aborted|InvalidArgument|AlreadyExists|FailedPrecondition)
+        ;;
+    "")
+        CASE_ERRS+=("复用 Pause 的 operation_id 调 Checkpoint 未被拒绝：rc=${V2_RC}，返回被当作成功")
+        ;;
+    *)
+        CASE_ERRS+=("期望 Aborted/InvalidArgument/FailedPrecondition，实际 ${V2_CODE}: ${V2_MSG}")
+        ;;
+esac
+v2_rpc "SandboxAdminService/GetSandboxRuntime" "{\"backend\":\"e2b\",\"sandbox_id\":\"${SBX_ID}\"}" "${OP_TIMEOUT}"
+ck "A 状态仍为 Running" "$(jqr "${V2_OUT}" '.runtime.runtimeState')" "Running"
+finish_case "N9" "operation_id 跨动作复用被拒绝（不复用 Pause 的终态）"
+
+# --- N10 能力矩阵：已注册但未实现 v2 的后端 → Unimplemented；未注册 → NotFound ---
+for n10_be in container android bogus; do
+    if [ "${n10_be}" = "bogus" ]; then n10_want="NotFound"; else n10_want="Unimplemented"; fi
+    while IFS='|' read -r n10_m n10_body; do
+        v2_rpc "${n10_m}" "${n10_body}" "${OP_TIMEOUT}"
+        if [ "${V2_CODE}" != "${n10_want}" ]; then
+            CASE_ERRS+=("${n10_be} ${n10_m} 期望 ${n10_want}，实际 ${V2_CODE:-rc=${V2_RC}}: ${V2_MSG}")
+        fi
+    done <<N10EOF
+SandboxService/Create|{"backend":"${n10_be}","sandbox":{"sandbox_id":"v2e2bmatrix"}}
+SandboxService/Update|{"backend":"${n10_be}","sandbox_id":"v2e2bmatrix"}
+SandboxService/List|{"backend":"${n10_be}"}
+SandboxService/Delete|{"backend":"${n10_be}","sandbox_id":"v2e2bmatrix"}
+SandboxService/ListCachedBuilds|{"backend":"${n10_be}"}
+SandboxAdminService/PauseSandbox|{"backend":"${n10_be}","operation_id":"v2-matrix","sandbox_id":"v2e2bmatrix"}
+SandboxAdminService/CheckpointSandbox|{"backend":"${n10_be}","operation_id":"v2-matrix-c","cri_sandbox_id":"v2e2bmatrix"}
+SandboxAdminService/GetSandboxRuntime|{"backend":"${n10_be}","sandbox_id":"v2e2bmatrix"}
+N10EOF
+done
+finish_case "N10" "能力矩阵：container/android → Unimplemented；bogus → NotFound（8 方法）"
+
+# --- N11 backend 解析：空 / 大写 / 前后空白 等价于 e2b ---
+N11_END="$(date -u -d "+1 hour" +%Y-%m-%dT%H:%M:%SZ)"
+for n11_be in "" "E2B" " e2b "; do
+    v2_rpc "SandboxService/List" "{\"backend\":\"${n11_be}\"}" "${OP_TIMEOUT}"
+    ck "List backend=[${n11_be}] 退出码" "${V2_RC}" "0"
+    if [ "${V2_RC}" -eq 0 ]; then
+        if ! jqr "${V2_OUT}" '.sandboxes[]?.spec.sandboxId' | grep -qx -- "${SBX_ID}"; then
+            CASE_ERRS+=("List backend=[${n11_be}] 未返回 A")
+        fi
+    fi
+done
+v2_rpc "SandboxAdminService/GetSandboxRuntime" '{"backend":"E2B","sandbox_id":"'"${SBX_ID}"'"}' "${OP_TIMEOUT}"
+ck "Get backend=E2B 退出码" "${V2_RC}" "0"
+ck "Get backend=E2B sandboxId" "$(jqr "${V2_OUT}" '.runtime.sandboxId')" "${SBX_ID}"
+v2_rpc "SandboxService/Update" "{\"backend\":\" e2b \",\"sandbox_id\":\"${SBX_ID}\",\"end_time\":\"${N11_END}\"}" "${OP_TIMEOUT}"
+ck "Update backend=[ e2b ] 退出码" "${V2_RC}" "0"
+v2_rpc "SandboxService/ListCachedBuilds" '{"backend":""}' "${OP_TIMEOUT}"
+ck "ListCachedBuilds 省略 backend 退出码" "${V2_RC}" "0"
+v2_rpc "SandboxService/Delete" '{"backend":"E2B","sandbox_id":"v2e2bdel-nonexistent"}' "${OP_TIMEOUT}"
+ck "Delete 不存在 ID（backend=E2B）退出码" "${V2_RC}" "0"
+finish_case "N11" "backend 解析：空/E2B/前后空白 等价（List/Get/Update/Cached/Delete）"
+
+# --- N12 Update 参数与未知 ID ---
+v2_rpc "SandboxService/Update" '{"backend":"e2b","end_time":"'"${N11_END}"'"}' "${OP_TIMEOUT}"
+ck "缺 sandbox_id Code" "${V2_CODE}" "InvalidArgument"
+ck_contains "message" "${V2_ERR}" "sandbox_id"
+v2_rpc "SandboxService/Update" '{"backend":"e2b","sandbox_id":"v2e2bmissing-ok","end_time":"'"${N11_END}"'"}' "${OP_TIMEOUT}"
+ck "未知 sandbox_id Code" "${V2_CODE}" "NotFound"
+finish_case "N12" "Update 缺 sandbox_id → InvalidArgument；未知 ID → NotFound"
+
+# --- N13 归属校验：CRI 路由属于 container 的 ID 不能用 backend=e2b 查询 ---
+# 只做只读 Get：校验分支若回归，Delete 会真的摘掉 container 的路由，破坏现场。
+N13_STATE="${STATE_DIR}/state.json"
+N13_OWNER=""
+if [ -f "${N13_STATE}" ]; then
+    N13_OWNER="$(jq -r '[.routes[]? | select(.kind == "pod" and .engine != "e2b")][0].id // empty' \
+        "${N13_STATE}" 2>/dev/null || true)"
+fi
+if [ -z "${N13_OWNER}" ]; then
+    log_skip "N13 state.json 中没有 container 路由，跳过归属校验（state 干净时属预期）"
+else
+    v2_rpc "SandboxAdminService/GetSandboxRuntime" "{\"backend\":\"e2b\",\"cri_sandbox_id\":\"${N13_OWNER}\"}" "${OP_TIMEOUT}"
+    ck "Code" "${V2_CODE}" "FailedPrecondition"
+    ck_contains "message" "${V2_ERR}" "owned by backend"
+    finish_case "N13" "CRI ID 归属 container 时用 backend=e2b 查询 → FailedPrecondition"
+fi
+
+# --- N14 空白 sandbox_id 应被协议层拒绝 ---
+v2_rpc "SandboxAdminService/GetSandboxRuntime" '{"backend":"e2b","sandbox_id":"   "}' "${OP_TIMEOUT}"
+ck "Get 空白 ID Code" "${V2_CODE}" "InvalidArgument"
+v2_rpc "SandboxService/Delete" '{"backend":"e2b","sandbox_id":"   "}' "${OP_TIMEOUT}"
+ck "Delete 空白 ID Code" "${V2_CODE}" "InvalidArgument"
+finish_case "N14" "空白 sandbox_id → InvalidArgument（Get/Delete）"
+
+# --- N15 Create 失败回滚：build 不存在时不留 netns / 列表残留 ---
+# 走真实失败路径：CNI ADD 已发生，orchestrator Create 取模板失败 → 引擎必须 CNI DEL
+# 回滚且不写 tracker/state。若意外成功，记入清理列表并在用例里判失败。
+# build ID 用固定值：orchestrator 的模板缓存会在 fetch 失败前先建 entry，
+# 固定值避免每跑一次就多一条缓存（该 entry 只出现在 L1，不影响沙箱/网络断言）。
+N15_ID="v2e2bfail$(date +%s)"
+N15_BUILD="v2bogus-build-26"
+N15_JSON="$(create_payload "${N15_ID}" "${BASE_ENV}" "${N15_BUILD}" "false" "e2b" "${ENVD_TOKEN}" "$(_new_execution_id)")"
+v2_rpc "SandboxService/Create" "${N15_JSON}" "${CREATE_TIMEOUT}"
+if [ "${V2_RC}" -eq 0 ]; then
+    CASE_ERRS+=("指向不存在 build 的 Create 意外成功（已记入清理列表）")
+    alive_push "${N15_ID}"
+fi
+ck "List 中无该 ID" "$(list_count "${N15_ID}" || echo "-1")" "0"
+v2_rpc "SandboxAdminService/GetSandboxRuntime" "{\"backend\":\"e2b\",\"sandbox_id\":\"${N15_ID}\"}" "${OP_TIMEOUT}"
+ck "Get Code" "${V2_CODE}" "NotFound"
+if [ "${CNI_MODE}" = "1" ]; then
+    N15_SHORT="$(printf '%s' "${N15_ID}" | sha256sum | cut -c1-6)"
+    N15_PAT="${N15_ID:0:6}${N15_SHORT}"
+    ck "netns 无残留" "$(ls /var/run/netns 2>/dev/null | grep -c -- "${N15_PAT}" || true)" "0"
+fi
+finish_case "N15" "Create 失败回滚（build 不存在：无沙箱/netns 残留）"
+
+# --- N16 Checkpoint 缺 operation_id / 缺 target（与 Pause 的 N4 对称） ---
+v2_rpc "SandboxAdminService/CheckpointSandbox" "{\"backend\":\"e2b\",\"cri_sandbox_id\":\"${SBX_ID}\",\"timeout_seconds\":60,\"metadata\":{\"team_id\":\"${TEAM_ID}\",\"build_id\":\"${CKPT_BUILD}\"}}" "${OP_TIMEOUT}"
+ck "缺 operation_id Code" "${V2_CODE}" "InvalidArgument"
+ck_contains "message" "${V2_ERR}" "operation_id"
+v2_rpc "SandboxAdminService/CheckpointSandbox" "{\"backend\":\"e2b\",\"operation_id\":\"v2-notarget-$(date +%s)\",\"timeout_seconds\":60,\"metadata\":{\"team_id\":\"${TEAM_ID}\",\"build_id\":\"${CKPT_BUILD}\"}}" "${OP_TIMEOUT}"
+ck "缺 target Code" "${V2_CODE}" "InvalidArgument"
+ck_contains "message" "${V2_ERR}" "cri_sandbox_id or sandbox_id"
+finish_case "N16" "Checkpoint 缺 operation_id/target → InvalidArgument"
 
 #==================== §8 Delete 与回收（D1-D6） ====================#
 

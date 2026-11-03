@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -37,6 +38,16 @@ func NewV2Server(reg *Registry, routes *engine.RouteTable) *V2Server {
 }
 
 // ---- 分发与校验 ----
+
+// requireSandboxID 拒绝空或纯空白的 sandbox_id。协议层的“必填”校验不能只判
+// == ""，否则 "   " 会被当成合法 ID 透传给后端（Get 变成 NotFound、Delete 变成
+// 幂等成功），调用方无法区分参数错误与资源不存在。
+func requireSandboxID(field, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return status.Errorf(codes.InvalidArgument, "%s is required", field)
+	}
+	return nil
+}
 
 // moduleFor 按名字（空 = e2b）解析后端；未注册返回 NotFound。
 func (s *V2Server) moduleFor(backend string) (*engine.BackendModule, error) {
@@ -120,8 +131,8 @@ func (s *V2Server) Create(ctx context.Context, req *adminv2.SandboxCreateRequest
 		return nil, err
 	}
 	spec := sandboxSpecFromProto(req.GetSandbox())
-	if spec.SandboxID == "" {
-		return nil, status.Error(codes.InvalidArgument, "sandbox.sandbox_id is required")
+	if err := requireSandboxID("sandbox.sandbox_id", spec.SandboxID); err != nil {
+		return nil, err
 	}
 	if err := s.checkCRIOwner(mod, spec.SandboxID); err != nil {
 		return nil, err
@@ -155,8 +166,8 @@ func (s *V2Server) Update(ctx context.Context, req *adminv2.SandboxUpdateRequest
 	if err != nil {
 		return nil, err
 	}
-	if req.GetSandboxId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "sandbox_id is required")
+	if err := requireSandboxID("sandbox_id", req.GetSandboxId()); err != nil {
+		return nil, err
 	}
 	upd := engine.SandboxUpdate{}
 	if t := req.GetEndTime(); t != nil {
@@ -201,8 +212,8 @@ func (s *V2Server) Delete(ctx context.Context, req *adminv2.SandboxDeleteRequest
 	if err != nil {
 		return nil, err
 	}
-	if req.GetSandboxId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "sandbox_id is required")
+	if err := requireSandboxID("sandbox_id", req.GetSandboxId()); err != nil {
+		return nil, err
 	}
 	if err := s.checkCRIOwner(mod, req.GetSandboxId()); err != nil {
 		return nil, err
@@ -364,7 +375,7 @@ func (s *V2Server) logAdminOp(mod *engine.BackendModule, action, operationID str
 // ---- proto <-> DTO 映射 ----
 
 func sandboxRefFromTarget(criSandboxID, sandboxID string) (engine.SandboxRef, error) {
-	if criSandboxID == "" && sandboxID == "" {
+	if strings.TrimSpace(criSandboxID) == "" && strings.TrimSpace(sandboxID) == "" {
 		return engine.SandboxRef{}, status.Error(codes.InvalidArgument, "cri_sandbox_id or sandbox_id is required")
 	}
 	return engine.SandboxRef{CRISandboxID: criSandboxID, SandboxID: sandboxID}, nil

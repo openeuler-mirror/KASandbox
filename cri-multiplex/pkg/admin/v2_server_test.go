@@ -329,3 +329,48 @@ type fakeRuntimeEngine struct {
 func (f *fakeRuntimeEngine) AdminGetSandboxRuntime(ctx context.Context, ref engine.SandboxRef) (*engine.SandboxRuntime, error) {
 	return f.runtime, nil
 }
+
+func TestV2RejectsBlankSandboxID(t *testing.T) {
+	ctx := context.Background()
+	life := &fakeLifecycleEngine{}
+	s := NewV2Server(lifecycleRegistry(t, life), nil)
+
+	if _, err := s.Create(ctx, &adminv2.SandboxCreateRequest{
+		Sandbox: &adminv2.SandboxSpec{SandboxId: "   "},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Create blank id code = %v, want InvalidArgument", status.Code(err))
+	}
+	if _, err := s.Update(ctx, &adminv2.SandboxUpdateRequest{SandboxId: "   "}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Update blank id code = %v, want InvalidArgument", status.Code(err))
+	}
+	if _, err := s.Delete(ctx, &adminv2.SandboxDeleteRequest{SandboxId: "   "}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Delete blank id code = %v, want InvalidArgument", status.Code(err))
+	}
+	if life.created != nil || life.updateCalls != 0 || life.deleteCalls != 0 {
+		t.Fatalf("blank id must not reach engine: created=%v update=%d delete=%d",
+			life.created, life.updateCalls, life.deleteCalls)
+	}
+
+	// Pause/Checkpoint/Get 走 sandboxRefFromTarget，同样要拒绝纯空白 target。
+	ps := NewV2Server(pauseRegistry(t, &fakeAdminEngine{}), nil)
+	if _, err := ps.PauseSandbox(ctx, &adminv2.PauseSandboxRequest{
+		OperationId: "op-blank",
+		Target:      &adminv2.PauseSandboxRequest_SandboxId{SandboxId: "   "},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Pause blank target code = %v, want InvalidArgument", status.Code(err))
+	}
+
+	rtEng := &fakeRuntimeEngine{}
+	reg, err := NewRegistry([]*engine.BackendModule{{
+		Descriptor: engine.BackendDescriptor{Type: engine.EngineTypeE2B, Handler: "e2b"},
+		Engine:     rtEng,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewV2Server(reg, nil).GetSandboxRuntime(ctx, &adminv2.GetSandboxRuntimeRequest{
+		Target: &adminv2.GetSandboxRuntimeRequest_SandboxId{SandboxId: "   "},
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Get blank target code = %v, want InvalidArgument", status.Code(err))
+	}
+}

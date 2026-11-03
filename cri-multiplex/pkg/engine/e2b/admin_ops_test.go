@@ -109,6 +109,41 @@ func TestAdminPauseOperationIDRetryReturnsRecordedResult(t *testing.T) {
 	}
 }
 
+func TestAdminCheckpointRejectsOperationIDReusedByPause(t *testing.T) {
+	client := &fakeSandboxServiceClient{}
+	e := newAdminOpsTestEngine(t, client)
+
+	if _, _, err := e.AdminPause(context.Background(), adminOp("op-shared"), 0); err != nil {
+		t.Fatalf("AdminPause: %v", err)
+	}
+	// 幂等键的作用域是 (动作, 沙箱)：Pause 的终态不能被 Checkpoint 复用，
+	// 否则调用方会拿到 snapshotPersisted/vmResumed=true 但实际没打检查点。
+	if _, _, _, err := e.AdminCheckpoint(context.Background(), adminOp("op-shared"), 0); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("reused operation_id code = %v, want FailedPrecondition", status.Code(err))
+	}
+	if client.checkpointCalls != 0 {
+		t.Fatalf("checkpoint calls = %d, want 0", client.checkpointCalls)
+	}
+}
+
+func TestAdminPauseRejectsOperationIDReusedByOtherSandbox(t *testing.T) {
+	client := &fakeSandboxServiceClient{}
+	e := newAdminOpsTestEngine(t, client)
+
+	if _, _, err := e.AdminPause(context.Background(), adminOp("op-cross"), 0); err != nil {
+		t.Fatalf("AdminPause: %v", err)
+	}
+	other := adminOp("op-cross")
+	other.CRISandboxID = "cri-b"
+	other.E2BSandboxID = "e2b-b"
+	if _, _, err := e.AdminPause(context.Background(), other, 0); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("cross sandbox reuse code = %v, want FailedPrecondition", status.Code(err))
+	}
+	if client.pauseCalls != 1 {
+		t.Fatalf("pause calls = %d, want 1", client.pauseCalls)
+	}
+}
+
 func TestAdminPauseLockConflictAborted(t *testing.T) {
 	client := &fakeSandboxServiceClient{}
 	e := newAdminOpsTestEngine(t, client)

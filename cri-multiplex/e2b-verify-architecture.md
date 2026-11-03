@@ -38,7 +38,7 @@ e2b-verify/
 ├── 23_restart_multiplex_hide_direct.sh # 隐藏 direct sandbox
 ├── 24_bulk_direct_concurrency.sh      # 性能：100/200 并发（无池）
 ├── 25_bulk_direct_concurrency_pool.sh # 性能：100/200 并发（带池）
-├── 26_adminv2_e2b_lifecycle.sh        # admin v2 创建/暂停/恢复/检查点（47 条用例）
+├── 26_adminv2_e2b_lifecycle.sh        # admin v2 创建/暂停/恢复/检查点（63 条用例）
 ├── p01_bulk_cni_start_100.sh          # 性能：kubelet 批量创建（默认 95）
 ├── configure_network_mode.sh # 切换 non-CNI / CNI
 ├── switch_cni_pool.sh        # 切换 CNI 预热池
@@ -357,25 +357,32 @@ e2b-verify/
   等待 `CNI pool warm: ready=N/M` 后执行同样批次
 - `p01_bulk_cni_start_100.sh`：通过 kubelet 批量 apply（默认 95 个），统计 apply/Ready 总耗时
 
-### 26_adminv2_e2b_lifecycle.sh — admin v2 创建/暂停/恢复/检查点（47 条用例）
+### 26_adminv2_e2b_lifecycle.sh — admin v2 创建/暂停/恢复/检查点（63 条用例）
 
 前置：业务面全走 admin v2；暂停/检查点所需的快照产物由 E2B 控制面预分配，失败即退出。
 
 - P1–P7 预检 — 工具链、proto、受控实例、admin socket、v2 已注册、模板元数据、鉴权与迁移
-- C1–C3 创建 — 返回标识与接入信息；重复创建幂等、列表不重复
-- V1–V4 读一致性 — 运行事实、列表与 orchestrator 一致、数据面端口、netns
+- C1–C5 创建 — 返回标识与接入信息；重复创建幂等、列表不重复；重试携带不同起止时间不改写已生效时间；
+  同 ID 不同模板/构建重试不重建沙箱（参数不参与幂等键）
+- V1–V6 读一致性 — 运行事实、列表与 orchestrator 一致、数据面端口、netns；
+  `cri_sandbox_id` 与 `sandbox_id` 两种定位等价；v2 创建不写 CRI 路由，kubelet 侧 Stop/Remove 不误删
 - U1 修改 TTL — 列表反映新到期时间，状态/模板不变
 - L1 构建缓存 — 列出本节点已缓存的构建
-- PZ1–PZ5 暂停 — 预分配快照、暂停并持久化快照、状态变 Paused、重试幂等、删源沙箱
+- PZ1–PZ7 暂停 — 预分配快照、暂停并持久化、状态变 Paused、重试幂等、暂停后数据面关闭但端口/netns
+  仍登记、已暂停沙箱用新 op 再操作被拒绝、删源沙箱
 - R1–R3 恢复 — 从暂停快照恢复同一沙箱、指向快照模板且 Running、数据面重新可达
 - K1–K4 检查点 — 预分配模板、打检查点并持久化、源沙箱网络身份不变、重试幂等
 - KC1–KC5 检查点派生 — 新沙箱、运行事实来自检查点模板、数据面可达、列表可见、删除后查不到
-- N1–N6 负向 — 缺沙箱/团队/操作标识被拒，后端不支持 Unimplemented，后端未注册 NotFound，团队不符被拒
+- N1–N16 负向与能力分发 — 缺沙箱/团队/操作/模板/构建标识被拒；未实现 v2 的后端对 8 个方法
+  Unimplemented、未注册后端 NotFound；backend 空/大写/空白等价；operation_id 跨动作复用被拒；
+  Update 缺 ID/未知 ID；CRI 归属校验；空白 ID 拒绝；Create 失败回滚无 netns 残留；
+  Checkpoint 缺 operation_id/target 被拒
 - D1–D6 删除 — 删除运行中沙箱、重复删除幂等、查询 NotFound、列表消失、CRI 回收、缺标识被拒
 - Z1–Z2 收尾 — 无残留沙箱、汇总统计
 
-不覆盖：`crictl inspectp`（admin 路径不写 mux 路由）、`List` 里的 `Paused`（恒报 Running，暂停状态
-只能由 `GetSandboxRuntime` 观察）。
+不覆盖：`crictl inspectp`（admin 路径不写 mux 路由，V6 已用 Stop/Remove 钉住隔离性）、
+`List` 里的 `Paused`（恒报 Running，暂停状态只能由 `GetSandboxRuntime` 观察）。
+待契约确认后再补：`max_sandbox_length_hours=0`（proto 注释 0=不限制，实现回落 24h）。
 
 ### 环境与模式切换脚本
 
