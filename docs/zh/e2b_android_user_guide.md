@@ -16,14 +16,15 @@
 
 多版本镜像和cuttlefish host包获取路径：（不同分支对应不同安卓版本, 注意clone需要使用lfs，可以参考代码仓里的readme）
 
-[cvd-host-packages-and-images - AtomGit](https://gitcode.com/h3288824963/cvd-host-packages-and-images)
+[cvd-host-packages-and-images - AtomGit](https://gitcode.com/jokp_z/cvd-host-packages-and-images)
 
 ```bash
-git clone https://gitcode.com/h3288824963/cvd-host-packages-and-images.git
+git clone https://gitcode.com/jokp_z/cvd-host-packages-and-images.git
 cd cvd-host-packages-and-images
 
 ## 一次性下载所有远程分支引用的 LFS 文件（不会切换工作树）
 yum install git-lfs
+git lfs install
 git lfs fetch --all
 
 ## 然后可以自由切换任意分支，LFS 文件都已就绪
@@ -158,9 +159,9 @@ unzip aosp_cf_arm64_only_phone-img-eng.android-build.zip
 tar -xzvf cvd-host_package.tar.gz
 ```
 
-解压完成后，目录中应包含 bin/launch_cvd、etc/bootloader_aarch64/bootloader.qemu 等 Cuttlefish 文件。
+解压完成后，目录中应包含 bin/launch_cvd、etc/bootloader_aarch64/bootloader.qemu、etc/bootloader_aarch64/bootloader.stratovirt 等文件。
 
-注意需要从[u_boot_product - AtomGit](https://atomgit.com/super55/u_boot_product) 获取对应安卓版本的bootloader.stratovirt 放到 /\$CF_DIR/etc/bootloader_aarch64/ 目录下
+如果缺少bootloader.stratovirt可以从[u_boot_product - AtomGit](https://atomgit.com/super55/u_boot_product) 获取对应安卓版本的bootloader.stratovirt 放到 $CF_DIR/etc/bootloader_aarch64/ 目录下
 
 **关于 adb：** android-15/16 的 cvd-host_package.tar.gz 已移除 bin/adb（bin/adb_connector 等其余文件保持不变）。需要使用 adb 时，请统一使用 android-14 包中的 bin/adb（如 /cvd-host-packages/android-14/bin/adb），已验证其可正常连接 android-15/16 沙箱。
 
@@ -170,7 +171,7 @@ tar -xzvf cvd-host_package.tar.gz
 
 **注意：**
 
-这里启动不同版本android时需要使用对应版本的run_qemu.sh和run_stratovirt2.sh， 注意脚本请从[cvd-host-packages-and-images - AtomGit](https://gitcode.com/h3288824963/cvd-host-packages-and-images)获取最新版本。
+这里启动不同版本android时需要使用对应版本的run_qemu.sh和run_stratovirt2.sh， 注意脚本请从[cvd-host-packages-and-images - AtomGit](https://gitcode.com/jokp_z/cvd-host-packages-and-images)获取最新版本。
 
 ```bash
 bash run_qemu.sh
@@ -184,14 +185,6 @@ bash run_stratovirt2.sh
 新开终端，连接设备并检查 Android 状态。android-15/16 的包中不含 bin/adb，请使用 android-14 的 adb（见第 3 节关于 adb 的说明）：
 
 ```bash
-cd "$CF_DIR"
-
-## android-14：直接使用包内自带的 adb
-./bin/adb connect 127.0.0.1:6520
-./bin/adb devices
-./bin/adb shell
-
-## android-15/16：包内已无 bin/adb，使用 android-14 的 adb
 /cvd-host-packages/android-14/bin/adb connect 127.0.0.1:6520
 /cvd-host-packages/android-14/bin/adb devices
 /cvd-host-packages/android-14/bin/adb shell
@@ -206,7 +199,7 @@ ifconfig
 ss -lntp | grep ':49983'
 ```
 
-预期 buried_eth0 的地址为 192.168.97.2(安卓14) \| 255.255.255.255(安卓15,16)，eth1 的地址为 169.254.0.21，并且 envd 监听 49983 端口。
+预期 buried_eth0 的地址为 192.168.97.2，eth1 的地址为 169.254.0.21，并且 envd 监听 49983 端口。
 
 ## 5. 准备 E2B 节点文件
 
@@ -214,11 +207,12 @@ ss -lntp | grep ':49983'
 
 创建 /firmware，并从 \$CF_DIR 复制 persistent 磁盘。persistent_composite.img 在固件目录中使用 persistent.img 作为文件名。
 
-同时从[u_boot_product - AtomGit](https://gitcode.com/super55/u_boot_product)下载对应安卓版本的bootloader.stratovirt 放入 /firmware/android-\<版本\>/ 目录下。
+同时复制对应安卓版本的bootloader.stratovirt 放入 /firmware/android-\<版本\>/ 目录下。
 
 ```bash
 mkdir -p /firmware/android-{14,15,16}/
 cp "$CF_DIR/cuttlefish/instances/cvd-1/persistent_composite.img" "/firmware/android-${ANDROID_VERSION}/persistent.img"
+cp "$CF_DIR/etc/bootloader_aarch64/bootloader.stratovirt" "/firmware/android-${ANDROID_VERSION}/bootloader.stratovirt"
 ```
 
 ### 5.2 准备并上传 Android OS 镜像
@@ -254,7 +248,7 @@ oras push --insecure "$REGISTRY/$PROJECT/android-os:${ANDROID_VERSION}" --disabl
 kubectl edit daemonset template-manager -ne2b
 ```
 
-在 spec.template.spec.containers 中名为 template-manager 的容器下补充以下环境变量和挂载；在 spec.template.spec.volumes 下补充对应卷。CVD_HOST_PACKAGE_DIR 与 FIRMWARE_DIR 的值应分别与挂载路径一致。
+在 spec.template.spec.containers 中名为 template-manager 的容器下补充以下环境变量和挂载；在 spec.template.spec.volumes 下补充对应卷。
 
 ```yaml
 spec:
@@ -265,8 +259,10 @@ spec:
           env:
             - name: ENVD_TIMEOUT
               value: 300s
-            - name: CVD_HOST_PACKAGE_DIR
+            - name: CVD_HOST_PACKAGES_ROOT
               value: /cvd-host-packages
+            - name: FIRMWARE_PACKAGES_ROOT
+              value: /firmware
           volumeMounts:
             - name: stratovirt-versions
               mountPath: /stratovirt-versions
@@ -300,7 +296,7 @@ spec:
 
 ## 7. 使用 E2B SDK 构建并验证 Android 模板
 
-将以下脚本保存为 test_e2b_sdk.py。其中 E2B_CLUSTER_IP、Harbor 账号和密码均从环境变量读取；E2B_CONFIG_PATH 默认为 /root/.e2b/config.json。安卓多版本需要配置android_version="14"字段，15/16同理
+将以下脚本保存为 test_e2b_sdk.py。其中 E2B_CLUSTER_IP、Harbor 账号和密码均从环境变量读取；E2B_CONFIG_PATH 默认为 /root/.e2b/config.json。安卓多版本需要配置android_version、ANDROID_OS_URL字段
 
 ```python
 """构建并验证单盘 Android raw 镜像模板。"""
