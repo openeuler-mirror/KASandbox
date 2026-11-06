@@ -236,6 +236,7 @@ pub fn build_microvm_for_boot(
     vmm.vm
         .register_memory_regions(guest_memory)
         .map_err(VmmError::Vm)?;
+    vmm.vm.setup_dirty_tracking().map_err(VmmError::Vm)?;
 
     let entry_point = load_kernel(&boot_config.kernel_file, vmm.vm.guest_memory())?;
     let initrd = InitrdConfig::from_config(boot_config, vmm.vm.guest_memory())?;
@@ -431,6 +432,10 @@ pub fn build_microvm_from_snapshot(
 
     vmm.vm
         .register_memory_regions(guest_memory)
+        .map_err(VmmError::Vm)
+        .map_err(StartMicrovmError::Internal)?;
+    vmm.vm
+        .setup_dirty_tracking()
         .map_err(VmmError::Vm)
         .map_err(StartMicrovmError::Internal)?;
     vmm.uffd = uffd;

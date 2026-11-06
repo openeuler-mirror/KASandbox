@@ -66,6 +66,13 @@ pub struct VirtioBlockState {
     file_engine_type: FileEngineTypeState,
 }
 
+impl VirtioBlockState {
+    /// The generic virtio half of this state, used by in-place rollback.
+    pub(crate) fn virtio_state(&self) -> &VirtioDeviceState {
+        &self.virtio_state
+    }
+}
+
 impl Persist<'_> for VirtioBlock {
     type State = VirtioBlockState;
     type ConstructorArgs = BlockConstructorArgs;

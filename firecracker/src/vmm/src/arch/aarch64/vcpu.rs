@@ -278,6 +278,14 @@ impl KvmVcpu {
         Ok(())
     }
 
+    /// Writes a snapshot's state back onto this vcpu's existing fd, for an
+    /// in-place rollback. KVM_ARM_VCPU_INIT on an already-run vcpu is the
+    /// architecture's defined reset, so the existing restore path is exactly
+    /// the right sequence against the existing fd.
+    pub fn restore_state_in_place(&mut self, state: &VcpuState) -> Result<(), KvmVcpuError> {
+        self.restore_state(state)
+    }
+
     /// Dumps CPU configuration.
     pub fn dump_cpu_config(&self) -> Result<CpuConfiguration, KvmVcpuError> {
         let mut regs = Aarch64RegisterVec::default();

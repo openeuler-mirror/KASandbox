@@ -126,6 +126,7 @@ pub fn build_microvm_from_config(
         vmm_version: CPU_TEMPLATE_HELPER_VERSION.to_string(),
         app_name: "cpu-template-helper".to_string(),
         memory_regions: None,
+        dirty_tracking: None,
     };
     let mut vm_resources =
         VmResources::from_json(&config, &instance_info, HTTP_MAX_PAYLOAD_SIZE, None)
