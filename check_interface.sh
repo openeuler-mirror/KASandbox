@@ -199,7 +199,8 @@ EOF
 # 容器环境不预装 buf/oasdiff。脚本统一用 go install 安装到缓存目录：
 #   - go install 自带版本校验，不依赖 GitHub Release 的下载速度和资产命名；
 #   - 缓存按版本命名，已存在且 --version 通过时直接复用，不重复编译。
-# 因此容器内必须已安装 Go。
+# 因此容器内必须已安装 Go。安装失败属于工具错误，脚本会直接以退出码 2
+# 终止，不能继续执行后续检查，否则缺失工具会被误判为“无接口变更”。
 # ---------------------------------------------------------------------------
 BUF_VERSION="v1.75.0"
 OASDIFF_VERSION="v1.35.0"
@@ -538,11 +539,14 @@ check_proto() {
 is_openapi_ref() {
     local ref="$1"
     local path="$2"
-    local head
+    local content
 
     git cat-file -e "${ref}:${path}" 2>/dev/null || return 1
-    head="$(git show "${ref}:${path}" 2>/dev/null | sed -n '1,40p' || true)"
-    printf '%s\n' "$head" | grep -E "^openapi:[[:space:]]*[\"']?[0-9]" >/dev/null
+    # 不能只看文件前 N 行：许可证头、说明注释可能长达几十甚至上百行，
+    # 真正的 openapi 字段会被截断掉，导致接口文件被误判为普通 YAML。
+    # 这里扫描整个文件，只匹配顶格的 openapi 键（注释行以 # 开头，不会命中）。
+    content="$(git show "${ref}:${path}" 2>/dev/null)" || return 1
+    printf '%s\n' "$content" | grep -E "^openapi[[:space:]]*:[[:space:]]*[\"']?[0-9]" >/dev/null
 }
 
 # 把 oasdiff 的变更类型翻译成中文，例如 request-property-removed -> 删除请求体字段。
@@ -1038,8 +1042,10 @@ plugins:
     opt: paths=source_relative
 EOF
 
-    gobin="$(install_proto_plugin protoc-gen-go google.golang.org/protobuf/cmd/protoc-gen-go "$gover")" || return 1
-    grpcbin="$(install_proto_plugin protoc-gen-go-grpc google.golang.org/grpc/cmd/protoc-gen-go-grpc "$grpcver")" || return 1
+    gobin="$(install_proto_plugin protoc-gen-go google.golang.org/protobuf/cmd/protoc-gen-go "$gover")" \
+        || die "安装检查工具失败: protoc-gen-go ${gover}，终止检查"
+    grpcbin="$(install_proto_plugin protoc-gen-go-grpc google.golang.org/grpc/cmd/protoc-gen-go-grpc "$grpcver")" \
+        || die "安装检查工具失败: protoc-gen-go-grpc ${grpcver}，终止检查"
 
     setup_proto_path "protoc-gen-go|$gobin" "protoc-gen-go-grpc|$grpcbin"
 
@@ -1125,8 +1131,10 @@ check_generated_proto() {
 
     if [ "$envd" -eq 1 ]; then
         info "[generated/proto] 重新生成 envd spec（go ${PROTO_GO_VERSION} + connect ${PROTO_CONNECT_VERSION}）"
-        gobin="$(install_proto_plugin protoc-gen-go google.golang.org/protobuf/cmd/protoc-gen-go "$PROTO_GO_VERSION")" || return 0
-        connectbin="$(install_proto_plugin protoc-gen-connect-go connectrpc.com/connect/cmd/protoc-gen-connect-go "$PROTO_CONNECT_VERSION")" || return 0
+        gobin="$(install_proto_plugin protoc-gen-go google.golang.org/protobuf/cmd/protoc-gen-go "$PROTO_GO_VERSION")" \
+            || die "安装检查工具失败: protoc-gen-go ${PROTO_GO_VERSION}，终止检查"
+        connectbin="$(install_proto_plugin protoc-gen-connect-go connectrpc.com/connect/cmd/protoc-gen-connect-go "$PROTO_CONNECT_VERSION")" \
+            || die "安装检查工具失败: protoc-gen-connect-go ${PROTO_CONNECT_VERSION}，终止检查"
         setup_proto_path "protoc-gen-go|$gobin" "protoc-gen-connect-go|$connectbin"
         run_buf_generate "packages/envd/spec" --template buf.gen.yaml || true
         run_buf_generate "packages/envd/spec" --template buf.gen.shared.yaml || true
@@ -1134,15 +1142,18 @@ check_generated_proto() {
 
     if [ "$legacy" -eq 1 ]; then
         info "[generated/proto] 重新生成 envd legacy（go ${PROTO_GO_LEGACY_VERSION}）"
-        golegacy="$(install_proto_plugin protoc-gen-go google.golang.org/protobuf/cmd/protoc-gen-go "$PROTO_GO_LEGACY_VERSION")" || return 0
+        golegacy="$(install_proto_plugin protoc-gen-go google.golang.org/protobuf/cmd/protoc-gen-go "$PROTO_GO_LEGACY_VERSION")" \
+            || die "安装检查工具失败: protoc-gen-go ${PROTO_GO_LEGACY_VERSION}，终止检查"
         setup_proto_path "protoc-gen-go|$golegacy"
         run_buf_generate "packages/envd/internal/services/legacy" --template buf.gen.yaml || true
     fi
 
     if [ "$orch" -eq 1 ]; then
         info "[generated/proto] 重新生成 orchestrator（go ${PROTO_GO_VERSION} + grpc ${PROTO_GRPC_VERSION}）"
-        gobin="$(install_proto_plugin protoc-gen-go google.golang.org/protobuf/cmd/protoc-gen-go "$PROTO_GO_VERSION")" || return 0
-        grpcbin="$(install_proto_plugin protoc-gen-go-grpc google.golang.org/grpc/cmd/protoc-gen-go-grpc "$PROTO_GRPC_VERSION")" || return 0
+        gobin="$(install_proto_plugin protoc-gen-go google.golang.org/protobuf/cmd/protoc-gen-go "$PROTO_GO_VERSION")" \
+            || die "安装检查工具失败: protoc-gen-go ${PROTO_GO_VERSION}，终止检查"
+        grpcbin="$(install_proto_plugin protoc-gen-go-grpc google.golang.org/grpc/cmd/protoc-gen-go-grpc "$PROTO_GRPC_VERSION")" \
+            || die "安装检查工具失败: protoc-gen-go-grpc ${PROTO_GRPC_VERSION}，终止检查"
         setup_proto_path "protoc-gen-go|$gobin" "protoc-gen-go-grpc|$grpcbin"
 
         local -a protos=("orchestrator.proto:orchestrator" "info.proto:orchestrator-info" "template-manager.proto:template-manager")
