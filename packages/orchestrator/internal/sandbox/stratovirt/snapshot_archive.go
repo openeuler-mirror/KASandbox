@@ -6,11 +6,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
 )
 
-var snapshotFiles = []string{"state", "memory"}
+const (
+	stateFile  = "state"
+	memoryFile = "memory"
+	// gpuImagesFilePrefix starts the name of each optional per-device file in
+	// which StratoVirt keeps virtio-gpu resource images.
+	gpuImagesFilePrefix = "gpu-images-"
+)
 
 func packSnapshot(dir, destination string) error {
 	out, err := os.Create(destination)
@@ -25,7 +32,7 @@ func packSnapshot(dir, destination string) error {
 
 	tw := tar.NewWriter(out)
 
-	for _, name := range snapshotFiles {
+	for _, name := range snapshotFiles(dir) {
 		path := filepath.Join(dir, name)
 		info, err := os.Stat(path)
 		if err != nil {
@@ -67,6 +74,19 @@ func packSnapshot(dir, destination string) error {
 	return nil
 }
 
+// snapshotFiles returns the required files and the GPU images files in dir.
+// An unreadable dir needs no error here: packing fails on the required files.
+func snapshotFiles(dir string) []string {
+	names := []string{stateFile, memoryFile}
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), gpuImagesFilePrefix) {
+			names = append(names, entry.Name())
+		}
+	}
+	return names
+}
+
 func unpackSnapshot(source, dir string) error {
 	in, err := os.Open(source)
 	if err != nil {
@@ -75,7 +95,7 @@ func unpackSnapshot(source, dir string) error {
 	defer in.Close()
 
 	tr := tar.NewReader(in)
-	found := make(map[string]bool, len(snapshotFiles))
+	found := make(map[string]bool)
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -104,7 +124,7 @@ func unpackSnapshot(source, dir string) error {
 		found[header.Name] = true
 	}
 
-	for _, name := range snapshotFiles {
+	for _, name := range []string{stateFile, memoryFile} {
 		if !found[name] {
 			return fmt.Errorf("snapshot archive is missing %s", name)
 		}
@@ -113,12 +133,11 @@ func unpackSnapshot(source, dir string) error {
 }
 
 func isSnapshotFile(name string) bool {
-	for _, allowed := range snapshotFiles {
-		if name == allowed {
-			return true
-		}
+	if name == stateFile || name == memoryFile {
+		return true
 	}
-	return false
+	// Archive entries become paths below the restore directory.
+	return strings.HasPrefix(name, gpuImagesFilePrefix) && filepath.Base(name) == name
 }
 
 func restoreSnapshotFiles(file template.File, dir string, cached bool) error {
