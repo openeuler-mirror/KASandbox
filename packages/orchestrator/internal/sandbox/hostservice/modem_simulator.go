@@ -24,6 +24,8 @@ import (
 
 const ModemSimulatorVsockPort uint32 = 9600
 
+const guestGatewayNeighborDeleteCommand = "/system/bin/ip neigh del 192.168.97.1 dev buried_eth0"
+
 const androidRildRestartCommand = "kill $(pidof com.android.phone); /system/bin/setprop ctl.restart vendor.ril-daemon"
 
 const guestCommandOutputLimit = 1 << 20
@@ -87,9 +89,17 @@ func RestartGuestRild(ctx context.Context, envdHostIP string, accessToken *strin
 	defer cancel()
 
 	started := time.Now()
-	if _, err := runGuestShellCommand(restartCtx, envdHostIP, accessToken, androidRildRestartCommand); err != nil {
+	_, restartErr := runGuestShellCommand(restartCtx, envdHostIP, accessToken, androidRildRestartCommand)
+
+	_, neighborErr := runGuestShellCommand(restartCtx, envdHostIP, accessToken, guestGatewayNeighborDeleteCommand)
+
+	if neighborErr != nil {
+		logger.L().Warn(ctx, "android guest gateway neighbor repair failed", logger.WithSandboxID(sandboxID), zap.Error(neighborErr))
+	}
+
+	if restartErr != nil {
 		return fmt.Errorf("android sandbox guest rild restart failed (sandbox_id=%s, duration=%s, timeout=%s, parent_context_error=%v, restart_context_error=%v): %w",
-			sandboxID, time.Since(started), timeout, ctx.Err(), restartCtx.Err(), err)
+			sandboxID, time.Since(started), timeout, ctx.Err(), restartCtx.Err(), restartErr)
 	}
 
 	logger.L().Info(ctx, "android sandbox guest rild restarted",

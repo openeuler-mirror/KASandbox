@@ -28,6 +28,7 @@ type BuilderConfig struct {
 	FirmwarePackagesRoot       string        `env:"FIRMWARE_PACKAGES_ROOT" envDefault:"/firmware"`
 	CvdHostPackagesRoot        string        `env:"CVD_HOST_PACKAGES_ROOT" envDefault:"/cvd-host-packages"`
 	DefaultCacheDir            string        `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
+	AndroidFinalSnapshotWait   time.Duration `env:"ANDROID_FINAL_SNAPSHOT_WAIT" envDefault:"60s"`
 	ReadyCheckTimeout          time.Duration `env:"READY_CHECK_TIMEOUT"      envDefault:"30s"`
 	ADBVsockPort               uint32        `env:"ADB_VSOCK_PORT"           envDefault:"5555"`
 
@@ -111,6 +112,10 @@ func Parse() (Config, error) {
 		return config, err
 	}
 
+	if config.AndroidFinalSnapshotWait < 0 {
+		return config, fmt.Errorf("ANDROID_FINAL_SNAPSHOT_WAIT must not be negative")
+	}
+
 	// The daemon parses the embedded network.Config through env.ParseAs, which
 	// bypasses network.ParseConfig — run its SANDBOX_PROXY_* fail-fast
 	// validation (and CA_AUTO generation) here so startup behavior matches.
@@ -148,6 +153,10 @@ func ParseBuilder() (BuilderConfig, error) {
 	model, err := env.ParseAs[BuilderConfig]()
 	if err != nil {
 		return BuilderConfig{}, err
+	}
+
+	if model.AndroidFinalSnapshotWait < 0 {
+		return BuilderConfig{}, fmt.Errorf("ANDROID_FINAL_SNAPSHOT_WAIT must not be negative")
 	}
 
 	if err = makePathsAbsolute(&model); err != nil {

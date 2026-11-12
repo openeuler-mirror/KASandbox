@@ -204,10 +204,14 @@ func (ppb *PostProcessingBuilder) Build(
 	ppb.logger.Debug(ctx, "using io engine", zap.String("io_engine", ioEngine))
 
 	// Always restart the sandbox for the final layer to properly wire the rootfs path for the final template
+	sandboxTimeout := finalizeTimeout
+	if osType == vmm.OsAndroid {
+		sandboxTimeout += ppb.BuilderConfig.AndroidFinalSnapshotWait
+	}
 	sandboxCreator := layer.NewCreateSandbox(
 		sbxConfig,
 		ppb.sandboxFactory,
-		finalizeTimeout,
+		sandboxTimeout,
 		layer.WithIoEngine(ioEngine),
 	)
 
@@ -246,6 +250,15 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger, osT
 		defer func() {
 			if e != nil {
 				return
+			}
+
+			if osType == vmm.OsAndroid {
+				delay := ppb.BuilderConfig.AndroidFinalSnapshotWait
+				userLogger.Info(ctx, fmt.Sprintf("Waiting %s before Android final snapshot", delay))
+				if err := waitBeforeSnapshot(ctx, delay); err != nil {
+					e = fmt.Errorf("waiting before Android final snapshot: %w", err)
+					return
+				}
 			}
 
 			// Ensure all changes are synchronized to disk so the sandbox can be
@@ -357,5 +370,16 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger, osT
 		}
 
 		return meta, nil
+	}
+}
+
+func waitBeforeSnapshot(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
 	}
 }
