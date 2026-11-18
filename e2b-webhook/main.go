@@ -194,6 +194,8 @@ func main() {
 	certFile := envOr("TLS_CERT_FILE", "/tls/tls.crt")
 	keyFile := envOr("TLS_KEY_FILE", "/tls/tls.key")
 	port := envOr("PORT", "8443")
+	// 共享节点可限定监听地址，避免与其他地址上的同端口服务冲突。
+	listenAddress := envOr("LISTEN_ADDRESS", ":"+port)
 
 	// e2b API 配置
 	apiURL := envOr("E2B_API_URL", "http://api.e2b.svc.cluster.local:3000")
@@ -202,7 +204,7 @@ func main() {
 
 	// 创建沙箱转换器 (调用 POST /sandboxes/transform, 每次发起新请求)
 	transformer := providers.NewSandboxTransformer(apiURL, apiKey, apiTimeout)
-	matcher, err := buildMatcher(transformer)
+	matcher, err := buildMatcher(transformer, apiURL, apiKey, apiTimeout)
 	if err != nil {
 		klog.Fatalf("failed to build provider matcher: %v", err)
 	}
@@ -213,7 +215,7 @@ func main() {
 	mux.HandleFunc("/healthz", serveHealth)
 
 	server := &http.Server{
-		Addr:    ":" + port,
+		Addr:    listenAddress,
 		Handler: mux,
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
@@ -224,7 +226,7 @@ func main() {
 		IdleTimeout:  60 * time.Second, // keep-alive 空闲连接
 	}
 
-	klog.Infof("starting e2b-webhook server on :%s (cert=%s key=%s)", port, certFile, keyFile)
+	klog.Infof("starting e2b-webhook server on %s (cert=%s key=%s)", listenAddress, certFile, keyFile)
 	klog.Infof("transform API: %s/sandboxes/transform (timeout=%s)", apiURL, apiTimeout)
 
 	// 监听 SIGINT/SIGTERM 信号，触发优雅退出
@@ -259,10 +261,15 @@ func main() {
 }
 
 // buildMatcher 注册全部已实现的 Provider。
-func buildMatcher(transformer *providers.SandboxTransformer) (*provider.Matcher, error) {
+func buildMatcher(transformer *providers.SandboxTransformer, apiURL, apiKey string, apiTimeout time.Duration) (*provider.Matcher, error) {
+	templateResolver, err := providers.NewAgentENVTemplateResolver(apiURL, apiKey, apiTimeout)
+	if err != nil {
+		return nil, err
+	}
 	list := []provider.Provider{
 		providers.NewE2BProvider(transformer),
 		providers.NewAndroidProvider(),
+		providers.NewAgentENVProvider(templateResolver),
 	}
 	matcher, err := provider.NewMatcher(list...)
 	if err != nil {

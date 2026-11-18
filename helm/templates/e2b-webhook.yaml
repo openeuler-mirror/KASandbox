@@ -23,6 +23,13 @@ spec:
         app.kubernetes.io/name: e2b-webhook
     spec:
       serviceAccountName: e2b-webhook
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -42,6 +49,11 @@ spec:
         - name: e2b-webhook
           image: "{{ .Values.registry }}/{{ .Values.image.webhook }}"
           imagePullPolicy: {{ .Values.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: webhook
               containerPort: 8443
@@ -60,13 +72,20 @@ spec:
                 secretKeyRef:
                   name: e2b-api-key
                   key: api-key
-                  optional: true
+                  optional: {{ not (dig "agentenv" "enabled" false .Values.webhook) }}
             - name: E2B_API_TIMEOUT
               value: "4s"
           volumeMounts:
             - name: tls
               mountPath: /tls
               readOnly: true
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: webhook
+              scheme: HTTPS
+            failureThreshold: 30
+            periodSeconds: 2
           livenessProbe:
             httpGet:
               path: /healthz
@@ -92,6 +111,19 @@ spec:
         - name: tls
           secret:
             secretName: e2b-webhook-tls
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: e2b-webhook
+  namespace: e2b
+  labels:
+    app.kubernetes.io/name: e2b-webhook
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: e2b-webhook
 ---
 apiVersion: v1
 kind: Service
@@ -163,4 +195,42 @@ webhooks:
         resources: ["batchsandboxes"]
         operations: ["CREATE"]
         scope: "*"
+{{- if dig "agentenv" "enabled" false .Values.webhook }}
+{{- if not (semverCompare ">=1.30-0" .Capabilities.KubeVersion.Version) }}
+{{- fail "AgentENV admission requires Kubernetes >= 1.30 for stable matchConditions" }}
+{{- end }}
+  # AgentENV Pod 无法通过 label objectSelector 识别 runtimeClassName，使用 CEL 精确匹配。
+  # failurePolicy=Ignore 保持 Webhook fail-open，最终由 agentenv-engine 对模板契约 fail-closed。
+  - name: agentenv-pod.e2b-webhook.e2b.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    matchPolicy: Equivalent
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        name: e2b-webhook
+        namespace: e2b
+        path: /mutate
+        port: 443
+      caBundle: ""                 # 由 deploy/deploy.sh 注入
+    matchConditions:
+      - name: agentenv-runtime-class
+        expression: >-
+          has(object.spec.runtimeClassName) &&
+          object.spec.runtimeClassName == 'agentenv' &&
+          (!has(object.metadata.labels) ||
+           !('batch-sandbox.sandbox.opensandbox.io/pod-index' in object.metadata.labels))
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        operations: ["CREATE"]
+        scope: "*"
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "kube-public", "kube-node-lease", "e2b"]
+{{- end }}
 {{- end }}

@@ -14,6 +14,9 @@ image:
 # e2b-webhook 开关：true 部署，false 不部署（默认）
 webhook:
   enabled: ${ENABLE_WEBHOOK}
+  # 显式启用后才注册 AgentENV Pod 准入，旧环境默认关闭。
+  agentenv:
+    enabled: ${ENABLE_AGENTENV_WEBHOOK}
 pullPolicy: IfNotPresent
 # postgres 访问地址：默认内置 Service；ENABLE_POSTGRES=false 时由 POSTGRES_URL 环境变量指向外部实例
 postgresUrl: ${POSTGRES_URL}
