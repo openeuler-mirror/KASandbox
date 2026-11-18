@@ -11,7 +11,7 @@ import (
 )
 
 func TestPortForwardRegistersAuthorizedPorts(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	defer instance.Close()
 	pod, ok := instance.getPod("cri-1")
 	if !ok {
@@ -47,7 +47,7 @@ func TestPortForwardRegistersAuthorizedPorts(t *testing.T) {
 }
 
 func TestPortForwardRejectsInvalidPorts(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	defer instance.Close()
 	for _, ports := range [][]int32{{0}, {65536}} {
 		_, err := instance.PortForward(context.Background(), &runtime.PortForwardRequest{

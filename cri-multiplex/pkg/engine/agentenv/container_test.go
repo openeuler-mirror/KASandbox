@@ -13,7 +13,7 @@ import (
 	runtimeapi "github.com/cri-multiplex/pkg/agentenv/runtime/v1"
 )
 
-func newReadyContainerTestEngine(t *testing.T) (*Engine, *memoryStateStore, *routeTable) {
+func newReadyContainerTestEngine(t *testing.T) (*Engine, *memoryStateStore) {
 	t.Helper()
 	const nativeID = "019a0000-0000-7000-8000-000000000201"
 	lifecycle := &fakeLifecycle{create: func(_ context.Context, req *runtimeapi.SandboxCreateRequest) (*runtimeapi.SandboxCreateResponse, error) {
@@ -23,15 +23,14 @@ func newReadyContainerTestEngine(t *testing.T) (*Engine, *memoryStateStore, *rou
 			Phase:            runtimeapi.SandboxPhase_RUNNING,
 		}}, nil
 	}}
-	instance, store, routes := newCRITestEngine(t, lifecycle)
+	instance, store := newCRITestEngine(t, lifecycle)
 	instance.exec = &fakeExec{}
 	if _, err := instance.RunPodSandbox(context.Background(), criRunRequest(map[string]string{
-		annTemplate:  "template-1",
-		annSandboxID: "product-container-test",
+		annTemplate: "template-1",
 	})); err != nil {
 		t.Fatalf("RunPodSandbox: %v", err)
 	}
-	return instance, store, routes
+	return instance, store
 }
 
 func criCreateContainerRequest(podID, name, image string, attempt uint32) *runtime.CreateContainerRequest {
@@ -58,7 +57,7 @@ func criCreateContainerRequest(podID, name, image string, attempt uint32) *runti
 }
 
 func TestCreateContainerResolvesRelativeLogPath(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	pod, ok := instance.getPod("cri-1")
 	if !ok {
 		t.Fatal("pod projection not found")
@@ -89,7 +88,7 @@ func TestCreateContainerResolvesRelativeLogPath(t *testing.T) {
 }
 
 func TestCreateContainerRejectsRelativeLogPathWithoutDirectory(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	req := criCreateContainerRequest("cri-1", "workload", "agentenv.dev/app:v1", 0)
 	req.Config.LogPath = "workload/0.log"
 	_, err := instance.CreateContainer(context.Background(), req)
@@ -99,7 +98,7 @@ func TestCreateContainerRejectsRelativeLogPathWithoutDirectory(t *testing.T) {
 }
 
 func TestCreateContainerRejectsNonVirtualImages(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	for _, image := range []string{
 		"docker.io/library/alpine:latest",
 		"agentenv.dev/",
@@ -117,7 +116,7 @@ func TestCreateContainerRejectsNonVirtualImages(t *testing.T) {
 	}
 }
 func TestContainerLifecycleProjectionAndPodCleanup(t *testing.T) {
-	instance, store, _ := newReadyContainerTestEngine(t)
+	instance, store := newReadyContainerTestEngine(t)
 	first, err := instance.CreateContainer(context.Background(), criCreateContainerRequest("cri-1", "app", "agentenv.dev/app:v1", 0))
 	if err != nil {
 		t.Fatalf("CreateContainer first: %v", err)
@@ -197,7 +196,7 @@ func TestContainerLifecycleProjectionAndPodCleanup(t *testing.T) {
 }
 
 func TestContainerProjectionRestoreAndValidation(t *testing.T) {
-	instance, store, _ := newReadyContainerTestEngine(t)
+	instance, store := newReadyContainerTestEngine(t)
 	created, err := instance.CreateContainer(context.Background(), criCreateContainerRequest("cri-1", "app", "agentenv.dev/app:v1", 0))
 	if err != nil {
 		t.Fatalf("CreateContainer: %v", err)
@@ -209,7 +208,6 @@ func TestContainerProjectionRestoreAndValidation(t *testing.T) {
 	restored := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,
-		newRouteTable(store),
 		&fakeLifecycle{},
 		&fakeAdmin{},
 	)
@@ -232,7 +230,7 @@ func TestContainerProjectionRestoreAndValidation(t *testing.T) {
 }
 
 func TestCreateContainerRequiresReadyPod(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	if _, err := instance.StopPodSandbox(context.Background(), &runtime.StopPodSandboxRequest{PodSandboxId: "cri-1"}); err != nil {
 		t.Fatalf("StopPodSandbox: %v", err)
 	}

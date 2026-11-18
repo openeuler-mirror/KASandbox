@@ -90,7 +90,6 @@ func validateDeleteOperationStatus(expectedOperationID string, operation *runtim
 
 type createPlan struct {
 	criID       string
-	productID   string
 	podUID      string
 	name        string
 	namespace   string
@@ -128,7 +127,7 @@ func (e *Engine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRe
 		return nil, e.mapRuntimeError(err)
 	}
 	lockStarted := time.Now()
-	unlock, err := e.lockSandbox(ctx, plan.criID, plan.productID)
+	unlock, err := e.lockSandbox(ctx, plan.criID)
 	if err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
@@ -140,13 +139,12 @@ func (e *Engine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRe
 		return nil, status.Errorf(codes.Internal, "fingerprint AgentENV create request: %v", err)
 	}
 	if existing, ok := e.getPod(plan.criID); ok {
+		if existing.PodUID != plan.podUID {
+			return nil, status.Error(codes.AlreadyExists, "sandbox id belongs to another Pod")
+		}
 		if existing.RequestFingerprint != "" && existing.RequestFingerprint != string(fingerprint) {
 			return nil, status.Errorf(codes.AlreadyExists,
 				"AgentENV sandbox %s already has a different create request", plan.criID)
-		}
-		if existing.ProductSandboxID != "" && existing.ProductSandboxID != plan.productID {
-			return nil, status.Errorf(codes.AlreadyExists,
-				"AgentENV sandbox %s is already bound to product %s", plan.criID, existing.ProductSandboxID)
 		}
 		if existing.NativeSandboxID != "" {
 			found, err := e.runtimeSandboxExists(ctx, existing.NativeSandboxID)
@@ -158,9 +156,6 @@ func (e *Engine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRe
 					return nil, err
 				}
 				if err := e.ensurePodNetwork(existing); err != nil {
-					return nil, err
-				}
-				if err := e.ensurePodRoute(existing); err != nil {
 					return nil, err
 				}
 				if existing.State != criStateReady || existing.LastError != "" {
@@ -180,72 +175,9 @@ func (e *Engine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRe
 			return e.completePodCreate(ctx, plan, existing, string(fingerprint))
 		}
 	}
-	if route, ok := e.routes.PodRouteByCRI(plan.criID); ok {
-		if route.NativeSandboxID == "" {
-			// 崩溃窗口可能只留下 reservation；先确认 Runtime 侧不存在，再清理残留路由。
-			info, err := e.findRuntimeSandboxByProduct(ctx, plan.productID)
-			if err != nil {
-				return nil, err
-			}
-			if info != nil {
-				return nil, status.Errorf(codes.FailedPrecondition,
-					"AgentENV runtime exists for product %s but local runtime projection is missing", plan.productID)
-			}
-			if err := e.routes.DeleteSandbox(plan.criID); err != nil {
-				return nil, status.Errorf(codes.Internal, "delete stale AgentENV route: %v", err)
-			}
-		} else {
-			found, err := e.runtimeSandboxExists(ctx, route.NativeSandboxID)
-			if err != nil {
-				return nil, err
-			}
-			if found {
-				return nil, status.Errorf(codes.FailedPrecondition,
-					"AgentENV CRI sandbox %s has a runtime route but no local state", plan.criID)
-			}
-			if err := e.routes.DeleteSandbox(plan.criID); err != nil {
-				return nil, status.Errorf(codes.Internal, "delete stale AgentENV route: %v", err)
-			}
-		}
-	}
-
-	if route, ok := e.routes.PodRouteByProduct(plan.productID); ok {
-		if route.CRISandboxID != "" && route.CRISandboxID != plan.criID {
-			return nil, status.Errorf(codes.FailedPrecondition,
-				"product sandbox id %s is already bound to CRI sandbox %s", plan.productID, route.CRISandboxID)
-		}
-		if route.NativeSandboxID == "" {
-			return nil, status.Errorf(codes.FailedPrecondition,
-				"AgentENV sandbox creation for product %s has an unknown in-flight outcome", plan.productID)
-		}
-		found, err := e.runtimeSandboxExists(ctx, route.NativeSandboxID)
-		if err != nil {
-			return nil, err
-		}
-		if found {
-			if _, _, err := e.routes.BindPodRoute(plan.productID, plan.criID, engine.EngineTypeAgentENV); err != nil {
-				return nil, status.Errorf(codes.Internal, "bind AgentENV sandbox route: %v", err)
-			}
-			return nil, status.Errorf(codes.FailedPrecondition,
-				"AgentENV runtime exists for product %s but local runtime projection is missing", plan.productID)
-		}
-		if err := e.routes.DeleteSandbox(plan.productID); err != nil {
-			return nil, status.Errorf(codes.Internal, "delete stale AgentENV product route: %v", err)
-		}
-	}
-	reservation := podRoute{
-		Backend:          engine.EngineTypeAgentENV,
-		CRISandboxID:     plan.criID,
-		ProductSandboxID: plan.productID,
-	}
-	if err := e.routes.PutPodRoute(reservation); err != nil {
-		_ = e.routes.DeleteSandbox(plan.criID)
-		return nil, status.Errorf(codes.FailedPrecondition, "reserve AgentENV sandbox ids: %v", err)
-	}
 	now := time.Now()
 	record := podRecord{
 		CRISandboxID:       plan.criID,
-		ProductSandboxID:   plan.productID,
 		PodUID:             plan.podUID,
 		Name:               plan.name,
 		Namespace:          plan.namespace,
@@ -262,9 +194,7 @@ func (e *Engine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRe
 	}
 	record.RuntimeNetwork = &runtimeNetworkRecord{Mode: runtimeManagedNetworkMode}
 	if err := e.putPod(record); err != nil {
-		routeErr := e.routes.DeleteSandbox(plan.criID)
-		return nil, status.Errorf(codes.Internal, "persist pending AgentENV CRI sandbox: %v; cleanup: %v",
-			err, routeErr)
+		return nil, status.Errorf(codes.Internal, "persist pending AgentENV CRI sandbox: %v", err)
 	}
 	completeStarted := time.Now()
 	response, err := e.completePodCreate(ctx, plan, record, string(fingerprint))
@@ -299,7 +229,7 @@ func (e *Engine) completePodCreate(ctx context.Context, plan *createPlan, record
 	info := response.GetSandbox()
 	nativeID := info.GetNativeSandboxId()
 	if nativeID == "" {
-		recovered, recoverErr := e.findRuntimeSandboxByProduct(ctx, plan.productID)
+		recovered, recoverErr := e.findRuntimeSandboxByProduct(ctx, plan.criID)
 		if recoverErr != nil {
 			return nil, e.rollbackFailedCreate(ctx, record, recoverErr)
 		}
@@ -311,9 +241,9 @@ func (e *Engine) completePodCreate(ctx context.Context, plan *createPlan, record
 		cause := status.Error(codes.Internal, "AgentENV Runtime returned an empty native sandbox id")
 		return nil, e.rollbackFailedCreate(ctx, record, cause)
 	}
-	if productID := info.GetProductSandboxId(); productID != "" && productID != plan.productID {
+	if productID := info.GetProductSandboxId(); productID != "" && productID != plan.criID {
 		cause := status.Errorf(codes.Internal,
-			"AgentENV Runtime returned product sandbox id %q, want %q", productID, plan.productID)
+			"AgentENV Runtime returned product sandbox id %q, want %q", productID, plan.criID)
 		record.NativeSandboxID = nativeID
 		return nil, e.rollbackFailedCreate(ctx, record, cause)
 	}
@@ -324,17 +254,11 @@ func (e *Engine) completePodCreate(ctx context.Context, plan *createPlan, record
 	}
 	record.State = criStateCreating
 	record.LastError = ""
-	// 保存 ready 投影及后端私有 ID 对照。
+	// 保存 ready 投影。
 	record.State = criStateReady
 	record.LastError = ""
 	persistStarted := time.Now()
-	route := podRoute{
-		Backend:          engine.EngineTypeAgentENV,
-		CRISandboxID:     record.CRISandboxID,
-		ProductSandboxID: record.ProductSandboxID,
-		NativeSandboxID:  record.NativeSandboxID,
-	}
-	if err := e.putPodWithRoute(record, route); err != nil {
+	if err := e.putPod(record); err != nil {
 		return nil, e.rollbackFailedCreate(ctx, record,
 			status.Errorf(codes.Internal, "persist AgentENV CRI sandbox state: %v", err))
 	}
@@ -345,21 +269,6 @@ func (e *Engine) completePodCreate(ctx context.Context, plan *createPlan, record
 	return &runtime.RunPodSandboxResponse{PodSandboxId: plan.criID}, nil
 }
 
-func (e *Engine) ensurePodRoute(record podRecord) error {
-	if record.CRISandboxID == "" || record.NativeSandboxID == "" {
-		return status.Error(codes.FailedPrecondition, "CRI and native sandbox ids are required for route")
-	}
-	if err := e.routes.PutPodRoute(podRoute{
-		Backend:          engine.EngineTypeAgentENV,
-		CRISandboxID:     record.CRISandboxID,
-		ProductSandboxID: record.ProductSandboxID,
-		NativeSandboxID:  record.NativeSandboxID,
-	}); err != nil {
-		return status.Errorf(codes.Internal, "persist AgentENV sandbox route: %v", err)
-	}
-	return nil
-}
-
 func (e *Engine) rollbackFailedCreate(ctx context.Context, record podRecord, cause error) error {
 	if err := e.rollbackPodCreate(ctx, record); err != nil {
 		return status.Errorf(codes.Internal, "%v; rollback failed: %v", cause, err)
@@ -367,7 +276,7 @@ func (e *Engine) rollbackFailedCreate(ctx context.Context, record podRecord, cau
 	return cause
 }
 
-// rollbackPodCreate 回收一次未完成 Create 的全部资源；失败时保留 cleanup-pending 供 reconciler 重试。
+// rollbackPodCreate 回收一次未完成 Create 的全部资源；失败时保留 cleanup-pending 供后续 CRI 清理重试。
 func (e *Engine) rollbackPodCreate(ctx context.Context, record podRecord) error {
 	rollbackCtx := context.WithoutCancel(ctx)
 	var errs []error
@@ -392,9 +301,6 @@ func (e *Engine) rollbackPodCreate(ctx context.Context, record podRecord) error 
 	}
 	if err := e.deletePod(record.CRISandboxID); err != nil {
 		return err
-	}
-	if err := e.routes.DeleteSandbox(record.CRISandboxID); err != nil {
-		return fmt.Errorf("delete AgentENV route: %w", err)
 	}
 	return nil
 }
@@ -424,16 +330,7 @@ func (e *Engine) PodSandboxStatus(ctx context.Context, req *runtime.PodSandboxSt
 	}
 	record, found := e.getPod(criID)
 	if !found {
-		route, ok := e.routes.PodRouteByCRI(criID)
-		if !ok {
-			return nil, status.Errorf(codes.NotFound, "AgentENV pod sandbox %s not found", criID)
-		}
-		record = podRecord{
-			CRISandboxID:     criID,
-			ProductSandboxID: route.ProductSandboxID,
-			NativeSandboxID:  route.NativeSandboxID,
-			State:            criStateNotReady,
-		}
+		return nil, status.Errorf(codes.NotFound, "AgentENV pod sandbox %s not found", criID)
 	}
 
 	state := criStateNotReady
@@ -543,8 +440,7 @@ func (e *Engine) ListPodSandbox(ctx context.Context, req *runtime.ListPodSandbox
 func (e *Engine) StopPodSandbox(ctx context.Context, req *runtime.StopPodSandboxRequest) (resp *runtime.StopPodSandboxResponse, retErr error) {
 	criID := req.GetPodSandboxId()
 	lockStarted := time.Now()
-	ids := e.sandboxOperationIDs(criID)
-	unlock, err := e.lockSandbox(ctx, ids...)
+	unlock, err := e.lockSandbox(ctx, criID)
 	if err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
@@ -565,18 +461,13 @@ func (e *Engine) stopPodSandboxLocked(ctx context.Context, req *runtime.StopPodS
 	}
 	record, found := e.getPod(criID)
 	if !found {
-		route, ok := e.routes.PodRouteByCRI(criID)
-		if !ok {
-			return &runtime.StopPodSandboxResponse{}, nil
-		}
-		record = podRecord{CRISandboxID: criID, ProductSandboxID: route.ProductSandboxID, NativeSandboxID: route.NativeSandboxID}
+		return &runtime.StopPodSandboxResponse{}, nil
 	}
 	if record.State == criStateNotReady && record.RuntimeDeleted {
 		return &runtime.StopPodSandboxResponse{}, nil
 	}
 	if record.NativeSandboxID == "" {
 		_ = e.deletePod(criID)
-		_ = e.routes.DeleteSandbox(criID)
 		return &runtime.StopPodSandboxResponse{}, nil
 	}
 	if err := e.ensureClients(); err != nil {
@@ -609,8 +500,7 @@ func (e *Engine) stopPodSandboxLocked(ctx context.Context, req *runtime.StopPodS
 func (e *Engine) RemovePodSandbox(ctx context.Context, req *runtime.RemovePodSandboxRequest) (resp *runtime.RemovePodSandboxResponse, retErr error) {
 	criID := req.GetPodSandboxId()
 	lockStarted := time.Now()
-	ids := e.sandboxOperationIDs(criID)
-	unlock, err := e.lockSandbox(ctx, ids...)
+	unlock, err := e.lockSandbox(ctx, criID)
 	if err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
@@ -629,9 +519,6 @@ func (e *Engine) RemovePodSandbox(ctx context.Context, req *runtime.RemovePodSan
 	}
 	var errs []error
 	if err := e.deletePod(criID); err != nil {
-		errs = append(errs, err)
-	}
-	if err := e.routes.DeleteSandbox(criID); err != nil {
 		errs = append(errs, err)
 	}
 	if len(errs) > 0 {
@@ -658,10 +545,9 @@ func buildCreatePlan(req *runtime.RunPodSandboxRequest) (*createPlan, error) {
 	if meta.GetUid() == "" {
 		return nil, status.Error(codes.InvalidArgument, "pod sandbox UID is required")
 	}
-	criID := meta.GetUid()
-	productID := strings.TrimSpace(annotations[annSandboxID])
-	if productID == "" {
-		productID = criID
+	criID := strings.TrimSpace(annotations[annSandboxID])
+	if criID == "" {
+		criID = meta.GetUid()
 	}
 	templateID := strings.TrimSpace(annotations[annCanonicalTemplate])
 	if templateID == "" {
@@ -757,7 +643,7 @@ func buildCreatePlan(req *runtime.RunPodSandboxRequest) (*createPlan, error) {
 	}
 
 	spec := &runtimeapi.SandboxSpec{
-		ProductSandboxId: productID,
+		ProductSandboxId: criID,
 		Alias:            meta.GetName(),
 		Source: &runtimeapi.SandboxSource{Kind: &runtimeapi.SandboxSource_Template{Template: &runtimeapi.TemplateSource{
 			TemplateId: templateID,
@@ -776,7 +662,6 @@ func buildCreatePlan(req *runtime.RunPodSandboxRequest) (*createPlan, error) {
 	}
 	return &createPlan{
 		criID:       criID,
-		productID:   productID,
 		podUID:      meta.GetUid(),
 		name:        meta.GetName(),
 		namespace:   meta.GetNamespace(),

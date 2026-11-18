@@ -55,13 +55,10 @@ type Config struct {
 // 容器和镜像仅做 CRI 本地投影；真实执行环境始终是 PodSandbox 对应的 microVM。
 type Engine struct {
 	config Config
-	routes *routeTable
 	store  engine.StateStore
 
-	// lifecycleMu 只用于隔离周期 Reconcile 与在线生命周期操作。
 	// sandboxOps 按 sandbox ID 加锁，不同 sandbox 的创建/清理可以并行。
-	lifecycleMu sync.RWMutex
-	sandboxOps  keyedLockSet
+	sandboxOps keyedLockSet
 
 	podMu        sync.RWMutex
 	podPersistMu sync.Mutex
@@ -70,7 +67,6 @@ type Engine struct {
 	persistedPodStateVersion uint64
 	pods                     map[string]*podRecord
 	containers               map[string]*containerRecord
-	images                   map[string]*imageRecord
 
 	dialOnce  sync.Once
 	dialErr   error
@@ -94,24 +90,20 @@ func New(config Config, deps engine.Deps) (*Engine, error) {
 	}
 	instance := &Engine{
 		config:          config,
-		routes:          newRouteTable(deps.Store),
 		store:           deps.Store,
 		pods:            make(map[string]*podRecord),
 		containers:      make(map[string]*containerRecord),
-		images:          make(map[string]*imageRecord),
 		portForwardReqs: make(map[string]*portForwardRequest),
 	}
 	return instance, nil
 }
 
-func newWithClients(config Config, store engine.StateStore, routes *routeTable, lifecycle lifecycleAPI, admin adminAPI) *Engine {
+func newWithClients(config Config, store engine.StateStore, lifecycle lifecycleAPI, admin adminAPI) *Engine {
 	e := &Engine{
 		config:          config,
-		routes:          routes,
 		store:           store,
 		pods:            make(map[string]*podRecord),
 		containers:      make(map[string]*containerRecord),
-		images:          make(map[string]*imageRecord),
 		portForwardReqs: make(map[string]*portForwardRequest),
 		lifecycle:       lifecycle,
 		admin:           admin,

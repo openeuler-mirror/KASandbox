@@ -38,7 +38,6 @@ cri-multiplex \
 - `-cni-pool-enabled` — E2B CNI netns/veth 预热池总开关（默认 false = 关闭）。需与 `-cni-pool-size > 0` 同时设置才生效。开启后后台协程提前执行完整 CNI ADD（netns 创建 + veth 配对 + host-local IPAM 分配），`RunPodSandbox` 直接从池中取用，规避并发创建时 CNI 插件链的串行瓶颈；有 RunPodSandbox 在途时预热自动暂停，创建优先；池空时回退为实时 CNI ADD。进程启动时自动清理上一轮遗留的预热池 entry（新命名可完整 CNI DEL 释放 IPAM，旧命名仅删 netns）。详见《CNI 并发创建优化与池化改造.md》
 - `-cni-pool-size` — E2B CNI netns/veth 预热池容量（默认 0 = 关闭），仅在 `-cni-pool-enabled` 同时开启时生效
 
-
 Requires root or write access to `/run/` for the socket.
 
 ## Architecture
@@ -81,7 +80,7 @@ test/test_pod_default.json       — 手工测试用的 PodSandbox 样例
 - **List\***：向所有后端并发 fan-out 并按后端合并；单后端失败保留其它后端结果（全部失败才报错，`Health` 只记日志）。
 - **Image 操作**（Status/Pull/Remove）：先按 `Descriptor.ImagePrefixes` 最长前缀匹配，未命中再按注册表顺序回退；`ImageFsInfo` 同理。
 - **Status/Version/UpdateRuntimeConfig**：始终委托给 containerd 后端。
-- **GetContainerEvents**：保持 mux 原有的不支持行为。
+- **GetContainerEvents**：返回不支持（多路复用器不接管 events）。
 
 旧构造函数 `server.NewMuxServerLegacy` / `engine.NewCleanupManagerLegacy` 只为过渡期测试保留（名字含 `Legacy`）。
 
@@ -208,3 +207,4 @@ Two generations of services share one admin unix socket:
 - `cni_*` 子字段仅 direct ADD 路径填写，池化命中为 0；`persist_ms` 是 `SaveBackendState("e2b.pods", …)`（全量 MarshalIndent + fsync + rename，store 互斥锁 + `Engine.stateMu`）的墙钟耗时（含锁排队）。
 - 采集脚本：`e2b-verify/28_bulk_concurrency_standalone.sh`（单机）、`29_bulk_concurrency_multinode.sh`（多节点），按 `[PerfTrace]` 解析统计 avg/p50/p90/p99。
 - 端到端基准：`e2b-verify/32_bulk_runp_concurrent.py`（并发栅栏同时发起 N 个 RunPodSandbox，输出分位数与 `[BulkResult]` 机读行，可选 `--cleanup`）；`e2b-verify/33_multi_round_benchmark.sh`（连续多轮跑 32 号脚本并附带环境指纹：负载/内存/大页/netns 泄漏数等，用于跨轮对比稳定性）。
+

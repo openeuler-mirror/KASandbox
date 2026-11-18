@@ -26,7 +26,7 @@ func TestRunPodSandboxDifferentSandboxesRunConcurrently(t *testing.T) {
 			Phase:            runtimeapi.SandboxPhase_RUNNING,
 		}}, nil
 	}}
-	instance, _, _ := newCRITestEngine(t, lifecycle)
+	instance, _ := newCRITestEngine(t, lifecycle)
 
 	newRequest := func(uid, productID string) *runtime.RunPodSandboxRequest {
 		req := criRunRequest(map[string]string{
@@ -87,11 +87,9 @@ func TestPodPersistenceDoesNotHoldStateReadLock(t *testing.T) {
 		entered:          make(chan struct{}),
 		release:          make(chan struct{}),
 	}
-	routes := newRouteTable(store)
 	instance := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,
-		routes,
 		&fakeLifecycle{},
 		&fakeAdmin{},
 	)
@@ -99,9 +97,8 @@ func TestPodPersistenceDoesNotHoldStateReadLock(t *testing.T) {
 	putErr := make(chan error, 1)
 	go func() {
 		putErr <- instance.putPod(podRecord{
-			CRISandboxID:     "cri-lock",
-			ProductSandboxID: "product-lock",
-			State:            criStateCreating,
+			CRISandboxID: "cri-lock",
+			State:        criStateCreating,
 		})
 	}()
 
@@ -118,7 +115,7 @@ func TestPodPersistenceDoesNotHoldStateReadLock(t *testing.T) {
 			readDone <- fmt.Errorf("pod record not found while persistence was blocked")
 			return
 		}
-		if record.ProductSandboxID != "product-lock" {
+		if record.CRISandboxID != "cri-lock" {
 			readDone <- fmt.Errorf("unexpected pod record: %+v", record)
 			return
 		}
@@ -146,11 +143,9 @@ func TestConcurrentPodMutationsCoalesceStateSnapshots(t *testing.T) {
 		entered:          make(chan struct{}),
 		release:          make(chan struct{}),
 	}
-	routes := newRouteTable(store)
 	instance := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,
-		routes,
 		&fakeLifecycle{},
 		&fakeAdmin{},
 	)
@@ -158,9 +153,8 @@ func TestConcurrentPodMutationsCoalesceStateSnapshots(t *testing.T) {
 	firstErr := make(chan error, 1)
 	go func() {
 		firstErr <- instance.putPod(podRecord{
-			CRISandboxID:     "cri-0",
-			ProductSandboxID: "product-0",
-			State:            criStateCreating,
+			CRISandboxID: "cri-0",
+			State:        criStateCreating,
 		})
 	}()
 	select {
@@ -174,9 +168,8 @@ func TestConcurrentPodMutationsCoalesceStateSnapshots(t *testing.T) {
 	for i := 0; i < extra; i++ {
 		go func(i int) {
 			errs <- instance.putPod(podRecord{
-				CRISandboxID:     fmt.Sprintf("cri-%d", i+1),
-				ProductSandboxID: fmt.Sprintf("product-%d", i+1),
-				State:            criStateCreating,
+				CRISandboxID: fmt.Sprintf("cri-%d", i+1),
+				State:        criStateCreating,
 			})
 		}(i)
 	}

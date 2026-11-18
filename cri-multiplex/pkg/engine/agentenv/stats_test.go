@@ -14,7 +14,7 @@ import (
 )
 
 func TestContainerStatsUsesSingleSandboxAccountingContainer(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	first, err := instance.CreateContainer(context.Background(), criCreateContainerRequest("cri-1", "app", "agentenv.dev/app:v1", 0))
 	if err != nil {
 		t.Fatalf("CreateContainer first: %v", err)
@@ -112,7 +112,7 @@ func TestContainerStatsUsesSingleSandboxAccountingContainer(t *testing.T) {
 	}
 }
 func TestContainerStatsValidationAndNonOwnerFilter(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	first, err := instance.CreateContainer(context.Background(), criCreateContainerRequest("cri-1", "app", "agentenv.dev/app:v1", 0))
 	if err != nil {
 		t.Fatalf("CreateContainer first: %v", err)

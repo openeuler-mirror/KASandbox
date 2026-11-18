@@ -97,7 +97,7 @@ Runtime 协议源在 `proto/agentenv/runtime/v1/runtime.proto`，与配套 Runti
 protoc -I proto --go_out=. --go_opt=module=github.com/cri-multiplex --go_opt=Magentenv/runtime/v1/runtime.proto=github.com/cri-multiplex/pkg/agentenv/runtime/v1 --go-grpc_out=. --go-grpc_opt=module=github.com/cri-multiplex --go-grpc_opt=Magentenv/runtime/v1/runtime.proto=github.com/cri-multiplex/pkg/agentenv/runtime/v1 proto/agentenv/runtime/v1/runtime.proto
 ```
 
-AgentENV 的 CRI、产品和原生 Sandbox ID 对照保存在自身 `agentenv.id_map` 状态中，公共路由结构不扩展。镜像引用缓存不再单独持久化；容器记录仍保留镜像引用。升级到此版前必须停止投递并排空 AgentENV Sandbox，不迁移存活 Sandbox 的旧映射。
+AgentENV 使用统一的逻辑 Sandbox ID：优先取 `sandbox.cri/sandbox-id`，未指定时取 Pod UID；CRI 返回此 ID，Pod metadata 保留原始 UID。Runtime 生成的原生 UUID 仅用于调用 Runtime 接口，与 Pod 状态一起保存，不再维护独立 ID 路由表。Image 接口无状态，不下载或缓存镜像；实际 rootfs 由模板提供。切换到此版前必须排空 AgentENV Sandbox，不迁移存活 Sandbox 的旧 ID 映射。
 
 Runtime 去掉自定义崩溃回收和全局维护屏障，ublk 恢复上游实现；保留正常请求幂等、Sandbox 操作互斥及生命周期处理。Runtime 协议版本为 `2.0.0`，移除私有 Remediate RPC；mux 与 Runtime 应配套更新。
 

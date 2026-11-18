@@ -29,7 +29,6 @@ type podRecord struct {
 	// RuntimeNetwork 仅记录 Runtime 所有的网络，绝不能传给 CNI DEL。
 	RuntimeNetwork     *runtimeNetworkRecord `json:"runtime_network,omitempty"`
 	CRISandboxID       string                `json:"cri_sandbox_id"`
-	ProductSandboxID   string                `json:"product_sandbox_id"`
 	NativeSandboxID    string                `json:"native_sandbox_id,omitempty"`
 	RuntimeDeleted     bool                  `json:"runtime_deleted,omitempty"`
 	PodUID             string                `json:"pod_uid"`
@@ -92,13 +91,6 @@ type containerRecord struct {
 	UpdatedAt  time.Time `json:"updated_at,omitempty"`
 }
 
-// imageRecord 表示已经由 CRI 声明可用的虚拟镜像引用。
-// AgentENV 模板决定实际 rootfs，镜像内容不会在节点侧拉取或执行。
-type imageRecord struct {
-	Reference string `json:"reference"`
-	ID        string `json:"id"`
-}
-
 type persistedAgentENVState struct {
 	Pods       []podRecord       `json:"pods"`
 	Containers []containerRecord `json:"containers,omitempty"`
@@ -119,6 +111,9 @@ func (e *Engine) restorePods() error {
 	pods := make(map[string]*podRecord, len(state.Pods))
 	for i := range state.Pods {
 		record := state.Pods[i]
+		if id := record.Annotations[annSandboxID]; id != "" && id != record.CRISandboxID {
+			return fmt.Errorf("agentenv pods: old sandbox ID mapping for %s; drain with the previous version before switching", record.CRISandboxID)
+		}
 		if record.CRISandboxID == "" {
 			return fmt.Errorf("agentenv pods: persisted CRI sandbox id is empty")
 		}
@@ -240,14 +235,6 @@ func (e *Engine) putPod(record podRecord) error {
 			delete(e.pods, record.CRISandboxID)
 		}
 	})
-}
-
-// 状态和 AgentENV 私有 ID 对照分别保存，不扩展公共 StateStore。
-func (e *Engine) putPodWithRoute(record podRecord, route podRoute) error {
-	if err := e.putPod(record); err != nil {
-		return err
-	}
-	return e.routes.PutPodRoute(route)
 }
 
 func (e *Engine) setPodState(criSandboxID, state string) error {

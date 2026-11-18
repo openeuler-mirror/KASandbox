@@ -99,7 +99,7 @@ func TestNativeRestoreRejectsLegacyNetworkWithoutChangingState(t *testing.T) {
 			store := newMemoryStateStore()
 			raw := []byte(`{"pods":[{"cri_sandbox_id":"old","native_sandbox_id":"native","state":"ready"` + extra + `}]}`)
 			store.sections[podStatePath] = raw
-			e := newWithClients(Config{}, store, newRouteTable(store), &fakeLifecycle{}, &fakeAdmin{})
+			e := newWithClients(Config{}, store, &fakeLifecycle{}, &fakeAdmin{})
 			defer e.Close()
 			if err := e.restorePods(); err == nil {
 				t.Fatal("应拒绝旧网络状态")

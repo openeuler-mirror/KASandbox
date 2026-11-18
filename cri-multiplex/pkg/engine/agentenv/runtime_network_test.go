@@ -27,7 +27,7 @@ func newRuntimeNetworkTestEngine(t *testing.T) (*Engine, *fakeLifecycle, *fakeAd
 			return &runtimeapi.SandboxInfo{NativeSandboxId: nativeID, Phase: runtimeapi.SandboxPhase_RUNNING}, nil
 		},
 	}
-	e, _, _ := newCRITestEngine(t, lifecycle)
+	e, _ := newCRITestEngine(t, lifecycle)
 	path := filepath.Join(t.TempDir(), "runtime-netns")
 	if err := os.WriteFile(path, nil, 0600); err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestRuntimeManagedNetworkLifecycleAndOwnership(t *testing.T) {
 	if rsp.GetStatus().GetNetwork().GetIp() != "10.11.0.9" || rsp.GetStatus().GetState() != runtime.PodSandboxState_SANDBOX_READY {
 		t.Fatalf("Pod 状态: %+v", rsp)
 	}
-	restored := newWithClients(Config{}, e.store, newRouteTable(e.store), lifecycle, e.admin)
+	restored := newWithClients(Config{}, e.store, lifecycle, e.admin)
 	if err := restored.restorePods(); err != nil {
 		t.Fatal(err)
 	}

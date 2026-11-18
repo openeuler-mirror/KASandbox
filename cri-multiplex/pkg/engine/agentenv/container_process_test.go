@@ -18,7 +18,7 @@ import (
 )
 
 func TestConcurrentStartContainerStartsOneGuestProcess(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	created, err := instance.CreateContainer(context.Background(), criCreateContainerRequest("cri-1", "concurrent-start", "agentenv.dev/app:v1", 0))
 	if err != nil {
 		t.Fatalf("CreateContainer: %v", err)
@@ -62,7 +62,7 @@ func TestReopenContainerLogIncrementsGeneration(t *testing.T) {
 }
 
 func TestStartContainerStartsNativeProcessAndStopUsesPid(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	var startRequest *runtimeapi.SandboxProcessStartRequest
 	var stopRequest *runtimeapi.SandboxProcessStopRequest
 	instance.exec = &fakeExec{
@@ -116,7 +116,7 @@ func TestStartContainerStartsNativeProcessAndStopUsesPid(t *testing.T) {
 }
 
 func TestContainerProcessExitWritesCRILogAndExitCode(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	instance.exec = &fakeExec{
 		startProcess: func(context.Context, *runtimeapi.SandboxProcessStartRequest) (*runtimeapi.SandboxProcessStartResponse, error) {
 			return &runtimeapi.SandboxProcessStartResponse{Pid: 6161}, nil
@@ -190,7 +190,7 @@ func TestCRILogWriterPreservesPartialLinesByStream(t *testing.T) {
 	}
 }
 func TestUpdateContainerResourcesIsExplicitlyUnimplemented(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	created, err := instance.CreateContainer(context.Background(), criCreateContainerRequest("cri-1", "app", "agentenv.dev/app:v1", 0))
 	if err != nil {
 		t.Fatalf("CreateContainer: %v", err)
@@ -203,7 +203,7 @@ func TestUpdateContainerResourcesIsExplicitlyUnimplemented(t *testing.T) {
 
 func startProcessTestContainer(t *testing.T) (*Engine, string) {
 	t.Helper()
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	instance.exec = &fakeExec{startProcess: func(context.Context, *runtimeapi.SandboxProcessStartRequest) (*runtimeapi.SandboxProcessStartResponse, error) {
 		return &runtimeapi.SandboxProcessStartResponse{Pid: 4242}, nil
 	}}

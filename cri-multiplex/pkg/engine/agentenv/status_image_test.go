@@ -13,7 +13,7 @@ import (
 )
 
 func TestCRIStatusVersionAndRuntimeConfig(t *testing.T) {
-	instance, _, _ := newCRITestEngine(t, &fakeLifecycle{})
+	instance, _ := newCRITestEngine(t, &fakeLifecycle{})
 	version, err := instance.Version(context.Background(), &runtime.VersionRequest{})
 	if err != nil {
 		t.Fatalf("Version: %v", err)
@@ -43,11 +43,9 @@ func TestCRIStatusVersionAndRuntimeConfig(t *testing.T) {
 
 func TestCRIStatusReportsRuntimeFailure(t *testing.T) {
 	store := newMemoryStateStore()
-	routes := newRouteTable(store)
 	instance := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,
-		routes,
 		&fakeLifecycle{},
 		&fakeAdmin{capabilities: func(context.Context, *emptypb.Empty) (*runtimeapi.SandboxCapabilities, error) {
 			return nil, status.Error(codes.Unavailable, "runtime offline")
@@ -68,12 +66,10 @@ func TestCRIStatusReportsRuntimeFailure(t *testing.T) {
 
 func TestHealthRetriesOnceAfterRuntimeRestart(t *testing.T) {
 	store := newMemoryStateStore()
-	routes := newRouteTable(store)
 	attempts := 0
 	instance := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,
-		routes,
 		&fakeLifecycle{},
 		&fakeAdmin{capabilities: func(context.Context, *emptypb.Empty) (*runtimeapi.SandboxCapabilities, error) {
 			attempts++
@@ -91,7 +87,7 @@ func TestHealthRetriesOnceAfterRuntimeRestart(t *testing.T) {
 	}
 }
 func TestCreateContainerAcceptsVirtualImageID(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
+	instance, _ := newReadyContainerTestEngine(t)
 	pulled, err := instance.PullImage(context.Background(), &runtime.PullImageRequest{Image: &runtime.ImageSpec{Image: "agentenv.dev/app:v1"}})
 	if err != nil {
 		t.Fatalf("PullImage: %v", err)
@@ -114,51 +110,24 @@ func TestCreateContainerAcceptsVirtualImageID(t *testing.T) {
 	}
 }
 
-func TestCreateContainerRejectsUnknownVirtualImageID(t *testing.T) {
-	instance, _, _ := newReadyContainerTestEngine(t)
-	_, err := instance.CreateContainer(context.Background(),
-		criCreateContainerRequest("cri-1", "app", "agentenv-image:0123456789abcdef0123456789abcdef", 0))
-	if status.Code(err) != codes.NotFound {
-		t.Fatalf("code = %v, want NotFound", status.Code(err))
-	}
-}
-
 func TestVirtualImageProjection(t *testing.T) {
-	instance, store, _ := newReadyContainerTestEngine(t)
-	pulled, err := instance.PullImage(context.Background(), &runtime.PullImageRequest{Image: &runtime.ImageSpec{Image: "agentenv.dev/app:v1"}})
-	if err != nil {
-		t.Fatalf("PullImage: %v", err)
+	instance, _ := newReadyContainerTestEngine(t)
+	ctx := context.Background()
+	ref := "agentenv.dev/app:v1"
+	for i := 0; i < 2; i++ {
+		image, err := instance.ImageStatus(ctx, &runtime.ImageStatusRequest{Image: &runtime.ImageSpec{Image: ref}})
+		if err != nil || image.GetImage().GetId() != ref {
+			t.Fatalf("ImageStatus: %v %v", image, err)
+		}
+		if _, err := instance.RemoveImage(ctx, &runtime.RemoveImageRequest{Image: &runtime.ImageSpec{Image: ref}}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if pulled.GetImageRef() == "" {
-		t.Fatal("PullImage returned empty image ref")
+	listed, err := instance.ListImages(ctx, &runtime.ListImagesRequest{})
+	if err != nil || len(listed.GetImages()) != 0 {
+		t.Fatalf("ListImages: %v %v", listed, err)
 	}
-	imageStatus, err := instance.ImageStatus(context.Background(), &runtime.ImageStatusRequest{Image: &runtime.ImageSpec{Image: "agentenv.dev/app:v1"}})
-	if err != nil || imageStatus.GetImage().GetId() != pulled.GetImageRef() {
-		t.Fatalf("ImageStatus mismatch: image=%+v err=%v", imageStatus.GetImage(), err)
-	}
-	listed, err := instance.ListImages(context.Background(), &runtime.ListImagesRequest{Filter: &runtime.ImageFilter{
-		Image: &runtime.ImageSpec{Image: pulled.GetImageRef()},
-	}})
-	if err != nil || len(listed.GetImages()) != 1 || listed.GetImages()[0].GetId() != pulled.GetImageRef() {
-		t.Fatalf("ListImages filter mismatch: %+v err=%v", listed.GetImages(), err)
-	}
-
-	if _, err := instance.CreateContainer(context.Background(), criCreateContainerRequest("cri-1", "app", "agentenv.dev/container-only:v2", 0)); err != nil {
-		t.Fatalf("CreateContainer: %v", err)
-	}
-	all, err := instance.ListImages(context.Background(), &runtime.ListImagesRequest{})
-	if err != nil || len(all.GetImages()) != 2 {
-		t.Fatalf("image projection from container missing: %+v err=%v", all.GetImages(), err)
-	}
-	if _, err := instance.RemoveImage(context.Background(), &runtime.RemoveImageRequest{Image: &runtime.ImageSpec{Image: "agentenv.dev/app:v1"}}); err != nil {
-		t.Fatalf("RemoveImage: %v", err)
-	}
-	imageStatus, err = instance.ImageStatus(context.Background(), &runtime.ImageStatusRequest{Image: &runtime.ImageSpec{Image: "agentenv.dev/app:v1"}})
-	if err != nil || imageStatus.GetImage() != nil {
-		t.Fatalf("removed image still visible: %+v err=%v", imageStatus.GetImage(), err)
-	}
-	var persisted map[string]any
-	if found, err := store.LoadBackendState(podStatePath, &persisted); err != nil || !found || persisted["images"] != nil {
-		t.Fatalf("image state not removed: found=%v err=%v state=%+v", found, err, persisted)
+	if _, err := instance.PullImage(ctx, &runtime.PullImageRequest{Image: &runtime.ImageSpec{Image: "docker.io/unrelated:latest"}}); err == nil {
+		t.Fatal("accepted unrelated image")
 	}
 }

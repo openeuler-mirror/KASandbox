@@ -115,8 +115,7 @@ func newTestEngine(t *testing.T, lifecycle lifecycleAPI, admin adminAPI) (*Engin
 	if err != nil {
 		t.Fatalf("NewJSONStateStore: %v", err)
 	}
-	routes := newRouteTable(store)
-	return newWithClients(Config{RuntimeAddress: "passthrough:///agentenv-test", NodeIP: "10.0.0.1"}, store, routes, lifecycle, admin), store
+	return newWithClients(Config{RuntimeAddress: "passthrough:///agentenv-test", NodeIP: "10.0.0.1"}, store, lifecycle, admin), store
 }
 
 func TestAdminPauseUsesNativeIDAndValidatesSucceededOperation(t *testing.T) {
@@ -131,10 +130,8 @@ func TestAdminPauseUsesNativeIDAndValidatesSucceededOperation(t *testing.T) {
 		}}, nil
 	}}
 	instance, _ := newTestEngine(t, &fakeLifecycle{}, admin)
-	if err := instance.routes.PutPodRoute(podRoute{
-		Backend:          core.EngineTypeAgentENV,
-		ProductSandboxID: "product-pause",
-		NativeSandboxID:  nativeID,
+	if err := instance.putPod(podRecord{CRISandboxID: "product-pause",
+		NativeSandboxID: nativeID,
 	}); err != nil {
 		t.Fatalf("seed route: %v", err)
 	}
@@ -167,10 +164,8 @@ func TestAdminPauseRejectsUnknownOperation(t *testing.T) {
 		}}, nil
 	}}
 	instance, _ := newTestEngine(t, &fakeLifecycle{}, admin)
-	if err := instance.routes.PutPodRoute(podRoute{
-		Backend:          core.EngineTypeAgentENV,
-		ProductSandboxID: "product-pause-unknown",
-		NativeSandboxID:  nativeID,
+	if err := instance.putPod(podRecord{CRISandboxID: "product-pause-unknown",
+		NativeSandboxID: nativeID,
 	}); err != nil {
 		t.Fatalf("seed route: %v", err)
 	}
@@ -199,10 +194,8 @@ func TestAdminCheckpointUsesNativeIDAndRequiresRunningSource(t *testing.T) {
 		}, nil
 	}}
 	instance, _ := newTestEngine(t, &fakeLifecycle{}, admin)
-	if err := instance.routes.PutPodRoute(podRoute{
-		Backend:          core.EngineTypeAgentENV,
-		ProductSandboxID: "product-checkpoint",
-		NativeSandboxID:  nativeID,
+	if err := instance.putPod(podRecord{CRISandboxID: "product-checkpoint",
+		NativeSandboxID: nativeID,
 	}); err != nil {
 		t.Fatalf("seed route: %v", err)
 	}
@@ -267,10 +260,8 @@ func TestAdminCheckpointRejectsUnpublishedOrNonRunningResult(t *testing.T) {
 				return tt.result, nil
 			}}
 			instance, _ := newTestEngine(t, &fakeLifecycle{}, admin)
-			if err := instance.routes.PutPodRoute(podRoute{
-				Backend:          core.EngineTypeAgentENV,
-				ProductSandboxID: "product-checkpoint-invalid",
-				NativeSandboxID:  nativeID,
+			if err := instance.putPod(podRecord{CRISandboxID: "product-checkpoint-invalid",
+				NativeSandboxID: nativeID,
 			}); err != nil {
 				t.Fatalf("seed route: %v", err)
 			}
@@ -294,18 +285,17 @@ func TestAdminGetSandboxRuntimeResolvesCRIToNativeID(t *testing.T) {
 		requested = req.GetNativeSandboxId()
 		return &runtimeapi.SandboxRuntimeInfo{
 			NativeSandboxId:  nativeID,
-			ProductSandboxId: "product-3",
+			ProductSandboxId: "cri-3",
 			Phase:            runtimeapi.SandboxPhase_PAUSED,
 			Hostports:        []*runtimeapi.HostPort{{HostPort: 30000, SandboxPort: 8080}},
 			Extra:            map[string]string{"reason": "test"},
 		}, nil
 	}}
 	engine, _ := newTestEngine(t, &fakeLifecycle{}, admin)
-	if err := engine.routes.PutPodRoute(podRoute{
-		Backend:          core.EngineTypeAgentENV,
-		ProductSandboxID: "product-3",
-		CRISandboxID:     "cri-3",
-		NativeSandboxID:  nativeID,
+	if err := engine.putPod(podRecord{
+
+		CRISandboxID:    "cri-3",
+		NativeSandboxID: nativeID,
 	}); err != nil {
 		t.Fatalf("seed mapping: %v", err)
 	}
@@ -317,7 +307,7 @@ func TestAdminGetSandboxRuntimeResolvesCRIToNativeID(t *testing.T) {
 	if requested != nativeID {
 		t.Fatalf("runtime request native id = %q", requested)
 	}
-	if runtimeInfo.CRISandboxID != "cri-3" || runtimeInfo.SandboxID != "product-3" || runtimeInfo.State != "Paused" {
+	if runtimeInfo.CRISandboxID != "cri-3" || runtimeInfo.SandboxID != "cri-3" || runtimeInfo.State != "Paused" {
 		t.Fatalf("runtime mapping mismatch: %+v", runtimeInfo)
 	}
 	if runtimeInfo.Extra["native_sandbox_id"] != nativeID || len(runtimeInfo.HostPorts) != 1 {
@@ -333,11 +323,10 @@ func TestCleanupSandboxDeletesNativeAndCRIMapping(t *testing.T) {
 		return successfulDeleteOperation(req), nil
 	}}
 	engine, _ := newTestEngine(t, lifecycle, &fakeAdmin{})
-	if err := engine.routes.PutPodRoute(podRoute{
-		Backend:          core.EngineTypeAgentENV,
-		ProductSandboxID: "product-4",
-		CRISandboxID:     "cri-4",
-		NativeSandboxID:  nativeID,
+	if err := engine.putPod(podRecord{
+
+		CRISandboxID:    "cri-4",
+		NativeSandboxID: nativeID,
 	}); err != nil {
 		t.Fatalf("seed mapping: %v", err)
 	}
@@ -348,34 +337,16 @@ func TestCleanupSandboxDeletesNativeAndCRIMapping(t *testing.T) {
 	if deleted != nativeID {
 		t.Fatalf("deleted native id = %q", deleted)
 	}
-	if _, ok := engine.routes.PodRouteByCRI("cri-4"); ok {
+	if _, ok := engine.getPod("cri-4"); ok {
 		t.Fatal("CRI mapping should be removed")
 	}
-	if _, ok := engine.routes.PodRouteByProduct("product-4"); ok {
+	if _, ok := engine.getPod("product-4"); ok {
 		t.Fatal("product mapping should be removed")
 	}
 }
 
-func TestBindCRISandboxAddsExplicitMapping(t *testing.T) {
-	engine, _ := newTestEngine(t, &fakeLifecycle{}, &fakeAdmin{})
-	if err := engine.routes.PutPodRoute(podRoute{Backend: core.EngineTypeAgentENV, ProductSandboxID: "product-5", NativeSandboxID: "native-5"}); err != nil {
-		t.Fatalf("seed mapping: %v", err)
-	}
-	nativeID, err := engine.BindCRISandbox("product-5", "cri-5")
-	if err != nil {
-		t.Fatalf("BindCRISandbox: %v", err)
-	}
-	if nativeID != "native-5" {
-		t.Fatalf("native id = %q", nativeID)
-	}
-	mapping, ok := engine.routes.PodRouteByCRI("cri-5")
-	if !ok || mapping.ProductSandboxID != "product-5" || mapping.NativeSandboxID != "native-5" {
-		t.Fatalf("CRI mapping mismatch: %+v ok=%v", mapping, ok)
-	}
-}
-
 func TestUnimplementedCRIMethodIsExplicit(t *testing.T) {
-	instance, _, _ := newCRITestEngine(t, &fakeLifecycle{})
+	instance, _ := newCRITestEngine(t, &fakeLifecycle{})
 	_, err := instance.GetContainerEvents(context.Background(), nil)
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("GetContainerEvents code = %v, want Unimplemented", status.Code(err))
@@ -383,14 +354,6 @@ func TestUnimplementedCRIMethodIsExplicit(t *testing.T) {
 }
 
 func boolPointer(value bool) *bool { return &value }
-func restoredRoutes(t *testing.T, store *core.JSONStateStore) *routeTable {
-	t.Helper()
-	routes := newRouteTable(store)
-	if err := routes.Restore(); err != nil {
-		t.Fatalf("restore routes: %v", err)
-	}
-	return routes
-}
 
 // 与 Cube 一致：生命周期走 CRI，Admin 仅暴露暂停、快照和运行信息。
 func TestAdminLifecycleIsNotExposed(t *testing.T) {

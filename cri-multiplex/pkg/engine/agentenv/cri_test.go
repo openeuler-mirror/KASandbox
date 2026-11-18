@@ -101,18 +101,16 @@ func (s *memoryStateStore) DeleteBackendState(path string) error {
 	return nil
 }
 
-func newCRITestEngine(t *testing.T, lifecycle lifecycleAPI) (*Engine, *memoryStateStore, *routeTable) {
+func newCRITestEngine(t *testing.T, lifecycle lifecycleAPI) (*Engine, *memoryStateStore) {
 	t.Helper()
 	store := newMemoryStateStore()
-	routes := newRouteTable(store)
 	instance := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,
-		routes,
 		lifecycle,
 		&fakeAdmin{},
 	)
-	return instance, store, routes
+	return instance, store
 }
 
 func criRunRequest(annotations map[string]string) *runtime.RunPodSandboxRequest {
@@ -141,7 +139,7 @@ func TestRunPodSandboxCreatesTemplateAndPersistsIDs(t *testing.T) {
 			Phase:            runtimeapi.SandboxPhase_RUNNING,
 		}}, nil
 	}}
-	instance, store, routes := newCRITestEngine(t, lifecycle)
+	instance, store := newCRITestEngine(t, lifecycle)
 
 	resp, err := instance.RunPodSandbox(context.Background(), criRunRequest(map[string]string{
 		annBackend:           "agentenv",
@@ -160,7 +158,7 @@ func TestRunPodSandboxCreatesTemplateAndPersistsIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunPodSandbox: %v", err)
 	}
-	if resp.GetPodSandboxId() != "cri-1" {
+	if resp.GetPodSandboxId() != "product-1" {
 		t.Fatalf("pod sandbox id = %q", resp.GetPodSandboxId())
 	}
 	if captured == nil || captured.GetSpec().GetSource().GetImage() != nil {
@@ -190,17 +188,16 @@ func TestRunPodSandboxCreatesTemplateAndPersistsIDs(t *testing.T) {
 		t.Fatalf("annotation maps mismatch: env=%v metadata=%v", spec.GetEnvVars(), spec.GetMetadata())
 	}
 
-	for name, lookup := range map[string]func() (podRoute, bool){
-		"CRI":     func() (podRoute, bool) { return routes.PodRouteByCRI("cri-1") },
-		"product": func() (podRoute, bool) { return routes.PodRouteByProduct("product-1") },
-		"native":  func() (podRoute, bool) { return routes.PodRouteByNative(nativeID) },
+	for name, lookup := range map[string]func() (podRecord, bool){
+		"CRI":     func() (podRecord, bool) { return instance.getPod("product-1") },
+		"product": func() (podRecord, bool) { return instance.getPod("product-1") },
 	} {
 		route, ok := lookup()
-		if !ok || route.CRISandboxID != "cri-1" || route.ProductSandboxID != "product-1" || route.NativeSandboxID != nativeID {
+		if !ok || route.CRISandboxID != "product-1" || route.NativeSandboxID != nativeID {
 			t.Fatalf("%s route mismatch: %+v ok=%v", name, route, ok)
 		}
 	}
-	record, ok := instance.getPod("cri-1")
+	record, ok := instance.getPod("product-1")
 	if !ok || record.NativeSandboxID != nativeID || record.TemplateID != "template-canonical" || record.State != criStateReady {
 		t.Fatalf("pod state mismatch: %+v ok=%v", record, ok)
 	}
@@ -215,7 +212,7 @@ func TestRunPodSandboxCreatesTemplateAndPersistsIDs(t *testing.T) {
 	}
 }
 func TestRunPodSandboxRejectsMissingTemplateAndAutoPause(t *testing.T) {
-	instance, _, _ := newCRITestEngine(t, &fakeLifecycle{})
+	instance, _ := newCRITestEngine(t, &fakeLifecycle{})
 
 	if _, err := instance.RunPodSandbox(context.Background(), criRunRequest(nil)); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("missing template code = %v, want InvalidArgument", status.Code(err))
@@ -247,7 +244,7 @@ func TestRunPodSandboxIsIdempotentForSamePodUID(t *testing.T) {
 			return &runtimeapi.SandboxInfo{NativeSandboxId: nativeID, ProductSandboxId: "product-idem", Phase: runtimeapi.SandboxPhase_RUNNING}, nil
 		},
 	}
-	instance, _, _ := newCRITestEngine(t, lifecycle)
+	instance, _ := newCRITestEngine(t, lifecycle)
 	req := criRunRequest(map[string]string{annTemplate: "template-1", annSandboxID: "product-idem"})
 	if _, err := instance.RunPodSandbox(context.Background(), req); err != nil {
 		t.Fatalf("first RunPodSandbox: %v", err)
@@ -264,12 +261,12 @@ func TestRunPodSandboxRollsBackReservationOnCreateFailure(t *testing.T) {
 	lifecycle := &fakeLifecycle{create: func(context.Context, *runtimeapi.SandboxCreateRequest) (*runtimeapi.SandboxCreateResponse, error) {
 		return nil, status.Error(codes.Unavailable, "runtime unavailable")
 	}}
-	instance, _, routes := newCRITestEngine(t, lifecycle)
+	instance, _ := newCRITestEngine(t, lifecycle)
 	_, err := instance.RunPodSandbox(context.Background(), criRunRequest(map[string]string{annTemplate: "template-1"}))
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("create error code = %v", status.Code(err))
 	}
-	if _, ok := routes.PodRouteByCRI("cri-1"); ok {
+	if _, ok := instance.getPod("cri-1"); ok {
 		t.Fatal("reservation survived failed create")
 	}
 	if _, ok := instance.getPod("cri-1"); ok {
@@ -310,13 +307,13 @@ func TestPodSandboxLifecycleProjection(t *testing.T) {
 			return successfulDeleteOperation(req), nil
 		},
 	}
-	instance, _, routes := newCRITestEngine(t, lifecycle)
+	instance, _ := newCRITestEngine(t, lifecycle)
 	req := criRunRequest(map[string]string{annTemplate: "template-1", annSandboxID: "product-life"})
 	if _, err := instance.RunPodSandbox(context.Background(), req); err != nil {
 		t.Fatalf("RunPodSandbox: %v", err)
 	}
 
-	statusResp, err := instance.PodSandboxStatus(context.Background(), &runtime.PodSandboxStatusRequest{PodSandboxId: "cri-1"})
+	statusResp, err := instance.PodSandboxStatus(context.Background(), &runtime.PodSandboxStatusRequest{PodSandboxId: "product-life"})
 	if err != nil {
 		t.Fatalf("PodSandboxStatus: %v", err)
 	}
@@ -331,14 +328,14 @@ func TestPodSandboxLifecycleProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPodSandbox: %v", err)
 	}
-	if len(listResp.GetItems()) != 1 || listResp.GetItems()[0].GetId() != "cri-1" {
+	if len(listResp.GetItems()) != 1 || listResp.GetItems()[0].GetId() != "product-life" {
 		t.Fatalf("list items = %+v", listResp.GetItems())
 	}
 
-	if _, err := instance.StopPodSandbox(context.Background(), &runtime.StopPodSandboxRequest{PodSandboxId: "cri-1"}); err != nil {
+	if _, err := instance.StopPodSandbox(context.Background(), &runtime.StopPodSandboxRequest{PodSandboxId: "product-life"}); err != nil {
 		t.Fatalf("StopPodSandbox: %v", err)
 	}
-	statusResp, err = instance.PodSandboxStatus(context.Background(), &runtime.PodSandboxStatusRequest{PodSandboxId: "cri-1"})
+	statusResp, err = instance.PodSandboxStatus(context.Background(), &runtime.PodSandboxStatusRequest{PodSandboxId: "product-life"})
 	if err != nil {
 		t.Fatalf("PodSandboxStatus after stop: %v", err)
 	}
@@ -346,13 +343,13 @@ func TestPodSandboxLifecycleProjection(t *testing.T) {
 		t.Fatalf("stopped state = %v", statusResp.GetStatus().GetState())
 	}
 
-	if _, err := instance.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "cri-1"}); err != nil {
+	if _, err := instance.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "product-life"}); err != nil {
 		t.Fatalf("RemovePodSandbox: %v", err)
 	}
-	if _, ok := instance.getPod("cri-1"); ok {
+	if _, ok := instance.getPod("product-life"); ok {
 		t.Fatal("pod state survived remove")
 	}
-	if _, ok := routes.PodRouteByCRI("cri-1"); ok {
+	if _, ok := instance.getPod("product-life"); ok {
 		t.Fatal("route survived remove")
 	}
 }
@@ -364,29 +361,27 @@ func TestRestoreStateRestoresRoutesAndCRIProjection(t *testing.T) {
 			NativeSandboxId: nativeID, ProductSandboxId: "product-restore", Phase: runtimeapi.SandboxPhase_RUNNING,
 		}}, nil
 	}}
-	instance, store, _ := newCRITestEngine(t, lifecycle)
+	instance, store := newCRITestEngine(t, lifecycle)
 	if _, err := instance.RunPodSandbox(context.Background(), criRunRequest(map[string]string{
 		annTemplate: "template-1", annSandboxID: "product-restore",
 	})); err != nil {
 		t.Fatalf("RunPodSandbox: %v", err)
 	}
 
-	routes := newRouteTable(store)
 	restored := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,
-		routes,
 		lifecycle,
 		&fakeAdmin{},
 	)
 	if err := restored.RestoreState(context.Background()); err != nil {
 		t.Fatalf("RestoreState: %v", err)
 	}
-	route, ok := routes.PodRouteByNative(nativeID)
-	if !ok || route.CRISandboxID != "cri-1" || route.ProductSandboxID != "product-restore" {
+	route, ok := restored.getPod("product-restore")
+	if !ok || route.CRISandboxID != "product-restore" {
 		t.Fatalf("restored route mismatch: %+v ok=%v", route, ok)
 	}
-	record, ok := restored.getPod("cri-1")
+	record, ok := restored.getPod("product-restore")
 	if !ok || record.NativeSandboxID != nativeID || record.TemplateID != "template-1" {
 		t.Fatalf("restored pod mismatch: %+v ok=%v", record, ok)
 	}
@@ -408,7 +403,7 @@ func TestStopThenRemoveDoesNotRepeatRuntimeDelete(t *testing.T) {
 			return successfulDeleteOperation(req), nil
 		},
 	}
-	instance, _, routes := newCRITestEngine(t, lifecycle)
+	instance, _ := newCRITestEngine(t, lifecycle)
 	if _, err := instance.RunPodSandbox(context.Background(), criRunRequest(map[string]string{
 		annTemplate:  "template-stop-remove",
 		annSandboxID: "product-stop-remove",
@@ -417,28 +412,28 @@ func TestStopThenRemoveDoesNotRepeatRuntimeDelete(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		if _, err := instance.StopPodSandbox(context.Background(), &runtime.StopPodSandboxRequest{PodSandboxId: "cri-1"}); err != nil {
+		if _, err := instance.StopPodSandbox(context.Background(), &runtime.StopPodSandboxRequest{PodSandboxId: "product-stop-remove"}); err != nil {
 			t.Fatalf("StopPodSandbox attempt %d: %v", i+1, err)
 		}
 	}
 	if deleteCalls != 1 {
 		t.Fatalf("runtime delete calls after repeated stop = %d, want 1", deleteCalls)
 	}
-	record, ok := instance.getPod("cri-1")
+	record, ok := instance.getPod("product-stop-remove")
 	if !ok || !record.RuntimeDeleted || record.State != criStateNotReady {
 		t.Fatalf("stopped record = %+v ok=%v", record, ok)
 	}
 
-	if _, err := instance.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "cri-1"}); err != nil {
+	if _, err := instance.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "product-stop-remove"}); err != nil {
 		t.Fatalf("RemovePodSandbox: %v", err)
 	}
 	if deleteCalls != 1 {
 		t.Fatalf("runtime delete calls after remove = %d, want 1", deleteCalls)
 	}
-	if _, ok := instance.getPod("cri-1"); ok {
+	if _, ok := instance.getPod("product-stop-remove"); ok {
 		t.Fatal("pod projection survived remove")
 	}
-	if _, ok := routes.PodRouteByCRI("cri-1"); ok {
+	if _, ok := instance.getPod("product-stop-remove"); ok {
 		t.Fatal("pod route survived remove")
 	}
 }
@@ -486,7 +481,7 @@ func TestStopPodSandboxRejectsUnknownDeleteOperation(t *testing.T) {
 			}, nil
 		},
 	}
-	instance, _, routes := newCRITestEngine(t, lifecycle)
+	instance, _ := newCRITestEngine(t, lifecycle)
 	request := criRunRequest(map[string]string{
 		annTemplate:  "template-unknown-delete",
 		annSandboxID: "product-unknown-delete",
@@ -495,24 +490,73 @@ func TestStopPodSandboxRejectsUnknownDeleteOperation(t *testing.T) {
 		t.Fatalf("RunPodSandbox: %v", err)
 	}
 
-	if _, err := instance.StopPodSandbox(context.Background(), &runtime.StopPodSandboxRequest{PodSandboxId: "cri-1"}); status.Code(err) != codes.Unavailable {
+	if _, err := instance.StopPodSandbox(context.Background(), &runtime.StopPodSandboxRequest{PodSandboxId: "product-unknown-delete"}); status.Code(err) != codes.Unavailable {
 		t.Fatalf("StopPodSandbox code = %v, want Unavailable; err=%v", status.Code(err), err)
 	}
-	record, ok := instance.getPod("cri-1")
+	record, ok := instance.getPod("product-unknown-delete")
 	if !ok || record.State != criStateReady {
 		t.Fatalf("pod record after failed stop = %+v, ok=%v; want READY projection retained", record, ok)
 	}
-	if _, ok := routes.PodRouteByCRI("cri-1"); !ok {
+	if _, ok := instance.getPod("product-unknown-delete"); !ok {
 		t.Fatal("route was removed after UNKNOWN delete operation")
 	}
 
-	if _, err := instance.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "cri-1"}); status.Code(err) != codes.Unavailable {
+	if _, err := instance.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "product-unknown-delete"}); status.Code(err) != codes.Unavailable {
 		t.Fatalf("RemovePodSandbox code = %v, want Unavailable; err=%v", status.Code(err), err)
 	}
-	if _, ok := instance.getPod("cri-1"); !ok {
+	if _, ok := instance.getPod("product-unknown-delete"); !ok {
 		t.Fatal("pod record was removed after UNKNOWN delete operation")
 	}
-	if _, ok := routes.PodRouteByCRI("cri-1"); !ok {
+	if _, ok := instance.getPod("product-unknown-delete"); !ok {
 		t.Fatal("route was removed after UNKNOWN delete operation")
+	}
+}
+
+// 同一逻辑 ID 不能被另一个 Pod 占用；Pod UID 仍作为 metadata 返回。
+func TestUnifiedSandboxIdentity(t *testing.T) {
+	calls := 0
+	lifecycle := &fakeLifecycle{create: func(_ context.Context, req *runtimeapi.SandboxCreateRequest) (*runtimeapi.SandboxCreateResponse, error) {
+		calls++
+		return &runtimeapi.SandboxCreateResponse{Sandbox: &runtimeapi.SandboxInfo{NativeSandboxId: "native-unified", ProductSandboxId: req.GetSpec().GetProductSandboxId()}}, nil
+	}}
+	instance, store := newCRITestEngine(t, lifecycle)
+	request := criRunRequest(map[string]string{annTemplate: "template-1", annSandboxID: "logical-1"})
+	response, err := instance.RunPodSandbox(context.Background(), request)
+	if err != nil || response.GetPodSandboxId() != "logical-1" {
+		t.Fatalf("create: %v %v", response, err)
+	}
+	record, ok := instance.getPod("logical-1")
+	if !ok || podMetadata(record).GetUid() != "cri-1" {
+		t.Fatalf("metadata lost: %+v", record)
+	}
+	if _, ok := store.sections["agentenv.id_map"]; ok {
+		t.Fatal("duplicate ID mapping persisted")
+	}
+	if _, ok := instance.getPod("cri-1"); ok {
+		t.Fatal("Pod UID registered as another sandbox ID")
+	}
+	request.Config.Metadata.Uid = "another-pod"
+	if _, err := instance.RunPodSandbox(context.Background(), request); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("duplicate logical ID: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("Runtime Create called %d times", calls)
+	}
+	for _, ref := range []engine.SandboxRef{{CRISandboxID: "logical-1"}, {SandboxID: "logical-1"}} {
+		mapping, err := instance.resolveMapping(ref)
+		if err != nil || mapping.NativeSandboxID != "native-unified" {
+			t.Fatalf("Admin mapping: %+v %v", mapping, err)
+		}
+	}
+	if _, err := instance.resolveMapping(engine.SandboxRef{CRISandboxID: "logical-1", SandboxID: "another"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("mismatch: %v", err)
+	}
+}
+
+func TestRestoreRejectsOldLogicalIDMapping(t *testing.T) {
+	instance, store := newCRITestEngine(t, &fakeLifecycle{})
+	store.sections[podStatePath] = []byte(`{"pods":[{"cri_sandbox_id":"old-cri","native_sandbox_id":"native","annotations":{"sandbox.cri/sandbox-id":"old-product"},"state":"ready"}]}`)
+	if err := instance.RestoreState(context.Background()); err == nil {
+		t.Fatal("silently accepted incompatible old ID mapping")
 	}
 }

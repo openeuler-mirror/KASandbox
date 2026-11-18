@@ -152,26 +152,26 @@ func (e *Engine) AdminGetSandboxRuntime(ctx context.Context, ref engine.SandboxR
 	return sandboxRuntimeInfoFromProto(info, mapping, e.config.NodeName, e.config.NodeIP), nil
 }
 
-func (e *Engine) resolveMapping(ref engine.SandboxRef) (podRoute, error) {
+func (e *Engine) resolveMapping(ref engine.SandboxRef) (podRecord, error) {
 	if ref.CRISandboxID == "" && ref.SandboxID == "" {
-		return podRoute{}, status.Error(codes.InvalidArgument, "cri_sandbox_id or sandbox_id is required")
+		return podRecord{}, status.Error(codes.InvalidArgument, "cri_sandbox_id or sandbox_id is required")
 	}
 	var (
-		mapping podRoute
+		mapping podRecord
 		ok      bool
 	)
 	if ref.CRISandboxID != "" {
-		mapping, ok = e.routes.PodRouteByCRI(ref.CRISandboxID)
+		mapping, ok = e.getPod(ref.CRISandboxID)
 	} else {
-		mapping, ok = e.routes.PodRouteByProduct(ref.SandboxID)
+		mapping, ok = e.getPod(ref.SandboxID)
 	}
 	if !ok {
-		return podRoute{}, status.Errorf(codes.NotFound, "sandbox not found on this node")
+		return podRecord{}, status.Errorf(codes.NotFound, "sandbox not found on this node")
 	}
-	if ref.CRISandboxID != "" && ref.SandboxID != "" && mapping.ProductSandboxID != ref.SandboxID {
-		return podRoute{}, status.Errorf(codes.FailedPrecondition,
-			"sandbox id mismatch: CRI %s maps to product %q, request has %q",
-			ref.CRISandboxID, mapping.ProductSandboxID, ref.SandboxID)
+	if ref.CRISandboxID != "" && ref.SandboxID != "" && mapping.CRISandboxID != ref.SandboxID {
+		return podRecord{}, status.Errorf(codes.FailedPrecondition,
+			"sandbox id mismatch: CRI %q, sandbox %q",
+			ref.CRISandboxID, ref.SandboxID)
 	}
 	return mapping, nil
 }
@@ -206,19 +206,16 @@ func cloneStringMap(values map[string]string) map[string]string {
 	return out
 }
 
-func sandboxRuntimeInfoFromProto(info *runtimeapi.SandboxRuntimeInfo, mapping podRoute, nodeName, nodeIP string) *engine.SandboxRuntime {
+func sandboxRuntimeInfoFromProto(info *runtimeapi.SandboxRuntimeInfo, mapping podRecord, nodeName, nodeIP string) *engine.SandboxRuntime {
 	runtime := &engine.SandboxRuntime{
 		Backend:      string(engine.EngineTypeAgentENV),
 		CRISandboxID: mapping.CRISandboxID,
-		SandboxID:    info.GetProductSandboxId(),
+		SandboxID:    mapping.CRISandboxID,
 		State:        runtimePhaseName(info.GetPhase()),
 		NodeName:     nodeName,
 		NetNSPath:    info.GetNetnsPath(),
 		HostIP:       nodeIP,
 		Extra:        cloneStringMap(info.GetExtra()),
-	}
-	if runtime.SandboxID == "" {
-		runtime.SandboxID = mapping.ProductSandboxID
 	}
 	ensureExtra(runtime, "native_sandbox_id", info.GetNativeSandboxId())
 	for key, value := range info.GetVersions() {

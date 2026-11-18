@@ -105,36 +105,11 @@ func normalizeLockKeys(keys []string) []string {
 	return out
 }
 
-// sandboxLockIDs 把调用方可能提供的 CRI、product 或 native ID 都纳入锁集合。
-// 同一个 CRI/product 组合的不同操作会共享至少一个 key。
-func (e *Engine) sandboxOperationIDs(sandboxID string) []string {
-	if e == nil {
-		return nil
-	}
-	ids := []string{sandboxID}
-	if record, ok := e.getPod(sandboxID); ok {
-		ids = append(ids, record.CRISandboxID, record.ProductSandboxID, record.NativeSandboxID)
-	}
-	if route, ok := e.routes.PodRoute(sandboxID); ok {
-		ids = append(ids, route.CRISandboxID, route.ProductSandboxID, route.NativeSandboxID)
-	}
-	return ids
-}
-
-// lockSandbox 在 lifecycle barrier 内获取 sandbox 级锁。
+// lockSandbox 获取 sandbox 级锁。
 // 不同 sandbox 可以并行，同一 sandbox 的创建、停止、删除和清理保持串行。
 func (e *Engine) lockSandbox(ctx context.Context, ids ...string) (func(), error) {
 	if e == nil {
 		return func() {}, nil
 	}
-	e.lifecycleMu.RLock()
-	unlock, err := e.sandboxOps.lock(ctx, ids...)
-	if err != nil {
-		e.lifecycleMu.RUnlock()
-		return nil, err
-	}
-	return func() {
-		unlock()
-		e.lifecycleMu.RUnlock()
-	}, nil
+	return e.sandboxOps.lock(ctx, ids...)
 }

@@ -352,41 +352,13 @@ func validateVirtualImage(reference string) error {
 	}
 	return nil
 }
-func agentenvImageRef(reference string) string {
-	sum := sha256.Sum256([]byte(reference))
-	return "agentenv-image:" + hex.EncodeToString(sum[:])[:32]
-}
 
-// resolveVirtualImage ?? kubelet ???????????? ImageStatus ????? ID?
+// resolveVirtualImage 保留原始模板占位引用，兼容 kubelet 将 ImageRef 传回 CreateContainer。
 func (e *Engine) resolveVirtualImage(reference string) (string, string, error) {
-	if err := validateVirtualImage(reference); err == nil {
-		return reference, agentenvImageRef(reference), nil
-	} else if !isAgentENVVirtualImageID(reference) {
+	if err := validateVirtualImage(reference); err != nil {
 		return "", "", err
 	}
-
-	record, ok := e.findImage(reference)
-	if !ok {
-		return "", "", status.Errorf(codes.NotFound, "AgentENV virtual image %q is not registered", reference)
-	}
-	if err := validateVirtualImage(record.Reference); err != nil {
-		return "", "", status.Errorf(codes.Internal, "persisted AgentENV virtual image %q is invalid: %v", record.Reference, err)
-	}
-	return record.Reference, record.ID, nil
-}
-
-// isAgentENVVirtualImageID ??? agentenvImageRef ??????? ID?
-func isAgentENVVirtualImageID(reference string) bool {
-	const prefix = "agentenv-image:"
-	if !strings.HasPrefix(reference, prefix) {
-		return false
-	}
-	encoded := strings.TrimPrefix(reference, prefix)
-	if len(encoded) != 32 || encoded != strings.ToLower(encoded) {
-		return false
-	}
-	_, err := hex.DecodeString(encoded)
-	return err == nil
+	return reference, reference, nil
 }
 
 func containerCRIState(state string) runtime.ContainerState {
