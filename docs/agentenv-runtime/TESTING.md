@@ -33,7 +33,11 @@ python3 "$KA_REPO/scripts/check-agentenv-contract.py" --agentenv "$AENV_REPO/src
 cd "$KA_REPO/packages/api"
 GOWORK=off go generate ./internal/api
 GOWORK=off go test ./internal/api
-# 生成后 git diff 不应出现未提交的 api.gen.go 变化。
+cd "$KA_REPO/tests/integration"
+GOWORK=off go generate ./internal/api
+GOWORK=off go test ./internal/api
+# 两处生成文件都必须提交；生成后 git diff 应为空。
+# 此处只运行生成客户端包，不运行需要集群的完整 integration suite。
 ```
 
 Webhook 全模块测试包含只读模板解析、鉴权、重定向拒绝、错误响应、大小限制、超时取消及真实 Provider 的 AdmissionReview。`AGENTENV_TEMPLATE_API_E2E=1` 是真实 API 的 opt-in 开关，本轮保持未设置。Helm 测试是离线渲染，不等于 API server 已接受该配置。
