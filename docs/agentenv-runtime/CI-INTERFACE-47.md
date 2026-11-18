@@ -14,3 +14,11 @@ PR 270，检查提交 `cea9a9e`。失败不是业务测试或编译失败，包�
 另一个 CI 配置注意点：本次日志比较的是 `HEAD^ (15c906a) -> HEAD (cea9a9e)`，不是 PR 对目标分支的完整差异。后续审核应显式传入 PR merge-base 与 PR head，避免补交生成文件被误认作“未改来源”，或仅因最后一个提交没有改 spec 而误判整个 PR 无接口变化。不能用最后一次提交的绿灯代替对三处 503 契约变更的人工审核。本轮不修改流水线或绕过检查。
 
 保留 Cube 配置；未切换版本、重启服务、运行 VM 或执行任何已暂缓项目。
+
+## 第 48 次检查与范围修复
+
+第 48 次检查只比较 `cea9a9e -> a7302ba`，把补交的集成客户端误判为来源未变。现已修正默认范围解析：显式 BASE/TARGET 或位置参数优先；否则读取 CHANGE_TARGET / gitlabTargetBranch。固定 Jenkins 任务 `multiarch/openeuler/check_interface/KASandbox` 未提供目标分支时使用 master（此兼容约定仅适用于该任务；若任务支持其他目标分支，应传入对应变量）。从 origin 远端跟踪引用计算共同祖先到 TARGET 的完整差异。本地无 PR 上下文仍默认 HEAD^ 到 HEAD。
+
+不自动联网或修改工作区；缺少目标引用、无共同祖先时明确失败，要求 CI 补齐引用/历史或显式指定范围。未放宽接口变更、生成文件来源或重新生成一致性检查。
+
+验证：Git Bash 执行 `bash scripts/tests/interface-range-test.sh` 通过，覆盖本地默认、参数优先级、多提交源文件/生成物、后续提交、目标分支独立前进、缺少引用、非法分支名、无共同祖先以及其他 Jenkins 任务。`bash -n check_interface.sh` 和 `git diff --check` 通过。此次未重跑依赖下载和完整代码生成；仍需新一轮平台 CI 验证，三个 503 契约变更仍需维护者审核。
