@@ -119,12 +119,20 @@ type JSONStateStore struct {
 	path     string
 	state    persistedState
 	disabled bool
-	// Both fields are protected by mu. A single writer preserves snapshot
-	// order while later mutations accumulate into the next pending batch.
+	// pending/inflight/flushing are protected by mu. A single writer preserves
+	// snapshot order while later mutations accumulate into the next pending batch.
 	pending  *stateWriteBatch
+	inflight *stateWriteBatch // batch currently being written (may be nil)
 	flushing bool
 	// Set at construction; tests can wrap the real writer before starting calls.
 	writeSnapshot func([]byte) error
+}
+
+// LazyStateStore is an optional StateStore extension: update memory and schedule
+// a durable flush without waiting for fsync. Sync drains pending writes.
+type LazyStateStore interface {
+	SaveBackendStateLazy(path string, value any) error
+	Sync() error
 }
 
 type stateWriteBatch struct {
@@ -286,11 +294,65 @@ func (s *JSONStateStore) SaveBackendState(path string, value any) error {
 	return s.saveBackendStateLocked(path, value)
 }
 
+// SaveBackendStateLazy applies the mutation in memory and schedules a flush,
+// but does not wait for disk sync. Call Sync (or a later Save*/Delete*) when
+// durability must be observed before returning to the caller.
+func (s *JSONStateStore) SaveBackendStateLazy(path string, value any) error {
+	if s == nil || s.disabled {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.setBackendStateLocked(path, value); err != nil {
+		return err
+	}
+	s.scheduleFlushLocked()
+	return nil
+}
+
+// Sync waits until all previously scheduled state writes have finished.
+func (s *JSONStateStore) Sync() error {
+	if s == nil || s.disabled {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for {
+		if s.pending != nil {
+			if err := s.flushLocked(); err != nil {
+				return err
+			}
+			continue
+		}
+		if s.inflight == nil {
+			return nil
+		}
+		batch := s.inflight
+		s.mu.Unlock()
+		<-batch.done
+		err := batch.err
+		s.mu.Lock()
+		if err != nil {
+			return err
+		}
+	}
+}
+
 func (s *JSONStateStore) saveBackendStateLocked(path string, value any) error {
 	if err := s.setBackendStateLocked(path, value); err != nil {
 		return err
 	}
 	return s.flushLocked()
+}
+
+func (s *JSONStateStore) scheduleFlushLocked() {
+	if s.pending == nil {
+		s.pending = &stateWriteBatch{done: make(chan struct{})}
+	}
+	if !s.flushing {
+		s.flushing = true
+		go s.flushBatches()
+	}
 }
 
 // setBackendStateLocked 只改内存，不落盘；调用方决定何时 flush。
@@ -425,14 +487,9 @@ func (s *JSONStateStore) flushLocked() error {
 	if s == nil || s.disabled {
 		return nil
 	}
-	if s.pending == nil {
-		s.pending = &stateWriteBatch{done: make(chan struct{})}
-	}
+	s.scheduleFlushLocked()
+	// Capture under mu: flushBatches cannot drain pending until we Unlock.
 	batch := s.pending
-	if !s.flushing {
-		s.flushing = true
-		go s.flushBatches()
-	}
 	s.mu.Unlock()
 	<-batch.done
 	s.mu.Lock()
@@ -445,10 +502,12 @@ func (s *JSONStateStore) flushBatches() {
 		batch := s.pending
 		if batch == nil {
 			s.flushing = false
+			s.inflight = nil
 			s.mu.Unlock()
 			return
 		}
 		s.pending = nil
+		s.inflight = batch
 		s.state.Version = 1
 		// Marshal while holding mu so later mutations cannot change this
 		// snapshot. Disk I/O uses only the resulting independent byte slice.
@@ -459,6 +518,11 @@ func (s *JSONStateStore) flushBatches() {
 		}
 		batch.err = err
 		close(batch.done)
+		s.mu.Lock()
+		if s.inflight == batch {
+			s.inflight = nil
+		}
+		s.mu.Unlock()
 	}
 }
 
@@ -566,3 +630,19 @@ func (s *JSONStateStore) PathForTest() string {
 	}
 	return s.path
 }
+
+func (s *JSONStateStore) WriteSnapshotForTest() func([]byte) error {
+	if s == nil {
+		return nil
+	}
+	return s.writeSnapshot
+}
+
+func (s *JSONStateStore) SetWriteSnapshotForTest(fn func([]byte) error) {
+	if s == nil || fn == nil {
+		return
+	}
+	s.writeSnapshot = fn
+}
+
+var _ LazyStateStore = (*JSONStateStore)(nil)

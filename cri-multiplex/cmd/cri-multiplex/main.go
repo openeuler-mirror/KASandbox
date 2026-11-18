@@ -15,6 +15,7 @@ import (
 	"github.com/cri-multiplex/pkg/engine"
 	"github.com/cri-multiplex/pkg/engine/android"
 	"github.com/cri-multiplex/pkg/engine/containerd"
+	"github.com/cri-multiplex/pkg/engine/cube"
 	"github.com/cri-multiplex/pkg/engine/e2b"
 	"github.com/cri-multiplex/pkg/engine/util"
 	"github.com/cri-multiplex/pkg/server"
@@ -114,6 +115,8 @@ func main() {
 	cleanupMaxRetries := flag.Int("cleanup-max-retries", 10, "Maximum cleanup retry attempts")
 	cleanupDryRun := flag.Bool("cleanup-dry-run", false, "Log orphan cleanup actions without deleting resources")
 	hideSandboxLabel := flag.String("hide-sandbox-label", "", "Hide E2B sandboxes carrying this label (key=value, e.g. flux-sandbox.io/direct=true) from ListPodSandbox/ListContainers, so kubelet does not garbage-collect them as orphans; empty keeps them visible")
+	cubeEnabled := flag.Bool("cube-enabled", false, "Enable the Cube runtime (Cubelet CubeboxMgr)")
+	cubeletAddress := flag.String("cubelet-address", "127.0.0.1:9999", "Local Cubelet CubeboxMgr gRPC address")
 	unknownHandlerPolicy := flag.String("unknown-handler-policy", string(server.UnknownHandlerPassthrough), "Behaviour for an unregistered runtime handler: passthrough (fall back to the default backend) or reject")
 	runtimeName := flag.String("runtime-name", "e2b-cri-shim", "Runtime name reported by the CRI Version API")
 	flag.Parse()
@@ -193,9 +196,19 @@ func main() {
 	}
 	defer androidEng.Close()
 
+	cubeEng, err := cube.New(cube.Config{
+		Deps:        engine.Deps{Store: stateStore, NodeName: *nodeName, NodeIP: *nodeIP},
+		Enabled:     *cubeEnabled,
+		CubeletAddr: *cubeletAddress,
+	})
+	if err != nil {
+		log.Fatalf("initialize cube backend: %v", err)
+	}
+	defer cubeEng.Close()
+
 	// 后端装配顺序固定：Register → Freeze → CleanupManager → Mux → Restore → Reconcile → Start。
 	reg := engine.NewRegistry(engine.EngineTypeContainer)
-	for _, mod := range []engine.BackendModule{containerEng.Module(), e2bEng.Module(), androidEng.Module()} {
+	for _, mod := range []engine.BackendModule{containerEng.Module(), e2bEng.Module(), androidEng.Module(), cubeEng.Module()} {
 		if err := reg.Register(mod); err != nil {
 			log.Fatalf("register backend %s: %v", mod.Descriptor.Type, err)
 		}
@@ -253,8 +266,8 @@ func main() {
 		mux.Stop()
 	}()
 
-	log.Printf("starting cri-multiplex on %s (containerd: %s, orchestrator: %s, node-ip: %s, proxy: %s, state-dir: %s, android-enabled: %v, cni-enabled: %v, android-node-ip: %s)",
-		*socketPath, *containerdSocket, cfg.OrchestratorAddr, cfg.NodeIP, cfg.OrchestratorProxyAddr, *stateDir, *androidEnabled, *cniEnabled, *androidNodeIP)
+	log.Printf("starting cri-multiplex on %s (containerd: %s, orchestrator: %s, node-ip: %s, proxy: %s, state-dir: %s, android-enabled: %v, cni-enabled: %v, android-node-ip: %s, cube-enabled: %v, cubelet: %s)",
+		*socketPath, *containerdSocket, cfg.OrchestratorAddr, cfg.NodeIP, cfg.OrchestratorProxyAddr, *stateDir, *androidEnabled, *cniEnabled, *androidNodeIP, *cubeEnabled, *cubeletAddress)
 	if err := mux.Start(*socketPath); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}

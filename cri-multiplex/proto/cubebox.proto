@@ -1,0 +1,156 @@
+// Wire-compatible subset of CubeSandbox CubeboxMgr (v0.7.3).
+// Field numbers match pkgs/proto/services/cubebox/v1/cubebox.proto.
+// Only the RPCs the CRI shim calls are included.
+
+syntax = "proto3";
+
+package cubelet.services.cubebox.v1;
+
+option go_package = "github.com/cri-multiplex/pkg/cubelet;cubelet";
+
+service CubeboxMgr {
+  rpc Create(RunCubeSandboxRequest) returns (RunCubeSandboxResponse);
+  rpc Destroy(DestroyCubeSandboxRequest) returns (DestroyCubeSandboxResponse);
+  rpc List(ListCubeSandboxRequest) returns (ListCubeSandboxResponse);
+  rpc Update(UpdateCubeSandboxRequest) returns (UpdateCubeSandboxResponse);
+  rpc Exec(ExecCubeSandboxRequest) returns (ExecCubeSandboxResponse);
+  rpc CommitSandbox(CommitSandboxRequest) returns (CommitSandboxResponse);
+}
+
+// Ret matches cubelet.services.errorcode.v1.Ret on the wire.
+// ret_code is an enum there; both encodings are a varint.
+message Ret {
+  int32 ret_code = 1;
+  string ret_msg = 2;
+}
+
+message Resource {
+  string cpu = 1;
+  string mem = 2;
+}
+
+message VolumeMounts {
+  string name = 1;
+  string container_path = 2;
+}
+
+message ImageSpec {
+  string image = 1;
+  map<string, string> annotations = 2;
+  string storage_media = 3;
+}
+
+message ContainerConfig {
+  string name = 1;
+  ImageSpec image = 2;
+  repeated string command = 3;
+  repeated string args = 4;
+  repeated VolumeMounts volume_mounts = 7;
+  Resource resources = 9;
+}
+
+message EmptyDirVolumeSource {
+  string SizeLimit = 2;
+}
+
+message VolumeSource {
+  EmptyDirVolumeSource empty_dir = 1;
+}
+
+message Volume {
+  string name = 1;
+  VolumeSource volume_source = 2;
+}
+
+message RunCubeSandboxRequest {
+  string requestID = 1;
+  repeated Volume volumes = 7;
+  repeated ContainerConfig containers = 8;
+  map<string, string> annotations = 9;
+  string instance_type = 13;
+  string network_type = 14;
+  string backend = 17;
+}
+
+message RunCubeSandboxResponse {
+  string requestID = 1;
+  Ret ret = 2;
+  string sandboxID = 3;
+  string sandboxUUID = 4;
+  string sandboxIP = 5;
+}
+
+message DestroyCubeSandboxRequest {
+  string requestID = 1;
+  string sandboxID = 2;
+  map<string, string> annotations = 9;
+}
+
+message DestroyCubeSandboxResponse {
+  string requestID = 1;
+  Ret ret = 2;
+  string sandboxID = 3;
+}
+
+enum ContainerState {
+  CONTAINER_CREATED = 0;
+  CONTAINER_RUNNING = 1;
+  CONTAINER_EXITED = 2;
+  CONTAINER_UNKNOWN = 3;
+  CONTAINER_PAUSING = 4;
+  CONTAINER_PAUSED = 5;
+}
+
+message Container {
+  string id = 1;
+  ContainerState state = 5;
+}
+
+message CubeSandbox {
+  string id = 1;
+  repeated Container containers = 4;
+}
+
+message ListCubeSandboxRequest {}
+
+message ListCubeSandboxResponse {
+  repeated CubeSandbox items = 1;
+}
+
+message UpdateCubeSandboxRequest {
+  string requestID = 1;
+  string sandboxID = 2;
+  map<string, string> annotations = 3;
+}
+
+message UpdateCubeSandboxResponse {
+  string requestID = 1;
+  Ret ret = 2;
+}
+
+message ExecCubeSandboxRequest {
+  string requestID = 1;
+  string sandbox_id = 2;
+  repeated string args = 9;
+}
+
+message ExecCubeSandboxResponse {
+  string requestID = 1;
+  Ret ret = 2;
+}
+
+message CommitSandboxRequest {
+  string requestID = 1;
+  string sandboxID = 2;
+  string templateID = 3;
+  string snapshot_dir = 4;
+  string backend = 5;
+}
+
+message CommitSandboxResponse {
+  string requestID = 1;
+  Ret ret = 2;
+  string sandboxID = 3;
+  string templateID = 4;
+  string snapshotPath = 5;
+}
