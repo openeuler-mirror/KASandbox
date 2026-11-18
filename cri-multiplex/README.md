@@ -80,3 +80,7 @@ sudo cri-multiplex \
 ```
 
 Requires root for Unix socket write access to `/run/`.
+
+## AgentENV 原生网络接入
+
+AgentENV backend 默认关闭，能力、参数和限制见 [AgentENV engine](pkg/engine/agentenv/README.md)，提交范围及验证结果见 [CRI 接入说明](AGENTENV-CRI.md)。AgentENV 使用 Runtime 原生网络，不执行 CNI ADD 或配置额外 HostPort；其他后端的网络行为保持不变。

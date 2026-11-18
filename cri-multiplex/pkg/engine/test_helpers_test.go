@@ -54,6 +54,10 @@ func (f *fakeCNIManager) NetNSName(sandboxID string) string {
 	return "test-" + util.ShortID(sandboxID)
 }
 
+func (f *fakeCNIManager) NetNSNames() ([]string, error) { return nil, nil }
+
+func (f *fakeCNIManager) DeleteNetNS(string) error { return nil }
+
 func (f *fakeCNIManager) Del(ctx context.Context, rec *util.CNIRecord, podCfg *runtime.PodSandboxConfig) error {
 	f.delCalls++
 	f.delCtxErr = ctx.Err()

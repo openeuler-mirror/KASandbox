@@ -86,6 +86,29 @@ type AdminOpResult struct {
 }
 
 // SandboxHostPort 是一条端口映射事实；框架层不依赖 util.PortMapping。
+// AgentENV 内部 remediation 动作；不得暴露为 KASandbox Admin v2 公共字段。
+const AdminRemediationReclaimStaleInstance = "reclaim-stale-instance"
+
+// AdminRemediation 是旧 Runtime sandbox 的显式回收请求。
+type AdminRemediation struct {
+	Action                    string // 当前仅支持 reclaim-stale-instance
+	ExpectedRuntimeInstanceID string // 可选；为空时由 Runtime 从 ownership manifest 解析
+	Confirmation              string // 必须等于解析后的 native sandbox ID
+}
+
+// AdminRemediationResult 是旧 sandbox 回收结果和回收后的 gate 投影。
+type AdminRemediationResult struct {
+	ResolvedRuntimeInstanceID string    // ownership manifest 中解析出的旧 Runtime 实例
+	RecoveryPhase             string    // READY、RECOVERING 或 DEGRADED
+	BlockingReasons           []string  // gate 仍存在时的阻塞原因
+	ReclaimedWorkDirs         uint32    // 已回收 Firecracker work dir 数
+	ReclaimedNetNS            uint32    // 已回收 Runtime netns 数
+	ReclaimedUblkDevices      uint32    // 已回收 ublk device 数
+	ReclaimedArtifacts        uint32    // 已回收 artifact generation 数
+	StartedAt                 time.Time // 操作开始时间
+	FinishedAt                time.Time // 操作结束时间
+}
+
 type SandboxHostPort struct {
 	HostPort    int // 宿主端口
 	SandboxPort int // 沙箱内端口
@@ -140,6 +163,11 @@ type AdminPauser interface {
 }
 
 // AdminCheckpointer 是创建检查点的能力。
+// AdminRemediator 是显式回收旧 Runtime sandbox 的内部能力；不进入 Admin v2。
+type AdminRemediator interface {
+	AdminRemediateSandbox(ctx context.Context, ref SandboxRef, remediation AdminRemediation, opts AdminOpOptions) (*AdminRemediationResult, error)
+}
+
 type AdminCheckpointer interface {
 	AdminCheckpointSandbox(ctx context.Context, ref SandboxRef, opts AdminOpOptions) (*AdminOpResult, error)
 }

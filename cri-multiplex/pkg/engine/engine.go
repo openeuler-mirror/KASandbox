@@ -13,6 +13,7 @@ const (
 	EngineTypeContainer EngineType = "container"
 	EngineTypeE2B       EngineType = "e2b"
 	EngineTypeAndroid   EngineType = "android"
+	EngineTypeAgentENV  EngineType = "agentenv"
 )
 
 type RuntimeEngine interface {

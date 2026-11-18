@@ -13,6 +13,7 @@ import (
 
 	"github.com/cri-multiplex/pkg/admin"
 	"github.com/cri-multiplex/pkg/engine"
+	"github.com/cri-multiplex/pkg/engine/agentenv"
 	"github.com/cri-multiplex/pkg/engine/android"
 	"github.com/cri-multiplex/pkg/engine/containerd"
 	"github.com/cri-multiplex/pkg/engine/e2b"
@@ -108,6 +109,10 @@ func main() {
 	androidLaunchTimeout := flag.Duration("android-launch-timeout", 30*time.Second, "Android launch readiness timeout")
 	androidStateDir := flag.String("android-state-dir", "/var/lib/cri-multiplex/android", "Android runtime state directory")
 	androidCNINetNSPrefix := flag.String("android-cni-netns-prefix", "android-", "Android CNI netns name prefix")
+	agentenvEnabled := flag.Bool("agentenv-enabled", false, "Enable the AgentENV runtime backend")
+	agentenvRuntimeAddress := flag.String("agentenv-runtime-address", "", "AgentENV Runtime gRPC target (for example unix:///run/agentenv/agentenv-runtime.sock)")
+	agentenvNetworkMode := flag.String("agentenv-network-mode", "runtime-managed", "AgentENV network owner (only runtime-managed is supported)")
+	e2bCNINetNSPrefix := flag.String("e2b-cni-netns-prefix", "e2b-", "E2B CNI netns prefix; isolated instances must use non-overlapping prefixes")
 	orphanReconcileEnabled := flag.Bool("orphan-reconcile-enabled", true, "Enable orphan resource reconciliation")
 	orphanReconcileInterval := flag.Duration("orphan-reconcile-interval", 60*time.Second, "Orphan reconciliation interval")
 	orphanGracePeriod := flag.Duration("orphan-grace-period", 120*time.Second, "Grace period before reclaiming orphan resources")
@@ -130,6 +135,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize state store: %v", err)
 	}
+	routes := engine.NewRouteTable(stateStore)
 
 	containerEng := containerd.New(*containerdSocket)
 	defer containerEng.Close()
@@ -142,8 +148,30 @@ func main() {
 		}
 		log.Printf("auto-detected node-ip: %s", *nodeIP)
 	}
+	deps := engine.Deps{Store: stateStore, Routes: routes, NodeName: *nodeName, NodeIP: *nodeIP}
+	var agentenvEng *agentenv.Engine
+	if *agentenvEnabled {
+		if strings.TrimSpace(*agentenvRuntimeAddress) == "" {
+			log.Fatal("--agentenv-runtime-address is required when --agentenv-enabled is set")
+		}
+		if *agentenvNetworkMode != "runtime-managed" {
+			log.Fatal("AgentENV only supports --agentenv-network-mode=runtime-managed")
+		}
+		agentenvEng, err = agentenv.New(agentenv.Config{
+			RuntimeAddress: *agentenvRuntimeAddress,
+			NodeName:       *nodeName,
+			NodeIP:         *nodeIP,
+		}, deps)
+		if err != nil {
+			log.Fatalf("initialize agentenv backend: %v", err)
+		}
+		defer agentenvEng.Close()
+	} else if strings.TrimSpace(*agentenvRuntimeAddress) != "" {
+		log.Printf("WARNING: --agentenv-runtime-address is set but --agentenv-enabled is false; AgentENV backend remains disabled")
+	}
+
 	cfg := e2b.Config{
-		Deps:                  engine.Deps{Store: stateStore, NodeName: *nodeName, NodeIP: *nodeIP},
+		Deps:                  deps,
 		OrchestratorAddr:      *orchestratorAddress,
 		OrchestratorProxyAddr: *orchestratorProxyAddr,
 		CNI: util.CNIConfig{
@@ -154,6 +182,7 @@ func main() {
 			NetNSDir:    *cniNetNSDir,
 			PoolEnabled: *cniPoolEnabled,
 			PoolSize:    *cniPoolSize,
+			NetNSPrefix: *e2bCNINetNSPrefix,
 		},
 		HideLabel: *hideSandboxLabel,
 	}
@@ -170,8 +199,10 @@ func main() {
 		}
 		log.Printf("auto-detected android-node-ip: %s", *androidNodeIP)
 	}
+	androidDeps := deps
+	androidDeps.NodeIP = *androidNodeIP
 	androidEng, err := android.New(android.Config{
-		Deps:                 engine.Deps{Store: stateStore, NodeName: *nodeName, NodeIP: *androidNodeIP},
+		Deps:                 androidDeps,
 		Enabled:              *androidEnabled,
 		ArtifactsDir:         *androidArtifactsDir,
 		ADBPortStart:         *androidADBPortStart,
@@ -195,7 +226,11 @@ func main() {
 
 	// 后端装配顺序固定：Register → Freeze → CleanupManager → Mux → Restore → Reconcile → Start。
 	reg := engine.NewRegistry(engine.EngineTypeContainer)
-	for _, mod := range []engine.BackendModule{containerEng.Module(), e2bEng.Module(), androidEng.Module()} {
+	modules := []engine.BackendModule{containerEng.Module(), e2bEng.Module(), androidEng.Module()}
+	if agentenvEng != nil {
+		modules = append(modules, agentenvEng.Module())
+	}
+	for _, mod := range modules {
 		if err := reg.Register(mod); err != nil {
 			log.Fatalf("register backend %s: %v", mod.Descriptor.Type, err)
 		}
@@ -220,6 +255,7 @@ func main() {
 		UnknownHandlerPolicy: handlerPolicy,
 		RuntimeName:          *runtimeName,
 		Cleanup:              cleanupManager,
+		Routes:               routes,
 	})
 	if err := mux.RestoreState(restoreCtx); err != nil {
 		log.Fatalf("restore mux state: %v", err)
