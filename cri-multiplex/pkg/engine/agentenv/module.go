@@ -27,7 +27,6 @@ var (
 	_ engine.RuntimeEngine         = (*Engine)(nil)
 	_ engine.AdminLifecycle        = (*Engine)(nil)
 	_ engine.AdminPauser           = (*Engine)(nil)
-	_ engine.AdminRemediator       = (*Engine)(nil)
 	_ engine.AdminCheckpointer     = (*Engine)(nil)
 	_ engine.AdminRuntimeDescriber = (*Engine)(nil)
 	_ engine.Cleaner               = (*Engine)(nil)

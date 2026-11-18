@@ -10,7 +10,6 @@ import (
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	runtimeapi "github.com/cri-multiplex/pkg/agentenv/runtime/v1"
-	"github.com/cri-multiplex/pkg/engine"
 )
 
 func TestCRIStatusVersionAndRuntimeConfig(t *testing.T) {
@@ -44,7 +43,7 @@ func TestCRIStatusVersionAndRuntimeConfig(t *testing.T) {
 
 func TestCRIStatusReportsRuntimeFailure(t *testing.T) {
 	store := newMemoryStateStore()
-	routes := engine.NewRouteTable(store)
+	routes := newRouteTable(store)
 	instance := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,
@@ -69,7 +68,7 @@ func TestCRIStatusReportsRuntimeFailure(t *testing.T) {
 
 func TestHealthRetriesOnceAfterRuntimeRestart(t *testing.T) {
 	store := newMemoryStateStore()
-	routes := engine.NewRouteTable(store)
+	routes := newRouteTable(store)
 	attempts := 0
 	instance := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
@@ -158,8 +157,8 @@ func TestVirtualImageProjection(t *testing.T) {
 	if err != nil || imageStatus.GetImage() != nil {
 		t.Fatalf("removed image still visible: %+v err=%v", imageStatus.GetImage(), err)
 	}
-	var persisted persistedAgentENVState
-	if found, err := store.LoadBackendState(podStatePath, &persisted); err != nil || !found || len(persisted.Images) != 0 {
+	var persisted map[string]any
+	if found, err := store.LoadBackendState(podStatePath, &persisted); err != nil || !found || persisted["images"] != nil {
 		t.Fatalf("image state not removed: found=%v err=%v state=%+v", found, err, persisted)
 	}
 }

@@ -108,14 +108,6 @@ load_env() {
     set -a
     source "$SCRIPT_DIR/.env"
     set +a
-    export ENABLE_AGENTENV_WEBHOOK="${ENABLE_AGENTENV_WEBHOOK:-false}"
-    case "$ENABLE_AGENTENV_WEBHOOK" in
-        true|false) ;;
-        *) error "ENABLE_AGENTENV_WEBHOOK 只能为 true 或 false" ;;
-    esac
-    if [ "$ENABLE_AGENTENV_WEBHOOK" = true ] && [ "${ENABLE_WEBHOOK:-false}" != true ]; then
-        error "ENABLE_AGENTENV_WEBHOOK=true 需要 ENABLE_WEBHOOK=true"
-    fi
     REGISTRY_URL="$SERVER_IP:$HARBOR_HTTPS_PORT/$REGISTRY_PROJECT"
     export REGISTRY_URL
     # orchestrator 启动方式：默认容器化（nomad 模式=nomad job / k8s 模式=DaemonSet）
@@ -329,73 +321,62 @@ install_helm_chart() {
 #   1) 生成自签 TLS 证书并创建 Secret
 #   2) 注入 caBundle 到 MutatingWebhookConfiguration
 #   3) 创建 API Key Secret
-resolve_webhook_api_key() {
-    local api_key="${E2B_WEBHOOK_API_KEY:-}"
-    local config_file="${E2B_WEBHOOK_API_CONFIG:-/root/.e2b/config.json}"
-    if [ -z "$api_key" ] && [ -f "$config_file" ]; then
-        api_key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("teamApiKey", ""))' "$config_file") || return
-    fi
-    printf '%s' "$api_key"
-}
-
-validate_agentenv_webhook() {
-    if [ "${ENABLE_AGENTENV_WEBHOOK:-false}" = true ]; then
-        [ "${ENABLE_WEBHOOK:-false}" = true ] || error "AgentENV 需要 ENABLE_WEBHOOK=true"
-        local api_key
-        api_key=$(resolve_webhook_api_key) || return
-        [ -n "$api_key" ] || error "AgentENV Webhook 缺少 API key"
-    fi
-}
-
-# 使用子 shell，确保失败或正常返回都会清理临时私钥。
-setup_webhook_certificates() (
+setup_webhook_certificates() {
     if [ "${ENABLE_WEBHOOK:-false}" != "true" ]; then
-        info "ENABLE_WEBHOOK=false，保持已有 Webhook 和 Secret 原状"
+        info "ENABLE_WEBHOOK=false, 跳过 e2b-webhook 证书配置"
+        # 开关关闭时清理可能遗留的 webhook 资源
+        kubectl -n e2b delete secret e2b-webhook-tls --ignore-not-found=true >/dev/null 2>&1 || true
+        kubectl -n e2b delete secret e2b-api-key --ignore-not-found=true >/dev/null 2>&1 || true
+        kubectl delete mutatingwebhookconfiguration e2b-webhook --ignore-not-found=true >/dev/null 2>&1 || true
         return
     fi
-    validate_agentenv_webhook
-    local api_key
-    api_key=$(resolve_webhook_api_key)
-    local tls_dir webhook_svc=e2b-webhook.e2b webhook_svc_fqdn=e2b-webhook.e2b.svc
-    umask 077
+
+    info "ENABLE_WEBHOOK=true, 开始配置 e2b-webhook 证书 ..."
+
+    local tls_dir webhook_svc webhook_svc_fqdn
     tls_dir="$(mktemp -d)"
-    trap 'rm -rf -- "$tls_dir"' EXIT
+    webhook_svc="e2b-webhook.e2b"
+    webhook_svc_fqdn="e2b-webhook.e2b.svc"
+
+    # 1. 生成自签 TLS 证书（用于 webhook 服务 HTTPS）
     openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-        -keyout "$tls_dir/tls.key" -out "$tls_dir/tls.crt" \
+        -keyout "$tls_dir/tls.key" \
+        -out "$tls_dir/tls.crt" \
         -subj "/CN=${webhook_svc}" \
         -addext "subjectAltName=DNS:${webhook_svc},DNS:${webhook_svc_fqdn},DNS:${webhook_svc_fqdn}.cluster.local" \
         >/dev/null 2>&1
-    # 原位更新 Secret，不先删除，避免读取方遇到 Secret 不存在的窗口。
-    kubectl -n e2b create secret tls e2b-webhook-tls \
-        --cert="$tls_dir/tls.crt" --key="$tls_dir/tls.key" \
-        --dry-run=client -o yaml | kubectl -n e2b apply -f - >/dev/null
-    if [ -n "$api_key" ]; then
-        printf '%s' "$api_key" > "$tls_dir/api-key"
-        kubectl -n e2b create secret generic e2b-api-key \
-            --from-file=api-key="$tls_dir/api-key" \
-            --dry-run=client -o yaml | kubectl -n e2b apply -f - >/dev/null
-    fi
-    local ca_bundle
-    ca_bundle=$(kubectl -n e2b get secret e2b-webhook-tls -o jsonpath='{.data.tls\.crt}')
-    [ -n "$ca_bundle" ] || error "e2b-webhook-tls 缺少 caBundle"
-    # 动态处理全部入口，兼容两入口、AgentENV 和后续 Cube 扩展；一次 patch 原子更新。
-    kubectl get mutatingwebhookconfiguration e2b-webhook -o json > "$tls_dir/webhooks.json"
-    python3 - "$tls_dir/webhooks.json" "$ca_bundle" > "$tls_dir/patch.json" <<'PY'
-import json, sys
-with open(sys.argv[1]) as source:
-    hooks = json.load(source).get("webhooks", [])
-if not hooks:
-    raise SystemExit("e2b-webhook 没有准入入口")
-json.dump([{"op": "add", "path": f"/webhooks/{i}/clientConfig/caBundle", "value": sys.argv[2]}
-           for i in range(len(hooks))], sys.stdout)
-PY
-    kubectl patch mutatingwebhookconfiguration e2b-webhook \
-        --type=json --patch-file="$tls_dir/patch.json" >/dev/null
-    if kubectl -n e2b get deployment e2b-webhook >/dev/null 2>&1; then
-        kubectl -n e2b rollout restart deployment/e2b-webhook >/dev/null
-    fi
-)
 
+    # 2. 创建 TLS Secret（幂等：先删后建）
+    kubectl -n e2b delete secret e2b-webhook-tls --ignore-not-found=true >/dev/null 2>&1 || true
+    kubectl -n e2b create secret tls e2b-webhook-tls \
+        --cert="$tls_dir/tls.crt" \
+        --key="$tls_dir/tls.key" >/dev/null
+
+    # 3. 创建 E2B_API_KEY Secret（如 config.json 存在则注入）
+    local api_key=""
+    if [ -f /root/.e2b/config.json ]; then
+        api_key=$(python3 -c "import json; print(json.load(open('/root/.e2b/config.json')).get('teamApiKey',''))" 2>/dev/null || true)
+    fi
+    kubectl -n e2b delete secret e2b-api-key --ignore-not-found=true >/dev/null 2>&1 || true
+    if [ -n "$api_key" ]; then
+        kubectl -n e2b create secret generic e2b-api-key \
+            --from-literal=api-key="$api_key" >/dev/null
+    fi
+
+    # 4. 注入 caBundle 到 MutatingWebhookConfiguration（从 Secret 读取 tls.crt）
+    local ca_bundle
+    ca_bundle=$(kubectl -n e2b get secret e2b-webhook-tls -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)
+    if [ -n "$ca_bundle" ]; then
+        kubectl patch mutatingwebhookconfiguration e2b-webhook \
+            --type='json' \
+            -p="[{\"op\":\"replace\",\"path\":\"/webhooks/0/clientConfig/caBundle\",\"value\":\"${ca_bundle}\"},{\"op\":\"replace\",\"path\":\"/webhooks/1/clientConfig/caBundle\",\"value\":\"${ca_bundle}\"}]" \
+            >/dev/null
+        info "caBundle injected into e2b-webhook"
+    else
+        warn "failed to read caBundle from secret e2b-webhook-tls"
+    fi
+    rm -rf "$tls_dir"
+}
 
 # 等待所有 Pod 就绪，超时 5 分钟
 wait_for_pods() {
@@ -440,7 +421,6 @@ wait_for_pods() {
 }
 
 deploy_k8s() {
-    validate_agentenv_webhook
     render_helm_values
     install_helm_chart
     setup_webhook_certificates
@@ -451,7 +431,6 @@ deploy_k8s() {
 # 流程：构建推送镜像 → 仅渲染 e2b-webhook.yaml 模板并 kubectl apply（不执行 helm install/upgrade）
 #      → 生成证书并注入 caBundle → 更新 API Key Secret → 等待就绪
 deploy_webhook() {
-    validate_agentenv_webhook
     if [ "${ENABLE_WEBHOOK:-false}" != "true" ]; then
         warn "ENABLE_WEBHOOK=false，跳过 e2b-webhook 部署（请在 .env 中设置 ENABLE_WEBHOOK=true）"
         exit 1
@@ -467,10 +446,7 @@ deploy_webhook() {
 
     # 3. 仅渲染 e2b-webhook.yaml 模板并直接应用，不执行 helm install/upgrade
     local manifest="$SCRIPT_DIR/rendered-e2b-webhook.yaml"
-    local kube_version
-    kube_version=$(kubectl version -o json | python3 -c 'import json,sys; print(json.load(sys.stdin)["serverVersion"]["gitVersion"])')
     helm template e2b-api "$SCRIPT_DIR/helm" \
-        --kube-version "$kube_version" \
         --show-only templates/e2b-webhook.yaml \
         > "$manifest"
     info "applying e2b-webhook manifest ..."
@@ -480,7 +456,17 @@ deploy_webhook() {
     # 4. 生成 TLS 证书、创建 Secret、注入 caBundle 到 MutatingWebhookConfiguration
     setup_webhook_certificates
 
-    # 5. 等待 webhook 部署就绪
+    # 5. 用当前 config.json 中的 teamApiKey 更新 Secret，并重启 webhook 使其生效
+    local api_key
+    api_key=$(python3 -c "import json; print(json.load(open('/root/.e2b/config.json')).get('teamApiKey',''))" 2>/dev/null || true)
+    if [ -n "$api_key" ]; then
+        kubectl -n e2b delete secret e2b-api-key --ignore-not-found=true >/dev/null 2>&1 || true
+        kubectl -n e2b create secret generic e2b-api-key \
+            --from-literal=api-key="$api_key" >/dev/null
+        info "e2b-api-key secret updated"
+    fi
+
+    # 6. 等待 webhook 部署就绪
     info "waiting for e2b-webhook deployment to be ready (timeout: 5min)..."
     kubectl rollout status deployment/e2b-webhook -n e2b --timeout=300s || exit 1
     info "e2b-webhook deploy complete!"
@@ -771,17 +757,11 @@ main() {
     if [ "$DEPLOY_TYPE" = "k8s" ] && [ "${ENABLE_WEBHOOK:-false}" = "true" ]; then
         info "updating e2b-api-key secret and restarting webhook ..."
         local api_key
-        api_key=$(resolve_webhook_api_key)
+        api_key=$(python3 -c "import json; print(json.load(open('/root/.e2b/config.json')).get('teamApiKey',''))" 2>/dev/null || true)
         if [ -n "$api_key" ]; then
-            (
-                umask 077
-                key_dir="$(mktemp -d)"
-                trap 'rm -rf -- "$key_dir"' EXIT
-                printf '%s' "$api_key" > "$key_dir/api-key"
-                kubectl -n e2b create secret generic e2b-api-key \
-                    --from-file=api-key="$key_dir/api-key" \
-                    --dry-run=client -o yaml | kubectl -n e2b apply -f - >/dev/null
-            )
+            kubectl -n e2b delete secret e2b-api-key --ignore-not-found=true >/dev/null 2>&1 || true
+            kubectl -n e2b create secret generic e2b-api-key \
+                --from-literal=api-key="$api_key" >/dev/null
             kubectl -n e2b rollout restart deployment e2b-webhook >/dev/null
             info "webhook restarted with new API key"
         fi
@@ -790,6 +770,4 @@ main() {
     info "E2B Local deploy complete!"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-    main "$@"
-fi
+main "$@"

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -230,7 +231,7 @@ func (e *Engine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRe
 			return nil, status.Errorf(codes.Internal, "delete stale AgentENV product route: %v", err)
 		}
 	}
-	reservation := engine.PodRoute{
+	reservation := podRoute{
 		Backend:          engine.EngineTypeAgentENV,
 		CRISandboxID:     plan.criID,
 		ProductSandboxID: plan.productID,
@@ -321,15 +322,11 @@ func (e *Engine) completePodCreate(ctx context.Context, plan *createPlan, record
 	}
 	record.State = criStateCreating
 	record.LastError = ""
-	// native ID 先保留在内存；网络事实核验成功后将 route 与 ready state 合并落盘。
-	// 若进程在合并写入前崩溃，pending PodRecord 仍可通过 product ID 收养 Runtime。
-	nativePersistMs := int64(0)
-	hostPortStarted := time.Now()
-	hostPortMs := time.Since(hostPortStarted).Milliseconds()
+	// 保存 ready 投影及后端私有 ID 对照。
 	record.State = criStateReady
 	record.LastError = ""
-	combinedPersistStarted := time.Now()
-	route := engine.PodRoute{
+	persistStarted := time.Now()
+	route := podRoute{
 		Backend:          engine.EngineTypeAgentENV,
 		CRISandboxID:     record.CRISandboxID,
 		ProductSandboxID: record.ProductSandboxID,
@@ -339,10 +336,10 @@ func (e *Engine) completePodCreate(ctx context.Context, plan *createPlan, record
 		return nil, e.rollbackFailedCreate(ctx, record,
 			status.Errorf(codes.Internal, "persist AgentENV CRI sandbox state: %v", err))
 	}
-	combinedPersistMs := time.Since(combinedPersistStarted).Milliseconds()
-	log.Printf("[PerfTrace] sandbox=%s native=%s runtime_create_ms=%d native_persist_ms=%d route_ms=0 hostport_ms=%d final_persist_ms=0 combined_persist_ms=%d adapter_total_ms=%d",
-		plan.criID, nativeID, runtimeCreateMs, nativePersistMs, hostPortMs,
-		combinedPersistMs, time.Since(adapterStarted).Milliseconds())
+	persistMs := time.Since(persistStarted).Milliseconds()
+	log.Printf("[PerfTrace] sandbox=%s native=%s runtime_create_ms=%d persist_ms=%d adapter_total_ms=%d",
+		plan.criID, nativeID, runtimeCreateMs,
+		persistMs, time.Since(adapterStarted).Milliseconds())
 	return &runtime.RunPodSandboxResponse{PodSandboxId: plan.criID}, nil
 }
 
@@ -350,7 +347,7 @@ func (e *Engine) ensurePodRoute(record podRecord) error {
 	if record.CRISandboxID == "" || record.NativeSandboxID == "" {
 		return status.Error(codes.FailedPrecondition, "CRI and native sandbox ids are required for route")
 	}
-	if err := e.routes.PutPodRoute(engine.PodRoute{
+	if err := e.routes.PutPodRoute(podRoute{
 		Backend:          engine.EngineTypeAgentENV,
 		CRISandboxID:     record.CRISandboxID,
 		ProductSandboxID: record.ProductSandboxID,
@@ -1104,4 +1101,12 @@ func parseTimeout(raw string) (uint64, error) {
 		return 0, status.Errorf(codes.InvalidArgument, "%s must be between 1 and %d", annTimeoutSeconds, maxCRIOperationTimeoutSeconds)
 	}
 	return value, nil
+}
+
+func unimplemented(method string) error {
+	return status.Errorf(codes.Unimplemented, "AgentENV CRI method %s is not implemented", method)
+}
+
+func (e *Engine) GetContainerEvents(context.Context, *runtime.GetEventsRequest, ...grpc.CallOption) (runtime.RuntimeService_GetContainerEventsClient, error) {
+	return nil, unimplemented("GetContainerEvents")
 }

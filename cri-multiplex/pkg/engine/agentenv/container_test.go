@@ -11,10 +11,9 @@ import (
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	runtimeapi "github.com/cri-multiplex/pkg/agentenv/runtime/v1"
-	"github.com/cri-multiplex/pkg/engine"
 )
 
-func newReadyContainerTestEngine(t *testing.T) (*Engine, *memoryStateStore, *engine.RouteTable) {
+func newReadyContainerTestEngine(t *testing.T) (*Engine, *memoryStateStore, *routeTable) {
 	t.Helper()
 	const nativeID = "019a0000-0000-7000-8000-000000000201"
 	lifecycle := &fakeLifecycle{create: func(_ context.Context, req *runtimeapi.SandboxCreateRequest) (*runtimeapi.SandboxCreateResponse, error) {
@@ -210,7 +209,7 @@ func TestContainerProjectionRestoreAndValidation(t *testing.T) {
 	restored := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,
-		engine.NewRouteTable(store),
+		newRouteTable(store),
 		&fakeLifecycle{},
 		&fakeAdmin{},
 	)

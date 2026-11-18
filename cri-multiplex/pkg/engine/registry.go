@@ -12,7 +12,6 @@ type Deps struct {
 	Store    StateStore
 	NodeName string
 	NodeIP   string
-	Routes   *RouteTable
 }
 
 // BackendDescriptor 是后端的静态标识：CRI handler、handler 别名与镜像前缀。

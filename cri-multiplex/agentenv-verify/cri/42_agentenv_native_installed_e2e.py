@@ -39,11 +39,15 @@ def main():
         return json.load(opener.open(urllib.request.Request('http://127.0.0.1:8000' + path,
                                                            headers={'X-API-Key': key}), timeout=15))
 
+    def healthy():
+        with opener.open('http://127.0.0.1:8000/health', timeout=15) as response:
+            return response.status == 204
+
     def cri(*argv):
         return command(['crictl', '--runtime-endpoint=unix://' + args.socket, *argv])
 
     def snapshot():
-        return {'health': api('/health/ready'), 'sandboxes': len(api('/sandboxes')),
+        return {'health': healthy(), 'sandboxes': len(api('/sandboxes')),
                 'boot': Path('/proc/sys/kernel/random/boot_id').read_text(),
                 'services': command(['systemctl', 'show', 'aenv', 'cri-multiplex', 'kubelet', 'containerd',
                                      'e2b-webhook-agentenv', '-p', 'Id', '-p', 'MainPID', '-p', 'ActiveEnterTimestamp']),
@@ -58,7 +62,7 @@ def main():
         raise RuntimeError('timeout: ' + description)
 
     before = snapshot(); save('before.json', before)
-    assert before['sandboxes'] == 0 and before['health']['ready']
+    assert before['sandboxes'] == 0 and before['health']
     assert not any(p['spec'].get('runtimeClassName') in ('agentenv', 'aenv') for p in before['pods']['items'])
     assert command(['kubectl', 'get', 'runtimeclass', 'agentenv', '-o', 'jsonpath={.handler}']) == 'agentenv'
     # 既有 Webhook 按 namespace 名称筛选，只复用专用测试 namespace。
@@ -135,9 +139,7 @@ def main():
                 assert item['metadata'].get('labels', {}).get('native-installed-probe') == pod_name
                 command(['kubectl', 'delete', 'pod', pod_name, '-n', ns, '--wait=true', '--timeout=180s'], timeout=190)
         def drained():
-            health = api('/health/ready')
-            return not api('/sandboxes') and health['ready'] and all(health.get(k, 0) == before['health'].get(k, 0)
-                for k in ['pausedSandboxes', 'unknownOperations', 'quarantinedOperations', 'firecrackerWorkDirs', 'runtimeNetns'])
+            return not api('/sandboxes') and healthy()
         wait(drained, 'Runtime cleanup')
         if uid:
             wait(lambda: not any(p['id'] == uid for p in json.loads(cri('pods', '-o', 'json')).get('items', [])), 'CRI cleanup')

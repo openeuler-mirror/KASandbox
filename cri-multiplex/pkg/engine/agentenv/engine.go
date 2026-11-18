@@ -18,7 +18,6 @@ import (
 
 	"github.com/cri-multiplex/pkg/agentenv/runtime/v1"
 	"github.com/cri-multiplex/pkg/engine"
-	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
 type lifecycleAPI interface {
@@ -32,7 +31,6 @@ type lifecycleAPI interface {
 type adminAPI interface {
 	Pause(context.Context, *v1.SandboxPauseRequest, ...grpc.CallOption) (*v1.SandboxPauseResponse, error)
 	Checkpoint(context.Context, *v1.SandboxCheckpointRequest, ...grpc.CallOption) (*v1.CheckpointResult, error)
-	Remediate(context.Context, *v1.SandboxRemediationRequest, ...grpc.CallOption) (*v1.SandboxRemediationResponse, error)
 	GetRuntime(context.Context, *v1.SandboxGetRuntimeRequest, ...grpc.CallOption) (*v1.SandboxRuntimeInfo, error)
 	Capabilities(context.Context, *emptypb.Empty, ...grpc.CallOption) (*v1.SandboxCapabilities, error)
 	GetStats(context.Context, *v1.SandboxStatsRequest, ...grpc.CallOption) (*v1.SandboxStatsResponse, error)
@@ -42,7 +40,7 @@ type execAPI interface {
 	ExecSync(context.Context, *v1.SandboxExecSyncRequest, ...grpc.CallOption) (*v1.SandboxExecSyncResponse, error)
 	StartProcess(context.Context, *v1.SandboxProcessStartRequest, ...grpc.CallOption) (*v1.SandboxProcessStartResponse, error)
 	GetProcess(context.Context, *v1.SandboxProcessGetRequest, ...grpc.CallOption) (*v1.SandboxProcessGetResponse, error)
-	ConnectProcess(context.Context, *v1.SandboxProcessConnectRequest, ...grpc.CallOption) (v1.ProcessEventStream, error)
+	ConnectProcess(context.Context, *v1.SandboxProcessConnectRequest, ...grpc.CallOption) (ProcessEventStream, error)
 	SendProcessInput(context.Context, *v1.SandboxProcessInputRequest, ...grpc.CallOption) (*v1.SandboxProcessInputResponse, error)
 	ResizeProcess(context.Context, *v1.SandboxProcessResizeRequest, ...grpc.CallOption) (*v1.SandboxProcessResizeResponse, error)
 	CloseProcessStdin(context.Context, *v1.SandboxProcessCloseStdinRequest, ...grpc.CallOption) (*v1.SandboxProcessCloseStdinResponse, error)
@@ -61,7 +59,7 @@ type Config struct {
 // 容器和镜像仅做 CRI 本地投影；真实执行环境始终是 PodSandbox 对应的 microVM。
 type Engine struct {
 	config Config
-	routes *engine.RouteTable
+	routes *routeTable
 	store  engine.StateStore
 
 	// lifecycleMu 只用于隔离周期 Reconcile 与在线生命周期操作。
@@ -86,54 +84,44 @@ type Engine struct {
 	admin     adminAPI
 	exec      execAPI
 
-	streamingOnce      sync.Once
-	streamingListener  net.Listener
-	streamingServer    *http.Server
-	streamingMu        sync.RWMutex
-	streamingReqs      map[string]*streamRequest
-	portForwardReqs    map[string]*portForwardRequest
-	events             *engine.EventBroker
-	eventMu            sync.Mutex
-	lastContainerEvent map[string]runtime.ContainerEventType
-	containerOps       sync.Map
+	streamingOnce     sync.Once
+	streamingListener net.Listener
+	streamingServer   *http.Server
+	streamingMu       sync.RWMutex
+	streamingReqs     map[string]*streamRequest
+	portForwardReqs   map[string]*portForwardRequest
+	containerOps      sync.Map
 }
 
 func New(config Config, deps engine.Deps) (*Engine, error) {
 	if config.RuntimeAddress == "" {
 		return nil, fmt.Errorf("agentenv: runtime address is required")
 	}
-	if deps.Routes == nil {
-		return nil, fmt.Errorf("agentenv: shared route table is required")
-	}
 	instance := &Engine{
-		config:             config,
-		routes:             deps.Routes,
-		store:              deps.Store,
-		pods:               make(map[string]*podRecord),
-		containers:         make(map[string]*containerRecord),
-		images:             make(map[string]*imageRecord),
-		streamingReqs:      make(map[string]*streamRequest),
-		portForwardReqs:    make(map[string]*portForwardRequest),
-		events:             engine.NewEventBroker(),
-		lastContainerEvent: make(map[string]runtime.ContainerEventType),
+		config:          config,
+		routes:          newRouteTable(deps.Store),
+		store:           deps.Store,
+		pods:            make(map[string]*podRecord),
+		containers:      make(map[string]*containerRecord),
+		images:          make(map[string]*imageRecord),
+		streamingReqs:   make(map[string]*streamRequest),
+		portForwardReqs: make(map[string]*portForwardRequest),
 	}
 	return instance, nil
 }
 
-func newWithClients(config Config, store engine.StateStore, routes *engine.RouteTable, lifecycle lifecycleAPI, admin adminAPI) *Engine {
+func newWithClients(config Config, store engine.StateStore, routes *routeTable, lifecycle lifecycleAPI, admin adminAPI) *Engine {
 	e := &Engine{
-		config:             config,
-		routes:             routes,
-		store:              store,
-		pods:               make(map[string]*podRecord),
-		containers:         make(map[string]*containerRecord),
-		images:             make(map[string]*imageRecord),
-		streamingReqs:      make(map[string]*streamRequest),
-		portForwardReqs:    make(map[string]*portForwardRequest),
-		events:             engine.NewEventBroker(),
-		lastContainerEvent: make(map[string]runtime.ContainerEventType),
-		lifecycle:          lifecycle,
-		admin:              admin,
+		config:          config,
+		routes:          routes,
+		store:           store,
+		pods:            make(map[string]*podRecord),
+		containers:      make(map[string]*containerRecord),
+		images:          make(map[string]*imageRecord),
+		streamingReqs:   make(map[string]*streamRequest),
+		portForwardReqs: make(map[string]*portForwardRequest),
+		lifecycle:       lifecycle,
+		admin:           admin,
 	}
 	e.dialOnce.Do(func() {})
 	return e
@@ -162,9 +150,9 @@ func (e *Engine) ensureClients() error {
 		e.connMu.Lock()
 		e.conn = conn
 		e.connMu.Unlock()
-		e.lifecycle = v1.NewLifecycleClient(conn)
-		e.admin = v1.NewAdminClient(conn)
-		e.exec = v1.NewExecClient(conn)
+		e.lifecycle = NewLifecycleClient(conn)
+		e.admin = NewAdminClient(conn)
+		e.exec = NewExecClient(conn)
 	})
 	return e.dialErr
 }
@@ -212,9 +200,6 @@ func (e *Engine) Close() error {
 	}
 	if e.streamingListener != nil {
 		_ = e.streamingListener.Close()
-	}
-	if e.events != nil {
-		e.events.Close()
 	}
 	e.connMu.Lock()
 	conn := e.conn

@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"time"
-
-	core "github.com/cri-multiplex/pkg/engine"
 )
 
 const podStatePath = "agentenv.pods"
@@ -97,16 +95,13 @@ type containerRecord struct {
 // imageRecord 表示已经由 CRI 声明可用的虚拟镜像引用。
 // AgentENV 模板决定实际 rootfs，镜像内容不会在节点侧拉取或执行。
 type imageRecord struct {
-	Reference string    `json:"reference"`
-	ID        string    `json:"id"`
-	SizeBytes uint64    `json:"size_bytes"`
-	PulledAt  time.Time `json:"pulled_at"`
+	Reference string `json:"reference"`
+	ID        string `json:"id"`
 }
 
 type persistedAgentENVState struct {
 	Pods       []podRecord       `json:"pods"`
 	Containers []containerRecord `json:"containers,omitempty"`
-	Images     []imageRecord     `json:"images,omitempty"`
 }
 
 func (e *Engine) restorePods() error {
@@ -177,24 +172,9 @@ func (e *Engine) restorePods() error {
 		normalizeContainerRecord(record)
 		containers[record.ContainerID] = record
 	}
-	images := make(map[string]*imageRecord, len(state.Images))
-	for i := range state.Images {
-		record := state.Images[i]
-		if record.Reference == "" || record.ID == "" {
-			return fmt.Errorf("agentenv images: persisted reference or id is empty")
-		}
-		if record.PulledAt.IsZero() {
-			record.PulledAt = time.Now()
-		}
-		if _, duplicate := images[record.Reference]; duplicate {
-			return fmt.Errorf("agentenv images: duplicate image reference %s", record.Reference)
-		}
-		images[record.Reference] = &record
-	}
 	e.podMu.Lock()
 	e.pods = pods
 	e.containers = containers
-	e.images = images
 	e.podMu.Unlock()
 	return nil
 }
@@ -262,44 +242,12 @@ func (e *Engine) putPod(record podRecord) error {
 	})
 }
 
-// putPodWithRoute 把 ready pod state 和最终 route 合并成一次持久化。
-// 组合能力不可用时由 RouteTable 退化为原有两次写入，调用语义保持不变。
-func (e *Engine) putPodWithRoute(record podRecord, route core.PodRoute) error {
-	if err := validatePodRecord(record); err != nil {
+// 状态和 AgentENV 私有 ID 对照分别保存，不扩展公共 StateStore。
+func (e *Engine) putPodWithRoute(record podRecord, route podRoute) error {
+	if err := e.putPod(record); err != nil {
 		return err
 	}
-	e.podMu.Lock()
-	preparePodRecord(&record, time.Now())
-	previous, existed := e.pods[record.CRISandboxID]
-	e.pods[record.CRISandboxID] = &record
-	version := e.markPodStateDirtyLocked()
-	rollback := func() {
-		if existed {
-			e.pods[record.CRISandboxID] = previous
-		} else {
-			delete(e.pods, record.CRISandboxID)
-		}
-	}
-	e.podMu.Unlock()
-	if e.routes == nil {
-		return e.persistPodStateChange(version, rollback)
-	}
-
-	e.podPersistMu.Lock()
-	e.podMu.RLock()
-	snapshotVersion := e.podStateVersion
-	state := e.snapshotPodStateLocked()
-	e.podMu.RUnlock()
-	err := e.routes.PutPodRouteAndBackendState(route, podStatePath, state)
-	if err == nil {
-		if snapshotVersion > e.persistedPodStateVersion {
-			e.persistedPodStateVersion = snapshotVersion
-		}
-		e.podPersistMu.Unlock()
-		return nil
-	}
-	e.podPersistMu.Unlock()
-	return e.repairPodStateAfterFailure(fmt.Errorf("agentenv route and pods: save state: %w", err), rollback)
+	return e.routes.PutPodRoute(route)
 }
 
 func (e *Engine) setPodState(criSandboxID, state string) error {
@@ -435,7 +383,6 @@ func (e *Engine) snapshotPodStateLocked() persistedAgentENVState {
 	state := persistedAgentENVState{
 		Pods:       make([]podRecord, 0, len(e.pods)),
 		Containers: make([]containerRecord, 0, len(e.containers)),
-		Images:     make([]imageRecord, 0, len(e.images)),
 	}
 	for _, record := range e.pods {
 		state.Pods = append(state.Pods, *clonePodRecord(record))
@@ -443,12 +390,8 @@ func (e *Engine) snapshotPodStateLocked() persistedAgentENVState {
 	for _, record := range e.containers {
 		state.Containers = append(state.Containers, *cloneContainerRecord(record))
 	}
-	for _, record := range e.images {
-		state.Images = append(state.Images, *record)
-	}
 	sort.Slice(state.Pods, func(i, j int) bool { return state.Pods[i].CRISandboxID < state.Pods[j].CRISandboxID })
 	sort.Slice(state.Containers, func(i, j int) bool { return state.Containers[i].ContainerID < state.Containers[j].ContainerID })
-	sort.Slice(state.Images, func(i, j int) bool { return state.Images[i].Reference < state.Images[j].Reference })
 	return state
 }
 func clonePodRecord(record *podRecord) *podRecord {

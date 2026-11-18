@@ -135,10 +135,12 @@ func (e *Engine) reconcileOrphanRoutes(opts engine.ReconcileOptions, now time.Ti
 	}
 	var errs []error
 	for _, route := range e.routes.Snapshot() {
-		if route.Engine != engine.EngineTypeAgentENV {
+		if route.Backend != engine.EngineTypeAgentENV {
 			continue
 		}
-		if knownCRI[route.CRISandboxID] || knownProduct[route.ProductSandboxID] || knownNative[route.NativeSandboxID] {
+		if (route.CRISandboxID != "" && knownCRI[route.CRISandboxID]) ||
+			(route.ProductSandboxID != "" && knownProduct[route.ProductSandboxID]) ||
+			(route.NativeSandboxID != "" && knownNative[route.NativeSandboxID]) {
 			continue
 		}
 		if !route.UpdatedAt.IsZero() && route.UpdatedAt.Add(opts.GracePeriod).After(now) {
@@ -146,7 +148,10 @@ func (e *Engine) reconcileOrphanRoutes(opts engine.ReconcileOptions, now time.Ti
 		}
 		id := route.CRISandboxID
 		if id == "" {
-			id = route.ID
+			id = route.ProductSandboxID
+		}
+		if id == "" {
+			id = route.NativeSandboxID
 		}
 		if opts.DryRun {
 			log.Printf("[AgentENV] dry-run delete orphan route id=%s", id)

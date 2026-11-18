@@ -83,4 +83,20 @@ Requires root for Unix socket write access to `/run/`.
 
 ## AgentENV 原生网络接入
 
-AgentENV backend 默认关闭，能力、参数和限制见 [AgentENV engine](pkg/engine/agentenv/README.md)，提交范围及验证结果见 [CRI 接入说明](AGENTENV-CRI.md)。AgentENV 使用 Runtime 原生网络，不执行 CNI ADD 或配置额外 HostPort；其他后端的网络行为保持不变。
+AgentENV backend 默认关闭，通过 `--agentenv-enabled` 和 `--agentenv-runtime-address` 接入 Runtime。AgentENV 使用 Runtime 原生网络，不执行 CNI ADD 或配置额外 HostPort；其他后端的网络行为保持不变。
+
+AgentENV Pod 准入独立注册：先部署包含 AgentENV provider 的 Webhook 服务，再执行 `python3 deploy/agentenv/webhook.py install`（在仓库根目录运行，依赖 PyYAML、kubectl 和 Kubernetes 1.30+）。脚本复用 `e2b/e2b-webhook` 服务及 TLS Secret，不修改原有准入资源；卸载使用同一脚本的 `uninstall`。
+
+AgentENV 测试集中在 `cri-multiplex/agentenv-verify/`。离线契约检查使用 `python3 cri-multiplex/agentenv-verify/packaging/check_agentenv_contract.py --agentenv <Runtime源码>/src/api/openapi.yml`；Runtime 回归入口为 `runtime/run-release-regression.py`，通过 `--runtime-source` 指定已应用补丁的源码目录。节点集成测试应在独占测试环境执行。
+
+Runtime 协议源在 `proto/agentenv/runtime/v1/runtime.proto`，与配套 Runtime 源码保持一致；Go 消息及 gRPC 文件由 protoc 生成。生成命令在 `cri-multiplex` 下运行：
+
+```bash
+protoc -I proto --go_out=. --go_opt=module=github.com/cri-multiplex --go_opt=Magentenv/runtime/v1/runtime.proto=github.com/cri-multiplex/pkg/agentenv/runtime/v1 --go-grpc_out=. --go-grpc_opt=module=github.com/cri-multiplex --go-grpc_opt=Magentenv/runtime/v1/runtime.proto=github.com/cri-multiplex/pkg/agentenv/runtime/v1 proto/agentenv/runtime/v1/runtime.proto
+```
+
+AgentENV 的 CRI、产品和原生 Sandbox ID 对照保存在自身 `agentenv.id_map` 状态中，公共路由结构不扩展。镜像引用缓存不再单独持久化；容器记录仍保留镜像引用。升级到此版前必须停止投递并排空 AgentENV Sandbox，不迁移存活 Sandbox 的旧映射。
+
+Runtime 去掉自定义崩溃回收和全局维护屏障，ublk 恢复上游实现；保留正常请求幂等、Sandbox 操作互斥及生命周期处理。Runtime 协议版本为 `2.0.0`，移除私有 Remediate RPC；mux 与 Runtime 应配套更新。
+
+在 `cri-multiplex` 目录运行 `GOWORK=off go test -p 1 ./pkg/agentenv/... ./pkg/engine/... ./pkg/server/... ./cmd/...`。安装/回退测试使用 `python3 agentenv-verify/packaging/test_install.py --script <Runtime源码>/scripts/release/agentenv-cri-runtime-patch/rpm-control.sh`，通过临时目录和命令桩验证，不访问系统服务。Runtime 单元测试可运行 `CARGO_BUILD_JOBS=2 python3 agentenv-verify/runtime/run-release-regression.py --runtime-source <源码目录> --suite unit --suite runtime-unit --skip-fault-injection --output <新输出目录>`。这些测试不能替代 VM 和真实 kubelet 验收。

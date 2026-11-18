@@ -218,59 +218,6 @@ func TestStateStoreDeleteDuringFlushDoesNotResurrect(t *testing.T) {
 	}
 }
 
-func TestStateStoreSaveRouteAndBackendStateUsesSingleSnapshot(t *testing.T) {
-	store := newStateStoreTestStore(t)
-	write := store.writeSnapshot
-	writes := 0
-	store.writeSnapshot = func(data []byte) error {
-		writes++
-		return write(data)
-	}
-	route := RouteRecord{
-		Kind:             "pod",
-		ID:               "cri-combined",
-		Engine:           EngineTypeAgentENV,
-		CRISandboxID:     "cri-combined",
-		ProductSandboxID: "product-combined",
-		NativeSandboxID:  "native-combined",
-	}
-	if err := store.SaveRouteAndBackendState(route, "agentenv.pods", []string{"pod-combined"}); err != nil {
-		t.Fatalf("SaveRouteAndBackendState: %v", err)
-	}
-	if writes != 1 {
-		t.Fatalf("snapshot writes = %d, want 1", writes)
-	}
-
-	reopened, err := NewJSONStateStore(filepath.Dir(store.path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	routes, err := reopened.LoadRoutes()
-	if err != nil || len(routes) != 1 || routes[0].NativeSandboxID != "native-combined" {
-		t.Fatalf("restored routes = %+v err=%v", routes, err)
-	}
-	var pods []string
-	found, err := reopened.LoadBackendState("agentenv.pods", &pods)
-	if err != nil || !found || len(pods) != 1 || pods[0] != "pod-combined" {
-		t.Fatalf("restored agentenv pods = %+v found=%v err=%v", pods, found, err)
-	}
-}
-
-func TestStateStoreCombinedSaveRejectsReservedPathAtomically(t *testing.T) {
-	store := newStateStoreTestStore(t)
-	route := RouteRecord{Kind: "pod", ID: "cri-invalid-combined", Engine: EngineTypeAgentENV}
-	if err := store.SaveRouteAndBackendState(route, "routes.invalid", []string{"pod"}); err == nil {
-		t.Fatal("combined save accepted reserved backend section")
-	}
-	routes, err := store.LoadRoutes()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(routes) != 0 {
-		t.Fatalf("route mutation survived rejected combined save: %+v", routes)
-	}
-}
-
 func TestStateStoreConcurrentPodRouteRecovery(t *testing.T) {
 	store := newStateStoreTestStore(t)
 	var writes atomic.Int64

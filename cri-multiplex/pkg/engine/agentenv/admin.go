@@ -57,7 +57,7 @@ func (e *Engine) AdminCreateSandbox(ctx context.Context, spec engine.SandboxSpec
 			"agentenv runtime returned product sandbox id %q, want %q", productID, spec.SandboxID)
 	}
 
-	mapping := engine.PodRoute{
+	mapping := podRoute{
 		Backend:          engine.EngineTypeAgentENV,
 		ProductSandboxID: spec.SandboxID,
 		NativeSandboxID:  nativeID,
@@ -205,90 +205,6 @@ func (e *Engine) AdminPauseSandbox(ctx context.Context, ref engine.SandboxRef, o
 	return result, nil
 }
 
-func (e *Engine) AdminRemediateSandbox(ctx context.Context, ref engine.SandboxRef, remediation engine.AdminRemediation, opts engine.AdminOpOptions) (*engine.AdminRemediationResult, error) {
-	mapping, err := e.resolveMapping(ref)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(remediation.Action) != engine.AdminRemediationReclaimStaleInstance {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"unsupported AgentENV remediation action %q", remediation.Action)
-	}
-	operationID := strings.TrimSpace(opts.OperationID)
-	if operationID == "" {
-		return nil, status.Error(codes.InvalidArgument, "operation_id is required for AgentENV remediation")
-	}
-	confirmation := strings.TrimSpace(remediation.Confirmation)
-	if confirmation != mapping.NativeSandboxID {
-		return nil, status.Error(codes.InvalidArgument,
-			"confirmation must exactly match the native sandbox id")
-	}
-	if err := e.ensureClients(); err != nil {
-		return nil, e.mapRuntimeError(err)
-	}
-	var timeoutSeconds uint64
-	if opts.Timeout > 0 {
-		timeoutSeconds = uint64(opts.Timeout / time.Second)
-	}
-	response, err := e.admin.Remediate(ctx, &runtimeapi.SandboxRemediationRequest{
-		OperationId:               operationID,
-		NativeSandboxId:           mapping.NativeSandboxID,
-		Action:                    runtimeapi.SandboxRemediationAction_SANDBOX_REMEDIATION_ACTION_RECLAIM_STALE_INSTANCE,
-		ExpectedRuntimeInstanceId: strings.TrimSpace(remediation.ExpectedRuntimeInstanceID),
-		Confirmation:              confirmation,
-		TimeoutSeconds:            timeoutSeconds,
-	})
-	if err != nil {
-		return nil, e.mapRuntimeError(err)
-	}
-	if err := validateRemediationOperationStatus(operationID, response.GetOperation()); err != nil {
-		return nil, err
-	}
-	result := &engine.AdminRemediationResult{
-		ResolvedRuntimeInstanceID: response.GetResolvedRuntimeInstanceId(),
-		RecoveryPhase:             response.GetRecoveryPhase(),
-		BlockingReasons:           append([]string(nil), response.GetBlockingReasons()...),
-		ReclaimedWorkDirs:         response.GetReclaimedWorkDirs(),
-		ReclaimedNetNS:            response.GetReclaimedNetns(),
-		ReclaimedUblkDevices:      response.GetReclaimedUblkDevices(),
-		ReclaimedArtifacts:        response.GetReclaimedArtifactGenerations(),
-	}
-	if startedAt := response.GetOperation().GetStartedAt(); startedAt != nil {
-		result.StartedAt = startedAt.AsTime()
-	}
-	if finishedAt := response.GetOperation().GetFinishedAt(); finishedAt != nil {
-		result.FinishedAt = finishedAt.AsTime()
-	}
-	return result, nil
-}
-
-func validateRemediationOperationStatus(expectedOperationID string, operation *runtimeapi.OperationStatus) error {
-	if operation == nil {
-		return status.Error(codes.Internal, "AgentENV sandbox remediation returned a nil operation status")
-	}
-	if actual := operation.GetOperationId(); actual != expectedOperationID {
-		return status.Errorf(codes.Internal,
-			"AgentENV sandbox remediation operation id mismatch: got %q, want %q", actual, expectedOperationID)
-	}
-	if state := strings.ToUpper(strings.TrimSpace(operation.GetState())); state != "SUCCEEDED" {
-		detail := strings.TrimSpace(operation.GetErrorMessage())
-		if code := strings.TrimSpace(operation.GetErrorCode()); code != "" {
-			if detail != "" {
-				detail = code + ": " + detail
-			} else {
-				detail = code
-			}
-		}
-		if detail == "" {
-			detail = "no error detail"
-		}
-		return status.Errorf(codes.Unavailable,
-			"AgentENV sandbox remediation operation %s did not succeed: state=%s detail=%s",
-			expectedOperationID, state, detail)
-	}
-	return nil
-}
-
 func validatePauseOperationStatus(expectedOperationID string, operation *runtimeapi.OperationStatus) error {
 	if operation == nil {
 		return status.Error(codes.Internal, "AgentENV sandbox pause returned a nil operation status")
@@ -414,18 +330,18 @@ func (e *Engine) resolveNativeByProduct(ctx context.Context, productSandboxID st
 	if nativeID == "" {
 		return "", false, status.Error(codes.Internal, "AgentENV runtime returned an empty native sandbox id")
 	}
-	if err := e.routes.PutPodRoute(engine.PodRoute{Backend: engine.EngineTypeAgentENV, ProductSandboxID: productSandboxID, NativeSandboxID: nativeID}); err != nil {
+	if err := e.routes.PutPodRoute(podRoute{Backend: engine.EngineTypeAgentENV, ProductSandboxID: productSandboxID, NativeSandboxID: nativeID}); err != nil {
 		return "", false, status.Errorf(codes.Internal, "persist recovered AgentENV id mapping: %v", err)
 	}
 	return nativeID, true, nil
 }
 
-func (e *Engine) resolveMapping(ref engine.SandboxRef) (engine.PodRoute, error) {
+func (e *Engine) resolveMapping(ref engine.SandboxRef) (podRoute, error) {
 	if ref.CRISandboxID == "" && ref.SandboxID == "" {
-		return engine.PodRoute{}, status.Error(codes.InvalidArgument, "cri_sandbox_id or sandbox_id is required")
+		return podRoute{}, status.Error(codes.InvalidArgument, "cri_sandbox_id or sandbox_id is required")
 	}
 	var (
-		mapping engine.PodRoute
+		mapping podRoute
 		ok      bool
 	)
 	if ref.CRISandboxID != "" {
@@ -434,10 +350,10 @@ func (e *Engine) resolveMapping(ref engine.SandboxRef) (engine.PodRoute, error) 
 		mapping, ok = e.routes.PodRouteByProduct(ref.SandboxID)
 	}
 	if !ok {
-		return engine.PodRoute{}, status.Errorf(codes.NotFound, "sandbox not found on this node")
+		return podRoute{}, status.Errorf(codes.NotFound, "sandbox not found on this node")
 	}
 	if ref.CRISandboxID != "" && ref.SandboxID != "" && mapping.ProductSandboxID != ref.SandboxID {
-		return engine.PodRoute{}, status.Errorf(codes.FailedPrecondition,
+		return podRoute{}, status.Errorf(codes.FailedPrecondition,
 			"sandbox id mismatch: CRI %s maps to product %q, request has %q",
 			ref.CRISandboxID, mapping.ProductSandboxID, ref.SandboxID)
 	}
@@ -553,7 +469,7 @@ func cloneStringMap(values map[string]string) map[string]string {
 	return out
 }
 
-func sandboxRuntimeFromProto(info *runtimeapi.SandboxInfo, mapping engine.PodRoute, nodeName, nodeIP string) *engine.SandboxRuntime {
+func sandboxRuntimeFromProto(info *runtimeapi.SandboxInfo, mapping podRoute, nodeName, nodeIP string) *engine.SandboxRuntime {
 	runtime := &engine.SandboxRuntime{
 		Backend:      string(engine.EngineTypeAgentENV),
 		CRISandboxID: mapping.CRISandboxID,
@@ -578,7 +494,7 @@ func sandboxRuntimeFromProto(info *runtimeapi.SandboxInfo, mapping engine.PodRou
 	return runtime
 }
 
-func sandboxRuntimeInfoFromProto(info *runtimeapi.SandboxRuntimeInfo, mapping engine.PodRoute, nodeName, nodeIP string) *engine.SandboxRuntime {
+func sandboxRuntimeInfoFromProto(info *runtimeapi.SandboxRuntimeInfo, mapping podRoute, nodeName, nodeIP string) *engine.SandboxRuntime {
 	runtime := &engine.SandboxRuntime{
 		Backend:      string(engine.EngineTypeAgentENV),
 		CRISandboxID: mapping.CRISandboxID,

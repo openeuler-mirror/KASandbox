@@ -21,6 +21,21 @@ def expand(document, value):
             if key not in ("description", "summary", "example", "examples")}
 
 
+def check_user_fields(value, location="request"):
+    if isinstance(value, list):
+        for item in value:
+            check_user_fields(item, location)
+    elif isinstance(value, dict):
+        for name in value.get("properties", {}):
+            if name.lower().replace("_", "").replace("-", "") in {"user", "userid", "username"}:
+                raise ValueError(f"不需要的用户字段: {location}.{name}")
+        name = value.get("name", "")
+        if value.get("in") and name.lower().replace("_", "").replace("-", "") in {"user", "userid", "username"}:
+            raise ValueError(f"不需要的用户参数: {location}.{name}")
+        for key, item in value.items():
+            check_user_fields(item, f"{location}.{key}")
+
+
 def check(agentenv_path, kasandbox_path):
     agentenv = yaml.safe_load(agentenv_path.read_text(encoding="utf-8"))
     kasandbox = yaml.safe_load(kasandbox_path.read_text(encoding="utf-8"))
@@ -33,11 +48,9 @@ def check(agentenv_path, kasandbox_path):
                 continue
             other = kasandbox["paths"][path][method]
             for field in ("parameters", "requestBody"):
+                check_user_fields(expand(agentenv, operation.get(field)), f"{method} {path}")
                 if expand(agentenv, operation.get(field)) != expand(kasandbox, other.get(field)):
                     raise ValueError(f"请求契约不一致: {method} {path} {field}")
-            if method == "post":
-                if expand(agentenv, operation["responses"]["503"]) != expand(kasandbox, other["responses"]["503"]):
-                    raise ValueError(f"维护响应不一致: {method} {path}")
             checked.append(f"{method.upper()} {path}")
     if len(checked) != 9:
         raise ValueError(f"预期九接口，实际 {len(checked)}")
@@ -47,6 +60,6 @@ def check(agentenv_path, kasandbox_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agentenv", type=Path, required=True, help="AgentENV src/api/openapi.yml")
-    parser.add_argument("--kasandbox", type=Path, default=Path(__file__).resolve().parents[1] / "spec/openapi.yml")
+    parser.add_argument("--kasandbox", type=Path, default=Path(__file__).resolve().parents[3] / "spec/openapi.yml")
     args = parser.parse_args()
     print(json.dumps(check(args.agentenv, args.kasandbox), ensure_ascii=False, indent=2))

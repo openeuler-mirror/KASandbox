@@ -12,14 +12,11 @@ import (
 )
 
 type RouteRecord struct {
-	Kind             string     `json:"kind"`
-	ID               string     `json:"id"`
-	Engine           EngineType `json:"engine"`
-	SandboxID        string     `json:"sandbox_id,omitempty"`
-	CRISandboxID     string     `json:"cri_sandbox_id,omitempty"`
-	ProductSandboxID string     `json:"product_sandbox_id,omitempty"`
-	NativeSandboxID  string     `json:"native_sandbox_id,omitempty"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	Kind      string     `json:"kind"`
+	ID        string     `json:"id"`
+	Engine    EngineType `json:"engine"`
+	SandboxID string     `json:"sandbox_id,omitempty"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 type CleanupTask struct {
@@ -117,15 +114,6 @@ type StateStore interface {
 	DeleteBackendState(path string) error
 }
 
-// routeAndBackendStateStore 是 StateStore 的可选原子组合写入能力。
-// 支持时，route 与 backend section 在同一个 state snapshot 中落盘，
-// 避免创建成功路径为同一事务执行两次 fsync。
-type routeAndBackendStateStore interface {
-	SaveRouteAndBackendState(route RouteRecord, path string, value any) error
-}
-
-var _ routeAndBackendStateStore = (*JSONStateStore)(nil)
-
 type JSONStateStore struct {
 	mu       sync.Mutex
 	path     string
@@ -190,30 +178,6 @@ func (s *JSONStateStore) SaveRoute(r RouteRecord) error {
 	s.state.Version = 1
 	r.UpdatedAt = time.Now()
 	s.state.Routes = upsertRouteRecord(s.state.Routes, r)
-	return s.flushLocked()
-}
-
-// SaveRouteAndBackendState 在一次内存 mutation 和一次 snapshot 中同时写入 route 与 backend state。
-// 该方法只供 RouteTable 的组合写入使用；底层 store 不支持时由 RouteTable 自动退化。
-func (s *JSONStateStore) SaveRouteAndBackendState(r RouteRecord, path string, value any) error {
-	if s == nil || s.disabled {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	previousRoutes := s.state.Routes
-	previousVersion := s.state.Version
-	s.state.Version = 1
-	r.UpdatedAt = time.Now()
-	s.state.Routes = upsertRouteRecord(s.state.Routes, r)
-	if err := s.setBackendStateLocked(path, value); err != nil {
-		s.state.Routes = previousRoutes
-		s.state.Version = previousVersion
-		return err
-	}
-	// flushLocked 会释放锁等待磁盘写入；按既有 StateStore 语义，写失败时保留内存 mutation，
-	// 由上层回滚/修复流程决定后续状态，不能在这里整体回滚并覆盖并发 mutation。
 	return s.flushLocked()
 }
 

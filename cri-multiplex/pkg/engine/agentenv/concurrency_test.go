@@ -11,7 +11,6 @@ import (
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	runtimeapi "github.com/cri-multiplex/pkg/agentenv/runtime/v1"
-	"github.com/cri-multiplex/pkg/engine"
 )
 
 func TestRunPodSandboxDifferentSandboxesRunConcurrently(t *testing.T) {
@@ -88,7 +87,7 @@ func TestPodPersistenceDoesNotHoldStateReadLock(t *testing.T) {
 		entered:          make(chan struct{}),
 		release:          make(chan struct{}),
 	}
-	routes := engine.NewRouteTable(store)
+	routes := newRouteTable(store)
 	instance := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,
@@ -147,7 +146,7 @@ func TestConcurrentPodMutationsCoalesceStateSnapshots(t *testing.T) {
 		entered:          make(chan struct{}),
 		release:          make(chan struct{}),
 	}
-	routes := engine.NewRouteTable(store)
+	routes := newRouteTable(store)
 	instance := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,

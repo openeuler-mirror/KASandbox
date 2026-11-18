@@ -17,7 +17,7 @@ type fakeExec struct {
 	execSync          func(context.Context, *runtimeapi.SandboxExecSyncRequest) (*runtimeapi.SandboxExecSyncResponse, error)
 	startProcess      func(context.Context, *runtimeapi.SandboxProcessStartRequest) (*runtimeapi.SandboxProcessStartResponse, error)
 	getProcess        func(context.Context, *runtimeapi.SandboxProcessGetRequest) (*runtimeapi.SandboxProcessGetResponse, error)
-	connectProcess    func(context.Context, *runtimeapi.SandboxProcessConnectRequest) (runtimeapi.ProcessEventStream, error)
+	connectProcess    func(context.Context, *runtimeapi.SandboxProcessConnectRequest) (ProcessEventStream, error)
 	sendProcessInput  func(context.Context, *runtimeapi.SandboxProcessInputRequest) (*runtimeapi.SandboxProcessInputResponse, error)
 	resizeProcess     func(context.Context, *runtimeapi.SandboxProcessResizeRequest) (*runtimeapi.SandboxProcessResizeResponse, error)
 	closeProcessStdin func(context.Context, *runtimeapi.SandboxProcessCloseStdinRequest) (*runtimeapi.SandboxProcessCloseStdinResponse, error)
@@ -59,7 +59,7 @@ func (f *fakeExec) GetProcess(ctx context.Context, req *runtimeapi.SandboxProces
 	return f.getProcess(ctx, req)
 }
 
-func (f *fakeExec) ConnectProcess(ctx context.Context, req *runtimeapi.SandboxProcessConnectRequest, _ ...grpc.CallOption) (runtimeapi.ProcessEventStream, error) {
+func (f *fakeExec) ConnectProcess(ctx context.Context, req *runtimeapi.SandboxProcessConnectRequest, _ ...grpc.CallOption) (ProcessEventStream, error) {
 	if f.connectProcess == nil {
 		return &fakeProcessEventStream{}, nil
 	}

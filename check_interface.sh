@@ -7,8 +7,7 @@
 #   ./门禁-v2.sh <BASE> <TARGET>
 #
 #   优先读环境变量 BASE / TARGET（流水线里用 BASE=... TARGET=... 传入），
-#   没有环境变量时读位置参数；PR 环境默认比较目标分支共同祖先到 HEAD，
-#   普通本地调用默认 HEAD^ / HEAD。
+#   没有环境变量时读两个位置参数，两者都没有时默认 HEAD^ / HEAD。
 #   BASE / TARGET 是当前仓库里的任意 git ref（分支、tag、commit）。
 #   只做比较，不 clone，也不改当前工作区。
 #
@@ -1325,10 +1324,7 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
       $0 <BASE> <TARGET>
 
   比较当前仓库中两个 git ref 之间的接口变更。
-  优先取环境变量 BASE / TARGET，其次取位置参数。
-  未指定 BASE 时，PR 环境使用目标分支与 TARGET 的共同祖先；本地默认 HEAD^。
-  PR 目标分支读取 CHANGE_TARGET / gitlabTargetBranch；固定 KASandbox Jenkins 任务默认 master。
-  目标分支必须已存在于 origin 的远端跟踪引用中；缺少引用或历史时明确失败。
+  优先取环境变量 BASE / TARGET，其次取两个位置参数，都没有时默认 HEAD^ / HEAD。
 
 示例:
   BASE=origin/main TARGET=HEAD $0
@@ -1338,8 +1334,8 @@ EOF
 fi
 
 stage_begin "1/8 参数与 ref 解析"
-source "$(dirname "${BASH_SOURCE[0]}")/scripts/interface-range.sh"
-resolve_interface_range "$@" || die "无法解析接口比较范围"
+BASE_REF="${BASE:-${1:-HEAD^}}"
+TARGET_REF="${TARGET:-${2:-HEAD}}"
 
 git rev-parse --git-dir >/dev/null 2>&1 || die "当前目录不是 git 仓库"
 

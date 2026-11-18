@@ -69,7 +69,6 @@ func successfulDeleteOperation(req *runtimeapi.SandboxDeleteRequest) *runtimeapi
 type fakeAdmin struct {
 	pause        func(context.Context, *runtimeapi.SandboxPauseRequest) (*runtimeapi.SandboxPauseResponse, error)
 	checkpoint   func(context.Context, *runtimeapi.SandboxCheckpointRequest) (*runtimeapi.CheckpointResult, error)
-	remediate    func(context.Context, *runtimeapi.SandboxRemediationRequest) (*runtimeapi.SandboxRemediationResponse, error)
 	getStats     func(context.Context, *runtimeapi.SandboxStatsRequest) (*runtimeapi.SandboxStatsResponse, error)
 	getRuntime   func(context.Context, *runtimeapi.SandboxGetRuntimeRequest) (*runtimeapi.SandboxRuntimeInfo, error)
 	capabilities func(context.Context, *emptypb.Empty) (*runtimeapi.SandboxCapabilities, error)
@@ -86,13 +85,6 @@ func (f *fakeAdmin) Checkpoint(ctx context.Context, req *runtimeapi.SandboxCheck
 		return &runtimeapi.CheckpointResult{}, nil
 	}
 	return f.checkpoint(ctx, req)
-}
-
-func (f *fakeAdmin) Remediate(ctx context.Context, req *runtimeapi.SandboxRemediationRequest, _ ...grpc.CallOption) (*runtimeapi.SandboxRemediationResponse, error) {
-	if f.remediate == nil {
-		return &runtimeapi.SandboxRemediationResponse{}, nil
-	}
-	return f.remediate(ctx, req)
 }
 
 func (f *fakeAdmin) GetStats(ctx context.Context, req *runtimeapi.SandboxStatsRequest, _ ...grpc.CallOption) (*runtimeapi.SandboxStatsResponse, error) {
@@ -123,7 +115,7 @@ func newTestEngine(t *testing.T, lifecycle lifecycleAPI, admin adminAPI) (*Engin
 	if err != nil {
 		t.Fatalf("NewJSONStateStore: %v", err)
 	}
-	routes := core.NewRouteTable(store)
+	routes := newRouteTable(store)
 	return newWithClients(Config{RuntimeAddress: "passthrough:///agentenv-test", NodeIP: "10.0.0.1"}, store, routes, lifecycle, admin), store
 }
 
@@ -239,7 +231,7 @@ func TestAdminDeleteUsesNativeIDAndRemovesMapping(t *testing.T) {
 		return nil, status.Error(codes.NotFound, "already gone")
 	}}
 	engine, store := newTestEngine(t, lifecycle, &fakeAdmin{})
-	if err := engine.routes.PutPodRoute(core.PodRoute{Backend: core.EngineTypeAgentENV, ProductSandboxID: "product-2", NativeSandboxID: nativeID}); err != nil {
+	if err := engine.routes.PutPodRoute(podRoute{Backend: core.EngineTypeAgentENV, ProductSandboxID: "product-2", NativeSandboxID: nativeID}); err != nil {
 		t.Fatalf("seed mapping: %v", err)
 	}
 
@@ -269,7 +261,7 @@ func TestAdminDeleteRejectsUnknownDeleteOperation(t *testing.T) {
 		}, nil
 	}}
 	instance, _ := newTestEngine(t, lifecycle, &fakeAdmin{})
-	if err := instance.routes.PutPodRoute(core.PodRoute{
+	if err := instance.routes.PutPodRoute(podRoute{
 		Backend:          core.EngineTypeAgentENV,
 		ProductSandboxID: "product-admin-unknown",
 		CRISandboxID:     "cri-admin-unknown",
@@ -312,7 +304,7 @@ func TestAdminPauseUsesNativeIDAndValidatesSucceededOperation(t *testing.T) {
 		}}, nil
 	}}
 	instance, _ := newTestEngine(t, &fakeLifecycle{}, admin)
-	if err := instance.routes.PutPodRoute(core.PodRoute{
+	if err := instance.routes.PutPodRoute(podRoute{
 		Backend:          core.EngineTypeAgentENV,
 		ProductSandboxID: "product-pause",
 		NativeSandboxID:  nativeID,
@@ -348,7 +340,7 @@ func TestAdminPauseRejectsUnknownOperation(t *testing.T) {
 		}}, nil
 	}}
 	instance, _ := newTestEngine(t, &fakeLifecycle{}, admin)
-	if err := instance.routes.PutPodRoute(core.PodRoute{
+	if err := instance.routes.PutPodRoute(podRoute{
 		Backend:          core.EngineTypeAgentENV,
 		ProductSandboxID: "product-pause-unknown",
 		NativeSandboxID:  nativeID,
@@ -380,7 +372,7 @@ func TestAdminCheckpointUsesNativeIDAndRequiresRunningSource(t *testing.T) {
 		}, nil
 	}}
 	instance, _ := newTestEngine(t, &fakeLifecycle{}, admin)
-	if err := instance.routes.PutPodRoute(core.PodRoute{
+	if err := instance.routes.PutPodRoute(podRoute{
 		Backend:          core.EngineTypeAgentENV,
 		ProductSandboxID: "product-checkpoint",
 		NativeSandboxID:  nativeID,
@@ -448,7 +440,7 @@ func TestAdminCheckpointRejectsUnpublishedOrNonRunningResult(t *testing.T) {
 				return tt.result, nil
 			}}
 			instance, _ := newTestEngine(t, &fakeLifecycle{}, admin)
-			if err := instance.routes.PutPodRoute(core.PodRoute{
+			if err := instance.routes.PutPodRoute(podRoute{
 				Backend:          core.EngineTypeAgentENV,
 				ProductSandboxID: "product-checkpoint-invalid",
 				NativeSandboxID:  nativeID,
@@ -468,89 +460,6 @@ func TestAdminCheckpointRejectsUnpublishedOrNonRunningResult(t *testing.T) {
 	}
 }
 
-func TestAdminRemediateUsesNativeIDAndValidatesSucceededOperation(t *testing.T) {
-	const nativeID = "019a0000-0000-7000-8000-000000000723"
-	var captured *runtimeapi.SandboxRemediationRequest
-	admin := &fakeAdmin{remediate: func(_ context.Context, req *runtimeapi.SandboxRemediationRequest) (*runtimeapi.SandboxRemediationResponse, error) {
-		captured = req
-		return &runtimeapi.SandboxRemediationResponse{
-			Operation: &runtimeapi.OperationStatus{
-				OperationId: req.GetOperationId(),
-				Action:      "reclaim_stale_instance",
-				State:       "SUCCEEDED",
-			},
-			ResolvedRuntimeInstanceId:    "old-runtime-1",
-			RecoveryPhase:                "READY",
-			ReclaimedWorkDirs:            1,
-			ReclaimedNetns:               1,
-			ReclaimedUblkDevices:         2,
-			ReclaimedArtifactGenerations: 3,
-		}, nil
-	}}
-	instance, _ := newTestEngine(t, &fakeLifecycle{}, admin)
-	if err := instance.routes.PutPodRoute(core.PodRoute{
-		Backend:          core.EngineTypeAgentENV,
-		ProductSandboxID: "product-remediate",
-		NativeSandboxID:  nativeID,
-	}); err != nil {
-		t.Fatalf("seed route: %v", err)
-	}
-
-	result, err := instance.AdminRemediateSandbox(
-		context.Background(),
-		core.SandboxRef{SandboxID: "product-remediate"},
-		core.AdminRemediation{
-			Action:                    core.AdminRemediationReclaimStaleInstance,
-			ExpectedRuntimeInstanceID: "old-runtime-1",
-			Confirmation:              nativeID,
-		},
-		core.AdminOpOptions{OperationID: "remediate-op-1", Timeout: 3 * time.Second},
-	)
-	if err != nil {
-		t.Fatalf("AdminRemediateSandbox: %v", err)
-	}
-	if captured.GetNativeSandboxId() != nativeID ||
-		captured.GetOperationId() != "remediate-op-1" ||
-		captured.GetConfirmation() != nativeID ||
-		captured.GetExpectedRuntimeInstanceId() != "old-runtime-1" ||
-		captured.GetTimeoutSeconds() != 3 ||
-		captured.GetAction() != runtimeapi.SandboxRemediationAction_SANDBOX_REMEDIATION_ACTION_RECLAIM_STALE_INSTANCE {
-		t.Fatalf("remediation request mismatch: %+v", captured)
-	}
-	if result.ResolvedRuntimeInstanceID != "old-runtime-1" ||
-		result.RecoveryPhase != "READY" ||
-		result.ReclaimedWorkDirs != 1 ||
-		result.ReclaimedNetNS != 1 ||
-		result.ReclaimedUblkDevices != 2 ||
-		result.ReclaimedArtifacts != 3 {
-		t.Fatalf("remediation result mismatch: %+v", result)
-	}
-}
-
-func TestAdminRemediateRejectsMismatchedConfirmation(t *testing.T) {
-	const nativeID = "019a0000-0000-7000-8000-000000000724"
-	instance, _ := newTestEngine(t, &fakeLifecycle{}, &fakeAdmin{})
-	if err := instance.routes.PutPodRoute(core.PodRoute{
-		Backend:          core.EngineTypeAgentENV,
-		ProductSandboxID: "product-remediate-confirm",
-		NativeSandboxID:  nativeID,
-	}); err != nil {
-		t.Fatalf("seed route: %v", err)
-	}
-	_, err := instance.AdminRemediateSandbox(
-		context.Background(),
-		core.SandboxRef{SandboxID: "product-remediate-confirm"},
-		core.AdminRemediation{
-			Action:       core.AdminRemediationReclaimStaleInstance,
-			Confirmation: "019a0000-0000-7000-8000-000000000725",
-		},
-		core.AdminOpOptions{OperationID: "remediate-op-confirm"},
-	)
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("AdminRemediateSandbox code = %v, want InvalidArgument; err=%v", status.Code(err), err)
-	}
-}
-
 func TestAdminGetSandboxRuntimeResolvesCRIToNativeID(t *testing.T) {
 	const nativeID = "019a0000-0000-7000-8000-000000000003"
 	var requested string
@@ -565,7 +474,7 @@ func TestAdminGetSandboxRuntimeResolvesCRIToNativeID(t *testing.T) {
 		}, nil
 	}}
 	engine, _ := newTestEngine(t, &fakeLifecycle{}, admin)
-	if err := engine.routes.PutPodRoute(core.PodRoute{
+	if err := engine.routes.PutPodRoute(podRoute{
 		Backend:          core.EngineTypeAgentENV,
 		ProductSandboxID: "product-3",
 		CRISandboxID:     "cri-3",
@@ -597,7 +506,7 @@ func TestCleanupSandboxDeletesNativeAndCRIMapping(t *testing.T) {
 		return successfulDeleteOperation(req), nil
 	}}
 	engine, _ := newTestEngine(t, lifecycle, &fakeAdmin{})
-	if err := engine.routes.PutPodRoute(core.PodRoute{
+	if err := engine.routes.PutPodRoute(podRoute{
 		Backend:          core.EngineTypeAgentENV,
 		ProductSandboxID: "product-4",
 		CRISandboxID:     "cri-4",
@@ -622,7 +531,7 @@ func TestCleanupSandboxDeletesNativeAndCRIMapping(t *testing.T) {
 
 func TestBindCRISandboxAddsExplicitMapping(t *testing.T) {
 	engine, _ := newTestEngine(t, &fakeLifecycle{}, &fakeAdmin{})
-	if err := engine.routes.PutPodRoute(core.PodRoute{Backend: core.EngineTypeAgentENV, ProductSandboxID: "product-5", NativeSandboxID: "native-5"}); err != nil {
+	if err := engine.routes.PutPodRoute(podRoute{Backend: core.EngineTypeAgentENV, ProductSandboxID: "product-5", NativeSandboxID: "native-5"}); err != nil {
 		t.Fatalf("seed mapping: %v", err)
 	}
 	nativeID, err := engine.BindCRISandbox("product-5", "cri-5")
@@ -661,9 +570,9 @@ func TestAdminCreateRejectsCredentialMaterial(t *testing.T) {
 const sha256Size = 32
 
 func boolPointer(value bool) *bool { return &value }
-func restoredRoutes(t *testing.T, store *core.JSONStateStore) *core.RouteTable {
+func restoredRoutes(t *testing.T, store *core.JSONStateStore) *routeTable {
 	t.Helper()
-	routes := core.NewRouteTable(store)
+	routes := newRouteTable(store)
 	if err := routes.Restore(); err != nil {
 		t.Fatalf("restore routes: %v", err)
 	}

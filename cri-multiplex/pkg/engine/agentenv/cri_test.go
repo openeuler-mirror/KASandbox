@@ -20,7 +20,6 @@ type memoryStateStore struct {
 	routes          []engine.RouteRecord
 	sections        map[string][]byte
 	saveRouteCalls  int
-	combinedCalls   int
 	failSaveRouteAt int
 }
 
@@ -42,33 +41,6 @@ func (s *memoryStateStore) SaveRoute(record engine.RouteRecord) error {
 		}
 	}
 	s.routes = append(s.routes, record)
-	return nil
-}
-
-func (s *memoryStateStore) SaveRouteAndBackendState(record engine.RouteRecord, path string, value any) error {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.saveRouteCalls++
-	if s.failSaveRouteAt > 0 && s.saveRouteCalls == s.failSaveRouteAt {
-		return errors.New("injected route save failure")
-	}
-	replaced := false
-	for i := range s.routes {
-		if s.routes[i].Kind == record.Kind && s.routes[i].ID == record.ID {
-			s.routes[i] = record
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		s.routes = append(s.routes, record)
-	}
-	s.sections[path] = data
-	s.combinedCalls++
 	return nil
 }
 
@@ -129,10 +101,10 @@ func (s *memoryStateStore) DeleteBackendState(path string) error {
 	return nil
 }
 
-func newCRITestEngine(t *testing.T, lifecycle lifecycleAPI) (*Engine, *memoryStateStore, *engine.RouteTable) {
+func newCRITestEngine(t *testing.T, lifecycle lifecycleAPI) (*Engine, *memoryStateStore, *routeTable) {
 	t.Helper()
 	store := newMemoryStateStore()
-	routes := engine.NewRouteTable(store)
+	routes := newRouteTable(store)
 	instance := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,
@@ -218,10 +190,10 @@ func TestRunPodSandboxCreatesTemplateAndPersistsIDs(t *testing.T) {
 		t.Fatalf("annotation maps mismatch: env=%v metadata=%v", spec.GetEnvVars(), spec.GetMetadata())
 	}
 
-	for name, lookup := range map[string]func() (engine.PodRoute, bool){
-		"CRI":     func() (engine.PodRoute, bool) { return routes.PodRouteByCRI("cri-1") },
-		"product": func() (engine.PodRoute, bool) { return routes.PodRouteByProduct("product-1") },
-		"native":  func() (engine.PodRoute, bool) { return routes.PodRouteByNative(nativeID) },
+	for name, lookup := range map[string]func() (podRoute, bool){
+		"CRI":     func() (podRoute, bool) { return routes.PodRouteByCRI("cri-1") },
+		"product": func() (podRoute, bool) { return routes.PodRouteByProduct("product-1") },
+		"native":  func() (podRoute, bool) { return routes.PodRouteByNative(nativeID) },
 	} {
 		route, ok := lookup()
 		if !ok || route.CRISandboxID != "cri-1" || route.ProductSandboxID != "product-1" || route.NativeSandboxID != nativeID {
@@ -238,8 +210,8 @@ func TestRunPodSandboxCreatesTemplateAndPersistsIDs(t *testing.T) {
 	if err != nil || !found || len(persisted.Pods) != 1 {
 		t.Fatalf("pod state not persisted: found=%v err=%v state=%+v", found, err, persisted)
 	}
-	if store.combinedCalls != 1 {
-		t.Fatalf("combined route/pod persistence calls = %d, want 1", store.combinedCalls)
+	if len(store.routes) != 0 {
+		t.Fatal("AgentENV 私有映射不应扩展公共路由记录")
 	}
 }
 func TestRunPodSandboxRejectsMissingTemplateAndAutoPause(t *testing.T) {
@@ -399,7 +371,7 @@ func TestRestoreStateRestoresRoutesAndCRIProjection(t *testing.T) {
 		t.Fatalf("RunPodSandbox: %v", err)
 	}
 
-	routes := engine.NewRouteTable(store)
+	routes := newRouteTable(store)
 	restored := newWithClients(
 		Config{RuntimeAddress: "passthrough:///agentenv-test", NodeName: "node-1", NodeIP: "10.0.0.1"},
 		store,

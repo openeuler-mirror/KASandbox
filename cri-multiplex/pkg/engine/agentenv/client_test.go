@@ -1,7 +1,8 @@
-package v1
+package agentenv
 
 import (
 	"context"
+	runtimeapi "github.com/cri-multiplex/pkg/agentenv/runtime/v1"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -46,7 +47,7 @@ func TestLifecycleClientUsesContractMethodNames(t *testing.T) {
 			name:   "create",
 			method: "/agentenv.runtime.v1.SandboxLifecycleService/Create",
 			call: func(client *LifecycleClient) error {
-				_, err := client.Create(context.Background(), &SandboxCreateRequest{})
+				_, err := client.Create(context.Background(), &runtimeapi.SandboxCreateRequest{})
 				return err
 			},
 		},
@@ -54,7 +55,7 @@ func TestLifecycleClientUsesContractMethodNames(t *testing.T) {
 			name:   "get",
 			method: "/agentenv.runtime.v1.SandboxLifecycleService/Get",
 			call: func(client *LifecycleClient) error {
-				_, err := client.Get(context.Background(), &SandboxGetRequest{})
+				_, err := client.Get(context.Background(), &runtimeapi.SandboxGetRequest{})
 				return err
 			},
 		},
@@ -62,7 +63,7 @@ func TestLifecycleClientUsesContractMethodNames(t *testing.T) {
 			name:   "delete",
 			method: "/agentenv.runtime.v1.SandboxLifecycleService/Delete",
 			call: func(client *LifecycleClient) error {
-				_, err := client.Delete(context.Background(), &SandboxDeleteRequest{})
+				_, err := client.Delete(context.Background(), &runtimeapi.SandboxDeleteRequest{})
 				return err
 			},
 		},
@@ -91,20 +92,9 @@ func TestAdminClientUsesContractMethodNames(t *testing.T) {
 	}
 }
 
-func TestAdminClientRemediateUsesContractMethodName(t *testing.T) {
-	conn := &recordingClientConn{}
-	if _, err := NewAdminClient(conn).Remediate(context.Background(), &SandboxRemediationRequest{}); err != nil {
-		t.Fatalf("Remediate: %v", err)
-	}
-	const expected = "/agentenv.runtime.v1.SandboxAdminService/Remediate"
-	if conn.method != expected {
-		t.Fatalf("method = %q, want %q", conn.method, expected)
-	}
-}
-
 func TestExecClientUsesContractMethodName(t *testing.T) {
 	conn := &recordingClientConn{}
-	if _, err := NewExecClient(conn).ExecSync(context.Background(), &SandboxExecSyncRequest{}); err != nil {
+	if _, err := NewExecClient(conn).ExecSync(context.Background(), &runtimeapi.SandboxExecSyncRequest{}); err != nil {
 		t.Fatalf("ExecSync: %v", err)
 	}
 	if conn.method != "/agentenv.runtime.v1.SandboxExecService/ExecSync" {
@@ -113,7 +103,7 @@ func TestExecClientUsesContractMethodName(t *testing.T) {
 }
 func TestExecClientConnectProcessUsesServerStreamMethodName(t *testing.T) {
 	conn := &recordingClientConn{}
-	stream, err := NewExecClient(conn).ConnectProcess(context.Background(), &SandboxProcessConnectRequest{})
+	stream, err := NewExecClient(conn).ConnectProcess(context.Background(), &runtimeapi.SandboxProcessConnectRequest{})
 	if err != nil {
 		t.Fatalf("ConnectProcess: %v", err)
 	}
@@ -136,7 +126,7 @@ func TestExecClientProcessMethodsUseContractMethodNames(t *testing.T) {
 			name:   "start-process",
 			method: "/agentenv.runtime.v1.SandboxExecService/StartProcess",
 			call: func(client *ExecClient) error {
-				_, err := client.StartProcess(context.Background(), &SandboxProcessStartRequest{})
+				_, err := client.StartProcess(context.Background(), &runtimeapi.SandboxProcessStartRequest{})
 				return err
 			},
 		},
@@ -144,7 +134,7 @@ func TestExecClientProcessMethodsUseContractMethodNames(t *testing.T) {
 			name:   "get-process",
 			method: "/agentenv.runtime.v1.SandboxExecService/GetProcess",
 			call: func(client *ExecClient) error {
-				_, err := client.GetProcess(context.Background(), &SandboxProcessGetRequest{})
+				_, err := client.GetProcess(context.Background(), &runtimeapi.SandboxProcessGetRequest{})
 				return err
 			},
 		},
@@ -152,7 +142,7 @@ func TestExecClientProcessMethodsUseContractMethodNames(t *testing.T) {
 			name:   "send-input",
 			method: "/agentenv.runtime.v1.SandboxExecService/SendProcessInput",
 			call: func(client *ExecClient) error {
-				_, err := client.SendProcessInput(context.Background(), &SandboxProcessInputRequest{})
+				_, err := client.SendProcessInput(context.Background(), &runtimeapi.SandboxProcessInputRequest{})
 				return err
 			},
 		},
@@ -160,7 +150,7 @@ func TestExecClientProcessMethodsUseContractMethodNames(t *testing.T) {
 			name:   "resize-process",
 			method: "/agentenv.runtime.v1.SandboxExecService/ResizeProcess",
 			call: func(client *ExecClient) error {
-				_, err := client.ResizeProcess(context.Background(), &SandboxProcessResizeRequest{})
+				_, err := client.ResizeProcess(context.Background(), &runtimeapi.SandboxProcessResizeRequest{})
 				return err
 			},
 		},
@@ -168,7 +158,7 @@ func TestExecClientProcessMethodsUseContractMethodNames(t *testing.T) {
 			name:   "close-stdin",
 			method: "/agentenv.runtime.v1.SandboxExecService/CloseProcessStdin",
 			call: func(client *ExecClient) error {
-				_, err := client.CloseProcessStdin(context.Background(), &SandboxProcessCloseStdinRequest{})
+				_, err := client.CloseProcessStdin(context.Background(), &runtimeapi.SandboxProcessCloseStdinRequest{})
 				return err
 			},
 		},
@@ -176,7 +166,7 @@ func TestExecClientProcessMethodsUseContractMethodNames(t *testing.T) {
 			name:   "stop-process",
 			method: "/agentenv.runtime.v1.SandboxExecService/StopProcess",
 			call: func(client *ExecClient) error {
-				_, err := client.StopProcess(context.Background(), &SandboxProcessStopRequest{})
+				_, err := client.StopProcess(context.Background(), &runtimeapi.SandboxProcessStopRequest{})
 				return err
 			},
 		},

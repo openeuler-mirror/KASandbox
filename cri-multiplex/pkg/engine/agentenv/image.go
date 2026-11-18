@@ -4,7 +4,6 @@ import (
 	"context"
 	"sort"
 	"strings"
-	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -17,27 +16,13 @@ func (e *Engine) PullImage(_ context.Context, req *runtime.PullImageRequest) (*r
 		return nil, status.Error(codes.InvalidArgument, "image reference is required")
 	}
 	reference := req.GetImage().GetImage()
-	now := time.Now()
 	record := &imageRecord{
 		Reference: reference,
 		ID:        agentenvImageRef(reference),
-		SizeBytes: 1,
-		PulledAt:  now,
 	}
 	e.podMu.Lock()
-	previous, existed := e.images[reference]
 	e.images[reference] = record
-	version := e.markPodStateDirtyLocked()
 	e.podMu.Unlock()
-	if err := e.persistPodStateChange(version, func() {
-		if existed {
-			e.images[reference] = previous
-		} else {
-			delete(e.images, reference)
-		}
-	}); err != nil {
-		return nil, status.Errorf(codes.Internal, "pull virtual image: %v", err)
-	}
 	return &runtime.PullImageResponse{ImageRef: record.ID}, nil
 }
 
@@ -74,19 +59,13 @@ func (e *Engine) RemoveImage(_ context.Context, req *runtime.RemoveImageRequest)
 	}
 	reference := req.GetImage().GetImage()
 	e.podMu.Lock()
-	key, previous, ok := e.findImageLocked(reference)
+	key, _, ok := e.findImageLocked(reference)
 	if !ok {
 		e.podMu.Unlock()
 		return &runtime.RemoveImageResponse{}, nil
 	}
 	delete(e.images, key)
-	version := e.markPodStateDirtyLocked()
 	e.podMu.Unlock()
-	if err := e.persistPodStateChange(version, func() {
-		e.images[key] = previous
-	}); err != nil {
-		return nil, status.Errorf(codes.Internal, "remove virtual image: %v", err)
-	}
 	return &runtime.RemoveImageResponse{}, nil
 }
 
@@ -112,8 +91,6 @@ func (e *Engine) allImageRecords() []imageRecord {
 		byReference[container.ImageName] = imageRecord{
 			Reference: container.ImageName,
 			ID:        container.ImageRef,
-			SizeBytes: 1,
-			PulledAt:  container.CreatedAt,
 		}
 	}
 	out := make([]imageRecord, 0, len(byReference))
@@ -148,8 +125,6 @@ func (e *Engine) findImageLocked(reference string) (string, *imageRecord, bool) 
 			return container.ImageName, &imageRecord{
 				Reference: container.ImageName,
 				ID:        container.ImageRef,
-				SizeBytes: 1,
-				PulledAt:  container.CreatedAt,
 			}, true
 		}
 	}
@@ -160,6 +135,6 @@ func imageRecordToCRI(record imageRecord) *runtime.Image {
 	return &runtime.Image{
 		Id:       record.ID,
 		RepoTags: []string{record.Reference},
-		Size_:    record.SizeBytes,
+		Size_:    0,
 	}
 }

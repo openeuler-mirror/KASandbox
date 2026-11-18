@@ -83,7 +83,6 @@ func (e *Engine) CreateContainer(_ context.Context, req *runtime.CreateContainer
 	if err := e.putContainer(record); err != nil {
 		return nil, status.Errorf(codes.Internal, "create container projection: %v", err)
 	}
-	e.publishContainerEvent(containerID, runtime.ContainerEventType_CONTAINER_CREATED_EVENT)
 	return &runtime.CreateContainerResponse{ContainerId: containerID}, nil
 }
 
@@ -166,7 +165,6 @@ func (e *Engine) StartContainer(ctx context.Context, req *runtime.StartContainer
 		cancel()
 		return nil, status.Errorf(codes.Internal, "persist started container: %v", err)
 	}
-	e.publishContainerEvent(record.ContainerID, runtime.ContainerEventType_CONTAINER_STARTED_EVENT)
 	go e.monitorContainerProcess(record.ContainerID)
 	return &runtime.StartContainerResponse{}, nil
 }
@@ -197,21 +195,16 @@ func (e *Engine) stopContainerLocked(ctx context.Context, record containerRecord
 		}
 	}
 	now := time.Now()
-	transitioned := false
 	_, _, err := e.mutateContainer(record.ContainerID, func(record *containerRecord) {
 		if record.State == containerStateExited {
 			return
 		}
-		transitioned = true
 		record.State = containerStateExited
 		record.ExitCode = exitCode
 		record.FinishedAt = now
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "stop container projection: %v", err)
-	}
-	if transitioned {
-		e.publishContainerEvent(record.ContainerID, runtime.ContainerEventType_CONTAINER_STOPPED_EVENT)
 	}
 	return &runtime.StopContainerResponse{}, nil
 }
@@ -243,7 +236,6 @@ func (e *Engine) RemoveContainer(ctx context.Context, req *runtime.RemoveContain
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "remove container projection: %v", err)
 	}
-	e.publishContainerEvent(record.ContainerID, runtime.ContainerEventType_CONTAINER_DELETED_EVENT)
 	return &runtime.RemoveContainerResponse{}, nil
 }
 

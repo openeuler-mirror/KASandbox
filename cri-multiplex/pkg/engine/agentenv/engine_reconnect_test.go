@@ -24,7 +24,7 @@ func (*reconnectCapabilitiesServer) Capabilities(context.Context, *emptypb.Empty
 type reconnectCapabilitiesService interface{}
 
 var reconnectCapabilitiesServiceDesc = grpc.ServiceDesc{
-	ServiceName: runtimeapi.AdminServiceName,
+	ServiceName: AdminServiceName,
 	HandlerType: (*reconnectCapabilitiesService)(nil),
 	Methods: []grpc.MethodDesc{{
 		MethodName: "Capabilities",
@@ -36,7 +36,7 @@ var reconnectCapabilitiesServiceDesc = grpc.ServiceDesc{
 			if interceptor == nil {
 				return srv.(*reconnectCapabilitiesServer).Capabilities(ctx, in)
 			}
-			info := &grpc.UnaryServerInfo{Server: srv, FullMethod: "/" + runtimeapi.AdminServiceName + "/Capabilities"}
+			info := &grpc.UnaryServerInfo{Server: srv, FullMethod: "/" + AdminServiceName + "/Capabilities"}
 			handler := func(ctx context.Context, req any) (any, error) {
 				return srv.(*reconnectCapabilitiesServer).Capabilities(ctx, req.(*emptypb.Empty))
 			}
@@ -67,10 +67,9 @@ func TestHealthRecoversAfterRuntimeGRPCRestart(t *testing.T) {
 	defer server.Stop()
 
 	store := newMemoryStateStore()
-	routes := engine.NewRouteTable(store)
 	instance, err := New(
 		Config{RuntimeAddress: address, NodeName: "node-1", NodeIP: "10.0.0.1"},
-		engine.Deps{Store: store, Routes: routes},
+		engine.Deps{Store: store},
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)

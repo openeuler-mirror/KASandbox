@@ -1,0 +1,12 @@
+{
+  "rpm_release": "0.2.4-15.11",
+  "srpm_inputs": {
+    "agentenv.spec": "a48988b01e33d1a940010fa951f44f76030754facaf534584221896b6d42f02a",
+    "0001-agentenv-cri-runtime.patch": "6119e4bc17d7c032f38badeabaf7190dd83701c29ffb4da1c20c07fa062ae163",
+    "0002-use-system-ca.patch": "f3bfee1ae04187d826f5614bc1a084c423618248f64388c930135c2dd7c73dae",
+    "AgentENV-0.2.4.tar.gz": "21a8c90c41086edf2c919502d174a50f1b7990e22c502d5c7a55d1d43e33f925",
+    "AgentENV-vendor-0.2.4.tar.gz": "bb7190ec139471b978505b3dc0a2237148279a0e6c8a09602b42e77b6dae855b",
+    "AgentENV-licenses-0.2.4.tar.gz": "a3d4eb3694931a9577bc81f41ce201946d41475539c2365a17760703ee46bcde",
+    "cargo-vendor-config.toml": "56946c14d28f6b4311d0445d6699c4104232e0c98e01f4a16955e89c5e27ea21"
+  }
+}

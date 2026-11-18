@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	runtimeapi "github.com/cri-multiplex/pkg/agentenv/runtime/v1"
-	"github.com/cri-multiplex/pkg/engine"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -61,7 +60,7 @@ func TestRuntimeManagedNetworkLifecycleAndOwnership(t *testing.T) {
 	if rsp.GetStatus().GetNetwork().GetIp() != "10.11.0.9" || rsp.GetStatus().GetState() != runtime.PodSandboxState_SANDBOX_READY {
 		t.Fatalf("Pod 状态: %+v", rsp)
 	}
-	restored := newWithClients(Config{}, e.store, engine.NewRouteTable(e.store), lifecycle, e.admin)
+	restored := newWithClients(Config{}, e.store, newRouteTable(e.store), lifecycle, e.admin)
 	if err := restored.restorePods(); err != nil {
 		t.Fatal(err)
 	}

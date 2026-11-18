@@ -33,7 +33,6 @@ type MuxOptions struct {
 	UnknownHandlerPolicy UnknownHandlerPolicy
 	RuntimeName          string
 	Cleanup              engine.CleanupScheduler
-	Routes               *engine.RouteTable
 }
 
 const defaultRuntimeName = "e2b-cri-shim"
@@ -51,13 +50,9 @@ type MuxServer struct {
 
 // NewMuxServer 用注册表装配 Mux：之后所有路由都由 Registry 与 RouteTable 决定。
 func NewMuxServer(reg *engine.Registry, store engine.StateStore, opts MuxOptions) *MuxServer {
-	routes := opts.Routes
-	if routes == nil {
-		routes = engine.NewRouteTable(store)
-	}
 	return &MuxServer{
 		reg:    reg,
-		routes: routes,
+		routes: engine.NewRouteTable(store),
 		opts:   opts,
 	}
 }
@@ -538,63 +533,7 @@ func (s *MuxServer) UpdateRuntimeConfig(ctx context.Context, req *runtime.Update
 }
 
 func (s *MuxServer) GetContainerEvents(req *runtime.GetEventsRequest, srv runtime.RuntimeService_GetContainerEventsServer) error {
-	ctx := srv.Context()
-	merged := make(chan *runtime.ContainerEventResponse, 256)
-	errCh := make(chan error, len(s.reg.Modules()))
-	active := 0
-	for _, mod := range s.reg.Modules() {
-		source, ok := mod.Engine.(engine.ContainerEventSource)
-		if !ok {
-			continue
-		}
-		events, err := source.SubscribeContainerEvents(ctx)
-		if err != nil {
-			return status.Errorf(codes.Unavailable, "%s events: %v", mod.Descriptor.Type, err)
-		}
-		active++
-		go func(events <-chan *runtime.ContainerEventResponse) {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case event, ok := <-events:
-					if !ok {
-						select {
-						case errCh <- nil:
-						case <-ctx.Done():
-						}
-						return
-					}
-					select {
-					case merged <- event:
-					case <-ctx.Done():
-						return
-					}
-				}
-			}
-		}(events)
-	}
-	if active == 0 {
-		return status.Error(codes.Unimplemented, "GetContainerEvents is not supported by any backend")
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case event := <-merged:
-			if err := srv.Send(event); err != nil {
-				return err
-			}
-		case err := <-errCh:
-			if err != nil {
-				return status.Errorf(codes.Unavailable, "container event source failed: %v", err)
-			}
-			active--
-			if active == 0 {
-				return nil
-			}
-		}
-	}
+	return fmt.Errorf("GetContainerEvents not supported by multiplexer")
 }
 
 // ========== ImageService：按注册的前缀路由 ==========

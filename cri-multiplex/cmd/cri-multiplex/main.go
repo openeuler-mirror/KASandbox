@@ -111,8 +111,6 @@ func main() {
 	androidCNINetNSPrefix := flag.String("android-cni-netns-prefix", "android-", "Android CNI netns name prefix")
 	agentenvEnabled := flag.Bool("agentenv-enabled", false, "Enable the AgentENV runtime backend")
 	agentenvRuntimeAddress := flag.String("agentenv-runtime-address", "", "AgentENV Runtime gRPC target (for example unix:///run/agentenv/agentenv-runtime.sock)")
-	agentenvNetworkMode := flag.String("agentenv-network-mode", "runtime-managed", "AgentENV network owner (only runtime-managed is supported)")
-	e2bCNINetNSPrefix := flag.String("e2b-cni-netns-prefix", "e2b-", "E2B CNI netns prefix; isolated instances must use non-overlapping prefixes")
 	orphanReconcileEnabled := flag.Bool("orphan-reconcile-enabled", true, "Enable orphan resource reconciliation")
 	orphanReconcileInterval := flag.Duration("orphan-reconcile-interval", 60*time.Second, "Orphan reconciliation interval")
 	orphanGracePeriod := flag.Duration("orphan-grace-period", 120*time.Second, "Grace period before reclaiming orphan resources")
@@ -135,7 +133,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize state store: %v", err)
 	}
-	routes := engine.NewRouteTable(stateStore)
 
 	containerEng := containerd.New(*containerdSocket)
 	defer containerEng.Close()
@@ -148,14 +145,11 @@ func main() {
 		}
 		log.Printf("auto-detected node-ip: %s", *nodeIP)
 	}
-	deps := engine.Deps{Store: stateStore, Routes: routes, NodeName: *nodeName, NodeIP: *nodeIP}
+	deps := engine.Deps{Store: stateStore, NodeName: *nodeName, NodeIP: *nodeIP}
 	var agentenvEng *agentenv.Engine
 	if *agentenvEnabled {
 		if strings.TrimSpace(*agentenvRuntimeAddress) == "" {
 			log.Fatal("--agentenv-runtime-address is required when --agentenv-enabled is set")
-		}
-		if *agentenvNetworkMode != "runtime-managed" {
-			log.Fatal("AgentENV only supports --agentenv-network-mode=runtime-managed")
 		}
 		agentenvEng, err = agentenv.New(agentenv.Config{
 			RuntimeAddress: *agentenvRuntimeAddress,
@@ -171,7 +165,7 @@ func main() {
 	}
 
 	cfg := e2b.Config{
-		Deps:                  deps,
+		Deps:                  engine.Deps{Store: stateStore, NodeName: *nodeName, NodeIP: *nodeIP},
 		OrchestratorAddr:      *orchestratorAddress,
 		OrchestratorProxyAddr: *orchestratorProxyAddr,
 		CNI: util.CNIConfig{
@@ -182,7 +176,6 @@ func main() {
 			NetNSDir:    *cniNetNSDir,
 			PoolEnabled: *cniPoolEnabled,
 			PoolSize:    *cniPoolSize,
-			NetNSPrefix: *e2bCNINetNSPrefix,
 		},
 		HideLabel: *hideSandboxLabel,
 	}
@@ -199,10 +192,8 @@ func main() {
 		}
 		log.Printf("auto-detected android-node-ip: %s", *androidNodeIP)
 	}
-	androidDeps := deps
-	androidDeps.NodeIP = *androidNodeIP
 	androidEng, err := android.New(android.Config{
-		Deps:                 androidDeps,
+		Deps:                 engine.Deps{Store: stateStore, NodeName: *nodeName, NodeIP: *androidNodeIP},
 		Enabled:              *androidEnabled,
 		ArtifactsDir:         *androidArtifactsDir,
 		ADBPortStart:         *androidADBPortStart,
@@ -255,7 +246,6 @@ func main() {
 		UnknownHandlerPolicy: handlerPolicy,
 		RuntimeName:          *runtimeName,
 		Cleanup:              cleanupManager,
-		Routes:               routes,
 	})
 	if err := mux.RestoreState(restoreCtx); err != nil {
 		log.Fatalf("restore mux state: %v", err)

@@ -192,7 +192,7 @@ func TestExecRejectsInvalidRequests(t *testing.T) {
 func TestExecWebSocketForwardsOutputAndExit(t *testing.T) {
 	instance, containerID := startStreamingTestContainer(t)
 	defer instance.Close()
-	instance.exec.(*fakeExec).connectProcess = func(_ context.Context, req *runtimeapi.SandboxProcessConnectRequest) (runtimeapi.ProcessEventStream, error) {
+	instance.exec.(*fakeExec).connectProcess = func(_ context.Context, req *runtimeapi.SandboxProcessConnectRequest) (ProcessEventStream, error) {
 		if req.GetPid() != 4242 {
 			t.Fatalf("pid = %d, want 4242", req.GetPid())
 		}

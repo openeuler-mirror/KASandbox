@@ -13,7 +13,6 @@ import (
 
 	runtimeapi "github.com/cri-multiplex/pkg/agentenv/runtime/v1"
 	"github.com/cri-multiplex/pkg/engine"
-	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
 const (
@@ -185,12 +184,10 @@ func (e *Engine) monitorContainerProcess(containerID string) {
 
 func (e *Engine) markContainerProcessExited(containerID string, exitCode int32, message string) {
 	now := time.Now()
-	transitioned := false
 	_, _, _ = e.mutateContainer(containerID, func(record *containerRecord) {
 		if record.State == containerStateRemoved || record.State == containerStateExited {
 			return
 		}
-		transitioned = true
 		record.State = containerStateExited
 		record.ExitCode = exitCode
 		record.FinishedAt = now
@@ -198,9 +195,6 @@ func (e *Engine) markContainerProcessExited(containerID string, exitCode int32, 
 			record.LastError = message
 		}
 	})
-	if transitioned {
-		e.publishContainerEvent(containerID, runtime.ContainerEventType_CONTAINER_STOPPED_EVENT)
-	}
 }
 
 func (e *Engine) setContainerProcessError(containerID string, err error) {

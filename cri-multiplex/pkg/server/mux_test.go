@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -119,37 +117,6 @@ func (f *fakeRuntimeEngine) ContainerStats(ctx context.Context, req *runtime.Con
 	f.record("ContainerStats")
 	return &runtime.ContainerStatsResponse{Stats: &runtime.ContainerStats{}}, f.err
 }
-
-type fakeEventEngine struct {
-	*fakeRuntimeEngine
-	broker     *engine.EventBroker
-	subscribed chan struct{}
-}
-
-func (f *fakeEventEngine) SubscribeContainerEvents(ctx context.Context) (<-chan *runtime.ContainerEventResponse, error) {
-	if f.subscribed != nil {
-		close(f.subscribed)
-	}
-	return f.broker.Subscribe(ctx)
-}
-
-type fakeEventServer struct {
-	grpc.ServerStream
-	ctx    context.Context
-	mu     sync.Mutex
-	events []*runtime.ContainerEventResponse
-	sentCh chan *runtime.ContainerEventResponse
-}
-
-func (s *fakeEventServer) Send(event *runtime.ContainerEventResponse) error {
-	s.mu.Lock()
-	s.events = append(s.events, event)
-	s.mu.Unlock()
-	s.sentCh <- event
-	return nil
-}
-
-func (s *fakeEventServer) Context() context.Context { return s.ctx }
 
 func (f *fakeRuntimeEngine) ListContainerStats(ctx context.Context, req *runtime.ListContainerStatsRequest) (*runtime.ListContainerStatsResponse, error) {
 	f.record("ListContainerStats")
@@ -554,70 +521,13 @@ func TestMuxLocalStatusVersionAndEvents(t *testing.T) {
 	if versionResp.RuntimeName != "e2b-cri-shim" {
 		t.Fatalf("runtime name = %q", versionResp.RuntimeName)
 	}
-	eventServer := &fakeEventServer{ctx: context.Background(), sentCh: make(chan *runtime.ContainerEventResponse, 1)}
-	if err := s.GetContainerEvents(&runtime.GetEventsRequest{}, eventServer); status.Code(err) != codes.Unimplemented {
-		t.Fatalf("GetContainerEvents code = %v, want Unimplemented", status.Code(err))
+	if err := s.GetContainerEvents(&runtime.GetEventsRequest{}, nil); err == nil {
+		t.Fatal("GetContainerEvents should return unsupported error")
 	}
 	if _, err := s.UpdateRuntimeConfig(context.Background(), &runtime.UpdateRuntimeConfigRequest{}); err != nil {
 		t.Fatalf("UpdateRuntimeConfig: %v", err)
 	}
 	s.Stop()
-}
-
-func TestMuxDispatchesContainerEventsFromBackend(t *testing.T) {
-	broker := engine.NewEventBroker()
-	subscribed := make(chan struct{})
-	fakeEngine := &fakeEventEngine{
-		fakeRuntimeEngine: newFakeEngine(engine.EngineTypeAgentENV),
-		broker:            broker,
-		subscribed:        subscribed,
-	}
-	reg := engine.NewRegistry(engine.EngineTypeAgentENV)
-	if err := reg.Register(engine.BackendModule{
-		Descriptor: engine.BackendDescriptor{Type: engine.EngineTypeAgentENV, Handler: string(engine.EngineTypeAgentENV)},
-		Engine:     fakeEngine,
-	}); err != nil {
-		t.Fatalf("register fake engine: %v", err)
-	}
-	if err := reg.Freeze(); err != nil {
-		t.Fatalf("freeze registry: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	server := &fakeEventServer{ctx: ctx, sentCh: make(chan *runtime.ContainerEventResponse, 1)}
-	done := make(chan error, 1)
-	mux := &MuxServer{reg: reg}
-	go func() {
-		done <- mux.GetContainerEvents(&runtime.GetEventsRequest{}, server)
-	}()
-	select {
-	case <-subscribed:
-	case <-time.After(2 * time.Second):
-		t.Fatal("event source was not subscribed")
-	}
-
-	wanted := &runtime.ContainerEventResponse{
-		ContainerId:        "container-1",
-		ContainerEventType: runtime.ContainerEventType_CONTAINER_STARTED_EVENT,
-	}
-	broker.Publish(wanted)
-	select {
-	case got := <-server.sentCh:
-		if got.GetContainerId() != wanted.GetContainerId() || got.GetContainerEventType() != wanted.GetContainerEventType() {
-			t.Fatalf("event = %+v, want %+v", got, wanted)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for multiplexed event")
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("GetContainerEvents returned error: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("GetContainerEvents did not stop after context cancellation")
-	}
 }
 
 func TestMuxImageRoutingAllPrefixes(t *testing.T) {
@@ -826,28 +736,5 @@ func TestMuxStatusCallsHealthButStaysReady(t *testing.T) {
 		if !cond.Status {
 			t.Fatalf("condition %s = false, want true (health must not flip readiness)", cond.Type)
 		}
-	}
-}
-func TestMuxSharesRouteTableAndPreservesBackendIDs(t *testing.T) {
-	routes := engine.NewRouteTable(nil)
-	if err := routes.SetPodRoute("e2b-pod", engine.EngineTypeE2B, "product-1", "native-1"); err != nil {
-		t.Fatalf("seed route: %v", err)
-	}
-	reg := testRegistry(t, newFakeEngine(engine.EngineTypeContainer), newFakeEngine(engine.EngineTypeE2B), newFakeEngine(engine.EngineTypeAndroid))
-	s := NewMuxServer(reg, nil, MuxOptions{Routes: routes})
-	if s.Routes() != routes {
-		t.Fatal("NewMuxServer did not use the injected RouteTable")
-	}
-
-	resp, err := s.RunPodSandbox(context.Background(), &runtime.RunPodSandboxRequest{
-		RuntimeHandler: "e2b",
-		Config:         &runtime.PodSandboxConfig{Metadata: &runtime.PodSandboxMetadata{Name: "pod"}},
-	})
-	if err != nil {
-		t.Fatalf("RunPodSandbox: %v", err)
-	}
-	route, ok := routes.PodRouteByCRI(resp.PodSandboxId)
-	if !ok || route.ProductSandboxID != "product-1" || route.NativeSandboxID != "native-1" {
-		t.Fatalf("Mux overwrote backend IDs: %+v ok=%v", route, ok)
 	}
 }
