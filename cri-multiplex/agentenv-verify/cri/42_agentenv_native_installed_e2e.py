@@ -19,9 +19,7 @@ def main():
     parser.add_argument('--output', required=True)
     parser.add_argument('--template', required=True)
     parser.add_argument('--node', default='node1')
-    parser.add_argument('--node-ip', required=True)
     parser.add_argument('--socket', default='/run/cri-multiplex.sock')
-    parser.add_argument('--portforward-helper', required=True)
     args = parser.parse_args()
     out = Path(args.output); out.mkdir(parents=True, exist_ok=False)
     ns = 'agentenv-e2e'
@@ -79,7 +77,7 @@ def main():
                                'sandbox.cri/metadata': json.dumps({'native-installed-probe': pod_name})}},
                'spec': {'nodeName': args.node, 'runtimeClassName': 'agentenv', 'restartPolicy': 'Never',
                         'terminationGracePeriodSeconds': 5, 'containers': [{'name': 'app', 'image': 'agentenv.dev/app:v1',
-                        'imagePullPolicy': 'IfNotPresent', 'command': ['/bin/sh', '-c', 'sleep 600'],
+                        'imagePullPolicy': 'IfNotPresent',
                         'ports': [{'name': 'http', 'containerPort': 18080, 'protocol': 'TCP'}]}]}}
         save('pod-input.json', pod)
         dry = json.loads(command(['kubectl', 'create', '--dry-run=server', '-f', str(out/'pod-input.json'), '-o', 'json']))
@@ -111,12 +109,7 @@ def main():
         assert len(stats.get('stats', [])) == 1
         measured = stats['stats'][0]
         assert measured['attributes']['id'] == cid
-        annotations = measured['attributes']['annotations']
-        # 现有 Runtime 返回 CPU 百分比，不伪造 CRI 累计 CPU 时间。
-        assert annotations['agentenv.dev/stats-scope'] == 'sandbox-aggregate'
-        assert float(annotations['agentenv.dev/cpu-used-percent']) >= 0
-        assert int(measured['memory']['workingSetBytes']['value']) >= 0
-        assert int(measured['writableLayer']['usedBytes']['value']) >= 0
+        assert not measured.get('memory') and not measured.get('writableLayer')
         body = 'NATIVE_INSTALLED_' + pod_name
         # 持续监听并先读取请求头，避免循环 nc 的非标准报文和监听间隙。
         handler = '#!/bin/sh\nwhile IFS= read -r line; do\n [ -z "$line" ] && break\n [ "$line" = "$(printf \'\\r\')" ] && break\ndone\nprintf \'HTTP/1.1 200 OK\\r\\nContent-Length: ' + str(len(body)) + '\\r\\nConnection: close\\r\\n\\r\\n' + body + "'\n"
@@ -132,11 +125,9 @@ def main():
         request = urllib.request.Request('http://127.0.0.1:8000/proxy/', headers={'X-API-Key': key,
                     'x-agentenv-sandbox-id': native_id, 'x-agentenv-target-port': '18080'})
         with opener.open(request, timeout=10) as response: assert response.status == 200 and response.read() == body.encode()
-        save('portforward.txt', command([args.portforward_helper, '-socket', args.socket, '-pod', sandbox_id,
-                                        '-port', '18080', '-node-ip', args.node_ip, '-expected', body], timeout=30))
         save('live-result.json', {'uid': uid, 'native_id': native_id, 'pod_ip': ip, 'webhook': True,
                                  'sdk_exec': True, 'exit37': True, 'stats': True,
-                                 'pod_ip_http': True, 'native_proxy_http': True, 'portforward_http': True})
+                                 'pod_ip_http': True, 'native_proxy_http': True, 'portforward_supported': False})
         print('PASS native installed functional checks', flush=True)
     finally:
         # 只删除带本次唯一标签的 Pod，保留已有 namespace。

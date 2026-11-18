@@ -68,7 +68,7 @@ func TestRuntimeManagedNetworkLifecycleAndOwnership(t *testing.T) {
 	if rec.RuntimeNetwork == nil || rec.CNIRecord != nil || podIPFromRecord(rec) != "10.11.0.9" {
 		t.Fatalf("恢复后的网络所有权丢失: %+v", rec)
 	}
-	if _, err := e.PortForward(context.Background(), &runtime.PortForwardRequest{PodSandboxId: "cri-1", Port: []int32{8080}}); err != nil {
+	if _, err := e.PortForward(context.Background(), &runtime.PortForwardRequest{PodSandboxId: "cri-1", Port: []int32{8080}}); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("原生网络 PortForward: %v", err)
 	}
 	order = nil
@@ -183,7 +183,7 @@ func TestRuntimeManagedStatusAndPortForwardRejectReusedSlot(t *testing.T) {
 	if rsp.GetStatus().GetState() != runtime.PodSandboxState_SANDBOX_NOTREADY || rsp.GetStatus().GetNetwork().GetIp() != "" {
 		t.Fatalf("不能报告复用后的旧IP: %+v", rsp)
 	}
-	if _, err = e.PortForward(context.Background(), &runtime.PortForwardRequest{PodSandboxId: "cri-1", Port: []int32{8080}}); status.Code(err) != codes.FailedPrecondition {
+	if _, err = e.PortForward(context.Background(), &runtime.PortForwardRequest{PodSandboxId: "cri-1", Port: []int32{8080}}); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("不能转发到复用IP: %v", err)
 	}
 }

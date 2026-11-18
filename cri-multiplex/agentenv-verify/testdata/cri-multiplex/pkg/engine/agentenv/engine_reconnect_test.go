@@ -24,7 +24,7 @@ func (*reconnectCapabilitiesServer) Capabilities(context.Context, *emptypb.Empty
 type reconnectCapabilitiesService interface{}
 
 var reconnectCapabilitiesServiceDesc = grpc.ServiceDesc{
-	ServiceName: AdminServiceName,
+	ServiceName: "agentenv.runtime.v1.SandboxAdminService",
 	HandlerType: (*reconnectCapabilitiesService)(nil),
 	Methods: []grpc.MethodDesc{{
 		MethodName: "Capabilities",
@@ -36,7 +36,7 @@ var reconnectCapabilitiesServiceDesc = grpc.ServiceDesc{
 			if interceptor == nil {
 				return srv.(*reconnectCapabilitiesServer).Capabilities(ctx, in)
 			}
-			info := &grpc.UnaryServerInfo{Server: srv, FullMethod: "/" + AdminServiceName + "/Capabilities"}
+			info := &grpc.UnaryServerInfo{Server: srv, FullMethod: "/" + "agentenv.runtime.v1.SandboxAdminService" + "/Capabilities"}
 			handler := func(ctx context.Context, req any) (any, error) {
 				return srv.(*reconnectCapabilitiesServer).Capabilities(ctx, req.(*emptypb.Empty))
 			}

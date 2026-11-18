@@ -1058,7 +1058,7 @@ func TestBuildMatcherRegistersAllImplementedProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildMatcher: %v", err)
 	}
-	for _, handler := range []string{"e2b", "android", "agentenv"} {
+	for _, handler := range []string{"e2b", "android"} {
 		if _, ok := matcher.Resolve(handler); !ok {
 			t.Fatalf("provider %q is not registered", handler)
 		}

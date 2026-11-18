@@ -69,7 +69,6 @@ func successfulDeleteOperation(req *runtimeapi.SandboxDeleteRequest) *runtimeapi
 type fakeAdmin struct {
 	pause        func(context.Context, *runtimeapi.SandboxPauseRequest) (*runtimeapi.SandboxPauseResponse, error)
 	checkpoint   func(context.Context, *runtimeapi.SandboxCheckpointRequest) (*runtimeapi.CheckpointResult, error)
-	getStats     func(context.Context, *runtimeapi.SandboxStatsRequest) (*runtimeapi.SandboxStatsResponse, error)
 	getRuntime   func(context.Context, *runtimeapi.SandboxGetRuntimeRequest) (*runtimeapi.SandboxRuntimeInfo, error)
 	capabilities func(context.Context, *emptypb.Empty) (*runtimeapi.SandboxCapabilities, error)
 }
@@ -85,13 +84,6 @@ func (f *fakeAdmin) Checkpoint(ctx context.Context, req *runtimeapi.SandboxCheck
 		return &runtimeapi.CheckpointResult{}, nil
 	}
 	return f.checkpoint(ctx, req)
-}
-
-func (f *fakeAdmin) GetStats(ctx context.Context, req *runtimeapi.SandboxStatsRequest, _ ...grpc.CallOption) (*runtimeapi.SandboxStatsResponse, error) {
-	if f.getStats == nil {
-		return &runtimeapi.SandboxStatsResponse{}, nil
-	}
-	return f.getStats(ctx, req)
 }
 
 func (f *fakeAdmin) GetRuntime(ctx context.Context, req *runtimeapi.SandboxGetRuntimeRequest, _ ...grpc.CallOption) (*runtimeapi.SandboxRuntimeInfo, error) {

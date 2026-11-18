@@ -144,55 +144,6 @@ func (RuntimeNetworkMode) EnumDescriptor() ([]byte, []int) {
 	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{1}
 }
 
-type SandboxProcessOutputStream int32
-
-const (
-	SandboxProcessOutputStream_SANDBOX_PROCESS_OUTPUT_STREAM_UNSPECIFIED SandboxProcessOutputStream = 0
-	SandboxProcessOutputStream_SANDBOX_PROCESS_OUTPUT_STREAM_STDOUT      SandboxProcessOutputStream = 1
-	SandboxProcessOutputStream_SANDBOX_PROCESS_OUTPUT_STREAM_STDERR      SandboxProcessOutputStream = 2
-)
-
-// Enum value maps for SandboxProcessOutputStream.
-var (
-	SandboxProcessOutputStream_name = map[int32]string{
-		0: "SANDBOX_PROCESS_OUTPUT_STREAM_UNSPECIFIED",
-		1: "SANDBOX_PROCESS_OUTPUT_STREAM_STDOUT",
-		2: "SANDBOX_PROCESS_OUTPUT_STREAM_STDERR",
-	}
-	SandboxProcessOutputStream_value = map[string]int32{
-		"SANDBOX_PROCESS_OUTPUT_STREAM_UNSPECIFIED": 0,
-		"SANDBOX_PROCESS_OUTPUT_STREAM_STDOUT":      1,
-		"SANDBOX_PROCESS_OUTPUT_STREAM_STDERR":      2,
-	}
-)
-
-func (x SandboxProcessOutputStream) Enum() *SandboxProcessOutputStream {
-	p := new(SandboxProcessOutputStream)
-	*p = x
-	return p
-}
-
-func (x SandboxProcessOutputStream) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (SandboxProcessOutputStream) Descriptor() protoreflect.EnumDescriptor {
-	return file_agentenv_runtime_v1_runtime_proto_enumTypes[2].Descriptor()
-}
-
-func (SandboxProcessOutputStream) Type() protoreflect.EnumType {
-	return &file_agentenv_runtime_v1_runtime_proto_enumTypes[2]
-}
-
-func (x SandboxProcessOutputStream) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use SandboxProcessOutputStream.Descriptor instead.
-func (SandboxProcessOutputStream) EnumDescriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{2}
-}
-
 // SandboxSource 表示创建来源，template 与 image 必须二选一。
 type SandboxSource struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2355,13 +2306,8 @@ type SandboxCapabilities struct {
 	ImageSource            bool                   `protobuf:"varint,6,opt,name=image_source,json=imageSource,proto3" json:"image_source,omitempty"`
 	VolumeMounts           bool                   `protobuf:"varint,7,opt,name=volume_mounts,json=volumeMounts,proto3" json:"volume_mounts,omitempty"`
 	AttachedDrives         bool                   `protobuf:"varint,8,opt,name=attached_drives,json=attachedDrives,proto3" json:"attached_drives,omitempty"`
-	ExecSync               bool                   `protobuf:"varint,9,opt,name=exec_sync,json=execSync,proto3" json:"exec_sync,omitempty"`
-	// 是否支持通过内部进程控制接口启动、查询和停止容器用户进程。
-	ProcessControl bool `protobuf:"varint,10,opt,name=process_control,json=processControl,proto3" json:"process_control,omitempty"`
-	// 是否支持 sandbox 级真实 guest stats。
-	Stats         bool `protobuf:"varint,11,opt,name=stats,proto3" json:"stats,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *SandboxCapabilities) Reset() {
@@ -2448,1383 +2394,6 @@ func (x *SandboxCapabilities) GetAttachedDrives() bool {
 		return x.AttachedDrives
 	}
 	return false
-}
-
-func (x *SandboxCapabilities) GetExecSync() bool {
-	if x != nil {
-		return x.ExecSync
-	}
-	return false
-}
-
-func (x *SandboxCapabilities) GetProcessControl() bool {
-	if x != nil {
-		return x.ProcessControl
-	}
-	return false
-}
-
-func (x *SandboxCapabilities) GetStats() bool {
-	if x != nil {
-		return x.Stats
-	}
-	return false
-}
-
-// SandboxStatsRequest 查询 native sandbox 的最新 guest 资源样本。
-// 这些指标属于整个 microVM，不是单个 CRI 逻辑容器的独立资源账本。
-type SandboxStatsRequest struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	NativeSandboxIds []string               `protobuf:"bytes,1,rep,name=native_sandbox_ids,json=nativeSandboxIds,proto3" json:"native_sandbox_ids,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
-}
-
-func (x *SandboxStatsRequest) Reset() {
-	*x = SandboxStatsRequest{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[31]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxStatsRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxStatsRequest) ProtoMessage() {}
-
-func (x *SandboxStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[31]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxStatsRequest.ProtoReflect.Descriptor instead.
-func (*SandboxStatsRequest) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{31}
-}
-
-func (x *SandboxStatsRequest) GetNativeSandboxIds() []string {
-	if x != nil {
-		return x.NativeSandboxIds
-	}
-	return nil
-}
-
-// SandboxStats 是 Runtime 可证明的 microVM 聚合统计。
-// cpu_used_percent 保留 envd 原始采样百分比；不通过单次百分比伪造累计 CPU 时间。
-type SandboxStats struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	NativeSandboxId  string                 `protobuf:"bytes,1,opt,name=native_sandbox_id,json=nativeSandboxId,proto3" json:"native_sandbox_id,omitempty"`
-	SampledAt        *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=sampled_at,json=sampledAt,proto3" json:"sampled_at,omitempty"`
-	CpuCount         int32                  `protobuf:"varint,3,opt,name=cpu_count,json=cpuCount,proto3" json:"cpu_count,omitempty"`
-	CpuUsedPercent   float64                `protobuf:"fixed64,4,opt,name=cpu_used_percent,json=cpuUsedPercent,proto3" json:"cpu_used_percent,omitempty"`
-	MemoryUsedBytes  uint64                 `protobuf:"varint,5,opt,name=memory_used_bytes,json=memoryUsedBytes,proto3" json:"memory_used_bytes,omitempty"`
-	MemoryTotalBytes uint64                 `protobuf:"varint,6,opt,name=memory_total_bytes,json=memoryTotalBytes,proto3" json:"memory_total_bytes,omitempty"`
-	MemoryCacheBytes uint64                 `protobuf:"varint,7,opt,name=memory_cache_bytes,json=memoryCacheBytes,proto3" json:"memory_cache_bytes,omitempty"`
-	DiskUsedBytes    uint64                 `protobuf:"varint,8,opt,name=disk_used_bytes,json=diskUsedBytes,proto3" json:"disk_used_bytes,omitempty"`
-	DiskTotalBytes   uint64                 `protobuf:"varint,9,opt,name=disk_total_bytes,json=diskTotalBytes,proto3" json:"disk_total_bytes,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
-}
-
-func (x *SandboxStats) Reset() {
-	*x = SandboxStats{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[32]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxStats) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxStats) ProtoMessage() {}
-
-func (x *SandboxStats) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[32]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxStats.ProtoReflect.Descriptor instead.
-func (*SandboxStats) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{32}
-}
-
-func (x *SandboxStats) GetNativeSandboxId() string {
-	if x != nil {
-		return x.NativeSandboxId
-	}
-	return ""
-}
-
-func (x *SandboxStats) GetSampledAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.SampledAt
-	}
-	return nil
-}
-
-func (x *SandboxStats) GetCpuCount() int32 {
-	if x != nil {
-		return x.CpuCount
-	}
-	return 0
-}
-
-func (x *SandboxStats) GetCpuUsedPercent() float64 {
-	if x != nil {
-		return x.CpuUsedPercent
-	}
-	return 0
-}
-
-func (x *SandboxStats) GetMemoryUsedBytes() uint64 {
-	if x != nil {
-		return x.MemoryUsedBytes
-	}
-	return 0
-}
-
-func (x *SandboxStats) GetMemoryTotalBytes() uint64 {
-	if x != nil {
-		return x.MemoryTotalBytes
-	}
-	return 0
-}
-
-func (x *SandboxStats) GetMemoryCacheBytes() uint64 {
-	if x != nil {
-		return x.MemoryCacheBytes
-	}
-	return 0
-}
-
-func (x *SandboxStats) GetDiskUsedBytes() uint64 {
-	if x != nil {
-		return x.DiskUsedBytes
-	}
-	return 0
-}
-
-func (x *SandboxStats) GetDiskTotalBytes() uint64 {
-	if x != nil {
-		return x.DiskTotalBytes
-	}
-	return 0
-}
-
-type SandboxStatsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Sandboxes     []*SandboxStats        `protobuf:"bytes,1,rep,name=sandboxes,proto3" json:"sandboxes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxStatsResponse) Reset() {
-	*x = SandboxStatsResponse{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[33]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxStatsResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxStatsResponse) ProtoMessage() {}
-
-func (x *SandboxStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[33]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxStatsResponse.ProtoReflect.Descriptor instead.
-func (*SandboxStatsResponse) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{33}
-}
-
-func (x *SandboxStatsResponse) GetSandboxes() []*SandboxStats {
-	if x != nil {
-		return x.Sandboxes
-	}
-	return nil
-}
-
-type SandboxExecSyncRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Runtime 只接受 native UUID；CRI/product ID 必须先由 adapter 解析。
-	NativeSandboxId string `protobuf:"bytes,1,opt,name=native_sandbox_id,json=nativeSandboxId,proto3" json:"native_sandbox_id,omitempty"`
-	// argv 语义：第一个元素是 executable，其余元素原样作为参数传入 envd。
-	Command []string          `protobuf:"bytes,2,rep,name=command,proto3" json:"command,omitempty"`
-	Envs    map[string]string `protobuf:"bytes,3,rep,name=envs,proto3" json:"envs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	Cwd     *string           `protobuf:"bytes,4,opt,name=cwd,proto3,oneof" json:"cwd,omitempty"`
-	// 0 表示不设置 Runtime 侧超时；非 0 时必须先等待进程退出，超时后终止进程。
-	TimeoutSeconds uint64 `protobuf:"varint,5,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *SandboxExecSyncRequest) Reset() {
-	*x = SandboxExecSyncRequest{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[34]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxExecSyncRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxExecSyncRequest) ProtoMessage() {}
-
-func (x *SandboxExecSyncRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[34]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxExecSyncRequest.ProtoReflect.Descriptor instead.
-func (*SandboxExecSyncRequest) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{34}
-}
-
-func (x *SandboxExecSyncRequest) GetNativeSandboxId() string {
-	if x != nil {
-		return x.NativeSandboxId
-	}
-	return ""
-}
-
-func (x *SandboxExecSyncRequest) GetCommand() []string {
-	if x != nil {
-		return x.Command
-	}
-	return nil
-}
-
-func (x *SandboxExecSyncRequest) GetEnvs() map[string]string {
-	if x != nil {
-		return x.Envs
-	}
-	return nil
-}
-
-func (x *SandboxExecSyncRequest) GetCwd() string {
-	if x != nil && x.Cwd != nil {
-		return *x.Cwd
-	}
-	return ""
-}
-
-func (x *SandboxExecSyncRequest) GetTimeoutSeconds() uint64 {
-	if x != nil {
-		return x.TimeoutSeconds
-	}
-	return 0
-}
-
-type SandboxExecSyncResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Stdout        []byte                 `protobuf:"bytes,1,opt,name=stdout,proto3" json:"stdout,omitempty"`
-	Stderr        []byte                 `protobuf:"bytes,2,opt,name=stderr,proto3" json:"stderr,omitempty"`
-	ExitCode      int32                  `protobuf:"zigzag32,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxExecSyncResponse) Reset() {
-	*x = SandboxExecSyncResponse{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[35]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxExecSyncResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxExecSyncResponse) ProtoMessage() {}
-
-func (x *SandboxExecSyncResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[35]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxExecSyncResponse.ProtoReflect.Descriptor instead.
-func (*SandboxExecSyncResponse) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{35}
-}
-
-func (x *SandboxExecSyncResponse) GetStdout() []byte {
-	if x != nil {
-		return x.Stdout
-	}
-	return nil
-}
-
-func (x *SandboxExecSyncResponse) GetStderr() []byte {
-	if x != nil {
-		return x.Stderr
-	}
-	return nil
-}
-
-func (x *SandboxExecSyncResponse) GetExitCode() int32 {
-	if x != nil {
-		return x.ExitCode
-	}
-	return 0
-}
-
-type SandboxProcessOutputChunk struct {
-	state         protoimpl.MessageState     `protogen:"open.v1"`
-	Sequence      uint64                     `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	Stream        SandboxProcessOutputStream `protobuf:"varint,2,opt,name=stream,proto3,enum=agentenv.runtime.v1.SandboxProcessOutputStream" json:"stream,omitempty"`
-	Data          []byte                     `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxProcessOutputChunk) Reset() {
-	*x = SandboxProcessOutputChunk{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[36]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessOutputChunk) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessOutputChunk) ProtoMessage() {}
-
-func (x *SandboxProcessOutputChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[36]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessOutputChunk.ProtoReflect.Descriptor instead.
-func (*SandboxProcessOutputChunk) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{36}
-}
-
-func (x *SandboxProcessOutputChunk) GetSequence() uint64 {
-	if x != nil {
-		return x.Sequence
-	}
-	return 0
-}
-
-func (x *SandboxProcessOutputChunk) GetStream() SandboxProcessOutputStream {
-	if x != nil {
-		return x.Stream
-	}
-	return SandboxProcessOutputStream_SANDBOX_PROCESS_OUTPUT_STREAM_UNSPECIFIED
-}
-
-func (x *SandboxProcessOutputChunk) GetData() []byte {
-	if x != nil {
-		return x.Data
-	}
-	return nil
-}
-
-type SandboxProcessTerminalSize struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Cols          uint32                 `protobuf:"varint,1,opt,name=cols,proto3" json:"cols,omitempty"`
-	Rows          uint32                 `protobuf:"varint,2,opt,name=rows,proto3" json:"rows,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxProcessTerminalSize) Reset() {
-	*x = SandboxProcessTerminalSize{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[37]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessTerminalSize) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessTerminalSize) ProtoMessage() {}
-
-func (x *SandboxProcessTerminalSize) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[37]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessTerminalSize.ProtoReflect.Descriptor instead.
-func (*SandboxProcessTerminalSize) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{37}
-}
-
-func (x *SandboxProcessTerminalSize) GetCols() uint32 {
-	if x != nil {
-		return x.Cols
-	}
-	return 0
-}
-
-func (x *SandboxProcessTerminalSize) GetRows() uint32 {
-	if x != nil {
-		return x.Rows
-	}
-	return 0
-}
-
-type SandboxProcessStartRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	NativeSandboxId string                 `protobuf:"bytes,1,opt,name=native_sandbox_id,json=nativeSandboxId,proto3" json:"native_sandbox_id,omitempty"`
-	// argv 语义：第一个元素是 executable。
-	Command []string          `protobuf:"bytes,2,rep,name=command,proto3" json:"command,omitempty"`
-	Envs    map[string]string `protobuf:"bytes,3,rep,name=envs,proto3" json:"envs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	Cwd     *string           `protobuf:"bytes,4,opt,name=cwd,proto3,oneof" json:"cwd,omitempty"`
-	// CRI Exec/Attach 交互参数；非交互容器主进程可使用默认 false。
-	Tty           bool                        `protobuf:"varint,5,opt,name=tty,proto3" json:"tty,omitempty"`
-	Stdin         bool                        `protobuf:"varint,6,opt,name=stdin,proto3" json:"stdin,omitempty"`
-	TerminalSize  *SandboxProcessTerminalSize `protobuf:"bytes,7,opt,name=terminal_size,json=terminalSize,proto3" json:"terminal_size,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxProcessStartRequest) Reset() {
-	*x = SandboxProcessStartRequest{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[38]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessStartRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessStartRequest) ProtoMessage() {}
-
-func (x *SandboxProcessStartRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[38]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessStartRequest.ProtoReflect.Descriptor instead.
-func (*SandboxProcessStartRequest) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{38}
-}
-
-func (x *SandboxProcessStartRequest) GetNativeSandboxId() string {
-	if x != nil {
-		return x.NativeSandboxId
-	}
-	return ""
-}
-
-func (x *SandboxProcessStartRequest) GetCommand() []string {
-	if x != nil {
-		return x.Command
-	}
-	return nil
-}
-
-func (x *SandboxProcessStartRequest) GetEnvs() map[string]string {
-	if x != nil {
-		return x.Envs
-	}
-	return nil
-}
-
-func (x *SandboxProcessStartRequest) GetCwd() string {
-	if x != nil && x.Cwd != nil {
-		return *x.Cwd
-	}
-	return ""
-}
-
-func (x *SandboxProcessStartRequest) GetTty() bool {
-	if x != nil {
-		return x.Tty
-	}
-	return false
-}
-
-func (x *SandboxProcessStartRequest) GetStdin() bool {
-	if x != nil {
-		return x.Stdin
-	}
-	return false
-}
-
-func (x *SandboxProcessStartRequest) GetTerminalSize() *SandboxProcessTerminalSize {
-	if x != nil {
-		return x.TerminalSize
-	}
-	return nil
-}
-
-type SandboxProcessStartResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Pid           uint32                 `protobuf:"varint,1,opt,name=pid,proto3" json:"pid,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxProcessStartResponse) Reset() {
-	*x = SandboxProcessStartResponse{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[39]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessStartResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessStartResponse) ProtoMessage() {}
-
-func (x *SandboxProcessStartResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[39]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessStartResponse.ProtoReflect.Descriptor instead.
-func (*SandboxProcessStartResponse) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{39}
-}
-
-func (x *SandboxProcessStartResponse) GetPid() uint32 {
-	if x != nil {
-		return x.Pid
-	}
-	return 0
-}
-
-type SandboxProcessConnectRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	NativeSandboxId string                 `protobuf:"bytes,1,opt,name=native_sandbox_id,json=nativeSandboxId,proto3" json:"native_sandbox_id,omitempty"`
-	Pid             uint32                 `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
-	// 先补发 sequence 大于 after_sequence 的缓存输出，再订阅实时事件。
-	AfterSequence uint64 `protobuf:"varint,3,opt,name=after_sequence,json=afterSequence,proto3" json:"after_sequence,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxProcessConnectRequest) Reset() {
-	*x = SandboxProcessConnectRequest{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[40]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessConnectRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessConnectRequest) ProtoMessage() {}
-
-func (x *SandboxProcessConnectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[40]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessConnectRequest.ProtoReflect.Descriptor instead.
-func (*SandboxProcessConnectRequest) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{40}
-}
-
-func (x *SandboxProcessConnectRequest) GetNativeSandboxId() string {
-	if x != nil {
-		return x.NativeSandboxId
-	}
-	return ""
-}
-
-func (x *SandboxProcessConnectRequest) GetPid() uint32 {
-	if x != nil {
-		return x.Pid
-	}
-	return 0
-}
-
-func (x *SandboxProcessConnectRequest) GetAfterSequence() uint64 {
-	if x != nil {
-		return x.AfterSequence
-	}
-	return 0
-}
-
-type SandboxProcessExitInfo struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Exited          bool                   `protobuf:"varint,1,opt,name=exited,proto3" json:"exited,omitempty"`
-	ExitCode        int32                  `protobuf:"zigzag32,2,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	ErrorMessage    string                 `protobuf:"bytes,3,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	OutputTruncated bool                   `protobuf:"varint,4,opt,name=output_truncated,json=outputTruncated,proto3" json:"output_truncated,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *SandboxProcessExitInfo) Reset() {
-	*x = SandboxProcessExitInfo{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[41]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessExitInfo) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessExitInfo) ProtoMessage() {}
-
-func (x *SandboxProcessExitInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[41]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessExitInfo.ProtoReflect.Descriptor instead.
-func (*SandboxProcessExitInfo) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{41}
-}
-
-func (x *SandboxProcessExitInfo) GetExited() bool {
-	if x != nil {
-		return x.Exited
-	}
-	return false
-}
-
-func (x *SandboxProcessExitInfo) GetExitCode() int32 {
-	if x != nil {
-		return x.ExitCode
-	}
-	return 0
-}
-
-func (x *SandboxProcessExitInfo) GetErrorMessage() string {
-	if x != nil {
-		return x.ErrorMessage
-	}
-	return ""
-}
-
-func (x *SandboxProcessExitInfo) GetOutputTruncated() bool {
-	if x != nil {
-		return x.OutputTruncated
-	}
-	return false
-}
-
-type SandboxProcessConnectResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Types that are valid to be assigned to Event:
-	//
-	//	*SandboxProcessConnectResponse_Output
-	//	*SandboxProcessConnectResponse_Exit
-	Event         isSandboxProcessConnectResponse_Event `protobuf_oneof:"event"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxProcessConnectResponse) Reset() {
-	*x = SandboxProcessConnectResponse{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[42]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessConnectResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessConnectResponse) ProtoMessage() {}
-
-func (x *SandboxProcessConnectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[42]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessConnectResponse.ProtoReflect.Descriptor instead.
-func (*SandboxProcessConnectResponse) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{42}
-}
-
-func (x *SandboxProcessConnectResponse) GetEvent() isSandboxProcessConnectResponse_Event {
-	if x != nil {
-		return x.Event
-	}
-	return nil
-}
-
-func (x *SandboxProcessConnectResponse) GetOutput() *SandboxProcessOutputChunk {
-	if x != nil {
-		if x, ok := x.Event.(*SandboxProcessConnectResponse_Output); ok {
-			return x.Output
-		}
-	}
-	return nil
-}
-
-func (x *SandboxProcessConnectResponse) GetExit() *SandboxProcessExitInfo {
-	if x != nil {
-		if x, ok := x.Event.(*SandboxProcessConnectResponse_Exit); ok {
-			return x.Exit
-		}
-	}
-	return nil
-}
-
-type isSandboxProcessConnectResponse_Event interface {
-	isSandboxProcessConnectResponse_Event()
-}
-
-type SandboxProcessConnectResponse_Output struct {
-	Output *SandboxProcessOutputChunk `protobuf:"bytes,1,opt,name=output,proto3,oneof"`
-}
-
-type SandboxProcessConnectResponse_Exit struct {
-	Exit *SandboxProcessExitInfo `protobuf:"bytes,2,opt,name=exit,proto3,oneof"`
-}
-
-func (*SandboxProcessConnectResponse_Output) isSandboxProcessConnectResponse_Event() {}
-
-func (*SandboxProcessConnectResponse_Exit) isSandboxProcessConnectResponse_Event() {}
-
-type SandboxProcessInputRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	NativeSandboxId string                 `protobuf:"bytes,1,opt,name=native_sandbox_id,json=nativeSandboxId,proto3" json:"native_sandbox_id,omitempty"`
-	Pid             uint32                 `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
-	Data            []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
-	// true 时写入 PTY，false 时写入普通 stdin。
-	Pty           bool `protobuf:"varint,4,opt,name=pty,proto3" json:"pty,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxProcessInputRequest) Reset() {
-	*x = SandboxProcessInputRequest{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[43]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessInputRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessInputRequest) ProtoMessage() {}
-
-func (x *SandboxProcessInputRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[43]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessInputRequest.ProtoReflect.Descriptor instead.
-func (*SandboxProcessInputRequest) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{43}
-}
-
-func (x *SandboxProcessInputRequest) GetNativeSandboxId() string {
-	if x != nil {
-		return x.NativeSandboxId
-	}
-	return ""
-}
-
-func (x *SandboxProcessInputRequest) GetPid() uint32 {
-	if x != nil {
-		return x.Pid
-	}
-	return 0
-}
-
-func (x *SandboxProcessInputRequest) GetData() []byte {
-	if x != nil {
-		return x.Data
-	}
-	return nil
-}
-
-func (x *SandboxProcessInputRequest) GetPty() bool {
-	if x != nil {
-		return x.Pty
-	}
-	return false
-}
-
-type SandboxProcessInputResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxProcessInputResponse) Reset() {
-	*x = SandboxProcessInputResponse{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[44]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessInputResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessInputResponse) ProtoMessage() {}
-
-func (x *SandboxProcessInputResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[44]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessInputResponse.ProtoReflect.Descriptor instead.
-func (*SandboxProcessInputResponse) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{44}
-}
-
-type SandboxProcessResizeRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	NativeSandboxId string                 `protobuf:"bytes,1,opt,name=native_sandbox_id,json=nativeSandboxId,proto3" json:"native_sandbox_id,omitempty"`
-	Pid             uint32                 `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
-	Cols            uint32                 `protobuf:"varint,3,opt,name=cols,proto3" json:"cols,omitempty"`
-	Rows            uint32                 `protobuf:"varint,4,opt,name=rows,proto3" json:"rows,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *SandboxProcessResizeRequest) Reset() {
-	*x = SandboxProcessResizeRequest{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[45]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessResizeRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessResizeRequest) ProtoMessage() {}
-
-func (x *SandboxProcessResizeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[45]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessResizeRequest.ProtoReflect.Descriptor instead.
-func (*SandboxProcessResizeRequest) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{45}
-}
-
-func (x *SandboxProcessResizeRequest) GetNativeSandboxId() string {
-	if x != nil {
-		return x.NativeSandboxId
-	}
-	return ""
-}
-
-func (x *SandboxProcessResizeRequest) GetPid() uint32 {
-	if x != nil {
-		return x.Pid
-	}
-	return 0
-}
-
-func (x *SandboxProcessResizeRequest) GetCols() uint32 {
-	if x != nil {
-		return x.Cols
-	}
-	return 0
-}
-
-func (x *SandboxProcessResizeRequest) GetRows() uint32 {
-	if x != nil {
-		return x.Rows
-	}
-	return 0
-}
-
-type SandboxProcessResizeResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxProcessResizeResponse) Reset() {
-	*x = SandboxProcessResizeResponse{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[46]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessResizeResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessResizeResponse) ProtoMessage() {}
-
-func (x *SandboxProcessResizeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[46]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessResizeResponse.ProtoReflect.Descriptor instead.
-func (*SandboxProcessResizeResponse) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{46}
-}
-
-type SandboxProcessCloseStdinRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	NativeSandboxId string                 `protobuf:"bytes,1,opt,name=native_sandbox_id,json=nativeSandboxId,proto3" json:"native_sandbox_id,omitempty"`
-	Pid             uint32                 `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *SandboxProcessCloseStdinRequest) Reset() {
-	*x = SandboxProcessCloseStdinRequest{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[47]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessCloseStdinRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessCloseStdinRequest) ProtoMessage() {}
-
-func (x *SandboxProcessCloseStdinRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[47]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessCloseStdinRequest.ProtoReflect.Descriptor instead.
-func (*SandboxProcessCloseStdinRequest) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{47}
-}
-
-func (x *SandboxProcessCloseStdinRequest) GetNativeSandboxId() string {
-	if x != nil {
-		return x.NativeSandboxId
-	}
-	return ""
-}
-
-func (x *SandboxProcessCloseStdinRequest) GetPid() uint32 {
-	if x != nil {
-		return x.Pid
-	}
-	return 0
-}
-
-type SandboxProcessCloseStdinResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxProcessCloseStdinResponse) Reset() {
-	*x = SandboxProcessCloseStdinResponse{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[48]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessCloseStdinResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessCloseStdinResponse) ProtoMessage() {}
-
-func (x *SandboxProcessCloseStdinResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[48]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessCloseStdinResponse.ProtoReflect.Descriptor instead.
-func (*SandboxProcessCloseStdinResponse) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{48}
-}
-
-type SandboxProcessGetRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	NativeSandboxId string                 `protobuf:"bytes,1,opt,name=native_sandbox_id,json=nativeSandboxId,proto3" json:"native_sandbox_id,omitempty"`
-	Pid             uint32                 `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
-	// 返回 sequence 大于 after_sequence 的输出；同时确认并释放更早的缓存。
-	AfterSequence uint64 `protobuf:"varint,3,opt,name=after_sequence,json=afterSequence,proto3" json:"after_sequence,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxProcessGetRequest) Reset() {
-	*x = SandboxProcessGetRequest{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[49]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessGetRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessGetRequest) ProtoMessage() {}
-
-func (x *SandboxProcessGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[49]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessGetRequest.ProtoReflect.Descriptor instead.
-func (*SandboxProcessGetRequest) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{49}
-}
-
-func (x *SandboxProcessGetRequest) GetNativeSandboxId() string {
-	if x != nil {
-		return x.NativeSandboxId
-	}
-	return ""
-}
-
-func (x *SandboxProcessGetRequest) GetPid() uint32 {
-	if x != nil {
-		return x.Pid
-	}
-	return 0
-}
-
-func (x *SandboxProcessGetRequest) GetAfterSequence() uint64 {
-	if x != nil {
-		return x.AfterSequence
-	}
-	return 0
-}
-
-type SandboxProcessGetResponse struct {
-	state    protoimpl.MessageState       `protogen:"open.v1"`
-	Pid      uint32                       `protobuf:"varint,1,opt,name=pid,proto3" json:"pid,omitempty"`
-	Running  bool                         `protobuf:"varint,2,opt,name=running,proto3" json:"running,omitempty"`
-	ExitCode int32                        `protobuf:"zigzag32,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	Outputs  []*SandboxProcessOutputChunk `protobuf:"bytes,4,rep,name=outputs,proto3" json:"outputs,omitempty"`
-	// Runtime 内部输出缓冲发生截断时为 true，不能把缺失内容当作完整日志。
-	OutputTruncated bool   `protobuf:"varint,5,opt,name=output_truncated,json=outputTruncated,proto3" json:"output_truncated,omitempty"`
-	ErrorMessage    string `protobuf:"bytes,6,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *SandboxProcessGetResponse) Reset() {
-	*x = SandboxProcessGetResponse{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[50]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessGetResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessGetResponse) ProtoMessage() {}
-
-func (x *SandboxProcessGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[50]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessGetResponse.ProtoReflect.Descriptor instead.
-func (*SandboxProcessGetResponse) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{50}
-}
-
-func (x *SandboxProcessGetResponse) GetPid() uint32 {
-	if x != nil {
-		return x.Pid
-	}
-	return 0
-}
-
-func (x *SandboxProcessGetResponse) GetRunning() bool {
-	if x != nil {
-		return x.Running
-	}
-	return false
-}
-
-func (x *SandboxProcessGetResponse) GetExitCode() int32 {
-	if x != nil {
-		return x.ExitCode
-	}
-	return 0
-}
-
-func (x *SandboxProcessGetResponse) GetOutputs() []*SandboxProcessOutputChunk {
-	if x != nil {
-		return x.Outputs
-	}
-	return nil
-}
-
-func (x *SandboxProcessGetResponse) GetOutputTruncated() bool {
-	if x != nil {
-		return x.OutputTruncated
-	}
-	return false
-}
-
-func (x *SandboxProcessGetResponse) GetErrorMessage() string {
-	if x != nil {
-		return x.ErrorMessage
-	}
-	return ""
-}
-
-type SandboxProcessStopRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	NativeSandboxId string                 `protobuf:"bytes,1,opt,name=native_sandbox_id,json=nativeSandboxId,proto3" json:"native_sandbox_id,omitempty"`
-	Pid             uint32                 `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
-	// 先发送 SIGTERM，超过宽限期后发送 SIGKILL。
-	GracePeriodSeconds uint64 `protobuf:"varint,3,opt,name=grace_period_seconds,json=gracePeriodSeconds,proto3" json:"grace_period_seconds,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
-}
-
-func (x *SandboxProcessStopRequest) Reset() {
-	*x = SandboxProcessStopRequest{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[51]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessStopRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessStopRequest) ProtoMessage() {}
-
-func (x *SandboxProcessStopRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[51]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessStopRequest.ProtoReflect.Descriptor instead.
-func (*SandboxProcessStopRequest) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{51}
-}
-
-func (x *SandboxProcessStopRequest) GetNativeSandboxId() string {
-	if x != nil {
-		return x.NativeSandboxId
-	}
-	return ""
-}
-
-func (x *SandboxProcessStopRequest) GetPid() uint32 {
-	if x != nil {
-		return x.Pid
-	}
-	return 0
-}
-
-func (x *SandboxProcessStopRequest) GetGracePeriodSeconds() uint64 {
-	if x != nil {
-		return x.GracePeriodSeconds
-	}
-	return 0
-}
-
-type SandboxProcessStopResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Stopped       bool                   `protobuf:"varint,1,opt,name=stopped,proto3" json:"stopped,omitempty"`
-	ExitCode      int32                  `protobuf:"zigzag32,2,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SandboxProcessStopResponse) Reset() {
-	*x = SandboxProcessStopResponse{}
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[52]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SandboxProcessStopResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SandboxProcessStopResponse) ProtoMessage() {}
-
-func (x *SandboxProcessStopResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentenv_runtime_v1_runtime_proto_msgTypes[52]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SandboxProcessStopResponse.ProtoReflect.Descriptor instead.
-func (*SandboxProcessStopResponse) Descriptor() ([]byte, []int) {
-	return file_agentenv_runtime_v1_runtime_proto_rawDescGZIP(), []int{52}
-}
-
-func (x *SandboxProcessStopResponse) GetStopped() bool {
-	if x != nil {
-		return x.Stopped
-	}
-	return false
-}
-
-func (x *SandboxProcessStopResponse) GetExitCode() int32 {
-	if x != nil {
-		return x.ExitCode
-	}
-	return 0
 }
 
 var File_agentenv_runtime_v1_runtime_proto protoreflect.FileDescriptor
@@ -4052,7 +2621,7 @@ const file_agentenv_runtime_v1_runtime_proto_rawDesc = "" +
 	"\x18SandboxGetRuntimeRequest\x12*\n" +
 	"\x11native_sandbox_id\x18\x01 \x01(\tR\x0fnativeSandboxId\"?\n" +
 	"\x1aSandboxOperationGetRequest\x12!\n" +
-	"\foperation_id\x18\x01 \x01(\tR\voperationId\"\xaf\x03\n" +
+	"\foperation_id\x18\x01 \x01(\tR\voperationId\"\x88\x03\n" +
 	"\x13SandboxCapabilities\x128\n" +
 	"\x18runtime_contract_version\x18\x01 \x01(\tR\x16runtimeContractVersion\x12\x14\n" +
 	"\x05pause\x18\x02 \x01(\bR\x05pause\x12\x16\n" +
@@ -4063,108 +2632,9 @@ const file_agentenv_runtime_v1_runtime_proto_rawDesc = "" +
 	"\x0ftemplate_source\x18\x05 \x01(\bR\x0etemplateSource\x12!\n" +
 	"\fimage_source\x18\x06 \x01(\bR\vimageSource\x12#\n" +
 	"\rvolume_mounts\x18\a \x01(\bR\fvolumeMounts\x12'\n" +
-	"\x0fattached_drives\x18\b \x01(\bR\x0eattachedDrives\x12\x1b\n" +
-	"\texec_sync\x18\t \x01(\bR\bexecSync\x12'\n" +
-	"\x0fprocess_control\x18\n" +
-	" \x01(\bR\x0eprocessControl\x12\x14\n" +
-	"\x05stats\x18\v \x01(\bR\x05statsJ\x04\b\f\x10\rR\x14recovery_remediation\"C\n" +
-	"\x13SandboxStatsRequest\x12,\n" +
-	"\x12native_sandbox_ids\x18\x01 \x03(\tR\x10nativeSandboxIds\"\x96\x03\n" +
-	"\fSandboxStats\x12*\n" +
-	"\x11native_sandbox_id\x18\x01 \x01(\tR\x0fnativeSandboxId\x129\n" +
-	"\n" +
-	"sampled_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tsampledAt\x12\x1b\n" +
-	"\tcpu_count\x18\x03 \x01(\x05R\bcpuCount\x12(\n" +
-	"\x10cpu_used_percent\x18\x04 \x01(\x01R\x0ecpuUsedPercent\x12*\n" +
-	"\x11memory_used_bytes\x18\x05 \x01(\x04R\x0fmemoryUsedBytes\x12,\n" +
-	"\x12memory_total_bytes\x18\x06 \x01(\x04R\x10memoryTotalBytes\x12,\n" +
-	"\x12memory_cache_bytes\x18\a \x01(\x04R\x10memoryCacheBytes\x12&\n" +
-	"\x0fdisk_used_bytes\x18\b \x01(\x04R\rdiskUsedBytes\x12(\n" +
-	"\x10disk_total_bytes\x18\t \x01(\x04R\x0ediskTotalBytes\"W\n" +
-	"\x14SandboxStatsResponse\x12?\n" +
-	"\tsandboxes\x18\x01 \x03(\v2!.agentenv.runtime.v1.SandboxStatsR\tsandboxes\"\xaa\x02\n" +
-	"\x16SandboxExecSyncRequest\x12*\n" +
-	"\x11native_sandbox_id\x18\x01 \x01(\tR\x0fnativeSandboxId\x12\x18\n" +
-	"\acommand\x18\x02 \x03(\tR\acommand\x12I\n" +
-	"\x04envs\x18\x03 \x03(\v25.agentenv.runtime.v1.SandboxExecSyncRequest.EnvsEntryR\x04envs\x12\x15\n" +
-	"\x03cwd\x18\x04 \x01(\tH\x00R\x03cwd\x88\x01\x01\x12'\n" +
-	"\x0ftimeout_seconds\x18\x05 \x01(\x04R\x0etimeoutSeconds\x1a7\n" +
-	"\tEnvsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x06\n" +
-	"\x04_cwd\"f\n" +
-	"\x17SandboxExecSyncResponse\x12\x16\n" +
-	"\x06stdout\x18\x01 \x01(\fR\x06stdout\x12\x16\n" +
-	"\x06stderr\x18\x02 \x01(\fR\x06stderr\x12\x1b\n" +
-	"\texit_code\x18\x03 \x01(\x11R\bexitCode\"\x94\x01\n" +
-	"\x19SandboxProcessOutputChunk\x12\x1a\n" +
-	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12G\n" +
-	"\x06stream\x18\x02 \x01(\x0e2/.agentenv.runtime.v1.SandboxProcessOutputStreamR\x06stream\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\fR\x04data\"D\n" +
-	"\x1aSandboxProcessTerminalSize\x12\x12\n" +
-	"\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n" +
-	"\x04rows\x18\x02 \x01(\rR\x04rows\"\x87\x03\n" +
-	"\x1aSandboxProcessStartRequest\x12*\n" +
-	"\x11native_sandbox_id\x18\x01 \x01(\tR\x0fnativeSandboxId\x12\x18\n" +
-	"\acommand\x18\x02 \x03(\tR\acommand\x12M\n" +
-	"\x04envs\x18\x03 \x03(\v29.agentenv.runtime.v1.SandboxProcessStartRequest.EnvsEntryR\x04envs\x12\x15\n" +
-	"\x03cwd\x18\x04 \x01(\tH\x00R\x03cwd\x88\x01\x01\x12\x10\n" +
-	"\x03tty\x18\x05 \x01(\bR\x03tty\x12\x14\n" +
-	"\x05stdin\x18\x06 \x01(\bR\x05stdin\x12T\n" +
-	"\rterminal_size\x18\a \x01(\v2/.agentenv.runtime.v1.SandboxProcessTerminalSizeR\fterminalSize\x1a7\n" +
-	"\tEnvsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x06\n" +
-	"\x04_cwd\"/\n" +
-	"\x1bSandboxProcessStartResponse\x12\x10\n" +
-	"\x03pid\x18\x01 \x01(\rR\x03pid\"\x83\x01\n" +
-	"\x1cSandboxProcessConnectRequest\x12*\n" +
-	"\x11native_sandbox_id\x18\x01 \x01(\tR\x0fnativeSandboxId\x12\x10\n" +
-	"\x03pid\x18\x02 \x01(\rR\x03pid\x12%\n" +
-	"\x0eafter_sequence\x18\x03 \x01(\x04R\rafterSequence\"\x9d\x01\n" +
-	"\x16SandboxProcessExitInfo\x12\x16\n" +
-	"\x06exited\x18\x01 \x01(\bR\x06exited\x12\x1b\n" +
-	"\texit_code\x18\x02 \x01(\x11R\bexitCode\x12#\n" +
-	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\x12)\n" +
-	"\x10output_truncated\x18\x04 \x01(\bR\x0foutputTruncated\"\xb5\x01\n" +
-	"\x1dSandboxProcessConnectResponse\x12H\n" +
-	"\x06output\x18\x01 \x01(\v2..agentenv.runtime.v1.SandboxProcessOutputChunkH\x00R\x06output\x12A\n" +
-	"\x04exit\x18\x02 \x01(\v2+.agentenv.runtime.v1.SandboxProcessExitInfoH\x00R\x04exitB\a\n" +
-	"\x05event\"\x80\x01\n" +
-	"\x1aSandboxProcessInputRequest\x12*\n" +
-	"\x11native_sandbox_id\x18\x01 \x01(\tR\x0fnativeSandboxId\x12\x10\n" +
-	"\x03pid\x18\x02 \x01(\rR\x03pid\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\fR\x04data\x12\x10\n" +
-	"\x03pty\x18\x04 \x01(\bR\x03pty\"\x1d\n" +
-	"\x1bSandboxProcessInputResponse\"\x83\x01\n" +
-	"\x1bSandboxProcessResizeRequest\x12*\n" +
-	"\x11native_sandbox_id\x18\x01 \x01(\tR\x0fnativeSandboxId\x12\x10\n" +
-	"\x03pid\x18\x02 \x01(\rR\x03pid\x12\x12\n" +
-	"\x04cols\x18\x03 \x01(\rR\x04cols\x12\x12\n" +
-	"\x04rows\x18\x04 \x01(\rR\x04rows\"\x1e\n" +
-	"\x1cSandboxProcessResizeResponse\"_\n" +
-	"\x1fSandboxProcessCloseStdinRequest\x12*\n" +
-	"\x11native_sandbox_id\x18\x01 \x01(\tR\x0fnativeSandboxId\x12\x10\n" +
-	"\x03pid\x18\x02 \x01(\rR\x03pid\"\"\n" +
-	" SandboxProcessCloseStdinResponse\"\x7f\n" +
-	"\x18SandboxProcessGetRequest\x12*\n" +
-	"\x11native_sandbox_id\x18\x01 \x01(\tR\x0fnativeSandboxId\x12\x10\n" +
-	"\x03pid\x18\x02 \x01(\rR\x03pid\x12%\n" +
-	"\x0eafter_sequence\x18\x03 \x01(\x04R\rafterSequence\"\xfe\x01\n" +
-	"\x19SandboxProcessGetResponse\x12\x10\n" +
-	"\x03pid\x18\x01 \x01(\rR\x03pid\x12\x18\n" +
-	"\arunning\x18\x02 \x01(\bR\arunning\x12\x1b\n" +
-	"\texit_code\x18\x03 \x01(\x11R\bexitCode\x12H\n" +
-	"\aoutputs\x18\x04 \x03(\v2..agentenv.runtime.v1.SandboxProcessOutputChunkR\aoutputs\x12)\n" +
-	"\x10output_truncated\x18\x05 \x01(\bR\x0foutputTruncated\x12#\n" +
-	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage\"\x8b\x01\n" +
-	"\x19SandboxProcessStopRequest\x12*\n" +
-	"\x11native_sandbox_id\x18\x01 \x01(\tR\x0fnativeSandboxId\x12\x10\n" +
-	"\x03pid\x18\x02 \x01(\rR\x03pid\x120\n" +
-	"\x14grace_period_seconds\x18\x03 \x01(\x04R\x12gracePeriodSeconds\"S\n" +
-	"\x1aSandboxProcessStopResponse\x12\x18\n" +
-	"\astopped\x18\x01 \x01(\bR\astopped\x12\x1b\n" +
-	"\texit_code\x18\x02 \x01(\x11R\bexitCode*\xaa\x01\n" +
+	"\x0fattached_drives\x18\b \x01(\bR\x0eattachedDrivesJ\x04\b\t\x10\n" +
+	"J\x04\b\n" +
+	"\x10\vJ\x04\b\v\x10\fJ\x04\b\f\x10\rR\texec_syncR\x0fprocess_controlR\x05statsR\x14recovery_remediation*\xaa\x01\n" +
 	"\fSandboxPhase\x12\x1d\n" +
 	"\x19SANDBOX_PHASE_UNSPECIFIED\x10\x00\x12\f\n" +
 	"\bCREATING\x10\x01\x12\f\n" +
@@ -4181,17 +2651,13 @@ const file_agentenv_runtime_v1_runtime_proto_rawDesc = "" +
 	"\x12RuntimeNetworkMode\x12$\n" +
 	" RUNTIME_NETWORK_MODE_UNSPECIFIED\x10\x00\x12(\n" +
 	"$RUNTIME_NETWORK_MODE_RUNTIME_MANAGED\x10\x01\x12+\n" +
-	"'RUNTIME_NETWORK_MODE_CNI_EXTERNAL_NETNS\x10\x02*\x9f\x01\n" +
-	"\x1aSandboxProcessOutputStream\x12-\n" +
-	")SANDBOX_PROCESS_OUTPUT_STREAM_UNSPECIFIED\x10\x00\x12(\n" +
-	"$SANDBOX_PROCESS_OUTPUT_STREAM_STDOUT\x10\x01\x12(\n" +
-	"$SANDBOX_PROCESS_OUTPUT_STREAM_STDERR\x10\x022\xd8\x03\n" +
+	"'RUNTIME_NETWORK_MODE_CNI_EXTERNAL_NETNS\x10\x022\xd8\x03\n" +
 	"\x17SandboxLifecycleService\x12_\n" +
 	"\x06Create\x12).agentenv.runtime.v1.SandboxCreateRequest\x1a*.agentenv.runtime.v1.SandboxCreateResponse\x12O\n" +
 	"\x03Get\x12&.agentenv.runtime.v1.SandboxGetRequest\x1a .agentenv.runtime.v1.SandboxInfo\x12Y\n" +
 	"\x04List\x12'.agentenv.runtime.v1.SandboxListRequest\x1a(.agentenv.runtime.v1.SandboxListResponse\x12U\n" +
 	"\x06Update\x12).agentenv.runtime.v1.SandboxUpdateRequest\x1a .agentenv.runtime.v1.SandboxInfo\x12Y\n" +
-	"\x06Delete\x12).agentenv.runtime.v1.SandboxDeleteRequest\x1a$.agentenv.runtime.v1.OperationStatus2\xb8\x05\n" +
+	"\x06Delete\x12).agentenv.runtime.v1.SandboxDeleteRequest\x1a$.agentenv.runtime.v1.OperationStatus2\xd7\x04\n" +
 	"\x13SandboxAdminService\x12\\\n" +
 	"\x05Pause\x12(.agentenv.runtime.v1.SandboxPauseRequest\x1a).agentenv.runtime.v1.SandboxPauseResponse\x12_\n" +
 	"\x06Resume\x12).agentenv.runtime.v1.SandboxResumeRequest\x1a*.agentenv.runtime.v1.SandboxResumeResponse\x12b\n" +
@@ -4200,18 +2666,7 @@ const file_agentenv_runtime_v1_runtime_proto_rawDesc = "" +
 	"\n" +
 	"GetRuntime\x12-.agentenv.runtime.v1.SandboxGetRuntimeRequest\x1a'.agentenv.runtime.v1.SandboxRuntimeInfo\x12e\n" +
 	"\fGetOperation\x12/.agentenv.runtime.v1.SandboxOperationGetRequest\x1a$.agentenv.runtime.v1.OperationStatus\x12P\n" +
-	"\fCapabilities\x12\x16.google.protobuf.Empty\x1a(.agentenv.runtime.v1.SandboxCapabilities\x12_\n" +
-	"\bGetStats\x12(.agentenv.runtime.v1.SandboxStatsRequest\x1a).agentenv.runtime.v1.SandboxStatsResponse2\xb6\a\n" +
-	"\x12SandboxExecService\x12e\n" +
-	"\bExecSync\x12+.agentenv.runtime.v1.SandboxExecSyncRequest\x1a,.agentenv.runtime.v1.SandboxExecSyncResponse\x12q\n" +
-	"\fStartProcess\x12/.agentenv.runtime.v1.SandboxProcessStartRequest\x1a0.agentenv.runtime.v1.SandboxProcessStartResponse\x12k\n" +
-	"\n" +
-	"GetProcess\x12-.agentenv.runtime.v1.SandboxProcessGetRequest\x1a..agentenv.runtime.v1.SandboxProcessGetResponse\x12y\n" +
-	"\x0eConnectProcess\x121.agentenv.runtime.v1.SandboxProcessConnectRequest\x1a2.agentenv.runtime.v1.SandboxProcessConnectResponse0\x01\x12u\n" +
-	"\x10SendProcessInput\x12/.agentenv.runtime.v1.SandboxProcessInputRequest\x1a0.agentenv.runtime.v1.SandboxProcessInputResponse\x12t\n" +
-	"\rResizeProcess\x120.agentenv.runtime.v1.SandboxProcessResizeRequest\x1a1.agentenv.runtime.v1.SandboxProcessResizeResponse\x12\x80\x01\n" +
-	"\x11CloseProcessStdin\x124.agentenv.runtime.v1.SandboxProcessCloseStdinRequest\x1a5.agentenv.runtime.v1.SandboxProcessCloseStdinResponse\x12n\n" +
-	"\vStopProcess\x12..agentenv.runtime.v1.SandboxProcessStopRequest\x1a/.agentenv.runtime.v1.SandboxProcessStopResponseb\x06proto3"
+	"\fCapabilities\x12\x16.google.protobuf.Empty\x1a(.agentenv.runtime.v1.SandboxCapabilitiesb\x06proto3"
 
 var (
 	file_agentenv_runtime_v1_runtime_proto_rawDescOnce sync.Once
@@ -4225,181 +2680,129 @@ func file_agentenv_runtime_v1_runtime_proto_rawDescGZIP() []byte {
 	return file_agentenv_runtime_v1_runtime_proto_rawDescData
 }
 
-var file_agentenv_runtime_v1_runtime_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_agentenv_runtime_v1_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 67)
+var file_agentenv_runtime_v1_runtime_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_agentenv_runtime_v1_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
 var file_agentenv_runtime_v1_runtime_proto_goTypes = []any{
-	(SandboxPhase)(0),                        // 0: agentenv.runtime.v1.SandboxPhase
-	(RuntimeNetworkMode)(0),                  // 1: agentenv.runtime.v1.RuntimeNetworkMode
-	(SandboxProcessOutputStream)(0),          // 2: agentenv.runtime.v1.SandboxProcessOutputStream
-	(*SandboxSource)(nil),                    // 3: agentenv.runtime.v1.SandboxSource
-	(*TemplateSource)(nil),                   // 4: agentenv.runtime.v1.TemplateSource
-	(*ImageSource)(nil),                      // 5: agentenv.runtime.v1.ImageSource
-	(*ResourceSpec)(nil),                     // 6: agentenv.runtime.v1.ResourceSpec
-	(*AutoResumeConfig)(nil),                 // 7: agentenv.runtime.v1.AutoResumeConfig
-	(*VolumeMount)(nil),                      // 8: agentenv.runtime.v1.VolumeMount
-	(*AttachedDrive)(nil),                    // 9: agentenv.runtime.v1.AttachedDrive
-	(*NetworkPolicy)(nil),                    // 10: agentenv.runtime.v1.NetworkPolicy
-	(*RuntimeNetworkConfig)(nil),             // 11: agentenv.runtime.v1.RuntimeNetworkConfig
-	(*AccessDescriptor)(nil),                 // 12: agentenv.runtime.v1.AccessDescriptor
-	(*SandboxSpec)(nil),                      // 13: agentenv.runtime.v1.SandboxSpec
-	(*SandboxInfo)(nil),                      // 14: agentenv.runtime.v1.SandboxInfo
-	(*OperationStatus)(nil),                  // 15: agentenv.runtime.v1.OperationStatus
-	(*CheckpointResult)(nil),                 // 16: agentenv.runtime.v1.CheckpointResult
-	(*SandboxRuntimeInfo)(nil),               // 17: agentenv.runtime.v1.SandboxRuntimeInfo
-	(*HostPort)(nil),                         // 18: agentenv.runtime.v1.HostPort
-	(*SandboxCreateRequest)(nil),             // 19: agentenv.runtime.v1.SandboxCreateRequest
-	(*SandboxCreateResponse)(nil),            // 20: agentenv.runtime.v1.SandboxCreateResponse
-	(*SandboxGetRequest)(nil),                // 21: agentenv.runtime.v1.SandboxGetRequest
-	(*SandboxListRequest)(nil),               // 22: agentenv.runtime.v1.SandboxListRequest
-	(*SandboxListResponse)(nil),              // 23: agentenv.runtime.v1.SandboxListResponse
-	(*SandboxUpdateRequest)(nil),             // 24: agentenv.runtime.v1.SandboxUpdateRequest
-	(*SandboxDeleteRequest)(nil),             // 25: agentenv.runtime.v1.SandboxDeleteRequest
-	(*SandboxPauseRequest)(nil),              // 26: agentenv.runtime.v1.SandboxPauseRequest
-	(*SandboxPauseResponse)(nil),             // 27: agentenv.runtime.v1.SandboxPauseResponse
-	(*SandboxResumeRequest)(nil),             // 28: agentenv.runtime.v1.SandboxResumeRequest
-	(*SandboxResumeResponse)(nil),            // 29: agentenv.runtime.v1.SandboxResumeResponse
-	(*SandboxCheckpointRequest)(nil),         // 30: agentenv.runtime.v1.SandboxCheckpointRequest
-	(*SandboxGetRuntimeRequest)(nil),         // 31: agentenv.runtime.v1.SandboxGetRuntimeRequest
-	(*SandboxOperationGetRequest)(nil),       // 32: agentenv.runtime.v1.SandboxOperationGetRequest
-	(*SandboxCapabilities)(nil),              // 33: agentenv.runtime.v1.SandboxCapabilities
-	(*SandboxStatsRequest)(nil),              // 34: agentenv.runtime.v1.SandboxStatsRequest
-	(*SandboxStats)(nil),                     // 35: agentenv.runtime.v1.SandboxStats
-	(*SandboxStatsResponse)(nil),             // 36: agentenv.runtime.v1.SandboxStatsResponse
-	(*SandboxExecSyncRequest)(nil),           // 37: agentenv.runtime.v1.SandboxExecSyncRequest
-	(*SandboxExecSyncResponse)(nil),          // 38: agentenv.runtime.v1.SandboxExecSyncResponse
-	(*SandboxProcessOutputChunk)(nil),        // 39: agentenv.runtime.v1.SandboxProcessOutputChunk
-	(*SandboxProcessTerminalSize)(nil),       // 40: agentenv.runtime.v1.SandboxProcessTerminalSize
-	(*SandboxProcessStartRequest)(nil),       // 41: agentenv.runtime.v1.SandboxProcessStartRequest
-	(*SandboxProcessStartResponse)(nil),      // 42: agentenv.runtime.v1.SandboxProcessStartResponse
-	(*SandboxProcessConnectRequest)(nil),     // 43: agentenv.runtime.v1.SandboxProcessConnectRequest
-	(*SandboxProcessExitInfo)(nil),           // 44: agentenv.runtime.v1.SandboxProcessExitInfo
-	(*SandboxProcessConnectResponse)(nil),    // 45: agentenv.runtime.v1.SandboxProcessConnectResponse
-	(*SandboxProcessInputRequest)(nil),       // 46: agentenv.runtime.v1.SandboxProcessInputRequest
-	(*SandboxProcessInputResponse)(nil),      // 47: agentenv.runtime.v1.SandboxProcessInputResponse
-	(*SandboxProcessResizeRequest)(nil),      // 48: agentenv.runtime.v1.SandboxProcessResizeRequest
-	(*SandboxProcessResizeResponse)(nil),     // 49: agentenv.runtime.v1.SandboxProcessResizeResponse
-	(*SandboxProcessCloseStdinRequest)(nil),  // 50: agentenv.runtime.v1.SandboxProcessCloseStdinRequest
-	(*SandboxProcessCloseStdinResponse)(nil), // 51: agentenv.runtime.v1.SandboxProcessCloseStdinResponse
-	(*SandboxProcessGetRequest)(nil),         // 52: agentenv.runtime.v1.SandboxProcessGetRequest
-	(*SandboxProcessGetResponse)(nil),        // 53: agentenv.runtime.v1.SandboxProcessGetResponse
-	(*SandboxProcessStopRequest)(nil),        // 54: agentenv.runtime.v1.SandboxProcessStopRequest
-	(*SandboxProcessStopResponse)(nil),       // 55: agentenv.runtime.v1.SandboxProcessStopResponse
-	nil,                                      // 56: agentenv.runtime.v1.AccessDescriptor.RoutingHeadersEntry
-	nil,                                      // 57: agentenv.runtime.v1.SandboxSpec.EnvVarsEntry
-	nil,                                      // 58: agentenv.runtime.v1.SandboxSpec.MetadataEntry
-	nil,                                      // 59: agentenv.runtime.v1.SandboxSpec.ExtraEntry
-	nil,                                      // 60: agentenv.runtime.v1.SandboxInfo.ExtraEntry
-	nil,                                      // 61: agentenv.runtime.v1.OperationStatus.ResultEntry
-	nil,                                      // 62: agentenv.runtime.v1.CheckpointResult.CompatibilityEntry
-	nil,                                      // 63: agentenv.runtime.v1.SandboxRuntimeInfo.NetworkEntry
-	nil,                                      // 64: agentenv.runtime.v1.SandboxRuntimeInfo.StorageEntry
-	nil,                                      // 65: agentenv.runtime.v1.SandboxRuntimeInfo.VersionsEntry
-	nil,                                      // 66: agentenv.runtime.v1.SandboxRuntimeInfo.ExtraEntry
-	nil,                                      // 67: agentenv.runtime.v1.SandboxCheckpointRequest.MetadataEntry
-	nil,                                      // 68: agentenv.runtime.v1.SandboxExecSyncRequest.EnvsEntry
-	nil,                                      // 69: agentenv.runtime.v1.SandboxProcessStartRequest.EnvsEntry
-	(*timestamppb.Timestamp)(nil),            // 70: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),                    // 71: google.protobuf.Empty
+	(SandboxPhase)(0),                  // 0: agentenv.runtime.v1.SandboxPhase
+	(RuntimeNetworkMode)(0),            // 1: agentenv.runtime.v1.RuntimeNetworkMode
+	(*SandboxSource)(nil),              // 2: agentenv.runtime.v1.SandboxSource
+	(*TemplateSource)(nil),             // 3: agentenv.runtime.v1.TemplateSource
+	(*ImageSource)(nil),                // 4: agentenv.runtime.v1.ImageSource
+	(*ResourceSpec)(nil),               // 5: agentenv.runtime.v1.ResourceSpec
+	(*AutoResumeConfig)(nil),           // 6: agentenv.runtime.v1.AutoResumeConfig
+	(*VolumeMount)(nil),                // 7: agentenv.runtime.v1.VolumeMount
+	(*AttachedDrive)(nil),              // 8: agentenv.runtime.v1.AttachedDrive
+	(*NetworkPolicy)(nil),              // 9: agentenv.runtime.v1.NetworkPolicy
+	(*RuntimeNetworkConfig)(nil),       // 10: agentenv.runtime.v1.RuntimeNetworkConfig
+	(*AccessDescriptor)(nil),           // 11: agentenv.runtime.v1.AccessDescriptor
+	(*SandboxSpec)(nil),                // 12: agentenv.runtime.v1.SandboxSpec
+	(*SandboxInfo)(nil),                // 13: agentenv.runtime.v1.SandboxInfo
+	(*OperationStatus)(nil),            // 14: agentenv.runtime.v1.OperationStatus
+	(*CheckpointResult)(nil),           // 15: agentenv.runtime.v1.CheckpointResult
+	(*SandboxRuntimeInfo)(nil),         // 16: agentenv.runtime.v1.SandboxRuntimeInfo
+	(*HostPort)(nil),                   // 17: agentenv.runtime.v1.HostPort
+	(*SandboxCreateRequest)(nil),       // 18: agentenv.runtime.v1.SandboxCreateRequest
+	(*SandboxCreateResponse)(nil),      // 19: agentenv.runtime.v1.SandboxCreateResponse
+	(*SandboxGetRequest)(nil),          // 20: agentenv.runtime.v1.SandboxGetRequest
+	(*SandboxListRequest)(nil),         // 21: agentenv.runtime.v1.SandboxListRequest
+	(*SandboxListResponse)(nil),        // 22: agentenv.runtime.v1.SandboxListResponse
+	(*SandboxUpdateRequest)(nil),       // 23: agentenv.runtime.v1.SandboxUpdateRequest
+	(*SandboxDeleteRequest)(nil),       // 24: agentenv.runtime.v1.SandboxDeleteRequest
+	(*SandboxPauseRequest)(nil),        // 25: agentenv.runtime.v1.SandboxPauseRequest
+	(*SandboxPauseResponse)(nil),       // 26: agentenv.runtime.v1.SandboxPauseResponse
+	(*SandboxResumeRequest)(nil),       // 27: agentenv.runtime.v1.SandboxResumeRequest
+	(*SandboxResumeResponse)(nil),      // 28: agentenv.runtime.v1.SandboxResumeResponse
+	(*SandboxCheckpointRequest)(nil),   // 29: agentenv.runtime.v1.SandboxCheckpointRequest
+	(*SandboxGetRuntimeRequest)(nil),   // 30: agentenv.runtime.v1.SandboxGetRuntimeRequest
+	(*SandboxOperationGetRequest)(nil), // 31: agentenv.runtime.v1.SandboxOperationGetRequest
+	(*SandboxCapabilities)(nil),        // 32: agentenv.runtime.v1.SandboxCapabilities
+	nil,                                // 33: agentenv.runtime.v1.AccessDescriptor.RoutingHeadersEntry
+	nil,                                // 34: agentenv.runtime.v1.SandboxSpec.EnvVarsEntry
+	nil,                                // 35: agentenv.runtime.v1.SandboxSpec.MetadataEntry
+	nil,                                // 36: agentenv.runtime.v1.SandboxSpec.ExtraEntry
+	nil,                                // 37: agentenv.runtime.v1.SandboxInfo.ExtraEntry
+	nil,                                // 38: agentenv.runtime.v1.OperationStatus.ResultEntry
+	nil,                                // 39: agentenv.runtime.v1.CheckpointResult.CompatibilityEntry
+	nil,                                // 40: agentenv.runtime.v1.SandboxRuntimeInfo.NetworkEntry
+	nil,                                // 41: agentenv.runtime.v1.SandboxRuntimeInfo.StorageEntry
+	nil,                                // 42: agentenv.runtime.v1.SandboxRuntimeInfo.VersionsEntry
+	nil,                                // 43: agentenv.runtime.v1.SandboxRuntimeInfo.ExtraEntry
+	nil,                                // 44: agentenv.runtime.v1.SandboxCheckpointRequest.MetadataEntry
+	(*timestamppb.Timestamp)(nil),      // 45: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),              // 46: google.protobuf.Empty
 }
 var file_agentenv_runtime_v1_runtime_proto_depIdxs = []int32{
-	4,  // 0: agentenv.runtime.v1.SandboxSource.template:type_name -> agentenv.runtime.v1.TemplateSource
-	5,  // 1: agentenv.runtime.v1.SandboxSource.image:type_name -> agentenv.runtime.v1.ImageSource
+	3,  // 0: agentenv.runtime.v1.SandboxSource.template:type_name -> agentenv.runtime.v1.TemplateSource
+	4,  // 1: agentenv.runtime.v1.SandboxSource.image:type_name -> agentenv.runtime.v1.ImageSource
 	1,  // 2: agentenv.runtime.v1.RuntimeNetworkConfig.mode:type_name -> agentenv.runtime.v1.RuntimeNetworkMode
-	56, // 3: agentenv.runtime.v1.AccessDescriptor.routing_headers:type_name -> agentenv.runtime.v1.AccessDescriptor.RoutingHeadersEntry
-	3,  // 4: agentenv.runtime.v1.SandboxSpec.source:type_name -> agentenv.runtime.v1.SandboxSource
-	6,  // 5: agentenv.runtime.v1.SandboxSpec.resources:type_name -> agentenv.runtime.v1.ResourceSpec
-	7,  // 6: agentenv.runtime.v1.SandboxSpec.auto_resume:type_name -> agentenv.runtime.v1.AutoResumeConfig
-	57, // 7: agentenv.runtime.v1.SandboxSpec.env_vars:type_name -> agentenv.runtime.v1.SandboxSpec.EnvVarsEntry
-	58, // 8: agentenv.runtime.v1.SandboxSpec.metadata:type_name -> agentenv.runtime.v1.SandboxSpec.MetadataEntry
-	8,  // 9: agentenv.runtime.v1.SandboxSpec.volume_mounts:type_name -> agentenv.runtime.v1.VolumeMount
-	10, // 10: agentenv.runtime.v1.SandboxSpec.network:type_name -> agentenv.runtime.v1.NetworkPolicy
-	59, // 11: agentenv.runtime.v1.SandboxSpec.extra:type_name -> agentenv.runtime.v1.SandboxSpec.ExtraEntry
-	9,  // 12: agentenv.runtime.v1.SandboxSpec.attached_drives:type_name -> agentenv.runtime.v1.AttachedDrive
-	70, // 13: agentenv.runtime.v1.SandboxSpec.expires_at:type_name -> google.protobuf.Timestamp
-	11, // 14: agentenv.runtime.v1.SandboxSpec.runtime_network:type_name -> agentenv.runtime.v1.RuntimeNetworkConfig
+	33, // 3: agentenv.runtime.v1.AccessDescriptor.routing_headers:type_name -> agentenv.runtime.v1.AccessDescriptor.RoutingHeadersEntry
+	2,  // 4: agentenv.runtime.v1.SandboxSpec.source:type_name -> agentenv.runtime.v1.SandboxSource
+	5,  // 5: agentenv.runtime.v1.SandboxSpec.resources:type_name -> agentenv.runtime.v1.ResourceSpec
+	6,  // 6: agentenv.runtime.v1.SandboxSpec.auto_resume:type_name -> agentenv.runtime.v1.AutoResumeConfig
+	34, // 7: agentenv.runtime.v1.SandboxSpec.env_vars:type_name -> agentenv.runtime.v1.SandboxSpec.EnvVarsEntry
+	35, // 8: agentenv.runtime.v1.SandboxSpec.metadata:type_name -> agentenv.runtime.v1.SandboxSpec.MetadataEntry
+	7,  // 9: agentenv.runtime.v1.SandboxSpec.volume_mounts:type_name -> agentenv.runtime.v1.VolumeMount
+	9,  // 10: agentenv.runtime.v1.SandboxSpec.network:type_name -> agentenv.runtime.v1.NetworkPolicy
+	36, // 11: agentenv.runtime.v1.SandboxSpec.extra:type_name -> agentenv.runtime.v1.SandboxSpec.ExtraEntry
+	8,  // 12: agentenv.runtime.v1.SandboxSpec.attached_drives:type_name -> agentenv.runtime.v1.AttachedDrive
+	45, // 13: agentenv.runtime.v1.SandboxSpec.expires_at:type_name -> google.protobuf.Timestamp
+	10, // 14: agentenv.runtime.v1.SandboxSpec.runtime_network:type_name -> agentenv.runtime.v1.RuntimeNetworkConfig
 	0,  // 15: agentenv.runtime.v1.SandboxInfo.phase:type_name -> agentenv.runtime.v1.SandboxPhase
-	70, // 16: agentenv.runtime.v1.SandboxInfo.created_at:type_name -> google.protobuf.Timestamp
-	70, // 17: agentenv.runtime.v1.SandboxInfo.expires_at:type_name -> google.protobuf.Timestamp
-	6,  // 18: agentenv.runtime.v1.SandboxInfo.actual_resources:type_name -> agentenv.runtime.v1.ResourceSpec
-	12, // 19: agentenv.runtime.v1.SandboxInfo.access:type_name -> agentenv.runtime.v1.AccessDescriptor
-	60, // 20: agentenv.runtime.v1.SandboxInfo.extra:type_name -> agentenv.runtime.v1.SandboxInfo.ExtraEntry
-	70, // 21: agentenv.runtime.v1.OperationStatus.started_at:type_name -> google.protobuf.Timestamp
-	70, // 22: agentenv.runtime.v1.OperationStatus.finished_at:type_name -> google.protobuf.Timestamp
-	61, // 23: agentenv.runtime.v1.OperationStatus.result:type_name -> agentenv.runtime.v1.OperationStatus.ResultEntry
+	45, // 16: agentenv.runtime.v1.SandboxInfo.created_at:type_name -> google.protobuf.Timestamp
+	45, // 17: agentenv.runtime.v1.SandboxInfo.expires_at:type_name -> google.protobuf.Timestamp
+	5,  // 18: agentenv.runtime.v1.SandboxInfo.actual_resources:type_name -> agentenv.runtime.v1.ResourceSpec
+	11, // 19: agentenv.runtime.v1.SandboxInfo.access:type_name -> agentenv.runtime.v1.AccessDescriptor
+	37, // 20: agentenv.runtime.v1.SandboxInfo.extra:type_name -> agentenv.runtime.v1.SandboxInfo.ExtraEntry
+	45, // 21: agentenv.runtime.v1.OperationStatus.started_at:type_name -> google.protobuf.Timestamp
+	45, // 22: agentenv.runtime.v1.OperationStatus.finished_at:type_name -> google.protobuf.Timestamp
+	38, // 23: agentenv.runtime.v1.OperationStatus.result:type_name -> agentenv.runtime.v1.OperationStatus.ResultEntry
 	0,  // 24: agentenv.runtime.v1.CheckpointResult.source_phase:type_name -> agentenv.runtime.v1.SandboxPhase
-	62, // 25: agentenv.runtime.v1.CheckpointResult.compatibility:type_name -> agentenv.runtime.v1.CheckpointResult.CompatibilityEntry
+	39, // 25: agentenv.runtime.v1.CheckpointResult.compatibility:type_name -> agentenv.runtime.v1.CheckpointResult.CompatibilityEntry
 	0,  // 26: agentenv.runtime.v1.SandboxRuntimeInfo.phase:type_name -> agentenv.runtime.v1.SandboxPhase
-	18, // 27: agentenv.runtime.v1.SandboxRuntimeInfo.hostports:type_name -> agentenv.runtime.v1.HostPort
-	15, // 28: agentenv.runtime.v1.SandboxRuntimeInfo.active_operations:type_name -> agentenv.runtime.v1.OperationStatus
-	63, // 29: agentenv.runtime.v1.SandboxRuntimeInfo.network:type_name -> agentenv.runtime.v1.SandboxRuntimeInfo.NetworkEntry
-	64, // 30: agentenv.runtime.v1.SandboxRuntimeInfo.storage:type_name -> agentenv.runtime.v1.SandboxRuntimeInfo.StorageEntry
-	65, // 31: agentenv.runtime.v1.SandboxRuntimeInfo.versions:type_name -> agentenv.runtime.v1.SandboxRuntimeInfo.VersionsEntry
-	66, // 32: agentenv.runtime.v1.SandboxRuntimeInfo.extra:type_name -> agentenv.runtime.v1.SandboxRuntimeInfo.ExtraEntry
-	13, // 33: agentenv.runtime.v1.SandboxCreateRequest.spec:type_name -> agentenv.runtime.v1.SandboxSpec
-	14, // 34: agentenv.runtime.v1.SandboxCreateResponse.sandbox:type_name -> agentenv.runtime.v1.SandboxInfo
-	15, // 35: agentenv.runtime.v1.SandboxCreateResponse.operation:type_name -> agentenv.runtime.v1.OperationStatus
-	14, // 36: agentenv.runtime.v1.SandboxListResponse.sandboxes:type_name -> agentenv.runtime.v1.SandboxInfo
-	70, // 37: agentenv.runtime.v1.SandboxUpdateRequest.expires_at:type_name -> google.protobuf.Timestamp
-	10, // 38: agentenv.runtime.v1.SandboxUpdateRequest.egress:type_name -> agentenv.runtime.v1.NetworkPolicy
-	14, // 39: agentenv.runtime.v1.SandboxPauseResponse.sandbox:type_name -> agentenv.runtime.v1.SandboxInfo
-	15, // 40: agentenv.runtime.v1.SandboxPauseResponse.operation:type_name -> agentenv.runtime.v1.OperationStatus
-	14, // 41: agentenv.runtime.v1.SandboxResumeResponse.sandbox:type_name -> agentenv.runtime.v1.SandboxInfo
-	15, // 42: agentenv.runtime.v1.SandboxResumeResponse.operation:type_name -> agentenv.runtime.v1.OperationStatus
-	67, // 43: agentenv.runtime.v1.SandboxCheckpointRequest.metadata:type_name -> agentenv.runtime.v1.SandboxCheckpointRequest.MetadataEntry
-	70, // 44: agentenv.runtime.v1.SandboxStats.sampled_at:type_name -> google.protobuf.Timestamp
-	35, // 45: agentenv.runtime.v1.SandboxStatsResponse.sandboxes:type_name -> agentenv.runtime.v1.SandboxStats
-	68, // 46: agentenv.runtime.v1.SandboxExecSyncRequest.envs:type_name -> agentenv.runtime.v1.SandboxExecSyncRequest.EnvsEntry
-	2,  // 47: agentenv.runtime.v1.SandboxProcessOutputChunk.stream:type_name -> agentenv.runtime.v1.SandboxProcessOutputStream
-	69, // 48: agentenv.runtime.v1.SandboxProcessStartRequest.envs:type_name -> agentenv.runtime.v1.SandboxProcessStartRequest.EnvsEntry
-	40, // 49: agentenv.runtime.v1.SandboxProcessStartRequest.terminal_size:type_name -> agentenv.runtime.v1.SandboxProcessTerminalSize
-	39, // 50: agentenv.runtime.v1.SandboxProcessConnectResponse.output:type_name -> agentenv.runtime.v1.SandboxProcessOutputChunk
-	44, // 51: agentenv.runtime.v1.SandboxProcessConnectResponse.exit:type_name -> agentenv.runtime.v1.SandboxProcessExitInfo
-	39, // 52: agentenv.runtime.v1.SandboxProcessGetResponse.outputs:type_name -> agentenv.runtime.v1.SandboxProcessOutputChunk
-	19, // 53: agentenv.runtime.v1.SandboxLifecycleService.Create:input_type -> agentenv.runtime.v1.SandboxCreateRequest
-	21, // 54: agentenv.runtime.v1.SandboxLifecycleService.Get:input_type -> agentenv.runtime.v1.SandboxGetRequest
-	22, // 55: agentenv.runtime.v1.SandboxLifecycleService.List:input_type -> agentenv.runtime.v1.SandboxListRequest
-	24, // 56: agentenv.runtime.v1.SandboxLifecycleService.Update:input_type -> agentenv.runtime.v1.SandboxUpdateRequest
-	25, // 57: agentenv.runtime.v1.SandboxLifecycleService.Delete:input_type -> agentenv.runtime.v1.SandboxDeleteRequest
-	26, // 58: agentenv.runtime.v1.SandboxAdminService.Pause:input_type -> agentenv.runtime.v1.SandboxPauseRequest
-	28, // 59: agentenv.runtime.v1.SandboxAdminService.Resume:input_type -> agentenv.runtime.v1.SandboxResumeRequest
-	30, // 60: agentenv.runtime.v1.SandboxAdminService.Checkpoint:input_type -> agentenv.runtime.v1.SandboxCheckpointRequest
-	31, // 61: agentenv.runtime.v1.SandboxAdminService.GetRuntime:input_type -> agentenv.runtime.v1.SandboxGetRuntimeRequest
-	32, // 62: agentenv.runtime.v1.SandboxAdminService.GetOperation:input_type -> agentenv.runtime.v1.SandboxOperationGetRequest
-	71, // 63: agentenv.runtime.v1.SandboxAdminService.Capabilities:input_type -> google.protobuf.Empty
-	34, // 64: agentenv.runtime.v1.SandboxAdminService.GetStats:input_type -> agentenv.runtime.v1.SandboxStatsRequest
-	37, // 65: agentenv.runtime.v1.SandboxExecService.ExecSync:input_type -> agentenv.runtime.v1.SandboxExecSyncRequest
-	41, // 66: agentenv.runtime.v1.SandboxExecService.StartProcess:input_type -> agentenv.runtime.v1.SandboxProcessStartRequest
-	52, // 67: agentenv.runtime.v1.SandboxExecService.GetProcess:input_type -> agentenv.runtime.v1.SandboxProcessGetRequest
-	43, // 68: agentenv.runtime.v1.SandboxExecService.ConnectProcess:input_type -> agentenv.runtime.v1.SandboxProcessConnectRequest
-	46, // 69: agentenv.runtime.v1.SandboxExecService.SendProcessInput:input_type -> agentenv.runtime.v1.SandboxProcessInputRequest
-	48, // 70: agentenv.runtime.v1.SandboxExecService.ResizeProcess:input_type -> agentenv.runtime.v1.SandboxProcessResizeRequest
-	50, // 71: agentenv.runtime.v1.SandboxExecService.CloseProcessStdin:input_type -> agentenv.runtime.v1.SandboxProcessCloseStdinRequest
-	54, // 72: agentenv.runtime.v1.SandboxExecService.StopProcess:input_type -> agentenv.runtime.v1.SandboxProcessStopRequest
-	20, // 73: agentenv.runtime.v1.SandboxLifecycleService.Create:output_type -> agentenv.runtime.v1.SandboxCreateResponse
-	14, // 74: agentenv.runtime.v1.SandboxLifecycleService.Get:output_type -> agentenv.runtime.v1.SandboxInfo
-	23, // 75: agentenv.runtime.v1.SandboxLifecycleService.List:output_type -> agentenv.runtime.v1.SandboxListResponse
-	14, // 76: agentenv.runtime.v1.SandboxLifecycleService.Update:output_type -> agentenv.runtime.v1.SandboxInfo
-	15, // 77: agentenv.runtime.v1.SandboxLifecycleService.Delete:output_type -> agentenv.runtime.v1.OperationStatus
-	27, // 78: agentenv.runtime.v1.SandboxAdminService.Pause:output_type -> agentenv.runtime.v1.SandboxPauseResponse
-	29, // 79: agentenv.runtime.v1.SandboxAdminService.Resume:output_type -> agentenv.runtime.v1.SandboxResumeResponse
-	16, // 80: agentenv.runtime.v1.SandboxAdminService.Checkpoint:output_type -> agentenv.runtime.v1.CheckpointResult
-	17, // 81: agentenv.runtime.v1.SandboxAdminService.GetRuntime:output_type -> agentenv.runtime.v1.SandboxRuntimeInfo
-	15, // 82: agentenv.runtime.v1.SandboxAdminService.GetOperation:output_type -> agentenv.runtime.v1.OperationStatus
-	33, // 83: agentenv.runtime.v1.SandboxAdminService.Capabilities:output_type -> agentenv.runtime.v1.SandboxCapabilities
-	36, // 84: agentenv.runtime.v1.SandboxAdminService.GetStats:output_type -> agentenv.runtime.v1.SandboxStatsResponse
-	38, // 85: agentenv.runtime.v1.SandboxExecService.ExecSync:output_type -> agentenv.runtime.v1.SandboxExecSyncResponse
-	42, // 86: agentenv.runtime.v1.SandboxExecService.StartProcess:output_type -> agentenv.runtime.v1.SandboxProcessStartResponse
-	53, // 87: agentenv.runtime.v1.SandboxExecService.GetProcess:output_type -> agentenv.runtime.v1.SandboxProcessGetResponse
-	45, // 88: agentenv.runtime.v1.SandboxExecService.ConnectProcess:output_type -> agentenv.runtime.v1.SandboxProcessConnectResponse
-	47, // 89: agentenv.runtime.v1.SandboxExecService.SendProcessInput:output_type -> agentenv.runtime.v1.SandboxProcessInputResponse
-	49, // 90: agentenv.runtime.v1.SandboxExecService.ResizeProcess:output_type -> agentenv.runtime.v1.SandboxProcessResizeResponse
-	51, // 91: agentenv.runtime.v1.SandboxExecService.CloseProcessStdin:output_type -> agentenv.runtime.v1.SandboxProcessCloseStdinResponse
-	55, // 92: agentenv.runtime.v1.SandboxExecService.StopProcess:output_type -> agentenv.runtime.v1.SandboxProcessStopResponse
-	73, // [73:93] is the sub-list for method output_type
-	53, // [53:73] is the sub-list for method input_type
-	53, // [53:53] is the sub-list for extension type_name
-	53, // [53:53] is the sub-list for extension extendee
-	0,  // [0:53] is the sub-list for field type_name
+	17, // 27: agentenv.runtime.v1.SandboxRuntimeInfo.hostports:type_name -> agentenv.runtime.v1.HostPort
+	14, // 28: agentenv.runtime.v1.SandboxRuntimeInfo.active_operations:type_name -> agentenv.runtime.v1.OperationStatus
+	40, // 29: agentenv.runtime.v1.SandboxRuntimeInfo.network:type_name -> agentenv.runtime.v1.SandboxRuntimeInfo.NetworkEntry
+	41, // 30: agentenv.runtime.v1.SandboxRuntimeInfo.storage:type_name -> agentenv.runtime.v1.SandboxRuntimeInfo.StorageEntry
+	42, // 31: agentenv.runtime.v1.SandboxRuntimeInfo.versions:type_name -> agentenv.runtime.v1.SandboxRuntimeInfo.VersionsEntry
+	43, // 32: agentenv.runtime.v1.SandboxRuntimeInfo.extra:type_name -> agentenv.runtime.v1.SandboxRuntimeInfo.ExtraEntry
+	12, // 33: agentenv.runtime.v1.SandboxCreateRequest.spec:type_name -> agentenv.runtime.v1.SandboxSpec
+	13, // 34: agentenv.runtime.v1.SandboxCreateResponse.sandbox:type_name -> agentenv.runtime.v1.SandboxInfo
+	14, // 35: agentenv.runtime.v1.SandboxCreateResponse.operation:type_name -> agentenv.runtime.v1.OperationStatus
+	13, // 36: agentenv.runtime.v1.SandboxListResponse.sandboxes:type_name -> agentenv.runtime.v1.SandboxInfo
+	45, // 37: agentenv.runtime.v1.SandboxUpdateRequest.expires_at:type_name -> google.protobuf.Timestamp
+	9,  // 38: agentenv.runtime.v1.SandboxUpdateRequest.egress:type_name -> agentenv.runtime.v1.NetworkPolicy
+	13, // 39: agentenv.runtime.v1.SandboxPauseResponse.sandbox:type_name -> agentenv.runtime.v1.SandboxInfo
+	14, // 40: agentenv.runtime.v1.SandboxPauseResponse.operation:type_name -> agentenv.runtime.v1.OperationStatus
+	13, // 41: agentenv.runtime.v1.SandboxResumeResponse.sandbox:type_name -> agentenv.runtime.v1.SandboxInfo
+	14, // 42: agentenv.runtime.v1.SandboxResumeResponse.operation:type_name -> agentenv.runtime.v1.OperationStatus
+	44, // 43: agentenv.runtime.v1.SandboxCheckpointRequest.metadata:type_name -> agentenv.runtime.v1.SandboxCheckpointRequest.MetadataEntry
+	18, // 44: agentenv.runtime.v1.SandboxLifecycleService.Create:input_type -> agentenv.runtime.v1.SandboxCreateRequest
+	20, // 45: agentenv.runtime.v1.SandboxLifecycleService.Get:input_type -> agentenv.runtime.v1.SandboxGetRequest
+	21, // 46: agentenv.runtime.v1.SandboxLifecycleService.List:input_type -> agentenv.runtime.v1.SandboxListRequest
+	23, // 47: agentenv.runtime.v1.SandboxLifecycleService.Update:input_type -> agentenv.runtime.v1.SandboxUpdateRequest
+	24, // 48: agentenv.runtime.v1.SandboxLifecycleService.Delete:input_type -> agentenv.runtime.v1.SandboxDeleteRequest
+	25, // 49: agentenv.runtime.v1.SandboxAdminService.Pause:input_type -> agentenv.runtime.v1.SandboxPauseRequest
+	27, // 50: agentenv.runtime.v1.SandboxAdminService.Resume:input_type -> agentenv.runtime.v1.SandboxResumeRequest
+	29, // 51: agentenv.runtime.v1.SandboxAdminService.Checkpoint:input_type -> agentenv.runtime.v1.SandboxCheckpointRequest
+	30, // 52: agentenv.runtime.v1.SandboxAdminService.GetRuntime:input_type -> agentenv.runtime.v1.SandboxGetRuntimeRequest
+	31, // 53: agentenv.runtime.v1.SandboxAdminService.GetOperation:input_type -> agentenv.runtime.v1.SandboxOperationGetRequest
+	46, // 54: agentenv.runtime.v1.SandboxAdminService.Capabilities:input_type -> google.protobuf.Empty
+	19, // 55: agentenv.runtime.v1.SandboxLifecycleService.Create:output_type -> agentenv.runtime.v1.SandboxCreateResponse
+	13, // 56: agentenv.runtime.v1.SandboxLifecycleService.Get:output_type -> agentenv.runtime.v1.SandboxInfo
+	22, // 57: agentenv.runtime.v1.SandboxLifecycleService.List:output_type -> agentenv.runtime.v1.SandboxListResponse
+	13, // 58: agentenv.runtime.v1.SandboxLifecycleService.Update:output_type -> agentenv.runtime.v1.SandboxInfo
+	14, // 59: agentenv.runtime.v1.SandboxLifecycleService.Delete:output_type -> agentenv.runtime.v1.OperationStatus
+	26, // 60: agentenv.runtime.v1.SandboxAdminService.Pause:output_type -> agentenv.runtime.v1.SandboxPauseResponse
+	28, // 61: agentenv.runtime.v1.SandboxAdminService.Resume:output_type -> agentenv.runtime.v1.SandboxResumeResponse
+	15, // 62: agentenv.runtime.v1.SandboxAdminService.Checkpoint:output_type -> agentenv.runtime.v1.CheckpointResult
+	16, // 63: agentenv.runtime.v1.SandboxAdminService.GetRuntime:output_type -> agentenv.runtime.v1.SandboxRuntimeInfo
+	14, // 64: agentenv.runtime.v1.SandboxAdminService.GetOperation:output_type -> agentenv.runtime.v1.OperationStatus
+	32, // 65: agentenv.runtime.v1.SandboxAdminService.Capabilities:output_type -> agentenv.runtime.v1.SandboxCapabilities
+	55, // [55:66] is the sub-list for method output_type
+	44, // [44:55] is the sub-list for method input_type
+	44, // [44:44] is the sub-list for extension type_name
+	44, // [44:44] is the sub-list for extension extendee
+	0,  // [0:44] is the sub-list for field type_name
 }
 
 func init() { file_agentenv_runtime_v1_runtime_proto_init() }
@@ -4414,21 +2817,15 @@ func file_agentenv_runtime_v1_runtime_proto_init() {
 	file_agentenv_runtime_v1_runtime_proto_msgTypes[7].OneofWrappers = []any{}
 	file_agentenv_runtime_v1_runtime_proto_msgTypes[10].OneofWrappers = []any{}
 	file_agentenv_runtime_v1_runtime_proto_msgTypes[21].OneofWrappers = []any{}
-	file_agentenv_runtime_v1_runtime_proto_msgTypes[34].OneofWrappers = []any{}
-	file_agentenv_runtime_v1_runtime_proto_msgTypes[38].OneofWrappers = []any{}
-	file_agentenv_runtime_v1_runtime_proto_msgTypes[42].OneofWrappers = []any{
-		(*SandboxProcessConnectResponse_Output)(nil),
-		(*SandboxProcessConnectResponse_Exit)(nil),
-	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agentenv_runtime_v1_runtime_proto_rawDesc), len(file_agentenv_runtime_v1_runtime_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   67,
+			NumEnums:      2,
+			NumMessages:   43,
 			NumExtensions: 0,
-			NumServices:   3,
+			NumServices:   2,
 		},
 		GoTypes:           file_agentenv_runtime_v1_runtime_proto_goTypes,
 		DependencyIndexes: file_agentenv_runtime_v1_runtime_proto_depIdxs,

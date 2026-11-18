@@ -2,11 +2,7 @@ package agentenv
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
-	"net"
-	"net/http"
 	"sync"
 	"time"
 
@@ -33,14 +29,6 @@ type adminAPI interface {
 	Checkpoint(context.Context, *v1.SandboxCheckpointRequest, ...grpc.CallOption) (*v1.CheckpointResult, error)
 	GetRuntime(context.Context, *v1.SandboxGetRuntimeRequest, ...grpc.CallOption) (*v1.SandboxRuntimeInfo, error)
 	Capabilities(context.Context, *emptypb.Empty, ...grpc.CallOption) (*v1.SandboxCapabilities, error)
-	GetStats(context.Context, *v1.SandboxStatsRequest, ...grpc.CallOption) (*v1.SandboxStatsResponse, error)
-}
-
-type execAPI interface {
-	StartProcess(context.Context, *v1.SandboxProcessStartRequest, ...grpc.CallOption) (*v1.SandboxProcessStartResponse, error)
-	GetProcess(context.Context, *v1.SandboxProcessGetRequest, ...grpc.CallOption) (*v1.SandboxProcessGetResponse, error)
-	ConnectProcess(context.Context, *v1.SandboxProcessConnectRequest, ...grpc.CallOption) (ProcessEventStream, error)
-	StopProcess(context.Context, *v1.SandboxProcessStopRequest, ...grpc.CallOption) (*v1.SandboxProcessStopResponse, error)
 }
 
 // Config 是 AgentENV engine 的连接和节点身份配置。
@@ -60,13 +48,9 @@ type Engine struct {
 	// sandboxOps 按 sandbox ID 加锁，不同 sandbox 的创建/清理可以并行。
 	sandboxOps keyedLockSet
 
-	podMu        sync.RWMutex
-	podPersistMu sync.Mutex
-	// podStateVersion 由 podMu 保护；persistedPodStateVersion 由 podPersistMu 保护。
-	podStateVersion          uint64
-	persistedPodStateVersion uint64
-	pods                     map[string]*podRecord
-	containers               map[string]*containerRecord
+	podMu      sync.RWMutex
+	pods       map[string]*podRecord
+	containers map[string]*containerRecord
 
 	dialOnce  sync.Once
 	dialErr   error
@@ -74,14 +58,8 @@ type Engine struct {
 	conn      *grpc.ClientConn
 	lifecycle lifecycleAPI
 	admin     adminAPI
-	exec      execAPI
 
-	streamingOnce     sync.Once
-	streamingListener net.Listener
-	streamingServer   *http.Server
-	streamingMu       sync.RWMutex
-	portForwardReqs   map[string]*portForwardRequest
-	containerOps      sync.Map
+	containerOps sync.Map
 }
 
 func New(config Config, deps engine.Deps) (*Engine, error) {
@@ -89,27 +67,12 @@ func New(config Config, deps engine.Deps) (*Engine, error) {
 		return nil, fmt.Errorf("agentenv: runtime address is required")
 	}
 	instance := &Engine{
-		config:          config,
-		store:           deps.Store,
-		pods:            make(map[string]*podRecord),
-		containers:      make(map[string]*containerRecord),
-		portForwardReqs: make(map[string]*portForwardRequest),
+		config:     config,
+		store:      deps.Store,
+		pods:       make(map[string]*podRecord),
+		containers: make(map[string]*containerRecord),
 	}
 	return instance, nil
-}
-
-func newWithClients(config Config, store engine.StateStore, lifecycle lifecycleAPI, admin adminAPI) *Engine {
-	e := &Engine{
-		config:          config,
-		store:           store,
-		pods:            make(map[string]*podRecord),
-		containers:      make(map[string]*containerRecord),
-		portForwardReqs: make(map[string]*portForwardRequest),
-		lifecycle:       lifecycle,
-		admin:           admin,
-	}
-	e.dialOnce.Do(func() {})
-	return e
 }
 
 func (e *Engine) lockContainer(containerID string) func() {
@@ -135,9 +98,8 @@ func (e *Engine) ensureClients() error {
 		e.connMu.Lock()
 		e.conn = conn
 		e.connMu.Unlock()
-		e.lifecycle = NewLifecycleClient(conn)
-		e.admin = NewAdminClient(conn)
-		e.exec = NewExecClient(conn)
+		e.lifecycle = v1.NewSandboxLifecycleServiceClient(conn)
+		e.admin = v1.NewSandboxAdminServiceClient(conn)
 	})
 	return e.dialErr
 }
@@ -180,12 +142,6 @@ func (e *Engine) reconnectRuntime() {
 	conn.ResetConnectBackoff()
 }
 func (e *Engine) Close() error {
-	if e.streamingServer != nil {
-		_ = e.streamingServer.Close()
-	}
-	if e.streamingListener != nil {
-		_ = e.streamingListener.Close()
-	}
 	e.connMu.Lock()
 	conn := e.conn
 	e.conn = nil
@@ -194,12 +150,4 @@ func (e *Engine) Close() error {
 		return nil
 	}
 	return conn.Close()
-}
-
-func generateStreamToken() (string, error) {
-	var token [24]byte
-	if _, err := rand.Read(token[:]); err != nil {
-		return "", fmt.Errorf("generate streaming token: %w", err)
-	}
-	return hex.EncodeToString(token[:]), nil
 }

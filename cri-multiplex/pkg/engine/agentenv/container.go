@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -55,10 +54,6 @@ func (e *Engine) CreateContainer(_ context.Context, req *runtime.CreateContainer
 			labels[key] = value
 		}
 	}
-	logPath, err := resolveContainerLogPath(pod, req.Config.LogPath)
-	if err != nil {
-		return nil, err
-	}
 	now := time.Now()
 	record := containerRecord{
 		ContainerID:  containerID,
@@ -68,13 +63,6 @@ func (e *Engine) CreateContainer(_ context.Context, req *runtime.CreateContainer
 		ImageName:    imageReference,
 		ImageRef:     imageReferenceID,
 		State:        containerStateCreated,
-		Command:      append([]string(nil), req.Config.Command...),
-		Args:         append([]string(nil), req.Config.Args...),
-		Env:          keyValueMap(req.Config.Envs),
-		WorkingDir:   req.Config.WorkingDir,
-		Tty:          req.Config.Tty,
-		Stdin:        req.Config.Stdin,
-		LogPath:      logPath,
 		Labels:       labels,
 		Annotations:  cloneStringMap(req.Config.Annotations),
 		CreatedAt:    now,
@@ -84,35 +72,6 @@ func (e *Engine) CreateContainer(_ context.Context, req *runtime.CreateContainer
 		return nil, status.Errorf(codes.Internal, "create container projection: %v", err)
 	}
 	return &runtime.CreateContainerResponse{ContainerId: containerID}, nil
-}
-
-func resolveContainerLogPath(pod podRecord, logPath string) (string, error) {
-	logPath = strings.TrimSpace(logPath)
-	if logPath == "" {
-		return "", nil
-	}
-	if filepath.IsAbs(logPath) {
-		return filepath.Clean(logPath), nil
-	}
-	logDirectory := strings.TrimSpace(pod.LogDirectory)
-	if logDirectory == "" || !filepath.IsAbs(logDirectory) {
-		return "", status.Error(codes.InvalidArgument, "container log path is relative and pod log directory is unavailable")
-	}
-	return filepath.Join(logDirectory, logPath), nil
-}
-
-func keyValueMap(values []*runtime.KeyValue) map[string]string {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(values))
-	for _, value := range values {
-		if value == nil || value.GetKey() == "" {
-			continue
-		}
-		out[value.GetKey()] = value.GetValue()
-	}
-	return out
 }
 
 func (e *Engine) StartContainer(ctx context.Context, req *runtime.StartContainerRequest) (*runtime.StartContainerResponse, error) {
@@ -133,39 +92,22 @@ func (e *Engine) StartContainer(ctx context.Context, req *runtime.StartContainer
 		return nil, status.Errorf(codes.FailedPrecondition, "pod sandbox %s is not ready", record.CRISandboxID)
 	}
 	if record.State == containerStateRunning {
-		if record.NativeProcessID == 0 {
-			return nil, status.Errorf(codes.FailedPrecondition, "container %s is running without a native process", record.ContainerID)
-		}
 		return &runtime.StartContainerResponse{}, nil
 	}
 	if record.State != containerStateCreated {
 		return nil, status.Errorf(codes.FailedPrecondition, "container %s is in state %s", record.ContainerID, record.State)
 	}
 
-	pid, err := e.startContainerProcess(ctx, record)
-	if err != nil {
-		return nil, err
-	}
 	now := time.Now()
-	_, _, err = e.mutateContainer(record.ContainerID, func(record *containerRecord) {
+	_, _, err := e.mutateContainer(record.ContainerID, func(record *containerRecord) {
 		record.State = containerStateRunning
-		record.NativeProcessID = pid
 		record.StartedAt = now
 		record.FinishedAt = time.Time{}
 		record.ExitCode = 0
-		record.LastError = ""
 	})
 	if err != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), containerProcessAPITimeout)
-		_, _ = e.stopContainerProcess(cleanupCtx, containerRecord{
-			ContainerID:     record.ContainerID,
-			CRISandboxID:    record.CRISandboxID,
-			NativeProcessID: pid,
-		})
-		cancel()
 		return nil, status.Errorf(codes.Internal, "persist started container: %v", err)
 	}
-	go e.monitorContainerProcess(record.ContainerID)
 	return &runtime.StartContainerResponse{}, nil
 }
 
@@ -186,21 +128,13 @@ func (e *Engine) stopContainerLocked(ctx context.Context, record containerRecord
 	if record.State == containerStateRemoved || record.State == containerStateExited {
 		return &runtime.StopContainerResponse{}, nil
 	}
-	exitCode := int32(0)
-	if record.State == containerStateRunning {
-		var err error
-		exitCode, err = e.stopContainerProcess(ctx, record)
-		if err != nil {
-			return nil, err
-		}
-	}
 	now := time.Now()
 	_, _, err := e.mutateContainer(record.ContainerID, func(record *containerRecord) {
 		if record.State == containerStateExited {
 			return
 		}
 		record.State = containerStateExited
-		record.ExitCode = exitCode
+		record.ExitCode = 0
 		record.FinishedAt = now
 	})
 	if err != nil {
@@ -294,7 +228,6 @@ func containerStatusFromRecord(record containerRecord) *runtime.ContainerStatus 
 		ImageRef:    record.ImageRef,
 		Labels:      cloneStringMap(record.Labels),
 		Annotations: cloneStringMap(record.Annotations),
-		LogPath:     record.LogPath,
 	}
 }
 
@@ -318,16 +251,7 @@ func (e *Engine) ReopenContainerLog(_ context.Context, req *runtime.ReopenContai
 	if !ok || record.State == containerStateRemoved {
 		return nil, status.Errorf(codes.NotFound, "container %s not found", req.GetContainerId())
 	}
-	if record.LogPath == "" {
-		return nil, status.Errorf(codes.FailedPrecondition, "container %s has no log path", record.ContainerID)
-	}
-	_, _, err := e.mutateContainer(record.ContainerID, func(current *containerRecord) {
-		current.LogGeneration++
-	})
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "request container log reopen: %v", err)
-	}
-	return &runtime.ReopenContainerLogResponse{}, nil
+	return nil, status.Error(codes.Unimplemented, "CRI logs are unavailable; use the AgentENV SDK")
 }
 
 func agentenvContainerID(podSandboxID, name string, attempt uint32) string {

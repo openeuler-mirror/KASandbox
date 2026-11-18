@@ -25,9 +25,6 @@ func normalizeContainerRecord(record *containerRecord) {
 	if record.UpdatedAt.IsZero() {
 		record.UpdatedAt = record.CreatedAt
 	}
-	record.Command = append([]string(nil), record.Command...)
-	record.Args = append([]string(nil), record.Args...)
-	record.Env = cloneStringMap(record.Env)
 	record.Labels = cloneStringMap(record.Labels)
 	record.Annotations = cloneStringMap(record.Annotations)
 }
@@ -79,11 +76,10 @@ func (e *Engine) putContainer(record containerRecord) error {
 	}
 	normalizeContainerRecord(&record)
 	e.podMu.Lock()
+	defer e.podMu.Unlock()
 	previous, existed := e.containers[record.ContainerID]
 	e.containers[record.ContainerID] = &record
-	version := e.markPodStateDirtyLocked()
-	e.podMu.Unlock()
-	if err := e.persistPodStateChange(version, func() {
+	if err := e.persistPodStateLocked(func() {
 		if existed {
 			e.containers[record.ContainerID] = previous
 		} else {
@@ -98,22 +94,19 @@ func (e *Engine) putContainer(record containerRecord) error {
 // mutateContainer 在一次持久化事务中更新容器投影。
 func (e *Engine) mutateContainer(containerID string, mutate func(*containerRecord)) (containerRecord, bool, error) {
 	e.podMu.Lock()
+	defer e.podMu.Unlock()
 	previous, ok := e.containers[containerID]
 	if !ok {
-		e.podMu.Unlock()
 		return containerRecord{}, false, nil
 	}
 	next := cloneContainerRecord(previous)
 	mutate(next)
 	next.UpdatedAt = time.Now()
 	if !validContainerState(next.State) {
-		e.podMu.Unlock()
 		return containerRecord{}, true, fmt.Errorf("agentenv containers: invalid state %q", next.State)
 	}
 	e.containers[containerID] = next
-	version := e.markPodStateDirtyLocked()
-	e.podMu.Unlock()
-	if err := e.persistPodStateChange(version, func() {
+	if err := e.persistPodStateLocked(func() {
 		e.containers[containerID] = previous
 	}); err != nil {
 		return containerRecord{}, true, fmt.Errorf("agentenv containers: persist %s: %w", containerID, err)

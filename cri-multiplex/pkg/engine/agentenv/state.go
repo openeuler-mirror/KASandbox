@@ -67,28 +67,13 @@ type containerRecord struct {
 	ImageName    string            `json:"image_name"`
 	ImageRef     string            `json:"image_ref"`
 	State        string            `json:"state"`
-	Command      []string          `json:"command,omitempty"`
-	Args         []string          `json:"args,omitempty"`
-	Env          map[string]string `json:"env,omitempty"`
-	WorkingDir   string            `json:"working_dir,omitempty"`
-	Tty          bool              `json:"tty,omitempty"`
-	Stdin        bool              `json:"stdin,omitempty"`
-	LogPath      string            `json:"log_path,omitempty"`
 	Labels       map[string]string `json:"labels,omitempty"`
 	Annotations  map[string]string `json:"annotations,omitempty"`
-	// NativeProcessID 是 guest envd 返回的 PID；0 表示尚未启动真实进程。
-	NativeProcessID uint32 `json:"native_process_id,omitempty"`
-	// ProcessLogSequence 是已经写入 CRI 日志并确认的最新输出序号。
-	ProcessLogSequence uint64 `json:"process_log_sequence,omitempty"`
-	// LogGeneration 每次 kubelet 请求日志轮转时递增，监控循环据此重新打开日志。
-	LogGeneration uint64 `json:"log_generation,omitempty"`
-	// LastError 保存进程启动、监控或停止失败的脱敏摘要。
-	LastError  string    `json:"last_error,omitempty"`
-	ExitCode   int32     `json:"exit_code,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	StartedAt  time.Time `json:"started_at,omitempty"`
-	FinishedAt time.Time `json:"finished_at,omitempty"`
-	UpdatedAt  time.Time `json:"updated_at,omitempty"`
+	ExitCode     int32             `json:"exit_code,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	StartedAt    time.Time         `json:"started_at,omitempty"`
+	FinishedAt   time.Time         `json:"finished_at,omitempty"`
+	UpdatedAt    time.Time         `json:"updated_at,omitempty"`
 }
 
 type persistedAgentENVState struct {
@@ -222,13 +207,12 @@ func (e *Engine) putPod(record podRecord) error {
 		return err
 	}
 	e.podMu.Lock()
+	defer e.podMu.Unlock()
 	now := time.Now()
 	preparePodRecord(&record, now)
 	previous, existed := e.pods[record.CRISandboxID]
 	e.pods[record.CRISandboxID] = &record
-	version := e.markPodStateDirtyLocked()
-	e.podMu.Unlock()
-	return e.persistPodStateChange(version, func() {
+	return e.persistPodStateLocked(func() {
 		if existed {
 			e.pods[record.CRISandboxID] = previous
 		} else {
@@ -249,9 +233,9 @@ func (e *Engine) setPodRuntimeDeleted(criSandboxID string) error {
 
 func (e *Engine) setPodStateWithRuntimeDeleted(criSandboxID, state string, runtimeDeleted *bool) error {
 	e.podMu.Lock()
+	defer e.podMu.Unlock()
 	record, ok := e.pods[criSandboxID]
 	if !ok {
-		e.podMu.Unlock()
 		return nil
 	}
 	previous := clonePodRecord(record)
@@ -281,9 +265,7 @@ func (e *Engine) setPodStateWithRuntimeDeleted(criSandboxID, state string, runti
 		}
 	}
 	e.pods[criSandboxID] = next
-	version := e.markPodStateDirtyLocked()
-	e.podMu.Unlock()
-	return e.persistPodStateChange(version, func() {
+	return e.persistPodStateLocked(func() {
 		e.pods[criSandboxID] = previous
 		for id, container := range previousContainers {
 			e.containers[id] = container
@@ -293,9 +275,9 @@ func (e *Engine) setPodStateWithRuntimeDeleted(criSandboxID, state string, runti
 
 func (e *Engine) deletePod(criSandboxID string) error {
 	e.podMu.Lock()
+	defer e.podMu.Unlock()
 	previousPod, existed := e.pods[criSandboxID]
 	if !existed {
-		e.podMu.Unlock()
 		return nil
 	}
 	previousContainers := make(map[string]*containerRecord)
@@ -306,9 +288,7 @@ func (e *Engine) deletePod(criSandboxID string) error {
 		}
 	}
 	delete(e.pods, criSandboxID)
-	version := e.markPodStateDirtyLocked()
-	e.podMu.Unlock()
-	return e.persistPodStateChange(version, func() {
+	return e.persistPodStateLocked(func() {
 		e.pods[criSandboxID] = previousPod
 		for id, container := range previousContainers {
 			e.containers[id] = container
@@ -316,53 +296,19 @@ func (e *Engine) deletePod(criSandboxID string) error {
 	})
 }
 
-func (e *Engine) markPodStateDirtyLocked() uint64 {
-	e.podStateVersion++
-	return e.podStateVersion
-}
-
-// persistPodStateChange 等待包含本次 mutation 的状态快照落盘。
-// 失败时回滚内存变更并再提交一次修复快照，避免失败写入污染后续快照。
-func (e *Engine) persistPodStateChange(version uint64, rollback func()) error {
-	err := e.flushPodState(version)
-	if err == nil {
+// persistPodStateLocked 由调用方持有 podMu，失败时恢复内存投影。
+func (e *Engine) persistPodStateLocked(rollback func()) error {
+	if e.store == nil {
 		return nil
 	}
-	return e.repairPodStateAfterFailure(err, rollback)
-}
-
-func (e *Engine) repairPodStateAfterFailure(cause error, rollback func()) error {
-	e.podMu.Lock()
-	if rollback != nil {
+	if err := e.store.SaveBackendState(podStatePath, e.snapshotPodStateLocked()); err != nil {
 		rollback()
-	}
-	repairVersion := e.markPodStateDirtyLocked()
-	e.podMu.Unlock()
-	if repairErr := e.flushPodState(repairVersion); repairErr != nil {
-		return errors.Join(cause, repairErr)
-	}
-	return cause
-}
-
-// flushPodState 只串行化快照写入，不在持 podMu 时执行文件 fsync。
-// 多个并发 mutation 可以让后一个快照覆盖前一个快照，从而自然合并写入。
-func (e *Engine) flushPodState(minVersion uint64) error {
-	if e == nil || e.store == nil {
-		return nil
-	}
-	e.podPersistMu.Lock()
-	defer e.podPersistMu.Unlock()
-	if minVersion <= e.persistedPodStateVersion {
-		return nil
-	}
-	e.podMu.RLock()
-	snapshotVersion := e.podStateVersion
-	state := e.snapshotPodStateLocked()
-	e.podMu.RUnlock()
-	if err := e.store.SaveBackendState(podStatePath, state); err != nil {
+		// 共享 StateStore 先改内存再落盘，恢复旧快照以免后续写入带入失败状态。
+		if restoreErr := e.store.SaveBackendState(podStatePath, e.snapshotPodStateLocked()); restoreErr != nil {
+			return errors.Join(err, restoreErr)
+		}
 		return fmt.Errorf("agentenv pods: save state: %w", err)
 	}
-	e.persistedPodStateVersion = snapshotVersion
 	return nil
 }
 

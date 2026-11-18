@@ -21,6 +21,10 @@ def main():
     tests = Path(__file__).resolve().parent
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
+    if any(suite in args.suite for suite in ('unit', 'runtime-unit')):
+        prepared = out / 'runtime-source'
+        subprocess.run([sys.executable, str(tests.parent / 'prepare-tests.py'), '--kind', 'runtime', '--source', str(repo), '--output', str(prepared)], check=True)
+        repo = prepared
     commands = {
         'unit': ['cargo', 'test', '--frozen', '--release', '-p', 'agentenv', '--lib', 'api::internal::tests'],
         'runtime-unit': ['cargo', 'test', '--frozen', '--release', '-p', 'agentenv', '--lib', 'runtime_server::tests'],

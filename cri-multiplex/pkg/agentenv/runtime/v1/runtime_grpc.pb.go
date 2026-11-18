@@ -281,7 +281,6 @@ const (
 	SandboxAdminService_GetRuntime_FullMethodName   = "/agentenv.runtime.v1.SandboxAdminService/GetRuntime"
 	SandboxAdminService_GetOperation_FullMethodName = "/agentenv.runtime.v1.SandboxAdminService/GetOperation"
 	SandboxAdminService_Capabilities_FullMethodName = "/agentenv.runtime.v1.SandboxAdminService/Capabilities"
-	SandboxAdminService_GetStats_FullMethodName     = "/agentenv.runtime.v1.SandboxAdminService/GetStats"
 )
 
 // SandboxAdminServiceClient is the client API for SandboxAdminService service.
@@ -296,8 +295,6 @@ type SandboxAdminServiceClient interface {
 	GetRuntime(ctx context.Context, in *SandboxGetRuntimeRequest, opts ...grpc.CallOption) (*SandboxRuntimeInfo, error)
 	GetOperation(ctx context.Context, in *SandboxOperationGetRequest, opts ...grpc.CallOption) (*OperationStatus, error)
 	Capabilities(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*SandboxCapabilities, error)
-	// 返回 native sandbox 的最新 guest 聚合 stats；不返回共享 VM 的伪造 per-container 指标。
-	GetStats(ctx context.Context, in *SandboxStatsRequest, opts ...grpc.CallOption) (*SandboxStatsResponse, error)
 }
 
 type sandboxAdminServiceClient struct {
@@ -368,16 +365,6 @@ func (c *sandboxAdminServiceClient) Capabilities(ctx context.Context, in *emptyp
 	return out, nil
 }
 
-func (c *sandboxAdminServiceClient) GetStats(ctx context.Context, in *SandboxStatsRequest, opts ...grpc.CallOption) (*SandboxStatsResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SandboxStatsResponse)
-	err := c.cc.Invoke(ctx, SandboxAdminService_GetStats_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // SandboxAdminServiceServer is the server API for SandboxAdminService service.
 // All implementations must embed UnimplementedSandboxAdminServiceServer
 // for forward compatibility.
@@ -390,8 +377,6 @@ type SandboxAdminServiceServer interface {
 	GetRuntime(context.Context, *SandboxGetRuntimeRequest) (*SandboxRuntimeInfo, error)
 	GetOperation(context.Context, *SandboxOperationGetRequest) (*OperationStatus, error)
 	Capabilities(context.Context, *emptypb.Empty) (*SandboxCapabilities, error)
-	// 返回 native sandbox 的最新 guest 聚合 stats；不返回共享 VM 的伪造 per-container 指标。
-	GetStats(context.Context, *SandboxStatsRequest) (*SandboxStatsResponse, error)
 	mustEmbedUnimplementedSandboxAdminServiceServer()
 }
 
@@ -419,9 +404,6 @@ func (UnimplementedSandboxAdminServiceServer) GetOperation(context.Context, *San
 }
 func (UnimplementedSandboxAdminServiceServer) Capabilities(context.Context, *emptypb.Empty) (*SandboxCapabilities, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Capabilities not implemented")
-}
-func (UnimplementedSandboxAdminServiceServer) GetStats(context.Context, *SandboxStatsRequest) (*SandboxStatsResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetStats not implemented")
 }
 func (UnimplementedSandboxAdminServiceServer) mustEmbedUnimplementedSandboxAdminServiceServer() {}
 func (UnimplementedSandboxAdminServiceServer) testEmbeddedByValue()                             {}
@@ -552,24 +534,6 @@ func _SandboxAdminService_Capabilities_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
-func _SandboxAdminService_GetStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SandboxStatsRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(SandboxAdminServiceServer).GetStats(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: SandboxAdminService_GetStats_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SandboxAdminServiceServer).GetStats(ctx, req.(*SandboxStatsRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // SandboxAdminService_ServiceDesc is the grpc.ServiceDesc for SandboxAdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -601,391 +565,7 @@ var SandboxAdminService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Capabilities",
 			Handler:    _SandboxAdminService_Capabilities_Handler,
 		},
-		{
-			MethodName: "GetStats",
-			Handler:    _SandboxAdminService_GetStats_Handler,
-		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "agentenv/runtime/v1/runtime.proto",
-}
-
-const (
-	SandboxExecService_ExecSync_FullMethodName          = "/agentenv.runtime.v1.SandboxExecService/ExecSync"
-	SandboxExecService_StartProcess_FullMethodName      = "/agentenv.runtime.v1.SandboxExecService/StartProcess"
-	SandboxExecService_GetProcess_FullMethodName        = "/agentenv.runtime.v1.SandboxExecService/GetProcess"
-	SandboxExecService_ConnectProcess_FullMethodName    = "/agentenv.runtime.v1.SandboxExecService/ConnectProcess"
-	SandboxExecService_SendProcessInput_FullMethodName  = "/agentenv.runtime.v1.SandboxExecService/SendProcessInput"
-	SandboxExecService_ResizeProcess_FullMethodName     = "/agentenv.runtime.v1.SandboxExecService/ResizeProcess"
-	SandboxExecService_CloseProcessStdin_FullMethodName = "/agentenv.runtime.v1.SandboxExecService/CloseProcessStdin"
-	SandboxExecService_StopProcess_FullMethodName       = "/agentenv.runtime.v1.SandboxExecService/StopProcess"
-)
-
-// SandboxExecServiceClient is the client API for SandboxExecService service.
-//
-// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-//
-// SandboxExecService 是 CRI 执行数据面的内部入口。
-// Runtime 必须通过本机 Node Proxy 访问 guest envd，不得在 adapter 中直连 Pod IP。
-type SandboxExecServiceClient interface {
-	ExecSync(ctx context.Context, in *SandboxExecSyncRequest, opts ...grpc.CallOption) (*SandboxExecSyncResponse, error)
-	StartProcess(ctx context.Context, in *SandboxProcessStartRequest, opts ...grpc.CallOption) (*SandboxProcessStartResponse, error)
-	GetProcess(ctx context.Context, in *SandboxProcessGetRequest, opts ...grpc.CallOption) (*SandboxProcessGetResponse, error)
-	// 多订阅实时输出流；不推进 GetProcess 的 ack 游标。
-	ConnectProcess(ctx context.Context, in *SandboxProcessConnectRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SandboxProcessConnectResponse], error)
-	SendProcessInput(ctx context.Context, in *SandboxProcessInputRequest, opts ...grpc.CallOption) (*SandboxProcessInputResponse, error)
-	ResizeProcess(ctx context.Context, in *SandboxProcessResizeRequest, opts ...grpc.CallOption) (*SandboxProcessResizeResponse, error)
-	CloseProcessStdin(ctx context.Context, in *SandboxProcessCloseStdinRequest, opts ...grpc.CallOption) (*SandboxProcessCloseStdinResponse, error)
-	StopProcess(ctx context.Context, in *SandboxProcessStopRequest, opts ...grpc.CallOption) (*SandboxProcessStopResponse, error)
-}
-
-type sandboxExecServiceClient struct {
-	cc grpc.ClientConnInterface
-}
-
-func NewSandboxExecServiceClient(cc grpc.ClientConnInterface) SandboxExecServiceClient {
-	return &sandboxExecServiceClient{cc}
-}
-
-func (c *sandboxExecServiceClient) ExecSync(ctx context.Context, in *SandboxExecSyncRequest, opts ...grpc.CallOption) (*SandboxExecSyncResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SandboxExecSyncResponse)
-	err := c.cc.Invoke(ctx, SandboxExecService_ExecSync_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *sandboxExecServiceClient) StartProcess(ctx context.Context, in *SandboxProcessStartRequest, opts ...grpc.CallOption) (*SandboxProcessStartResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SandboxProcessStartResponse)
-	err := c.cc.Invoke(ctx, SandboxExecService_StartProcess_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *sandboxExecServiceClient) GetProcess(ctx context.Context, in *SandboxProcessGetRequest, opts ...grpc.CallOption) (*SandboxProcessGetResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SandboxProcessGetResponse)
-	err := c.cc.Invoke(ctx, SandboxExecService_GetProcess_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *sandboxExecServiceClient) ConnectProcess(ctx context.Context, in *SandboxProcessConnectRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SandboxProcessConnectResponse], error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &SandboxExecService_ServiceDesc.Streams[0], SandboxExecService_ConnectProcess_FullMethodName, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	x := &grpc.GenericClientStream[SandboxProcessConnectRequest, SandboxProcessConnectResponse]{ClientStream: stream}
-	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
-	return x, nil
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type SandboxExecService_ConnectProcessClient = grpc.ServerStreamingClient[SandboxProcessConnectResponse]
-
-func (c *sandboxExecServiceClient) SendProcessInput(ctx context.Context, in *SandboxProcessInputRequest, opts ...grpc.CallOption) (*SandboxProcessInputResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SandboxProcessInputResponse)
-	err := c.cc.Invoke(ctx, SandboxExecService_SendProcessInput_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *sandboxExecServiceClient) ResizeProcess(ctx context.Context, in *SandboxProcessResizeRequest, opts ...grpc.CallOption) (*SandboxProcessResizeResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SandboxProcessResizeResponse)
-	err := c.cc.Invoke(ctx, SandboxExecService_ResizeProcess_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *sandboxExecServiceClient) CloseProcessStdin(ctx context.Context, in *SandboxProcessCloseStdinRequest, opts ...grpc.CallOption) (*SandboxProcessCloseStdinResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SandboxProcessCloseStdinResponse)
-	err := c.cc.Invoke(ctx, SandboxExecService_CloseProcessStdin_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *sandboxExecServiceClient) StopProcess(ctx context.Context, in *SandboxProcessStopRequest, opts ...grpc.CallOption) (*SandboxProcessStopResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SandboxProcessStopResponse)
-	err := c.cc.Invoke(ctx, SandboxExecService_StopProcess_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// SandboxExecServiceServer is the server API for SandboxExecService service.
-// All implementations must embed UnimplementedSandboxExecServiceServer
-// for forward compatibility.
-//
-// SandboxExecService 是 CRI 执行数据面的内部入口。
-// Runtime 必须通过本机 Node Proxy 访问 guest envd，不得在 adapter 中直连 Pod IP。
-type SandboxExecServiceServer interface {
-	ExecSync(context.Context, *SandboxExecSyncRequest) (*SandboxExecSyncResponse, error)
-	StartProcess(context.Context, *SandboxProcessStartRequest) (*SandboxProcessStartResponse, error)
-	GetProcess(context.Context, *SandboxProcessGetRequest) (*SandboxProcessGetResponse, error)
-	// 多订阅实时输出流；不推进 GetProcess 的 ack 游标。
-	ConnectProcess(*SandboxProcessConnectRequest, grpc.ServerStreamingServer[SandboxProcessConnectResponse]) error
-	SendProcessInput(context.Context, *SandboxProcessInputRequest) (*SandboxProcessInputResponse, error)
-	ResizeProcess(context.Context, *SandboxProcessResizeRequest) (*SandboxProcessResizeResponse, error)
-	CloseProcessStdin(context.Context, *SandboxProcessCloseStdinRequest) (*SandboxProcessCloseStdinResponse, error)
-	StopProcess(context.Context, *SandboxProcessStopRequest) (*SandboxProcessStopResponse, error)
-	mustEmbedUnimplementedSandboxExecServiceServer()
-}
-
-// UnimplementedSandboxExecServiceServer must be embedded to have
-// forward compatible implementations.
-//
-// NOTE: this should be embedded by value instead of pointer to avoid a nil
-// pointer dereference when methods are called.
-type UnimplementedSandboxExecServiceServer struct{}
-
-func (UnimplementedSandboxExecServiceServer) ExecSync(context.Context, *SandboxExecSyncRequest) (*SandboxExecSyncResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ExecSync not implemented")
-}
-func (UnimplementedSandboxExecServiceServer) StartProcess(context.Context, *SandboxProcessStartRequest) (*SandboxProcessStartResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method StartProcess not implemented")
-}
-func (UnimplementedSandboxExecServiceServer) GetProcess(context.Context, *SandboxProcessGetRequest) (*SandboxProcessGetResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetProcess not implemented")
-}
-func (UnimplementedSandboxExecServiceServer) ConnectProcess(*SandboxProcessConnectRequest, grpc.ServerStreamingServer[SandboxProcessConnectResponse]) error {
-	return status.Errorf(codes.Unimplemented, "method ConnectProcess not implemented")
-}
-func (UnimplementedSandboxExecServiceServer) SendProcessInput(context.Context, *SandboxProcessInputRequest) (*SandboxProcessInputResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method SendProcessInput not implemented")
-}
-func (UnimplementedSandboxExecServiceServer) ResizeProcess(context.Context, *SandboxProcessResizeRequest) (*SandboxProcessResizeResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ResizeProcess not implemented")
-}
-func (UnimplementedSandboxExecServiceServer) CloseProcessStdin(context.Context, *SandboxProcessCloseStdinRequest) (*SandboxProcessCloseStdinResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method CloseProcessStdin not implemented")
-}
-func (UnimplementedSandboxExecServiceServer) StopProcess(context.Context, *SandboxProcessStopRequest) (*SandboxProcessStopResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method StopProcess not implemented")
-}
-func (UnimplementedSandboxExecServiceServer) mustEmbedUnimplementedSandboxExecServiceServer() {}
-func (UnimplementedSandboxExecServiceServer) testEmbeddedByValue()                            {}
-
-// UnsafeSandboxExecServiceServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to SandboxExecServiceServer will
-// result in compilation errors.
-type UnsafeSandboxExecServiceServer interface {
-	mustEmbedUnimplementedSandboxExecServiceServer()
-}
-
-func RegisterSandboxExecServiceServer(s grpc.ServiceRegistrar, srv SandboxExecServiceServer) {
-	// If the following call pancis, it indicates UnimplementedSandboxExecServiceServer was
-	// embedded by pointer and is nil.  This will cause panics if an
-	// unimplemented method is ever invoked, so we test this at initialization
-	// time to prevent it from happening at runtime later due to I/O.
-	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
-		t.testEmbeddedByValue()
-	}
-	s.RegisterService(&SandboxExecService_ServiceDesc, srv)
-}
-
-func _SandboxExecService_ExecSync_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SandboxExecSyncRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(SandboxExecServiceServer).ExecSync(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: SandboxExecService_ExecSync_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SandboxExecServiceServer).ExecSync(ctx, req.(*SandboxExecSyncRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _SandboxExecService_StartProcess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SandboxProcessStartRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(SandboxExecServiceServer).StartProcess(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: SandboxExecService_StartProcess_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SandboxExecServiceServer).StartProcess(ctx, req.(*SandboxProcessStartRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _SandboxExecService_GetProcess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SandboxProcessGetRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(SandboxExecServiceServer).GetProcess(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: SandboxExecService_GetProcess_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SandboxExecServiceServer).GetProcess(ctx, req.(*SandboxProcessGetRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _SandboxExecService_ConnectProcess_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(SandboxProcessConnectRequest)
-	if err := stream.RecvMsg(m); err != nil {
-		return err
-	}
-	return srv.(SandboxExecServiceServer).ConnectProcess(m, &grpc.GenericServerStream[SandboxProcessConnectRequest, SandboxProcessConnectResponse]{ServerStream: stream})
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type SandboxExecService_ConnectProcessServer = grpc.ServerStreamingServer[SandboxProcessConnectResponse]
-
-func _SandboxExecService_SendProcessInput_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SandboxProcessInputRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(SandboxExecServiceServer).SendProcessInput(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: SandboxExecService_SendProcessInput_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SandboxExecServiceServer).SendProcessInput(ctx, req.(*SandboxProcessInputRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _SandboxExecService_ResizeProcess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SandboxProcessResizeRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(SandboxExecServiceServer).ResizeProcess(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: SandboxExecService_ResizeProcess_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SandboxExecServiceServer).ResizeProcess(ctx, req.(*SandboxProcessResizeRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _SandboxExecService_CloseProcessStdin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SandboxProcessCloseStdinRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(SandboxExecServiceServer).CloseProcessStdin(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: SandboxExecService_CloseProcessStdin_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SandboxExecServiceServer).CloseProcessStdin(ctx, req.(*SandboxProcessCloseStdinRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _SandboxExecService_StopProcess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SandboxProcessStopRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(SandboxExecServiceServer).StopProcess(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: SandboxExecService_StopProcess_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SandboxExecServiceServer).StopProcess(ctx, req.(*SandboxProcessStopRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-// SandboxExecService_ServiceDesc is the grpc.ServiceDesc for SandboxExecService service.
-// It's only intended for direct use with grpc.RegisterService,
-// and not to be introspected or modified (even as a copy)
-var SandboxExecService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "agentenv.runtime.v1.SandboxExecService",
-	HandlerType: (*SandboxExecServiceServer)(nil),
-	Methods: []grpc.MethodDesc{
-		{
-			MethodName: "ExecSync",
-			Handler:    _SandboxExecService_ExecSync_Handler,
-		},
-		{
-			MethodName: "StartProcess",
-			Handler:    _SandboxExecService_StartProcess_Handler,
-		},
-		{
-			MethodName: "GetProcess",
-			Handler:    _SandboxExecService_GetProcess_Handler,
-		},
-		{
-			MethodName: "SendProcessInput",
-			Handler:    _SandboxExecService_SendProcessInput_Handler,
-		},
-		{
-			MethodName: "ResizeProcess",
-			Handler:    _SandboxExecService_ResizeProcess_Handler,
-		},
-		{
-			MethodName: "CloseProcessStdin",
-			Handler:    _SandboxExecService_CloseProcessStdin_Handler,
-		},
-		{
-			MethodName: "StopProcess",
-			Handler:    _SandboxExecService_StopProcess_Handler,
-		},
-	},
-	Streams: []grpc.StreamDesc{
-		{
-			StreamName:    "ConnectProcess",
-			Handler:       _SandboxExecService_ConnectProcess_Handler,
-			ServerStreams: true,
-		},
-	},
 	Metadata: "agentenv/runtime/v1/runtime.proto",
 }

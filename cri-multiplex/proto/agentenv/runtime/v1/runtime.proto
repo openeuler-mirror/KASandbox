@@ -272,9 +272,6 @@ message SandboxCheckpointRequest {
   map<string, string> metadata = 4;
 }
 
-
-
-
 message SandboxGetRuntimeRequest {
   string native_sandbox_id = 1;
 }
@@ -292,54 +289,8 @@ message SandboxCapabilities {
   bool image_source = 6;
   bool volume_mounts = 7;
   bool attached_drives = 8;
-  bool exec_sync = 9;
-  // 是否支持通过内部进程控制接口启动、查询和停止容器用户进程。
-  bool process_control = 10;
-  // 是否支持 sandbox 级真实 guest stats。
-  bool stats = 11;
-  // 是否支持对旧 Runtime 实例执行显式、可审计的 quarantine/reclaim。
-  reserved 12;
-  reserved "recovery_remediation";
-}
-
-// SandboxStatsRequest 查询 native sandbox 的最新 guest 资源样本。
-// 这些指标属于整个 microVM，不是单个 CRI 逻辑容器的独立资源账本。
-message SandboxStatsRequest {
-  repeated string native_sandbox_ids = 1;
-}
-
-// SandboxStats 是 Runtime 可证明的 microVM 聚合统计。
-// cpu_used_percent 保留 envd 原始采样百分比；不通过单次百分比伪造累计 CPU 时间。
-message SandboxStats {
-  string native_sandbox_id = 1;
-  google.protobuf.Timestamp sampled_at = 2;
-  int32 cpu_count = 3;
-  double cpu_used_percent = 4;
-  uint64 memory_used_bytes = 5;
-  uint64 memory_total_bytes = 6;
-  uint64 memory_cache_bytes = 7;
-  uint64 disk_used_bytes = 8;
-  uint64 disk_total_bytes = 9;
-}
-
-message SandboxStatsResponse {
-  repeated SandboxStats sandboxes = 1;
-}
-message SandboxExecSyncRequest {
-  // Runtime 只接受 native UUID；CRI/product ID 必须先由 adapter 解析。
-  string native_sandbox_id = 1;
-  // argv 语义：第一个元素是 executable，其余元素原样作为参数传入 envd。
-  repeated string command = 2;
-  map<string, string> envs = 3;
-  optional string cwd = 4;
-  // 0 表示不设置 Runtime 侧超时；非 0 时必须先等待进程退出，超时后终止进程。
-  uint64 timeout_seconds = 5;
-}
-
-message SandboxExecSyncResponse {
-  bytes stdout = 1;
-  bytes stderr = 2;
-  sint32 exit_code = 3;
+  reserved 9, 10, 11, 12;
+  reserved "exec_sync", "process_control", "stats", "recovery_remediation";
 }
 
 service SandboxLifecycleService {
@@ -359,128 +310,4 @@ service SandboxAdminService {
   rpc GetRuntime(SandboxGetRuntimeRequest) returns (SandboxRuntimeInfo);
   rpc GetOperation(SandboxOperationGetRequest) returns (OperationStatus);
   rpc Capabilities(google.protobuf.Empty) returns (SandboxCapabilities);
-  // 返回 native sandbox 的最新 guest 聚合 stats；不返回共享 VM 的伪造 per-container 指标。
-  rpc GetStats(SandboxStatsRequest) returns (SandboxStatsResponse);
-}
-
-enum SandboxProcessOutputStream {
-  SANDBOX_PROCESS_OUTPUT_STREAM_UNSPECIFIED = 0;
-  SANDBOX_PROCESS_OUTPUT_STREAM_STDOUT = 1;
-  SANDBOX_PROCESS_OUTPUT_STREAM_STDERR = 2;
-}
-
-message SandboxProcessOutputChunk {
-  uint64 sequence = 1;
-  SandboxProcessOutputStream stream = 2;
-  bytes data = 3;
-}
-
-message SandboxProcessTerminalSize {
-  uint32 cols = 1;
-  uint32 rows = 2;
-}
-
-message SandboxProcessStartRequest {
-  string native_sandbox_id = 1;
-  // argv 语义：第一个元素是 executable。
-  repeated string command = 2;
-  map<string, string> envs = 3;
-  optional string cwd = 4;
-  // CRI Exec/Attach 交互参数；非交互容器主进程可使用默认 false。
-  bool tty = 5;
-  bool stdin = 6;
-  SandboxProcessTerminalSize terminal_size = 7;
-}
-
-message SandboxProcessStartResponse {
-  uint32 pid = 1;
-}
-
-message SandboxProcessConnectRequest {
-  string native_sandbox_id = 1;
-  uint32 pid = 2;
-  // 先补发 sequence 大于 after_sequence 的缓存输出，再订阅实时事件。
-  uint64 after_sequence = 3;
-}
-
-message SandboxProcessExitInfo {
-  bool exited = 1;
-  sint32 exit_code = 2;
-  string error_message = 3;
-  bool output_truncated = 4;
-}
-
-message SandboxProcessConnectResponse {
-  oneof event {
-    SandboxProcessOutputChunk output = 1;
-    SandboxProcessExitInfo exit = 2;
-  }
-}
-
-message SandboxProcessInputRequest {
-  string native_sandbox_id = 1;
-  uint32 pid = 2;
-  bytes data = 3;
-  // true 时写入 PTY，false 时写入普通 stdin。
-  bool pty = 4;
-}
-
-message SandboxProcessInputResponse {}
-
-message SandboxProcessResizeRequest {
-  string native_sandbox_id = 1;
-  uint32 pid = 2;
-  uint32 cols = 3;
-  uint32 rows = 4;
-}
-
-message SandboxProcessResizeResponse {}
-
-message SandboxProcessCloseStdinRequest {
-  string native_sandbox_id = 1;
-  uint32 pid = 2;
-}
-
-message SandboxProcessCloseStdinResponse {}
-
-message SandboxProcessGetRequest {
-  string native_sandbox_id = 1;
-  uint32 pid = 2;
-  // 返回 sequence 大于 after_sequence 的输出；同时确认并释放更早的缓存。
-  uint64 after_sequence = 3;
-}
-
-message SandboxProcessGetResponse {
-  uint32 pid = 1;
-  bool running = 2;
-  sint32 exit_code = 3;
-  repeated SandboxProcessOutputChunk outputs = 4;
-  // Runtime 内部输出缓冲发生截断时为 true，不能把缺失内容当作完整日志。
-  bool output_truncated = 5;
-  string error_message = 6;
-}
-
-message SandboxProcessStopRequest {
-  string native_sandbox_id = 1;
-  uint32 pid = 2;
-  // 先发送 SIGTERM，超过宽限期后发送 SIGKILL。
-  uint64 grace_period_seconds = 3;
-}
-
-message SandboxProcessStopResponse {
-  bool stopped = 1;
-  sint32 exit_code = 2;
-}
-// SandboxExecService 是 CRI 执行数据面的内部入口。
-// Runtime 必须通过本机 Node Proxy 访问 guest envd，不得在 adapter 中直连 Pod IP。
-service SandboxExecService {
-  rpc ExecSync(SandboxExecSyncRequest) returns (SandboxExecSyncResponse);
-  rpc StartProcess(SandboxProcessStartRequest) returns (SandboxProcessStartResponse);
-  rpc GetProcess(SandboxProcessGetRequest) returns (SandboxProcessGetResponse);
-  // 多订阅实时输出流；不推进 GetProcess 的 ack 游标。
-  rpc ConnectProcess(SandboxProcessConnectRequest) returns (stream SandboxProcessConnectResponse);
-  rpc SendProcessInput(SandboxProcessInputRequest) returns (SandboxProcessInputResponse);
-  rpc ResizeProcess(SandboxProcessResizeRequest) returns (SandboxProcessResizeResponse);
-  rpc CloseProcessStdin(SandboxProcessCloseStdinRequest) returns (SandboxProcessCloseStdinResponse);
-  rpc StopProcess(SandboxProcessStopRequest) returns (SandboxProcessStopResponse);
 }

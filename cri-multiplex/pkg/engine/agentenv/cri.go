@@ -1094,3 +1094,8 @@ func (e *Engine) Exec(context.Context, *runtime.ExecRequest) (*runtime.ExecRespo
 func (e *Engine) Attach(context.Context, *runtime.AttachRequest) (*runtime.AttachResponse, error) {
 	return nil, unimplemented("Attach; use the AgentENV SDK")
 }
+
+// PortForward 不代理业务流量，直接使用 AgentENV SDK/proxy。
+func (e *Engine) PortForward(context.Context, *runtime.PortForwardRequest) (*runtime.PortForwardResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "use AgentENV SDK/proxy")
+}

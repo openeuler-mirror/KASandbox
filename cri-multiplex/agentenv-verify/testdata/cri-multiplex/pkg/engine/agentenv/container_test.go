@@ -2,8 +2,6 @@ package agentenv
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -24,7 +22,6 @@ func newReadyContainerTestEngine(t *testing.T) (*Engine, *memoryStateStore) {
 		}}, nil
 	}}
 	instance, store := newCRITestEngine(t, lifecycle)
-	instance.exec = &fakeExec{}
 	if _, err := instance.RunPodSandbox(context.Background(), criRunRequest(map[string]string{
 		annTemplate: "template-1",
 	})); err != nil {
@@ -34,11 +31,6 @@ func newReadyContainerTestEngine(t *testing.T) (*Engine, *memoryStateStore) {
 }
 
 func criCreateContainerRequest(podID, name, image string, attempt uint32) *runtime.CreateContainerRequest {
-	logPath := ""
-	if file, err := os.CreateTemp("", "agentenv-container-*.log"); err == nil {
-		logPath = file.Name()
-		_ = file.Close()
-	}
 	return &runtime.CreateContainerRequest{
 		PodSandboxId: podID,
 		Config: &runtime.ContainerConfig{
@@ -46,54 +38,12 @@ func criCreateContainerRequest(podID, name, image string, attempt uint32) *runti
 			Image:    &runtime.ImageSpec{Image: image},
 			Command:  []string{"/bin/sh"},
 			Args:     []string{"-c", "sleep 3600"},
-			LogPath:  logPath,
 			Labels:   map[string]string{"io.kubernetes.container.name": name},
 			Annotations: map[string]string{
 				"io.kubernetes.container.hash":         "hash-" + name,
 				"io.kubernetes.container.restartCount": "0",
 			},
 		},
-	}
-}
-
-func TestCreateContainerResolvesRelativeLogPath(t *testing.T) {
-	instance, _ := newReadyContainerTestEngine(t)
-	pod, ok := instance.getPod("cri-1")
-	if !ok {
-		t.Fatal("pod projection not found")
-	}
-	pod.LogDirectory = "/var/log/pods/agentenv-e2e"
-	if err := instance.putPod(pod); err != nil {
-		t.Fatalf("putPod: %v", err)
-	}
-
-	req := criCreateContainerRequest("cri-1", "workload", "agentenv.dev/app:v1", 0)
-	req.Config.LogPath = "workload/0.log"
-	response, err := instance.CreateContainer(context.Background(), req)
-	if err != nil {
-		t.Fatalf("CreateContainer: %v", err)
-	}
-	record, ok := instance.getContainer(response.GetContainerId())
-	if !ok {
-		t.Fatal("container projection not found")
-	}
-	want := filepath.Join(pod.LogDirectory, req.Config.LogPath)
-	if record.LogPath != want {
-		t.Fatalf("log path = %q, want %q", record.LogPath, want)
-	}
-	statusResponse, err := instance.ContainerStatus(context.Background(), &runtime.ContainerStatusRequest{ContainerId: response.GetContainerId()})
-	if err != nil || statusResponse.GetStatus().GetLogPath() != want {
-		t.Fatalf("status log path = %q err=%v, want %q", statusResponse.GetStatus().GetLogPath(), err, want)
-	}
-}
-
-func TestCreateContainerRejectsRelativeLogPathWithoutDirectory(t *testing.T) {
-	instance, _ := newReadyContainerTestEngine(t)
-	req := criCreateContainerRequest("cri-1", "workload", "agentenv.dev/app:v1", 0)
-	req.Config.LogPath = "workload/0.log"
-	_, err := instance.CreateContainer(context.Background(), req)
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
 	}
 }
 
