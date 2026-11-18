@@ -96,6 +96,31 @@ FAIL_COUNT="${FAIL_COUNT:-0}"
 SKIP_COUNT="${SKIP_COUNT:-0}"
 UNSUPPORTED_COUNT="${UNSUPPORTED_COUNT:-0}"
 
+#==================== 结构化报告事件流 ====================#
+# 未设置 E2B_VERIFY_REPORT_DIR 时 report_emit 全部 no-op；CI 由 run-suite.sh 注入。
+export E2B_VERIFY_SUITE="${E2B_VERIFY_SUITE:-webhook-verify}"
+# shellcheck source=lib/report.sh
+. "${WV_VERIFY_ROOT}/lib/report.sh"
+
+# webhook 套件的 pass/fail/skip/unsupported 即一条用例，事件里直接形成
+# case_start + assert + case_end；case 字段取 P1/A1/D1…，JUnit 每条一个 testcase。
+_report_case_result() {
+    local status="${1:-}" id="${2:-}"; shift 2 2>/dev/null || true
+    report_enabled || return 0
+    local exit_code=0 p=0 f=0 s=0 u=0
+    case "${status}" in
+        pass) p=1 ;;
+        fail) f=1; exit_code=1 ;;
+        skip) s=1 ;;
+        unsupported) u=1; exit_code=77 ;;
+    esac
+    local counts="{\"pass\":${p},\"fail\":${f},\"skip\":${s},\"unsupported\":${u}}"
+    local file_id="${E2B_VERIFY_CASE_FILE:-${E2B_VERIFY_CASE_NUM:-standalone}}"
+    report_begin_case "${id}" "$*" "${file_id}"
+    report_emit assert "${status}" "$*"
+    report_end_case "${id}" "${exit_code}" 0 "${counts}"
+}
+
 _wv_record() {
     # $1=状态 $2=用例编号 $3=描述
     printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "${RESULT_FILE}" 2>/dev/null || true
@@ -107,6 +132,7 @@ log_error() { printf '%b\n' "${RED}[ERROR]${NC} $*" >&2; }
 log_debug() { [ "${WV_DEBUG:-0}" = "1" ] && printf '%b\n' "${CYAN}[DEBUG]${NC} $*" >&2 || true; }
 
 log_step() {
+    report_emit step_start "" "$*"
     printf '\n%b\n' "${CYAN}────────────────────────────────────────────────────${NC}" >&2
     printf '%b\n' "${CYAN} $* ${NC}" >&2
     printf '%b\n' "${CYAN}────────────────────────────────────────────────────${NC}" >&2
@@ -123,6 +149,7 @@ log_section() {
 # 便于把一次失败直接对回用例编号。
 pass() {
     local id="$1"; shift
+    _report_case_result pass "${id}" "$*"
     PASS_COUNT=$((PASS_COUNT + 1)); export PASS_COUNT
     printf '%b\n' "${GREEN}[PASS]${NC} ${BOLD}${id}${NC}  $*" >&2
     _wv_record PASS "${id}" "$*"
@@ -130,6 +157,7 @@ pass() {
 
 fail() {
     local id="$1"; shift
+    _report_case_result fail "${id}" "$*"
     FAIL_COUNT=$((FAIL_COUNT + 1)); export FAIL_COUNT
     printf '%b\n' "${RED}[FAIL]${NC} ${BOLD}${id}${NC}  $*" >&2
     _wv_record FAIL "${id}" "$*"
@@ -137,6 +165,7 @@ fail() {
 
 skip() {
     local id="$1"; shift
+    _report_case_result skip "${id}" "$*"
     SKIP_COUNT=$((SKIP_COUNT + 1)); export SKIP_COUNT
     printf '%b\n' "${YELLOW}[SKIP]${NC} ${BOLD}${id}${NC}  $*" >&2
     _wv_record SKIP "${id}" "$*"
@@ -144,6 +173,7 @@ skip() {
 
 unsupported() {
     local id="$1"; shift
+    _report_case_result unsupported "${id}" "$*"
     UNSUPPORTED_COUNT=$((UNSUPPORTED_COUNT + 1)); export UNSUPPORTED_COUNT
     printf '%b\n' "${YELLOW}[UNSUPPORTED]${NC} ${BOLD}${id}${NC}  $*" >&2
     _wv_record UNSUPPORTED "${id}" "$*"
@@ -318,6 +348,7 @@ print_summary() {
         fi
     fi
     printf '\n' >&2
+    report_emit summary "" "PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} SKIP=${SKIP_COUNT} UNSUPPORTED=${UNSUPPORTED_COUNT}"
     log_info "日志: ${LOG_DIR}   证据: ${ARTIFACT_DIR}"
     if [ -f "${STATE_FILE}" ]; then
         log_info "状态: ${STATE_FILE}"
