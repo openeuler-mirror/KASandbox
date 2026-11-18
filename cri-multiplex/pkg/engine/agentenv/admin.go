@@ -10,162 +10,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	runtimeapi "github.com/cri-multiplex/pkg/agentenv/runtime/v1"
 	"github.com/cri-multiplex/pkg/engine"
 )
-
-const (
-	adminCreateOperationPrefix = "admin-create:"
-	adminDeleteOperationPrefix = "admin-delete:"
-)
-
-func (e *Engine) AdminCreateSandbox(ctx context.Context, spec engine.SandboxSpec) (*engine.SandboxCreateResult, error) {
-	runtimeSpec, err := sandboxSpecFromAdmin(spec)
-	if err != nil {
-		return nil, err
-	}
-	fingerprint, err := requestFingerprint(runtimeSpec)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "fingerprint create request: %v", err)
-	}
-	if err := e.ensureClients(); err != nil {
-		return nil, e.mapRuntimeError(err)
-	}
-	unlock, err := e.lockSandbox(ctx, spec.SandboxID)
-	if err != nil {
-		return nil, status.FromContextError(err).Err()
-	}
-	defer unlock()
-
-	response, err := e.lifecycle.Create(ctx, &runtimeapi.SandboxCreateRequest{
-		OperationId:        adminCreateOperationPrefix + spec.SandboxID,
-		RequestFingerprint: fingerprint,
-		Spec:               runtimeSpec,
-	})
-	if err != nil {
-		return nil, e.mapRuntimeError(err)
-	}
-	info := response.GetSandbox()
-	nativeID := info.GetNativeSandboxId()
-	if nativeID == "" {
-		return nil, status.Error(codes.Internal, "agentenv runtime returned an empty native sandbox id")
-	}
-	if productID := info.GetProductSandboxId(); productID != "" && productID != spec.SandboxID {
-		return nil, status.Errorf(codes.Internal,
-			"agentenv runtime returned product sandbox id %q, want %q", productID, spec.SandboxID)
-	}
-
-	mapping := podRoute{
-		Backend:          engine.EngineTypeAgentENV,
-		ProductSandboxID: spec.SandboxID,
-		NativeSandboxID:  nativeID,
-	}
-	if err := e.routes.PutPodRoute(mapping); err != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		_, _ = e.lifecycle.Delete(cleanupCtx, &runtimeapi.SandboxDeleteRequest{
-			OperationId:     adminDeleteOperationPrefix + nativeID,
-			NativeSandboxId: nativeID,
-		})
-		cancel()
-		return nil, status.Errorf(codes.Internal, "persist AgentENV id mapping: %v", err)
-	}
-
-	return &engine.SandboxCreateResult{
-		SandboxID: spec.SandboxID,
-		ClientID:  nativeID,
-		HostIP:    e.config.NodeIP,
-	}, nil
-}
-
-func (e *Engine) AdminUpdateSandbox(ctx context.Context, sandboxID string, update engine.SandboxUpdate) error {
-	if sandboxID == "" {
-		return status.Error(codes.InvalidArgument, "sandbox_id is required")
-	}
-	mapping, ok := e.routes.PodRouteByProduct(sandboxID)
-	if !ok {
-		return status.Errorf(codes.NotFound, "sandbox %s not found on this node", sandboxID)
-	}
-	if err := e.ensureClients(); err != nil {
-		return e.mapRuntimeError(err)
-	}
-
-	request := &runtimeapi.SandboxUpdateRequest{NativeSandboxId: mapping.NativeSandboxID}
-	if update.EndTime != nil {
-		request.ExpiresAt = timestamppb.New(*update.EndTime)
-	}
-	if update.Egress != nil {
-		request.Egress = networkPolicyToProto(*update.Egress)
-	}
-	_, err := e.lifecycle.Update(ctx, request)
-	return e.mapRuntimeError(err)
-}
-
-func (e *Engine) AdminListSandboxes(ctx context.Context) ([]*engine.SandboxRuntime, error) {
-	if err := e.ensureClients(); err != nil {
-		return nil, e.mapRuntimeError(err)
-	}
-	response, err := e.lifecycle.List(ctx, &runtimeapi.SandboxListRequest{IncludePaused: true})
-	if err != nil {
-		return nil, e.mapRuntimeError(err)
-	}
-	out := make([]*engine.SandboxRuntime, 0, len(response.GetSandboxes()))
-	for _, info := range response.GetSandboxes() {
-		mapping, _ := e.routes.PodRouteByNative(info.GetNativeSandboxId())
-		out = append(out, sandboxRuntimeFromProto(info, mapping, e.config.NodeName, e.config.NodeIP))
-	}
-	return out, nil
-}
-
-func (e *Engine) AdminDeleteSandbox(ctx context.Context, sandboxID string) error {
-	if sandboxID == "" {
-		return status.Error(codes.InvalidArgument, "sandbox_id is required")
-	}
-	ids := e.sandboxOperationIDs(sandboxID)
-	unlock, err := e.lockSandbox(ctx, ids...)
-	if err != nil {
-		return status.FromContextError(err).Err()
-	}
-	defer unlock()
-	nativeID, found, err := e.resolveNativeByProduct(ctx, sandboxID)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return nil
-	}
-	route, _ := e.routes.PodRouteByProduct(sandboxID)
-	if err := e.ensureClients(); err != nil {
-		return e.mapRuntimeError(err)
-	}
-
-	operationID := adminDeleteOperationPrefix + nativeID
-	operation, err := e.lifecycle.Delete(ctx, &runtimeapi.SandboxDeleteRequest{
-		OperationId:     operationID,
-		NativeSandboxId: nativeID,
-	})
-	if err != nil {
-		mappedErr := e.mapRuntimeError(err)
-		if status.Code(mappedErr) != codes.NotFound {
-			return mappedErr
-		}
-	} else if err := validateDeleteOperationStatus(operationID, operation); err != nil {
-		// Delete 副作用结果不确定时保留 CRI record 与 route，供后续重试和对账。
-		return err
-	}
-	if err := e.deletePod(route.CRISandboxID); err != nil {
-		return status.Errorf(codes.Internal, "delete AgentENV CRI state: %v", err)
-	}
-	if err := e.routes.DeleteSandbox(sandboxID); err != nil {
-		return status.Errorf(codes.Internal, "delete AgentENV id mapping: %v", err)
-	}
-	return nil
-}
-
-func (e *Engine) AdminListCachedBuilds(context.Context) ([]engine.CachedBuild, error) {
-	return nil, status.Error(codes.Unimplemented, "AgentENV template cache listing is not implemented")
-}
 
 func (e *Engine) AdminPauseSandbox(ctx context.Context, ref engine.SandboxRef, opts engine.AdminOpOptions) (*engine.AdminOpResult, error) {
 	mapping, err := e.resolveMapping(ref)
@@ -304,38 +152,6 @@ func (e *Engine) AdminGetSandboxRuntime(ctx context.Context, ref engine.SandboxR
 	return sandboxRuntimeInfoFromProto(info, mapping, e.config.NodeName, e.config.NodeIP), nil
 }
 
-func (e *Engine) resolveNativeByProduct(ctx context.Context, productSandboxID string) (string, bool, error) {
-	mapping, found := e.routes.PodRouteByProduct(productSandboxID)
-	if found && mapping.NativeSandboxID != "" {
-		return mapping.NativeSandboxID, true, nil
-	}
-	if err := e.ensureClients(); err != nil {
-		return "", false, e.mapRuntimeError(err)
-	}
-	response, err := e.lifecycle.List(ctx, &runtimeapi.SandboxListRequest{
-		ProductSandboxId: productSandboxID,
-		IncludePaused:    true,
-	})
-	if err != nil {
-		return "", false, e.mapRuntimeError(err)
-	}
-	if len(response.GetSandboxes()) == 0 {
-		return "", false, nil
-	}
-	if len(response.GetSandboxes()) > 1 {
-		return "", false, status.Errorf(codes.FailedPrecondition,
-			"multiple AgentENV sandboxes found for product id %s", productSandboxID)
-	}
-	nativeID := response.GetSandboxes()[0].GetNativeSandboxId()
-	if nativeID == "" {
-		return "", false, status.Error(codes.Internal, "AgentENV runtime returned an empty native sandbox id")
-	}
-	if err := e.routes.PutPodRoute(podRoute{Backend: engine.EngineTypeAgentENV, ProductSandboxID: productSandboxID, NativeSandboxID: nativeID}); err != nil {
-		return "", false, status.Errorf(codes.Internal, "persist recovered AgentENV id mapping: %v", err)
-	}
-	return nativeID, true, nil
-}
-
 func (e *Engine) resolveMapping(ref engine.SandboxRef) (podRoute, error) {
 	if ref.CRISandboxID == "" && ref.SandboxID == "" {
 		return podRoute{}, status.Error(codes.InvalidArgument, "cri_sandbox_id or sandbox_id is required")
@@ -358,85 +174,6 @@ func (e *Engine) resolveMapping(ref engine.SandboxRef) (podRoute, error) {
 			ref.CRISandboxID, mapping.ProductSandboxID, ref.SandboxID)
 	}
 	return mapping, nil
-}
-
-func sandboxSpecFromAdmin(spec engine.SandboxSpec) (*runtimeapi.SandboxSpec, error) {
-	if spec.SandboxID == "" {
-		return nil, status.Error(codes.InvalidArgument, "sandbox_id is required")
-	}
-	if spec.StartTime != nil {
-		return nil, status.Error(codes.InvalidArgument, "start_time is not supported by AgentENV Runtime")
-	}
-	if spec.TemplateID == "" && spec.Image == "" {
-		return nil, status.Error(codes.InvalidArgument, "template_id or image is required")
-	}
-	if spec.TemplateID != "" && spec.Image != "" {
-		return nil, status.Error(codes.InvalidArgument, "template_id and image are mutually exclusive")
-	}
-	if spec.Image != "" && spec.BuildID != "" {
-		return nil, status.Error(codes.InvalidArgument, "build_id requires template_id")
-	}
-	if spec.MaxSandboxLengthHours < 0 {
-		return nil, status.Error(codes.InvalidArgument, "max_sandbox_length_hours cannot be negative")
-	}
-	if err := rejectSensitiveValues("metadata", spec.Metadata); err != nil {
-		return nil, err
-	}
-	if err := rejectSensitiveValues("extra", spec.Extra); err != nil {
-		return nil, err
-	}
-
-	source := &runtimeapi.SandboxSource{}
-	if spec.TemplateID != "" {
-		source.Kind = &runtimeapi.SandboxSource_Template{Template: &runtimeapi.TemplateSource{
-			TemplateId: spec.TemplateID,
-			BuildId:    spec.BuildID,
-		}}
-	} else {
-		source.Kind = &runtimeapi.SandboxSource_Image{Image: &runtimeapi.ImageSource{Image: spec.Image}}
-	}
-
-	volumeMounts := make([]*runtimeapi.VolumeMount, 0, len(spec.VolumeMounts))
-	for _, mount := range spec.VolumeMounts {
-		if mount.Path == "" {
-			return nil, status.Error(codes.InvalidArgument, "volume mount path is required")
-		}
-		volumeMounts = append(volumeMounts, &runtimeapi.VolumeMount{
-			Id:   mount.ID,
-			Name: mount.Name,
-			Path: mount.Path,
-			Type: mount.Type,
-		})
-	}
-
-	runtimeSpec := &runtimeapi.SandboxSpec{
-		ProductSandboxId:      spec.SandboxID,
-		Alias:                 spec.Alias,
-		Source:                source,
-		Resources:             &runtimeapi.ResourceSpec{Vcpu: spec.VCPU, MemoryMb: spec.RamMB, DiskMb: spec.DiskMB},
-		MaxSandboxLengthHours: uint64(spec.MaxSandboxLengthHours),
-		AllowInternet:         spec.AllowInternet,
-		EnvVars:               cloneStringMap(spec.EnvVars),
-		Metadata:              cloneStringMap(spec.Metadata),
-		VolumeMounts:          volumeMounts,
-		Extra:                 cloneStringMap(spec.Extra),
-	}
-	if spec.Network != nil {
-		runtimeSpec.Network = networkPolicyToProto(*spec.Network)
-	}
-	if spec.EndTime != nil {
-		runtimeSpec.ExpiresAt = timestamppb.New(*spec.EndTime)
-	}
-	return runtimeSpec, nil
-}
-
-func networkPolicyToProto(policy engine.NetworkPolicy) *runtimeapi.NetworkPolicy {
-	return &runtimeapi.NetworkPolicy{
-		AllowedCidrs:    append([]string(nil), policy.AllowedCIDRs...),
-		DeniedCidrs:     append([]string(nil), policy.DeniedCIDRs...),
-		AllowedDomains:  append([]string(nil), policy.AllowedDomains...),
-		MaskRequestHost: policy.MaskRequestHost,
-	}
 }
 
 func requestFingerprint(spec *runtimeapi.SandboxSpec) ([]byte, error) {
@@ -467,31 +204,6 @@ func cloneStringMap(values map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
-}
-
-func sandboxRuntimeFromProto(info *runtimeapi.SandboxInfo, mapping podRoute, nodeName, nodeIP string) *engine.SandboxRuntime {
-	runtime := &engine.SandboxRuntime{
-		Backend:      string(engine.EngineTypeAgentENV),
-		CRISandboxID: mapping.CRISandboxID,
-		SandboxID:    info.GetProductSandboxId(),
-		State:        runtimePhaseName(info.GetPhase()),
-		NodeName:     nodeName,
-		HostIP:       nodeIP,
-		Extra:        cloneStringMap(info.GetExtra()),
-	}
-	if runtime.SandboxID == "" {
-		runtime.SandboxID = mapping.ProductSandboxID
-	}
-	ensureExtra(runtime, "native_sandbox_id", info.GetNativeSandboxId())
-	if info.GetCreatedAt() != nil {
-		createdAt := info.GetCreatedAt().AsTime()
-		runtime.StartTime = &createdAt
-	}
-	if info.GetExpiresAt() != nil {
-		expiresAt := info.GetExpiresAt().AsTime()
-		runtime.EndTime = &expiresAt
-	}
-	return runtime
 }
 
 func sandboxRuntimeInfoFromProto(info *runtimeapi.SandboxRuntimeInfo, mapping podRoute, nodeName, nodeIP string) *engine.SandboxRuntime {

@@ -17,7 +17,6 @@ func (e *Engine) Module() engine.BackendModule {
 		Descriptor: Descriptor,
 		Engine:     e,
 		Cleaner:    e,
-		Reconciler: e,
 		Restorer:   e,
 		Health:     e,
 	}
@@ -25,12 +24,10 @@ func (e *Engine) Module() engine.BackendModule {
 
 var (
 	_ engine.RuntimeEngine         = (*Engine)(nil)
-	_ engine.AdminLifecycle        = (*Engine)(nil)
 	_ engine.AdminPauser           = (*Engine)(nil)
 	_ engine.AdminCheckpointer     = (*Engine)(nil)
 	_ engine.AdminRuntimeDescriber = (*Engine)(nil)
 	_ engine.Cleaner               = (*Engine)(nil)
-	_ engine.Reconciler            = (*Engine)(nil)
 	_ engine.StateRestorer         = (*Engine)(nil)
 	_ engine.HealthChecker         = (*Engine)(nil)
 )

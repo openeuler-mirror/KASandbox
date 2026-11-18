@@ -5,10 +5,8 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	runtimeapi "github.com/cri-multiplex/pkg/agentenv/runtime/v1"
-	"github.com/cri-multiplex/pkg/engine"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -110,48 +108,5 @@ func TestNativeRestoreRejectsLegacyNetworkWithoutChangingState(t *testing.T) {
 				t.Fatal("拒绝加载不应改写或部分接管状态")
 			}
 		})
-	}
-}
-
-func TestNativeReconcileRecoversPendingAndReclaimsExpired(t *testing.T) {
-	e, lifecycle, _, path := newRuntimeNetworkTestEngine(t)
-	defer e.Close()
-	ctx := context.Background()
-	req := criRunRequest(map[string]string{annTemplate: "template"})
-	if _, err := e.RunPodSandbox(ctx, req); err != nil {
-		t.Fatal(err)
-	}
-	rec, _ := e.getPod("cri-1")
-	native := rec.NativeSandboxID
-	rec.NativeSandboxID = ""
-	rec.State = criStateCreating
-	if err := e.putPod(rec); err != nil {
-		t.Fatal(err)
-	}
-	lifecycle.list = func(context.Context, *runtimeapi.SandboxListRequest) (*runtimeapi.SandboxListResponse, error) {
-		return &runtimeapi.SandboxListResponse{Sandboxes: []*runtimeapi.SandboxInfo{{NativeSandboxId: native, ProductSandboxId: rec.ProductSandboxID, Phase: runtimeapi.SandboxPhase_RUNNING}}}, nil
-	}
-	if err := e.Reconcile(ctx, engine.ReconcileOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	restored, _ := e.getPod("cri-1")
-	if restored.State != criStateReady || restored.NativeSandboxID != native {
-		t.Fatal("未恢复原生投影")
-	}
-	lifecycle.list = nil
-	if err := e.Reconcile(ctx, engine.ReconcileOptions{GracePeriod: time.Hour}); err != nil {
-		t.Fatal(err)
-	}
-	if len(e.listPods()) != 1 {
-		t.Fatal("宽限期内被回收")
-	}
-	if err := e.Reconcile(ctx, engine.ReconcileOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if len(e.listPods()) != 0 {
-		t.Fatal("过期投影未回收")
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatal("Reconcile 不应自行删除原生 netns", err)
 	}
 }

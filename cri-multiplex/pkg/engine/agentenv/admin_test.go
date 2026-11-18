@@ -119,179 +119,6 @@ func newTestEngine(t *testing.T, lifecycle lifecycleAPI, admin adminAPI) (*Engin
 	return newWithClients(Config{RuntimeAddress: "passthrough:///agentenv-test", NodeIP: "10.0.0.1"}, store, routes, lifecycle, admin), store
 }
 
-func TestSandboxSpecFromAdminMapsThreeIDContract(t *testing.T) {
-	expiresAt := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
-	mask := "example.test"
-	spec := core.SandboxSpec{
-		SandboxID:             "product-1",
-		TemplateID:            "template-1",
-		BuildID:               "build-1",
-		Alias:                 "alias-1",
-		VCPU:                  2,
-		RamMB:                 4096,
-		DiskMB:                8192,
-		MaxSandboxLengthHours: 24,
-		AllowInternet:         boolPointer(true),
-		EnvVars:               map[string]string{"MODE": "test"},
-		Metadata:              map[string]string{"team": "kas"},
-		VolumeMounts: []core.VolumeMount{{
-			ID:   "volume-1",
-			Name: "data",
-			Path: "/data",
-			Type: "volume",
-		}},
-		Network: &core.NetworkPolicy{
-			AllowedCIDRs:    []string{"10.0.0.0/8"},
-			DeniedCIDRs:     []string{"0.0.0.0/0"},
-			AllowedDomains:  []string{"example.test"},
-			MaskRequestHost: &mask,
-		},
-		Extra:   map[string]string{"execution_id": "exec-1"},
-		EndTime: &expiresAt,
-	}
-
-	runtimeSpec, err := sandboxSpecFromAdmin(spec)
-	if err != nil {
-		t.Fatalf("sandboxSpecFromAdmin: %v", err)
-	}
-	if runtimeSpec.GetNativeSandboxId() != "" {
-		t.Fatalf("product id must not be reused as native id: %q", runtimeSpec.GetNativeSandboxId())
-	}
-	if runtimeSpec.GetProductSandboxId() != "product-1" {
-		t.Fatalf("product id = %q", runtimeSpec.GetProductSandboxId())
-	}
-	if got := runtimeSpec.GetSource().GetTemplate(); got.GetTemplateId() != "template-1" || got.GetBuildId() != "build-1" {
-		t.Fatalf("template source mismatch: %+v", got)
-	}
-	if runtimeSpec.GetResources().GetVcpu() != 2 || runtimeSpec.GetResources().GetMemoryMb() != 4096 {
-		t.Fatalf("resource mapping mismatch: %+v", runtimeSpec.GetResources())
-	}
-	if runtimeSpec.GetExpiresAt() == nil || !runtimeSpec.GetExpiresAt().AsTime().Equal(expiresAt) {
-		t.Fatalf("expires_at mapping mismatch: %+v", runtimeSpec.GetExpiresAt())
-	}
-	if runtimeSpec.GetNetwork().GetMaskRequestHost() != "example.test" {
-		t.Fatalf("network mapping mismatch: %+v", runtimeSpec.GetNetwork())
-	}
-	if len(runtimeSpec.GetVolumeMounts()) != 1 || runtimeSpec.GetVolumeMounts()[0].GetPath() != "/data" {
-		t.Fatalf("volume mapping mismatch: %+v", runtimeSpec.GetVolumeMounts())
-	}
-}
-
-func TestAdminCreatePersistsNativeMappingAndDerivedOperation(t *testing.T) {
-	const nativeID = "019a0000-0000-7000-8000-000000000001"
-	var captured *runtimeapi.SandboxCreateRequest
-	lifecycle := &fakeLifecycle{create: func(_ context.Context, req *runtimeapi.SandboxCreateRequest) (*runtimeapi.SandboxCreateResponse, error) {
-		captured = req
-		return &runtimeapi.SandboxCreateResponse{Sandbox: &runtimeapi.SandboxInfo{
-			NativeSandboxId:  nativeID,
-			ProductSandboxId: req.GetSpec().GetProductSandboxId(),
-			Phase:            runtimeapi.SandboxPhase_RUNNING,
-		}}, nil
-	}}
-	engine, store := newTestEngine(t, lifecycle, &fakeAdmin{})
-
-	result, err := engine.AdminCreateSandbox(context.Background(), core.SandboxSpec{
-		SandboxID:    "product-1",
-		TemplateID:   "template-1",
-		VCPU:         1,
-		RamMB:        1024,
-		VolumeMounts: []core.VolumeMount{},
-	})
-	if err != nil {
-		t.Fatalf("AdminCreateSandbox: %v", err)
-	}
-	if result.SandboxID != "product-1" || result.ClientID != nativeID {
-		t.Fatalf("create result mismatch: %+v", result)
-	}
-	if captured.GetOperationId() != "admin-create:product-1" {
-		t.Fatalf("operation id = %q", captured.GetOperationId())
-	}
-	if len(captured.GetRequestFingerprint()) != sha256Size {
-		t.Fatalf("fingerprint length = %d", len(captured.GetRequestFingerprint()))
-	}
-	if captured.GetSpec().GetNativeSandboxId() != "" {
-		t.Fatal("adapter must let AgentENV Runtime generate the native UUID")
-	}
-
-	persisted := restoredRoutes(t, store)
-	mapping, ok := persisted.PodRouteByProduct("product-1")
-	if !ok {
-		t.Fatal("mapping not persisted")
-	}
-	if mapping.NativeSandboxID != nativeID || mapping.CRISandboxID != "" {
-		t.Fatalf("mapping mismatch: %+v", mapping)
-	}
-}
-
-func TestAdminDeleteUsesNativeIDAndRemovesMapping(t *testing.T) {
-	const nativeID = "019a0000-0000-7000-8000-000000000002"
-	var deleted string
-	lifecycle := &fakeLifecycle{delete: func(_ context.Context, req *runtimeapi.SandboxDeleteRequest) (*runtimeapi.OperationStatus, error) {
-		deleted = req.GetNativeSandboxId()
-		return nil, status.Error(codes.NotFound, "already gone")
-	}}
-	engine, store := newTestEngine(t, lifecycle, &fakeAdmin{})
-	if err := engine.routes.PutPodRoute(podRoute{Backend: core.EngineTypeAgentENV, ProductSandboxID: "product-2", NativeSandboxID: nativeID}); err != nil {
-		t.Fatalf("seed mapping: %v", err)
-	}
-
-	if err := engine.AdminDeleteSandbox(context.Background(), "product-2"); err != nil {
-		t.Fatalf("AdminDeleteSandbox: %v", err)
-	}
-	if deleted != nativeID {
-		t.Fatalf("delete native id = %q", deleted)
-	}
-	persisted := restoredRoutes(t, store)
-	if _, ok := persisted.PodRouteByProduct("product-2"); ok {
-		t.Fatal("mapping should be removed")
-	}
-}
-
-func TestAdminDeleteRejectsUnknownDeleteOperation(t *testing.T) {
-	const nativeID = "019a0000-0000-7000-8000-000000000720"
-	var requestedOperationID string
-	lifecycle := &fakeLifecycle{delete: func(_ context.Context, req *runtimeapi.SandboxDeleteRequest) (*runtimeapi.OperationStatus, error) {
-		requestedOperationID = req.GetOperationId()
-		return &runtimeapi.OperationStatus{
-			OperationId:  req.GetOperationId(),
-			Action:       "delete",
-			State:        "UNKNOWN",
-			ErrorCode:    "OUTCOME_UNKNOWN",
-			ErrorMessage: "Runtime restarted before delete reached a terminal state",
-		}, nil
-	}}
-	instance, _ := newTestEngine(t, lifecycle, &fakeAdmin{})
-	if err := instance.routes.PutPodRoute(podRoute{
-		Backend:          core.EngineTypeAgentENV,
-		ProductSandboxID: "product-admin-unknown",
-		CRISandboxID:     "cri-admin-unknown",
-		NativeSandboxID:  nativeID,
-	}); err != nil {
-		t.Fatalf("seed route: %v", err)
-	}
-	if err := instance.putPod(podRecord{
-		CRISandboxID:     "cri-admin-unknown",
-		ProductSandboxID: "product-admin-unknown",
-		NativeSandboxID:  nativeID,
-		State:            criStateReady,
-	}); err != nil {
-		t.Fatalf("seed pod record: %v", err)
-	}
-
-	err := instance.AdminDeleteSandbox(context.Background(), "product-admin-unknown")
-	if got := status.Code(err); got != codes.Unavailable {
-		t.Fatalf("AdminDeleteSandbox code = %v, want Unavailable; err=%v", got, err)
-	}
-	if requestedOperationID != adminDeleteOperationPrefix+nativeID {
-		t.Fatalf("operation id = %q", requestedOperationID)
-	}
-	if _, ok := instance.routes.PodRouteByProduct("product-admin-unknown"); !ok {
-		t.Fatal("route was removed after UNKNOWN delete operation")
-	}
-	if record, ok := instance.getPod("cri-admin-unknown"); !ok || record.State != criStateReady {
-		t.Fatalf("pod record after failed delete = %+v, ok=%v; want READY projection retained", record, ok)
-	}
-}
 func TestAdminPauseUsesNativeIDAndValidatesSucceededOperation(t *testing.T) {
 	const nativeID = "019a0000-0000-7000-8000-000000000721"
 	var captured *runtimeapi.SandboxPauseRequest
@@ -555,20 +382,6 @@ func TestUnimplementedCRIMethodIsExplicit(t *testing.T) {
 	}
 }
 
-func TestAdminCreateRejectsCredentialMaterial(t *testing.T) {
-	engine, _ := newTestEngine(t, &fakeLifecycle{}, &fakeAdmin{})
-	_, err := engine.AdminCreateSandbox(context.Background(), core.SandboxSpec{
-		SandboxID:  "product-sensitive",
-		TemplateID: "template-1",
-		Extra:      map[string]string{"envd_access_token": "secret"},
-	})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
-	}
-}
-
-const sha256Size = 32
-
 func boolPointer(value bool) *bool { return &value }
 func restoredRoutes(t *testing.T, store *core.JSONStateStore) *routeTable {
 	t.Helper()
@@ -577,4 +390,17 @@ func restoredRoutes(t *testing.T, store *core.JSONStateStore) *routeTable {
 		t.Fatalf("restore routes: %v", err)
 	}
 	return routes
+}
+
+// 与 Cube 一致：生命周期走 CRI，Admin 仅暴露暂停、快照和运行信息。
+func TestAdminLifecycleIsNotExposed(t *testing.T) {
+	if _, ok := any(&Engine{}).(core.AdminLifecycle); ok {
+		t.Fatal("unexpected AdminLifecycle capability")
+	}
+}
+
+func TestModuleDoesNotReconcile(t *testing.T) {
+	if (&Engine{}).Module().Reconciler != nil {
+		t.Fatal("unexpected active reconciler")
+	}
 }

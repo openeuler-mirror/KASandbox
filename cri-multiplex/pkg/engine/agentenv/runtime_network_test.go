@@ -141,7 +141,7 @@ func TestRuntimeManagedRejectsHostPortBeforeCreatingVM(t *testing.T) {
 		t.Fatal("无效请求产生了资源")
 	}
 }
-func TestRuntimeManagedNetworkIdentityAndMissingNamespace(t *testing.T) {
+func TestRuntimeManagedNetworkIdentityWithoutHostNamespaceProbe(t *testing.T) {
 	e, _, admin, path := newRuntimeNetworkTestEngine(t)
 	if _, err := e.RunPodSandbox(context.Background(), criRunRequest(map[string]string{annTemplate: "template"})); err != nil {
 		t.Fatal(err)
@@ -159,8 +159,8 @@ func TestRuntimeManagedNetworkIdentityAndMissingNamespace(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if ready, err := e.podNetworkReady(rec); err != nil || ready {
-		t.Fatalf("缺失 netns 不应 Ready: %t %v", ready, err)
+	if ready, err := e.podNetworkReady(rec); err != nil || !ready {
+		t.Fatalf("网络状态由 Runtime 提供，mux 不探测宿主 netns: %t %v", ready, err)
 	}
 }
 

@@ -51,7 +51,7 @@ func TestConcurrentStartContainerStartsOneGuestProcess(t *testing.T) {
 }
 
 func TestReopenContainerLogIncrementsGeneration(t *testing.T) {
-	instance, containerID := startStreamingTestContainer(t)
+	instance, containerID := startProcessTestContainer(t)
 	if _, err := instance.ReopenContainerLog(context.Background(), &runtime.ReopenContainerLogRequest{ContainerId: containerID}); err != nil {
 		t.Fatalf("ReopenContainerLog: %v", err)
 	}
@@ -199,4 +199,20 @@ func TestUpdateContainerResourcesIsExplicitlyUnimplemented(t *testing.T) {
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("update resources code = %v, want Unimplemented", status.Code(err))
 	}
+}
+
+func startProcessTestContainer(t *testing.T) (*Engine, string) {
+	t.Helper()
+	instance, _, _ := newReadyContainerTestEngine(t)
+	instance.exec = &fakeExec{startProcess: func(context.Context, *runtimeapi.SandboxProcessStartRequest) (*runtimeapi.SandboxProcessStartResponse, error) {
+		return &runtimeapi.SandboxProcessStartResponse{Pid: 4242}, nil
+	}}
+	created, err := instance.CreateContainer(context.Background(), criCreateContainerRequest("cri-1", "workload", "agentenv.dev/app:v1", 0))
+	if err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	if _, err := instance.StartContainer(context.Background(), &runtime.StartContainerRequest{ContainerId: created.GetContainerId()}); err != nil {
+		t.Fatalf("StartContainer: %v", err)
+	}
+	return instance, created.GetContainerId()
 }

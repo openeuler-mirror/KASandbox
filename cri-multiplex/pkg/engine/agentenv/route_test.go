@@ -2,26 +2,9 @@ package agentenv
 
 import (
 	"testing"
-	"time"
 
 	"github.com/cri-multiplex/pkg/engine"
 )
-
-func TestPrivateMappingCleansNativeOnlyOrphan(t *testing.T) {
-	e, _ := newTestEngine(t, nil, nil)
-	if err := e.putPod(podRecord{CRISandboxID: "pending", State: criStateCreating}); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.routes.PutPodRoute(podRoute{Backend: engine.EngineTypeAgentENV, NativeSandboxID: "orphan"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.reconcileOrphanRoutes(engine.ReconcileOptions{}, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := e.routes.PodRouteByNative("orphan"); ok {
-		t.Fatal("孤立映射被其他 Pod 的空 ID 错误保留")
-	}
-}
 
 func TestPrivateMappingEmptyDeletePreservesPartialIdentity(t *testing.T) {
 	routes := newRouteTable(nil)

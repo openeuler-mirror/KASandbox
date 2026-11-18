@@ -287,3 +287,10 @@ func (w *criLogWriter) Close() error {
 	}
 	return w.file.Close()
 }
+
+func stringPointer(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}

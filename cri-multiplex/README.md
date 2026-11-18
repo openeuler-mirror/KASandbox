@@ -87,6 +87,8 @@ AgentENV backend 默认关闭，通过 `--agentenv-enabled` 和 `--agentenv-runt
 
 AgentENV Pod 准入独立注册：先部署包含 AgentENV provider 的 Webhook 服务，再执行 `python3 deploy/agentenv/webhook.py install`（在仓库根目录运行，依赖 PyYAML、kubectl 和 Kubernetes 1.30+）。脚本复用 `e2b/e2b-webhook` 服务及 TLS Secret，不修改原有准入资源；卸载使用同一脚本的 `uninstall`。
 
+业务命令统一通过 AgentENV SDK 执行；CRI `ExecSync`、`Exec`、`Attach` 返回 `Unimplemented`，不支持 `kubectl exec/attach` 和 exec 类型探针。CRI 容器生命周期及 PortForward 保留。Admin 仅提供 Pause、Checkpoint、GetRuntime；创建和恢复走 CRI，不注册 AdminLifecycle 或主动 Reconciler。
+
 AgentENV 测试集中在 `cri-multiplex/agentenv-verify/`。离线契约检查使用 `python3 cri-multiplex/agentenv-verify/packaging/check_agentenv_contract.py --agentenv <Runtime源码>/src/api/openapi.yml`；Runtime 回归入口为 `runtime/run-release-regression.py`，通过 `--runtime-source` 指定已应用补丁的源码目录。节点集成测试应在独占测试环境执行。
 
 Runtime 协议源在 `proto/agentenv/runtime/v1/runtime.proto`，与配套 Runtime 源码保持一致；Go 消息及 gRPC 文件由 protoc 生成。生成命令在 `cri-multiplex` 下运行：

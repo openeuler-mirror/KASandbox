@@ -37,13 +37,9 @@ type adminAPI interface {
 }
 
 type execAPI interface {
-	ExecSync(context.Context, *v1.SandboxExecSyncRequest, ...grpc.CallOption) (*v1.SandboxExecSyncResponse, error)
 	StartProcess(context.Context, *v1.SandboxProcessStartRequest, ...grpc.CallOption) (*v1.SandboxProcessStartResponse, error)
 	GetProcess(context.Context, *v1.SandboxProcessGetRequest, ...grpc.CallOption) (*v1.SandboxProcessGetResponse, error)
 	ConnectProcess(context.Context, *v1.SandboxProcessConnectRequest, ...grpc.CallOption) (ProcessEventStream, error)
-	SendProcessInput(context.Context, *v1.SandboxProcessInputRequest, ...grpc.CallOption) (*v1.SandboxProcessInputResponse, error)
-	ResizeProcess(context.Context, *v1.SandboxProcessResizeRequest, ...grpc.CallOption) (*v1.SandboxProcessResizeResponse, error)
-	CloseProcessStdin(context.Context, *v1.SandboxProcessCloseStdinRequest, ...grpc.CallOption) (*v1.SandboxProcessCloseStdinResponse, error)
 	StopProcess(context.Context, *v1.SandboxProcessStopRequest, ...grpc.CallOption) (*v1.SandboxProcessStopResponse, error)
 }
 
@@ -88,7 +84,6 @@ type Engine struct {
 	streamingListener net.Listener
 	streamingServer   *http.Server
 	streamingMu       sync.RWMutex
-	streamingReqs     map[string]*streamRequest
 	portForwardReqs   map[string]*portForwardRequest
 	containerOps      sync.Map
 }
@@ -104,7 +99,6 @@ func New(config Config, deps engine.Deps) (*Engine, error) {
 		pods:            make(map[string]*podRecord),
 		containers:      make(map[string]*containerRecord),
 		images:          make(map[string]*imageRecord),
-		streamingReqs:   make(map[string]*streamRequest),
 		portForwardReqs: make(map[string]*portForwardRequest),
 	}
 	return instance, nil
@@ -118,7 +112,6 @@ func newWithClients(config Config, store engine.StateStore, routes *routeTable, 
 		pods:            make(map[string]*podRecord),
 		containers:      make(map[string]*containerRecord),
 		images:          make(map[string]*imageRecord),
-		streamingReqs:   make(map[string]*streamRequest),
 		portForwardReqs: make(map[string]*portForwardRequest),
 		lifecycle:       lifecycle,
 		admin:           admin,
