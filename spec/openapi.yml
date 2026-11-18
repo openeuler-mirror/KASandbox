@@ -115,6 +115,20 @@ components:
         type: string
 
   responses:
+    Maintenance503:
+      description: AgentENV 节点处于维护模式，写请求尚未执行；调用方应等待 Retry-After 后重试。KASandbox 调用方应兼容此响应，但不表示 KASandbox 已实现相同屏障。
+      headers:
+        Retry-After:
+          description: 建议等待的秒数；当前维护屏障返回 5。
+          required: true
+          schema:
+            type: string
+            enum: ["5"]
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
     "400":
       description: Bad request
       content:
@@ -3696,6 +3710,8 @@ paths:
             schema:
               $ref: "#/components/schemas/RuntimeSnapshotMetadata"
       responses:
+        "503":
+          $ref: "#/components/responses/Maintenance503"
         "200":
           description: Pause snapshot metadata written
           content:
@@ -3731,6 +3747,8 @@ paths:
             schema:
               $ref: "#/components/schemas/RuntimeSnapshotMetadata"
       responses:
+        "503":
+          $ref: "#/components/responses/Maintenance503"
         "200":
           description: Checkpoint snapshot template metadata written
           content:
@@ -3789,6 +3807,8 @@ paths:
             schema:
               $ref: "#/components/schemas/BuildStatusRequest"
       responses:
+        "503":
+          $ref: "#/components/responses/Maintenance503"
         "200":
           description: Build status updated (or idempotent repeat with the same value)
         "400":

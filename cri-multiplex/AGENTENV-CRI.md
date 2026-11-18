@@ -6,7 +6,7 @@
 
 共享 RouteTable 保存 CRI、产品和原生 Sandbox ID；可选组合持久化将 route 与 backend state 合并为一次 snapshot。旧字段兼容，旧后端构造方式保留，损坏状态文件处理保持上游行为。
 
-AgentENV 复用 Runtime 原生网络，不使用 CNI pool/direct 或额外 HostPort。本提交不改变共享 CNI/HostPort util，不包含 Webhook、OpenAPI、部署脚本、Runtime RPM、预编译二进制或故障注入脚本。
+AgentENV 复用 Runtime 原生网络，不使用 CNI pool/direct 或额外 HostPort。首个 CRI 提交不改变共享 CNI/HostPort util。后续提交已补充 Webhook、OpenAPI、部署配置及[统一指导](../docs/agentenv-runtime/README.md)；Runtime RPM、预编译二进制或故障注入脚本不在本分支交付范围。
 
 ## 启用与回退
 
@@ -38,4 +38,4 @@ AgentENV 复用 Runtime 原生网络，不使用 CNI pool/direct 或额外 HostP
 
 本分支未包含同事尚未合入当前上游基线的 Cube backend。双方合并时须同时保留 `cmd/cri-multiplex/main.go` 的注册/参数及 `pkg/engine/engine.go` 的 EngineType。不得使用本分支二进制覆盖正在运行 Cube 的组合制品。现场 Cube 配置未修改。
 
-本次只推送 CRI 分支，Webhook、OpenAPI 及统一部署交付留在原准备目录，后续单独审查提交。平台 CI 结果以创建 PR 后实际运行结果为准。
+本分支后续提交补充 Webhook、OpenAPI 及统一部署交付，详见[PR 准备记录](../docs/agentenv-runtime/PR-PREPARATION.md)。平台 CI 结果以创建 PR 后实际运行结果为准。
