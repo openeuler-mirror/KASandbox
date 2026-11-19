@@ -10,9 +10,8 @@ case "${1:-}" in
     install-mock) script=packaging/test_install.py ;;
     rpm-inputs) script=packaging/verify-submission.py ;;
     licenses) script=packaging/verify-license-bundle.py ;;
-    system-ca) script=packaging/run-system-ca.py ;;
     -h|--help|"")
-        echo "用法：bash agentenv-verify/run.sh {cri|webhook|runtime|contract|install-mock|rpm-inputs|licenses|system-ca} [参数]"
+        echo "用法：bash agentenv-verify/run.sh {cri|webhook|runtime|contract|install-mock|rpm-inputs|licenses} [参数]"
         echo "对指定套件使用 --help 查看所需参数。"
         exit 0
         ;;

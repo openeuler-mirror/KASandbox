@@ -115,4 +115,4 @@ cargo test --frozen --release -p agentenv --lib api::internal::tests -- --skip c
 cargo test --frozen --release -p agentenv --lib runtime_server::tests
 ```
 
-安装和回退的模拟验证使用 `bash cri-multiplex/agentenv-verify/run.sh install-mock --script <Runtime源码>/scripts/release/agentenv-cri-runtime-patch/rpm-control.sh`。系统 CA 包验证使用 `run.sh system-ca --runtime-source <Runtime源码>`，由 Python 驱动离线 Rust 探针验证实际 TLS 客户端库。
+安装和回退的模拟验证使用 `bash cri-multiplex/agentenv-verify/run.sh install-mock --script <Runtime源码>/scripts/release/agentenv-cri-runtime-patch/rpm-control.sh`。
