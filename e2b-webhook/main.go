@@ -263,6 +263,7 @@ func buildMatcher(transformer *providers.SandboxTransformer) (*provider.Matcher,
 	list := []provider.Provider{
 		providers.NewE2BProvider(transformer),
 		providers.NewAndroidProvider(),
+		providers.NewCubeProvider(envOr("CUBE_API_URL", "")),
 	}
 	matcher, err := provider.NewMatcher(list...)
 	if err != nil {
