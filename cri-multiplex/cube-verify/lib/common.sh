@@ -15,7 +15,7 @@ CONTAINERD_SOCKET="${CONTAINERD_SOCKET:-/run/containerd/containerd.sock}"
 CUBELET_ADDR="${CUBELET_ADDR:-127.0.0.1:9999}"
 CUBE_API_URL="${CUBE_API_URL:-http://127.0.0.1:3000}"
 CUBE_TEMPLATE="${CUBE_E2E_TEMPLATE:-sandbox-code}"
-CUBE_CLIENT_DIR="${CUBE_CLIENT_DIR:-${MULTIPLEX_DIR}/scripts/cube-e2e}"
+CUBE_CLIENT_DIR="${CUBE_CLIENT_DIR:-${SCRIPT_DIR_COMMON}/cube-e2e}"
 LOG_DIR="${CUBE_VERIFY_LOG_DIR:-${E2E_DIR}/logs}"
 PID_FILE="${E2E_DIR}/multiplex.pid"
 MULTIPLEX_BIN="${MULTIPLEX_DIR}/cri-multiplex"
@@ -102,7 +102,7 @@ start_cube_multiplex() {
   log_pass "cri socket ready: ${SOCKET}"
 }
 
-# 跑 scripts/cube-e2e Go 客户端；mode=e2e|bench|density|concurr|hot
+# 跑 cube-verify/cube-e2e Go 客户端；mode=e2e|bench|density|concurr|hot
 # 用法: run_cube_client <mode> [n] [c]
 # concurr 默认建议小规模（n≈c），避免创建堆积把 p95 拉高。
 run_cube_client() {

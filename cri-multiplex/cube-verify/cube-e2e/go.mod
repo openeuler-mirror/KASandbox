@@ -1,4 +1,4 @@
-module github.com/cri-multiplex/scripts/cube-e2e
+module github.com/cri-multiplex/cube-verify/cube-e2e
 
 go 1.25.4
 
