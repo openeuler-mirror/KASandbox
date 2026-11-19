@@ -17,7 +17,7 @@
   - [3.3 组件与 RPM 分工](#33-组件与-rpm-分工)
 - [4. 环境准备](#4-环境准备)
   - [4.1 系统要求](#41-系统要求)
-  - [4.2 磁盘与 Docker](#42-磁盘与-docker)
+  - [4.2 设置前提（安装前必做）](#42-设置前提安装前必做)
   - [4.3 控制面依赖（MySQL / Redis / MinIO）](#43-控制面依赖mysql--redis--minio)
 - [5. 部署 CubeSandbox](#5-部署-cubesandbox)
   - [5.1 上游 one-click（无本仓补丁）](#51-上游-one-click无本仓补丁)
@@ -93,8 +93,9 @@
 主路径与 [E2B §7](./e2b_user_guide.md#7-模板管理) 对齐：**自构建 OCI → 推 Harbor → `tpl create-from-image`**（详见第 6 章）。
 
 ```bash
+# 0. 先做第 4 章前提：/dev/kvm、/data/cubelet=XFS、Docker ≥ 25
 # 1. 安装 src-openeuler/CubeSandbox 的 RPM 后再部署（详见 5.2）
-#    需 /dev/kvm、/data/cubelet 为 XFS、Docker ≥ 25。不要用 5.1 的上游在线脚本。
+#    不要用 5.1 的上游在线脚本。
 sudo /usr/local/services/cubetoolbox/one-click/install.sh
 
 # 2. 确认控制面 + 计算节点已注册且 Healthy
@@ -209,28 +210,144 @@ kubectl get runtimeclass cube
 
 ## 4. 环境准备
 
+装 RPM 或跑 `install.sh` **之前**先把下面三项就绪；缺任一项，`one-click/install.sh` 会在预检阶段直接退出。
+
 ### 4.1 系统要求
 
 | 项 | 要求 |
 |----|------|
 | 架构 | x86_64 或 aarch64，`/dev/kvm` 可用 |
-| 内存 / 磁盘 | 建议 ≥ 8 GB 内存；`/data/cubelet` ≥ 50 GB（多模板建议 ≥ 200 GB） |
+| 内存 / 磁盘 | ≥ 8 GB 内存；`/data/cubelet` ≥ 50 GB（多模板建议 ≥ 200 GB） |
 | 文件系统 | **`/data/cubelet` 必须为 XFS**（reflink / CoW；ext4 会被 one-click 拒绝） |
+| Docker | **≥ 25** + Compose v2；不要用 snap Docker；openEuler 自带过旧 Docker 不可用 |
 | 权限 | root |
 
-普通云主机无 KVM 时，x86_64 可走 CubeSandbox PVM 方案（见官方[快速开始](https://github.com/TencentCloud/CubeSandbox)）；aarch64 需原生 KVM 裸金属 / 物理机。
+### 4.2 设置前提（安装前必做）
 
-### 4.2 磁盘与 Docker
+#### 4.2.1 KVM（`/dev/kvm`）
 
 ```bash
-# 确认 KVM
+# 检查
 ls -la /dev/kvm
+# 期望类似：crw-rw---- 1 root kvm ... /dev/kvm
+```
 
-# 确认 /data/cubelet 为 XFS（按环境挂载或格式化）
-findmnt -no FSTYPE /data/cubelet
+| 情况 | 做法 |
+|------|------|
+| 裸金属 / 已开嵌套虚拟化的云主机 | 一般已有 `/dev/kvm`；若无设备节点，确认内核模块已加载：`modprobe kvm`（x86 再按平台 `modprobe kvm_intel` 或 `kvm_amd`） |
+| 普通云主机且无 `/dev/kvm`（x86_64） | 可走 CubeSandbox **PVM**（开发/评估用，非生产）：装机时 `CUBE_PVM_ENABLE=1 ./install.sh`；细节见官方 [PVM 部署](https://cubesandbox.com/guide/pvm-deploy.html) / [快速开始](https://github.com/TencentCloud/CubeSandbox) |
+| aarch64 且无 KVM | 需要原生 KVM 裸金属 / 物理机，PVM 路径不适用 |
 
-# Docker：≥ 25 + compose v2（不要用 snap Docker；openEuler 自带过旧 Docker 不可用）
-docker version
+若 `lsmod` 里已有 `kvm_pvm`，安装时必须带 `CUBE_PVM_ENABLE=1`，否则后续建模板容易失败。
+
+#### 4.2.2 `/data/cubelet` 必须是 XFS
+
+`install.sh` 会向上查找承载 `/data/cubelet` 的文件系统；不是 `xfs` 会 `die` 退出。
+
+```bash
+# 检查（目录尚不存在时，看父路径所在 FS）
+mkdir -p /data/cubelet
+findmnt -no FSTYPE,TARGET /data/cubelet
+# 或：df -T /data/cubelet
+# 期望 FSTYPE = xfs
+```
+
+**推荐：单独一块盘格式化为 XFS 后挂到 `/data/cubelet`**（`<DISK>` 换成实际设备，如 `/dev/vdb` / `/dev/sdb1`；**会清空该盘数据**）：
+
+```bash
+# 确认盘符后再执行
+lsblk
+sudo mkfs.xfs -f <DISK>
+sudo mkdir -p /data/cubelet
+sudo mount <DISK> /data/cubelet
+findmnt -no FSTYPE,SOURCE,TARGET /data/cubelet   # 应为 xfs
+
+# 开机自动挂载（用实际 UUID）
+UUID=$(blkid -s UUID -o value <DISK>)
+echo "UUID=${UUID} /data/cubelet xfs defaults,nofail 0 2" | sudo tee -a /etc/fstab
+sudo mount -a
+```
+
+若整机根分区已是 XFS，且空间够用，也可以直接 `mkdir -p /data/cubelet`（父路径是 XFS 即通过预检）；仍建议生产环境用独立数据盘。
+
+#### 4.2.3 Docker ≥ 25 + Compose v2
+
+```bash
+# 检查
+docker version          # Server Version 应 ≥ 25
+docker compose version  # 或 docker-compose version
+```
+
+| 不要用 | 原因 |
+|--------|------|
+| snap Docker | 读不到 `/usr/local/services`；若已装：`sudo snap remove docker` |
+| openEuler / 发行版自带过旧 Docker | 版本往往 &lt; 25，one-click 依赖会失败 |
+
+**方式 A（已装 KASandbox RPM，推荐与 E2B 同机时）**：
+
+```bash
+cd /opt/e2b-infra
+./build.sh --download          # 拉 docker-25.0.5.tgz 与 compose
+sudo ./build.sh --deploy docker
+docker version && docker compose version
+```
+
+**方式 B（静态包，仅装 Docker）**：
+
+```bash
+# 架构二选一
+ARCH=$(uname -m)   # x86_64 或 aarch64
+curl -fsSL -o /tmp/docker.tgz \
+  "https://download.docker.com/linux/static/stable/${ARCH}/docker-25.0.5.tgz"
+sudo tar -xzf /tmp/docker.tgz -C /tmp
+sudo cp /tmp/docker/* /usr/bin/
+
+# Compose v2 插件或独立二进制均可；示意独立二进制：
+COMPOSE_ARCH=$([ "$ARCH" = x86_64 ] && echo x86_64 || echo aarch64)
+sudo curl -fsSL -o /usr/local/bin/docker-compose \
+  "https://github.com/docker/compose/releases/download/v2.40.2/docker-compose-linux-${COMPOSE_ARCH}"
+sudo chmod +x /usr/local/bin/docker-compose
+# 兼容 `docker compose`：可选
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo ln -sfn /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+
+# 若系统无 docker.service，写一份最小 unit 后启动
+if [ ! -f /etc/systemd/system/docker.service ] && [ ! -f /usr/lib/systemd/system/docker.service ]; then
+  sudo tee /etc/systemd/system/docker.service <<'EOF'
+[Unit]
+Description=Docker Application Container Engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/dockerd
+ExecReload=/bin/kill -s HUP $MAINPID
+LimitNOFILE=infinity
+Delegate=yes
+KillMode=process
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+fi
+sudo systemctl daemon-reload
+sudo systemctl enable --now docker
+docker info >/dev/null && echo "docker ok"
+```
+
+也可按 [Docker 官方文档](https://docs.docker.com/engine/install/) 安装 `docker-ce`（同样要求 ≥ 25，且不要用 snap）。
+
+#### 4.2.4 一次验收
+
+三项都通过后再装 RPM / 跑 `install.sh`：
+
+```bash
+test -e /dev/kvm && echo "kvm ok"
+findmnt -no FSTYPE /data/cubelet | grep -qx xfs && echo "xfs ok"
+docker version --format '{{.Server.Version}}'
 docker compose version
 ```
 
@@ -722,7 +839,8 @@ sudo systemctl restart cube-sandbox-cube-api
 | 现象 | 处理 |
 |------|------|
 | `rpm -i cubesandbox` 后无进程 | 正常；必须再跑 `one-click/install.sh` |
-| Cubelet 起不来 / reflink 错误 | 确认 `/data/cubelet` 为 XFS |
+| Cubelet 起不来 / reflink 错误 | 确认 `/data/cubelet` 为 XFS（见 [4.2.2](#422-datacubelet-必须是-xfs)） |
+| `install.sh` 预检失败（无 KVM / 非 XFS / Docker 过旧） | 按 [4.2](#42-设置前提安装前必做) 补齐后再跑 |
 | 模板一直非 READY | `tpl watch`；检查镜像拉取、probe 端口是否监听并返回 2xx、CubeOps 是否有 Healthy 节点 |
 | `DISTRIBUTING` / `no healthy nodes` | `cubeopscli node list`；确认 Cubelet 已向 CubeOps `:3010` 注册且 Ready |
 | Harbor HTTPS x509 / 拉镜像失败 | 给 CubeMaster/TemplateCenter 配置 `SSL_CERT_FILE`（含 Harbor CA）并重启 |
@@ -731,7 +849,7 @@ sudo systemctl restart cube-sandbox-cube-api
 | Resume 失败 | CRI Resume 仅本机 origin；跨节点恢复不在当前 CRI 范围 |
 | Harbor 推了镜像但建模板失败 | 不用 `create_template.py`；用 `tpl create-from-image`；HTTP 仓加 `http://` 前缀 |
 | 只要 Cube、不要 E2B 全家桶 | 可不装 `e2b-infra`；`KASandbox` + `cubesandbox` 即可（无 Harbor 时走 §6.5 预置镜像） |
-| Docker 过旧 / snap | 换 Docker ≥ 25 官方或发行版高版本包 |
+| Docker 过旧 / snap | 见 [4.2.3](#423-docker--25--compose-v2)：卸 snap，装 ≥ 25 |
 | `/internal` 返回 401 | env 里要有 `CUBE_ADMIN_TOKEN`，请求头 `X-Admin-Token` 与之一致，并已重启 cube-api |
 | `last-snapshot` 404 | 先 `pause-snapshot`，再 `POST /internal/builds/{build_id}/status` 且 `status=success` |
 | 删模板 409 | catalog 里仍有 snapshot 引用；先删 snapshot / snapshot-template。此接口不删 CubeMaster 上的真实 `tpl-*` |
