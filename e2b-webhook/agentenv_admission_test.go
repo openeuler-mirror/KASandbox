@@ -42,19 +42,16 @@ func TestAgentENVAdmissionWithTemplateAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name, runtimeClass, template, canonical string
-		allowed, patched                        bool
+		name, runtimeClass, template string
+		allowed, patched             bool
 	}{
-		{"ready", "agentenv", "alias", "", true, true},
-		{"missing", "agentenv", "", "", true, false},
-		{"mismatch", "agentenv", "alias", "wrong", true, false},
-		{"unregistered-runtime", "unregistered", "alias", "", true, false},
+		{"ready", "agentenv", "alias", true, true},
+		{"missing", "agentenv", "", true, false},
+		{"canonical", "agentenv", "canonical", true, false},
+		{"unregistered-runtime", "unregistered", "alias", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{"sandbox.cri/template": tc.template}}, Spec: corev1.PodSpec{RuntimeClassName: &tc.runtimeClass}}
-			if tc.canonical != "" {
-				pod.Annotations["aenv.dev/template-id"] = tc.canonical
-			}
 			response := admitPod(newPodReview(admissionv1.Create, pod), matcher)
 			if response.Allowed != tc.allowed {
 				t.Fatalf("准入结果: %+v", response)
@@ -69,11 +66,8 @@ func TestAgentENVAdmissionWithTemplateAPI(t *testing.T) {
 			if err := json.Unmarshal(response.Patch, &patches); err != nil {
 				t.Fatal(err)
 			}
-			found := map[string]interface{}{}
-			for _, patch := range patches {
-				found[patch.Path] = patch.Value
-			}
-			if found["/metadata/annotations/aenv.dev~1template-id"] != "canonical" || found["/metadata/annotations/sandbox.cri~1build"] != "ready-build" {
+			if len(patches) != 1 || patches[0].Op != "replace" ||
+				patches[0].Path != "/metadata/annotations/sandbox.cri~1template" || patches[0].Value != "canonical" {
 				t.Fatalf("注解错误: %s", response.Patch)
 			}
 		})
@@ -96,12 +90,10 @@ func TestAgentENVAdmissionWithTemplateAPI(t *testing.T) {
 		if err := json.Unmarshal(response.Patch, &patches); err != nil {
 			t.Fatal(err)
 		}
-		for _, patch := range patches {
-			if patch.Path == "/spec/template/metadata/annotations/aenv.dev~1template-id" && patch.Value == "canonical" {
-				return
-			}
+		if len(patches) != 1 || patches[0].Op != "replace" ||
+			patches[0].Path != "/spec/template/metadata/annotations/sandbox.cri~1template" || patches[0].Value != "canonical" {
+			t.Fatalf("BatchSandbox 模板注解错误: %s", response.Patch)
 		}
-		t.Fatalf("缺少 BatchSandbox 模板注解: %s", response.Patch)
 	})
 }
 

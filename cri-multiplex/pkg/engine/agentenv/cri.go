@@ -2,14 +2,11 @@ package agentenv
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -23,35 +20,9 @@ import (
 )
 
 const (
-	annBackend           = "sandbox.cri/backend"
-	annSandboxID         = "sandbox.cri/sandbox-id"
-	annTemplate          = "sandbox.cri/template"
-	annBuild             = "sandbox.cri/build"
-	annMetadata          = "sandbox.cri/metadata"
-	annVCPU              = "sandbox.cri/vcpu"
-	annMemoryMB          = "sandbox.cri/memory-mb"
-	annDiskMB            = "sandbox.cri/disk-mb"
-	annCanonicalTemplate = "aenv.dev/template-id"
-	annTimeoutSeconds    = "aenv.dev/timeout-seconds"
-	annAutoPause         = "aenv.dev/auto-pause"
-	annAutoResume        = "aenv.dev/auto-resume"
-	annSecure            = "aenv.dev/secure"
-	annAllowInternet     = "aenv.dev/allow-internet"
-	annNetwork           = "aenv.dev/network"
-	annEnvVars           = "aenv.dev/env-vars"
-	annCustomParams      = "aenv.dev/custom-extension-params"
-	annMaxLengthHours    = "aenv.dev/max-sandbox-length-hours"
-	annVolumeMounts      = "aenv.dev/volume-mounts"
-
-	defaultCRIOperationTimeoutSeconds = 300
-	maxCRIOperationTimeoutSeconds     = 86400
-	maxCRISandboxLengthHours          = 8760
-	maxAnnotationJSONBytes            = 32 * 1024
-	maxAutoResumeJSONBytes            = 1024
-	maxStringMapEntries               = 256
-	maxCustomParamsFields             = 64
+	annTemplate                       = "sandbox.cri/template"
 	templateRefMaxLength              = 512
-	buildRefMaxLength                 = 128
+	defaultCRIOperationTimeoutSeconds = 300
 	defaultCRIDeleteTimeoutSeconds    = 60
 	// CRI sandbox 生命周期由 kubelet 管理，不能继承 Runtime 原生 API 的 15 秒默认 TTL。
 	defaultCRISandboxMaxLengthHours = 24
@@ -90,28 +61,13 @@ func validateDeleteOperationStatus(expectedOperationID string, operation *runtim
 
 type createPlan struct {
 	criID       string
-	podUID      string
 	name        string
 	namespace   string
 	templateID  string
-	buildID     string
 	labels      map[string]string
 	annotations map[string]string
 	podConfig   *runtime.PodSandboxConfig
 	spec        *runtimeapi.SandboxSpec
-	timeout     uint64
-}
-
-type networkAnnotation struct {
-	AllowedCIDRs    []string `json:"allowed_cidrs"`
-	DeniedCIDRs     []string `json:"denied_cidrs"`
-	AllowedDomains  []string `json:"allowed_domains"`
-	AllowPublic     *bool    `json:"allow_public_traffic"`
-	MaskRequestHost *string  `json:"mask_request_host"`
-}
-
-type autoResumeAnnotation struct {
-	Enabled bool `json:"enabled"`
 }
 
 // RunPodSandbox 是 AgentENV 的 CRI 创建主路径，只接受 template source。
@@ -139,7 +95,7 @@ func (e *Engine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRe
 		return nil, status.Errorf(codes.Internal, "fingerprint AgentENV create request: %v", err)
 	}
 	if existing, ok := e.getPod(plan.criID); ok {
-		if existing.PodUID != plan.podUID {
+		if existing.PodUID != plan.criID {
 			return nil, status.Error(codes.AlreadyExists, "sandbox id belongs to another Pod")
 		}
 		if existing.RequestFingerprint != "" && existing.RequestFingerprint != string(fingerprint) {
@@ -178,12 +134,11 @@ func (e *Engine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRe
 	now := time.Now()
 	record := podRecord{
 		CRISandboxID:       plan.criID,
-		PodUID:             plan.podUID,
+		PodUID:             plan.criID,
 		Name:               plan.name,
 		Namespace:          plan.namespace,
 		LogDirectory:       plan.podConfig.GetLogDirectory(),
 		TemplateID:         plan.templateID,
-		BuildID:            plan.buildID,
 		Labels:             cloneStringMap(plan.labels),
 		Annotations:        cloneStringMap(plan.annotations),
 		CreateOperationID:  "cri-create:" + plan.criID,
@@ -209,7 +164,7 @@ func (e *Engine) completePodCreate(ctx context.Context, plan *createPlan, record
 		OperationId:        record.CreateOperationID,
 		RequestFingerprint: []byte(fingerprint),
 		Spec:               plan.spec,
-		TimeoutSeconds:     plan.timeout,
+		TimeoutSeconds:     defaultCRIOperationTimeoutSeconds,
 	})
 	if err != nil {
 		mapped := e.mapRuntimeError(err)
@@ -530,148 +485,39 @@ func buildCreatePlan(req *runtime.RunPodSandboxRequest) (*createPlan, error) {
 	if req == nil || req.GetConfig() == nil || req.GetConfig().GetMetadata() == nil {
 		return nil, status.Error(codes.InvalidArgument, "pod sandbox config and metadata are required")
 	}
-	meta := req.GetConfig().GetMetadata()
-	annotations := cloneStringMap(req.GetConfig().GetAnnotations())
-	if err := validateAgentENVAnnotations(annotations); err != nil {
-		return nil, err
+	config := req.GetConfig()
+	meta := config.GetMetadata()
+	templateID := strings.TrimSpace(config.GetAnnotations()[annTemplate])
+	if templateID == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "%s is required", annTemplate)
 	}
-	if backend := strings.TrimSpace(annotations[annBackend]); backend != "" && backend != string(engine.EngineTypeAgentENV) {
-		return nil, status.Errorf(codes.InvalidArgument, "%s=%q is inconsistent with runtime handler agentenv", annBackend, backend)
-	}
-	templateEntry := strings.TrimSpace(annotations[annTemplate])
-	if templateEntry == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "%s is required; image/TEMPLATE_NAME/Pod name fallback is forbidden", annTemplate)
+	if len(templateID) > templateRefMaxLength {
+		return nil, status.Errorf(codes.InvalidArgument, "%s exceeds %d bytes", annTemplate, templateRefMaxLength)
 	}
 	if meta.GetUid() == "" {
 		return nil, status.Error(codes.InvalidArgument, "pod sandbox UID is required")
 	}
-	criID := strings.TrimSpace(annotations[annSandboxID])
-	if criID == "" {
-		criID = meta.GetUid()
-	}
-	templateID := strings.TrimSpace(annotations[annCanonicalTemplate])
-	if templateID == "" {
-		templateID = templateEntry
-	}
 
 	autoPause := false
-	if raw, ok := annotations[annAutoPause]; ok && raw != "" {
-		parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid %s: %v", annAutoPause, err)
-		}
-		if parsed {
-			return nil, status.Errorf(codes.InvalidArgument, "%s=true is forbidden on CRI sandboxes", annAutoPause)
-		}
-		autoPause = parsed
-	}
-	autoResume := autoResumeAnnotation{}
-	if raw := strings.TrimSpace(annotations[annAutoResume]); raw != "" {
-		if len(raw) > maxAutoResumeJSONBytes {
-			return nil, status.Errorf(codes.InvalidArgument, "%s exceeds %d bytes", annAutoResume, maxAutoResumeJSONBytes)
-		}
-		if err := decodeStrictJSON(annAutoResume, raw, &autoResume); err != nil {
-			return nil, err
-		}
-	}
-	envVars, err := parseStringMapAnnotation(annotations[annEnvVars])
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid %s JSON: %v", annEnvVars, err)
-	}
-	metadata, err := parseStringMapAnnotation(annotations[annMetadata])
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid %s JSON: %v", annMetadata, err)
-	}
-	if err := rejectSensitiveValues("metadata", metadata); err != nil {
-		return nil, err
-	}
-	if err := rejectSensitiveValues("env_vars", envVars); err != nil {
-		return nil, err
-	}
-	network, err := parseNetworkAnnotation(annotations[annNetwork])
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid %s JSON: %v", annNetwork, err)
-	}
-	customParams := strings.TrimSpace(annotations[annCustomParams])
-	if customParams != "" {
-		if len(customParams) > maxAnnotationJSONBytes {
-			return nil, status.Errorf(codes.InvalidArgument, "%s exceeds %d bytes", annCustomParams, maxAnnotationJSONBytes)
-		}
-		var fields map[string]json.RawMessage
-		if err := decodeStrictJSON(annCustomParams, customParams, &fields); err != nil {
-			return nil, err
-		}
-		if len(fields) > maxCustomParamsFields {
-			return nil, status.Errorf(codes.InvalidArgument, "%s exceeds %d top-level fields", annCustomParams, maxCustomParamsFields)
-		}
-		if err := rejectSensitiveJSON(annCustomParams, customParams); err != nil {
-			return nil, err
-		}
-	}
-	vcpu, err := parseInt64Annotation(annotations, annVCPU)
-	if err != nil {
-		return nil, err
-	}
-	memoryMB, err := parseInt64Annotation(annotations, annMemoryMB)
-	if err != nil {
-		return nil, err
-	}
-	diskMB, err := parseInt64Annotation(annotations, annDiskMB)
-	if err != nil {
-		return nil, err
-	}
-	maxLength, err := parseUint64Annotation(annotations, annMaxLengthHours)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(annotations[annMaxLengthHours]) == "" {
-		maxLength = defaultCRISandboxMaxLengthHours
-	} else if maxLength == 0 || maxLength > maxCRISandboxLengthHours {
-		return nil, status.Errorf(codes.InvalidArgument, "%s must be between 1 and %d", annMaxLengthHours, maxCRISandboxLengthHours)
-	}
-	timeout, err := parseTimeout(annotations[annTimeoutSeconds])
-	if err != nil {
-		return nil, err
-	}
-	secure, err := parseOptionalBoolAnnotation(annotations, annSecure)
-	if err != nil {
-		return nil, err
-	}
-	allowInternet, err := parseOptionalBoolAnnotation(annotations, annAllowInternet)
-	if err != nil {
-		return nil, err
-	}
-
-	spec := &runtimeapi.SandboxSpec{
-		ProductSandboxId: criID,
-		Alias:            meta.GetName(),
-		Source: &runtimeapi.SandboxSource{Kind: &runtimeapi.SandboxSource_Template{Template: &runtimeapi.TemplateSource{
-			TemplateId: templateID,
-			BuildId:    strings.TrimSpace(annotations[annBuild]),
-		}}},
-		Resources:                 &runtimeapi.ResourceSpec{Vcpu: vcpu, MemoryMb: memoryMB, DiskMb: diskMB},
-		MaxSandboxLengthHours:     maxLength,
-		AllowInternet:             allowInternet,
-		Secure:                    secure,
-		AutoPause:                 &autoPause,
-		AutoResume:                &runtimeapi.AutoResumeConfig{Enabled: autoResume.Enabled},
-		EnvVars:                   envVars,
-		Metadata:                  metadata,
-		Network:                   network,
-		CustomExtensionParamsJson: customParams,
-	}
 	return &createPlan{
-		criID:       criID,
-		podUID:      meta.GetUid(),
+		criID:       meta.GetUid(),
 		name:        meta.GetName(),
 		namespace:   meta.GetNamespace(),
 		templateID:  templateID,
-		buildID:     strings.TrimSpace(annotations[annBuild]),
-		labels:      cloneStringMap(req.GetConfig().GetLabels()),
-		annotations: annotations,
-		podConfig:   req.GetConfig(),
-		spec:        spec,
-		timeout:     timeout,
+		labels:      cloneStringMap(config.GetLabels()),
+		annotations: cloneStringMap(config.GetAnnotations()),
+		podConfig:   config,
+		spec: &runtimeapi.SandboxSpec{
+			ProductSandboxId: meta.GetUid(),
+			Alias:            meta.GetName(),
+			Source: &runtimeapi.SandboxSource{Kind: &runtimeapi.SandboxSource_Template{Template: &runtimeapi.TemplateSource{
+				TemplateId: templateID,
+			}}},
+			Resources:             &runtimeapi.ResourceSpec{},
+			MaxSandboxLengthHours: defaultCRISandboxMaxLengthHours,
+			AutoPause:             &autoPause,
+			AutoResume:            &runtimeapi.AutoResumeConfig{},
+		},
 	}, nil
 }
 
@@ -727,267 +573,6 @@ func labelsMatch(labels, selector map[string]string) bool {
 		}
 	}
 	return true
-}
-
-func validateAgentENVAnnotations(annotations map[string]string) error {
-	allowed := map[string]struct{}{
-		annCanonicalTemplate: {}, annTimeoutSeconds: {}, annAutoPause: {}, annAutoResume: {},
-		annSecure: {}, annAllowInternet: {}, annNetwork: {}, annEnvVars: {},
-		annCustomParams: {}, annMaxLengthHours: {},
-	}
-	for key := range annotations {
-		if strings.HasPrefix(key, "aenv.dev/") {
-			if _, ok := allowed[key]; !ok {
-				return status.Errorf(codes.InvalidArgument, "unknown AgentENV annotation %q", key)
-			}
-		}
-	}
-	if _, exists := annotations[annVolumeMounts]; exists {
-		return status.Errorf(codes.InvalidArgument, "%s is reserved and not implemented", annVolumeMounts)
-	}
-	limits := map[string]int{
-		annTemplate: templateRefMaxLength, annBuild: buildRefMaxLength,
-		annCanonicalTemplate: templateRefMaxLength, annAutoResume: maxAutoResumeJSONBytes,
-		annNetwork: maxAnnotationJSONBytes, annEnvVars: maxAnnotationJSONBytes,
-		annMetadata: maxAnnotationJSONBytes, annCustomParams: maxAnnotationJSONBytes,
-	}
-	for key, limit := range limits {
-		if len(strings.TrimSpace(annotations[key])) > limit {
-			return status.Errorf(codes.InvalidArgument, "%s exceeds %d bytes", key, limit)
-		}
-	}
-	return nil
-}
-
-func decodeStrictJSON(field, raw string, dst any) error {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "null" {
-		return status.Errorf(codes.InvalidArgument, "%s must be a JSON object", field)
-	}
-	if err := validateJSONNoDuplicateKeys(raw); err != nil {
-		return status.Errorf(codes.InvalidArgument, "invalid %s JSON: %v", field, err)
-	}
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	decoder.UseNumber()
-	if err := decoder.Decode(dst); err != nil {
-		return status.Errorf(codes.InvalidArgument, "invalid %s JSON: %v", field, err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return status.Errorf(codes.InvalidArgument, "invalid %s JSON: trailing data", field)
-		}
-		return status.Errorf(codes.InvalidArgument, "invalid %s JSON: %v", field, err)
-	}
-	return nil
-}
-
-func validateJSONNoDuplicateKeys(raw string) error {
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.UseNumber()
-	if err := walkJSONValue(decoder); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return errors.New("trailing data")
-		}
-		return err
-	}
-	return nil
-}
-
-func walkJSONValue(decoder *json.Decoder) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	delim, ok := token.(json.Delim)
-	if !ok {
-		return nil
-	}
-	switch delim {
-	case '{':
-		seen := make(map[string]struct{})
-		for decoder.More() {
-			keyToken, err := decoder.Token()
-			if err != nil {
-				return err
-			}
-			key, ok := keyToken.(string)
-			if !ok {
-				return errors.New("object key is not a string")
-			}
-			if _, exists := seen[key]; exists {
-				return fmt.Errorf("duplicate key %q", key)
-			}
-			seen[key] = struct{}{}
-			if err := walkJSONValue(decoder); err != nil {
-				return err
-			}
-		}
-		if end, err := decoder.Token(); err != nil || end != json.Delim('}') {
-			return errors.New("object is not closed")
-		}
-	case '[':
-		for decoder.More() {
-			if err := walkJSONValue(decoder); err != nil {
-				return err
-			}
-		}
-		if end, err := decoder.Token(); err != nil || end != json.Delim(']') {
-			return errors.New("array is not closed")
-		}
-	default:
-		return fmt.Errorf("unexpected delimiter %q", delim)
-	}
-	return nil
-}
-
-func rejectSensitiveJSON(field, raw string) error {
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil {
-		return status.Errorf(codes.InvalidArgument, "invalid %s JSON: %v", field, err)
-	}
-	return walkSensitiveJSON(field, "", value)
-}
-
-func walkSensitiveJSON(field, path string, value any) error {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, child := range typed {
-			if sensitiveKey(key) {
-				return status.Errorf(codes.InvalidArgument, "%s key %q contains credential material; use AccessDescriptor instead", field, key)
-			}
-			childPath := key
-			if path != "" {
-				childPath = path + "." + key
-			}
-			if err := walkSensitiveJSON(field, childPath, child); err != nil {
-				return err
-			}
-		}
-	case []any:
-		for index, child := range typed {
-			if err := walkSensitiveJSON(field, fmt.Sprintf("%s[%d]", path, index), child); err != nil {
-				return err
-			}
-		}
-	case string:
-		if sensitiveValue(typed) {
-			return status.Errorf(codes.InvalidArgument, "%s field %q contains credential material; use AccessDescriptor instead", field, path)
-		}
-	}
-	return nil
-}
-
-func sensitiveKey(key string) bool {
-	lower := strings.ToLower(strings.TrimSpace(key))
-	for _, marker := range []string{"password", "passwd", "token", "secret", "api_key", "apikey", "private_key", "credential"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func sensitiveValue(value string) bool {
-	lower := strings.ToLower(strings.TrimSpace(value))
-	if strings.HasPrefix(lower, "bearer ") {
-		return true
-	}
-	return strings.Contains(lower, "-----begin") && strings.Contains(lower, "private key-----")
-}
-
-func parseStringMapAnnotation(raw string) (map[string]string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-	if len(raw) > maxAnnotationJSONBytes {
-		return nil, fmt.Errorf("JSON exceeds %d bytes", maxAnnotationJSONBytes)
-	}
-	var values map[string]string
-	if err := decodeStrictJSON("string map", raw, &values); err != nil {
-		return nil, err
-	}
-	if len(values) > maxStringMapEntries {
-		return nil, fmt.Errorf("map exceeds %d entries", maxStringMapEntries)
-	}
-	return cloneStringMap(values), nil
-}
-
-func parseNetworkAnnotation(raw string) (*runtimeapi.NetworkPolicy, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-	if len(raw) > maxAnnotationJSONBytes {
-		return nil, fmt.Errorf("JSON exceeds %d bytes", maxAnnotationJSONBytes)
-	}
-	var value networkAnnotation
-	if err := decodeStrictJSON(annNetwork, raw, &value); err != nil {
-		return nil, err
-	}
-	return &runtimeapi.NetworkPolicy{
-		AllowedCidrs:       append([]string(nil), value.AllowedCIDRs...),
-		DeniedCidrs:        append([]string(nil), value.DeniedCIDRs...),
-		AllowedDomains:     append([]string(nil), value.AllowedDomains...),
-		AllowPublicTraffic: value.AllowPublic,
-		MaskRequestHost:    value.MaskRequestHost,
-	}, nil
-}
-
-func parseInt64Annotation(annotations map[string]string, key string) (int64, error) {
-	raw := strings.TrimSpace(annotations[key])
-	if raw == "" {
-		return 0, nil
-	}
-	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || value < 0 {
-		return 0, status.Errorf(codes.InvalidArgument, "%s must be a non-negative integer", key)
-	}
-	return value, nil
-}
-
-func parseUint64Annotation(annotations map[string]string, key string) (uint64, error) {
-	raw := strings.TrimSpace(annotations[key])
-	if raw == "" {
-		return 0, nil
-	}
-	value, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil {
-		return 0, status.Errorf(codes.InvalidArgument, "%s must be a non-negative integer", key)
-	}
-	return value, nil
-}
-
-func parseOptionalBoolAnnotation(annotations map[string]string, key string) (*bool, error) {
-	raw, ok := annotations[key]
-	if !ok || strings.TrimSpace(raw) == "" {
-		return nil, nil
-	}
-	value, err := strconv.ParseBool(strings.TrimSpace(raw))
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid %s: %v", key, err)
-	}
-	return &value, nil
-}
-
-func parseTimeout(raw string) (uint64, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return defaultCRIOperationTimeoutSeconds, nil
-	}
-	value, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil || value == 0 || value > maxCRIOperationTimeoutSeconds {
-		return 0, status.Errorf(codes.InvalidArgument, "%s must be between 1 and %d", annTimeoutSeconds, maxCRIOperationTimeoutSeconds)
-	}
-	return value, nil
 }
 
 func unimplemented(method string) error {

@@ -36,7 +36,6 @@ type podRecord struct {
 	Namespace          string                `json:"namespace"`
 	LogDirectory       string                `json:"log_directory,omitempty"`
 	TemplateID         string                `json:"template_id"`
-	BuildID            string                `json:"build_id"`
 	Labels             map[string]string     `json:"labels,omitempty"`
 	Annotations        map[string]string     `json:"annotations,omitempty"`
 	CNIRecord          json.RawMessage       `json:"cni_record,omitempty"`
@@ -96,7 +95,8 @@ func (e *Engine) restorePods() error {
 	pods := make(map[string]*podRecord, len(state.Pods))
 	for i := range state.Pods {
 		record := state.Pods[i]
-		if id := record.Annotations[annSandboxID]; id != "" && id != record.CRISandboxID {
+		// 检查旧版持久化记录，创建请求统一使用 Pod UID。
+		if id := record.Annotations["sandbox.cri/sandbox-id"]; id != "" && id != record.CRISandboxID && record.PodUID != record.CRISandboxID {
 			return fmt.Errorf("agentenv pods: old sandbox ID mapping for %s; drain with the previous version before switching", record.CRISandboxID)
 		}
 		if record.CRISandboxID == "" {

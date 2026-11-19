@@ -25,11 +25,8 @@ func TestRunPodSandboxDifferentSandboxesRunConcurrently(t *testing.T) {
 	}}
 	instance, _ := newCRITestEngine(t, lifecycle)
 
-	newRequest := func(uid, productID string) *runtime.RunPodSandboxRequest {
-		req := criRunRequest(map[string]string{
-			annTemplate:  "template-1",
-			annSandboxID: productID,
-		})
+	newRequest := func(uid string) *runtime.RunPodSandboxRequest {
+		req := criRunRequest(map[string]string{annTemplate: "template-1"})
 		req.GetConfig().GetMetadata().Uid = uid
 		req.GetConfig().GetMetadata().Name = uid
 		return req
@@ -37,11 +34,11 @@ func TestRunPodSandboxDifferentSandboxesRunConcurrently(t *testing.T) {
 
 	errs := make(chan error, 2)
 	go func() {
-		_, err := instance.RunPodSandbox(context.Background(), newRequest("cri-a", "product-a"))
+		_, err := instance.RunPodSandbox(context.Background(), newRequest("cri-a"))
 		errs <- err
 	}()
 	go func() {
-		_, err := instance.RunPodSandbox(context.Background(), newRequest("cri-b", "product-b"))
+		_, err := instance.RunPodSandbox(context.Background(), newRequest("cri-b"))
 		errs <- err
 	}()
 

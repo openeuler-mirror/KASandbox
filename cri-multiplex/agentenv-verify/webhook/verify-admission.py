@@ -11,22 +11,16 @@ def main():
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--alias", required=True)
     parser.add_argument("--template-id", required=True)
-    parser.add_argument("--build-id", required=True)
     args = parser.parse_args()
 
     prefix = "agentenv-admission-" + uuid.uuid4().hex[:10]
-    for case, template, build in (
-        ("alias", args.alias, None),
-        ("native-id", args.template_id, None),
-        ("pinned-build", args.alias, args.build_id),
+    for case, template, expected in (
+        ("alias", args.alias, args.template_id),
+        ("native-id", args.template_id, args.template_id),
         ("missing-template", None, None),
-        ("unknown-template", prefix, None),
+        ("unknown-template", prefix, prefix),
     ):
-        annotations = {}
-        if template is not None:
-            annotations["sandbox.cri/template"] = template
-        if build is not None:
-            annotations["sandbox.cri/build"] = build
+        annotations = {"sandbox.cri/template": template} if template is not None else {}
         pod = {
             "apiVersion": "v1",
             "kind": "Pod",
@@ -48,11 +42,13 @@ def main():
         if admitted["spec"]["runtimeClassName"] != "agentenv":
             raise RuntimeError(f"{case}: runtimeClassName 发生变化")
         actual = admitted["metadata"].get("annotations", {})
-        resolved = case in {"alias", "native-id", "pinned-build"}
-        expected = (args.template_id, args.build_id) if resolved else (None, None)
-        observed = (actual.get("aenv.dev/template-id"), actual.get("sandbox.cri/build"))
-        if observed != expected:
-            raise RuntimeError(f"{case}: 模板注解预期 {expected!r}，实际 {observed!r}")
+        expected_annotations = {"sandbox.cri/template": expected} if expected is not None else {}
+        actual_template = {
+            name: value for name, value in actual.items()
+            if name.startswith(("aenv.dev/", "sandbox.cri/"))
+        }
+        if actual_template != expected_annotations:
+            raise RuntimeError(f"{case}: 模板注解预期 {expected_annotations!r}，实际 {actual_template!r}")
         print(f"PASS {case}")
 
 

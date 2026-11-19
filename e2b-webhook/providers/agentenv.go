@@ -16,25 +16,14 @@ import (
 const (
 	agentENVProviderName = "agentenv"
 
-	annAgentENVTemplate          = "sandbox.cri/template"
-	annAgentENVBuild             = "sandbox.cri/build"
-	annAgentENVCanonicalTemplate = "aenv.dev/template-id"
-
 	agentENVTemplateRefMaxLen     = 512
-	agentENVBuildRefMaxLen        = 128
 	agentENVTemplateResponseLimit = 1 << 20
 	defaultAgentENVResolveTimeout = 2 * time.Second
 )
 
-// TemplateResolution 是只读模板解析后的稳定身份。
-type TemplateResolution struct {
-	CanonicalTemplateID string
-	BuildID             string
-}
-
-// TemplateResolver 从 template ID 或 alias 解析 canonical template 与可用 build。
+// TemplateResolver 将模板别名或 ID 解析为 Runtime 使用的模板 ID。
 type TemplateResolver interface {
-	ResolveTemplate(ctx context.Context, templateRef string, buildRef string) (TemplateResolution, error)
+	ResolveTemplate(ctx context.Context, templateRef string) (string, error)
 }
 
 // AgentENVProvider 将 RuntimeClass 命中的对象解析为 AgentENV 注入注解。
@@ -55,45 +44,25 @@ func (p *AgentENVProvider) Resolve(ctx context.Context, req provider.Request) (*
 	if p == nil || p.resolver == nil {
 		return nil, fmt.Errorf("agentenv template resolver is not configured")
 	}
-	templateRef := strings.TrimSpace(req.Annotations[annAgentENVTemplate])
+	rawTemplate := req.Annotations[provider.AnnTemplate]
+	templateRef := strings.TrimSpace(rawTemplate)
 	if templateRef == "" {
-		return nil, fmt.Errorf("annotation %s is required", annAgentENVTemplate)
+		return nil, fmt.Errorf("annotation %s is required", provider.AnnTemplate)
 	}
-	buildRef := strings.TrimSpace(req.Annotations[annAgentENVBuild])
-
-	resolved, err := p.resolver.ResolveTemplate(ctx, templateRef, buildRef)
+	canonicalID, err := p.resolver.ResolveTemplate(ctx, templateRef)
 	if err != nil {
 		return nil, err
 	}
-	canonicalID := strings.TrimSpace(resolved.CanonicalTemplateID)
-	if canonicalID == "" {
-		return nil, fmt.Errorf("template resolver returned an empty canonical template ID")
-	}
-	if len(canonicalID) > agentENVTemplateRefMaxLen {
-		return nil, fmt.Errorf("canonical template ID exceeds %d characters", agentENVTemplateRefMaxLen)
+	canonicalID = strings.TrimSpace(canonicalID)
+	if canonicalID == "" || len(canonicalID) > agentENVTemplateRefMaxLen {
+		return nil, fmt.Errorf("resolved template ID must be 1..%d bytes", agentENVTemplateRefMaxLen)
 	}
 
-	existingCanonical := strings.TrimSpace(req.Annotations[annAgentENVCanonicalTemplate])
-	if existingCanonical != "" && existingCanonical != canonicalID {
-		return nil, fmt.Errorf("annotation %s does not match resolved template", annAgentENVCanonicalTemplate)
+	result := &provider.Result{RuntimeClass: agentENVProviderName}
+	if rawTemplate != canonicalID {
+		result.Annotations = map[string]string{provider.AnnTemplate: canonicalID}
 	}
-
-	annotations := make(map[string]string, 2)
-	if existingCanonical == "" {
-		annotations[annAgentENVCanonicalTemplate] = canonicalID
-	}
-	resolvedBuildID := strings.TrimSpace(resolved.BuildID)
-	if buildRef == "" && resolvedBuildID != "" {
-		if len(resolvedBuildID) > agentENVBuildRefMaxLen {
-			return nil, fmt.Errorf("resolved build ID exceeds %d characters", agentENVBuildRefMaxLen)
-		}
-		annotations[annAgentENVBuild] = resolvedBuildID
-	}
-
-	return &provider.Result{
-		Annotations:  annotations,
-		RuntimeClass: agentENVProviderName,
-	}, nil
+	return result, nil
 }
 
 // AgentENVTemplateResolver 通过 AgentENV 只读模板 API 解析模板。
@@ -136,45 +105,37 @@ func NewAgentENVTemplateResolver(apiURL, apiKey string, timeout time.Duration) (
 }
 
 // ResolveTemplate 先解析 alias，再校验 build 状态并返回 canonical 身份。
-func (r *AgentENVTemplateResolver) ResolveTemplate(ctx context.Context, templateRef string, buildRef string) (TemplateResolution, error) {
+func (r *AgentENVTemplateResolver) ResolveTemplate(ctx context.Context, templateRef string) (string, error) {
 	if r == nil || r.client == nil {
-		return TemplateResolution{}, fmt.Errorf("template resolver is not configured")
+		return "", fmt.Errorf("template resolver is not configured")
 	}
 	// 一次解析共用超时预算，避免多个只读请求累计超过准入超时。
 	ctx, cancel := context.WithTimeout(ctx, r.client.Timeout)
 	defer cancel()
 	templateRef = strings.TrimSpace(templateRef)
 	if templateRef == "" || len(templateRef) > agentENVTemplateRefMaxLen {
-		return TemplateResolution{}, fmt.Errorf("template reference must be 1..%d characters", agentENVTemplateRefMaxLen)
-	}
-	buildRef = strings.TrimSpace(buildRef)
-	if len(buildRef) > agentENVBuildRefMaxLen {
-		return TemplateResolution{}, fmt.Errorf("build reference exceeds %d characters", agentENVBuildRefMaxLen)
+		return "", fmt.Errorf("template reference must be 1..%d characters", agentENVTemplateRefMaxLen)
 	}
 
 	canonicalTemplateID, err := r.resolveTemplateID(ctx, templateRef)
 	if err != nil {
-		return TemplateResolution{}, err
+		return "", err
 	}
 	template, err := r.getTemplate(ctx, canonicalTemplateID)
 	if err != nil {
-		return TemplateResolution{}, err
+		return "", err
 	}
 	if template.TemplateID != "" {
 		canonicalTemplateID = strings.TrimSpace(template.TemplateID)
 	}
 	if canonicalTemplateID == "" {
-		return TemplateResolution{}, fmt.Errorf("template API returned an empty template ID")
+		return "", fmt.Errorf("template API returned an empty template ID")
 	}
 
-	build, err := selectAgentENVBuild(template.Builds, buildRef)
-	if err != nil {
-		return TemplateResolution{}, err
+	if err := validateAgentENVLatestBuild(template.Builds); err != nil {
+		return "", err
 	}
-	return TemplateResolution{
-		CanonicalTemplateID: canonicalTemplateID,
-		BuildID:             build.BuildID,
-	}, nil
+	return canonicalTemplateID, nil
 }
 
 func (r *AgentENVTemplateResolver) resolveTemplateID(ctx context.Context, templateRef string) (string, error) {
@@ -262,22 +223,9 @@ type agentENVTemplateBuild struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func selectAgentENVBuild(builds []agentENVTemplateBuild, buildRef string) (agentENVTemplateBuild, error) {
-	if buildRef != "" {
-		for _, build := range builds {
-			if strings.TrimSpace(build.BuildID) != buildRef {
-				continue
-			}
-			if !strings.EqualFold(strings.TrimSpace(build.Status), "ready") {
-				return agentENVTemplateBuild{}, fmt.Errorf("template build %s is not ready", buildRef)
-			}
-			return build, nil
-		}
-		return agentENVTemplateBuild{}, fmt.Errorf("template build %s was not found", buildRef)
-	}
-
+func validateAgentENVLatestBuild(builds []agentENVTemplateBuild) error {
 	if len(builds) == 0 {
-		return agentENVTemplateBuild{}, fmt.Errorf("template has no builds")
+		return fmt.Errorf("template has no builds")
 	}
 	latest := builds[0]
 	for _, build := range builds[1:] {
@@ -286,10 +234,10 @@ func selectAgentENVBuild(builds []agentENVTemplateBuild, buildRef string) (agent
 		}
 	}
 	if !strings.EqualFold(strings.TrimSpace(latest.Status), "ready") {
-		return agentENVTemplateBuild{}, fmt.Errorf("latest template build %s is not ready", latest.BuildID)
+		return fmt.Errorf("latest template build %s is not ready", latest.BuildID)
 	}
 	if strings.TrimSpace(latest.BuildID) == "" {
-		return agentENVTemplateBuild{}, fmt.Errorf("template API returned an empty build ID")
+		return fmt.Errorf("template API returned an empty build ID")
 	}
-	return latest, nil
+	return nil
 }

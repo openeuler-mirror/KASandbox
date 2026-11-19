@@ -77,8 +77,7 @@ def main():
     sandbox_id = None
     try:
         pod = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': {'name': pod_name, 'namespace': ns, 'labels': {'native-installed-probe': pod_name},
-               'annotations': {'sandbox.cri/template': args.template, 'aenv.dev/secure': 'false',
-                               'sandbox.cri/metadata': json.dumps({'native-installed-probe': pod_name})}},
+               'annotations': {'sandbox.cri/template': args.template}},
                'spec': {'nodeName': args.node, 'runtimeClassName': 'agentenv', 'restartPolicy': 'Never',
                         'terminationGracePeriodSeconds': 5, 'containers': [{'name': 'app', 'image': 'agentenv.dev/app:v1',
                         'imagePullPolicy': 'IfNotPresent',
@@ -86,19 +85,21 @@ def main():
         save('pod-input.json', pod)
         dry = json.loads(command(['kubectl', 'create', '--dry-run=server', '-f', str(out/'pod-input.json'), '-o', 'json']))
         save('pod-dryrun.json', dry)
-        for name in ['aenv.dev/template-id', 'sandbox.cri/build']: assert dry['metadata']['annotations'].get(name)
+        assert dry['metadata']['annotations']['sandbox.cri/template']
         command(['kubectl', 'create', '-f', str(out/'pod-input.json')])
         command(['kubectl', 'wait', '-n', ns, 'pod/' + pod_name, '--for=condition=Ready', '--timeout=180s'], timeout=190)
         live = json.loads(command(['kubectl', 'get', 'pod', pod_name, '-n', ns, '-o', 'json'])); save('pod-live.json', live)
         uid = live['metadata']['uid']; ip = live['status']['podIP']; assert ipaddress.ip_address(ip).is_global or ipaddress.ip_address(ip).is_private
         assert not ipaddress.ip_address(ip).is_link_local
         cid = live['status']['containerStatuses'][0]['containerID'].split('://', 1)[1]
-        sandbox_id = live['metadata'].get('annotations', {}).get('sandbox.cri/sandbox-id') or uid
+        sandbox_id = uid
         status = json.loads(cri('inspectp', sandbox_id)); save('cri-pod.json', status)
         assert status['status']['state'] == 'SANDBOX_READY' and status['status']['network']['ip'] == ip
         container = json.loads(cri('inspect', cid)); save('cri-container.json', container)
         assert container['status']['state'] == 'CONTAINER_RUNNING'
-        native_id = next(x['sandboxID'] for x in api('/sandboxes') if x.get('metadata', {}).get('native-installed-probe') == pod_name)
+        sandboxes = api('/sandboxes')
+        assert len(sandboxes) == 1, '预期隔离验收中仅有本次 Sandbox'
+        native_id = sandboxes[0]['sandboxID']
         # 业务命令通过 AgentENV 兼容的 E2B SDK 执行，不依赖 CRI Exec。
         sandbox = Sandbox.connect(native_id, api_key=key, api_url='http://127.0.0.1:8000',
                                   sandbox_url='http://127.0.0.1:8000/proxy', request_timeout=30)
@@ -125,7 +126,6 @@ def main():
                     return response.status == 200 and response.read() == body.encode()
             except OSError: return False
         wait(http_ok, 'PodIP HTTP', timeout=30)
-        native_id = next(x['sandboxID'] for x in api('/sandboxes') if x.get('metadata', {}).get('native-installed-probe') == pod_name)
         request = urllib.request.Request('http://127.0.0.1:8000/proxy/', headers={'X-API-Key': key,
                     'x-agentenv-sandbox-id': native_id, 'x-agentenv-target-port': '18080'})
         with opener.open(request, timeout=10) as response: assert response.status == 200 and response.read() == body.encode()
