@@ -378,8 +378,6 @@ deploy_cri_multiplex() {
     local mux_socket="/run/cri-multiplex.sock"
     local containerd_socket="/run/containerd/containerd.sock"
     local orchestrator_addr="${CRI_MULTIPLEX_ORCHESTRATOR:-localhost:5008}"
-    local cube_enabled="${CRI_MULTIPLEX_CUBE_ENABLED:-false}"
-    local cubelet_address="${CRI_MULTIPLEX_CUBELET:-127.0.0.1:9999}"
     local unit_file="/etc/systemd/system/cri-multiplex.service"
 
     info "部署 cri-multiplex ..."
@@ -450,9 +448,7 @@ ExecStart=${bin} -socket ${mux_socket} -containerd-socket ${containerd_socket} -
   -cni-bin-dir /opt/cni/bin \
   -cni-ifname eth0 \
   -cni-netns-dir /var/run/netns \
-  -hide-sandbox-label flux-sandbox.io/direct=true \
-  -cube-enabled=${cube_enabled} \
-  -cubelet-address ${cubelet_address}
+  -hide-sandbox-label flux-sandbox.io/direct=true
 Restart=always
 RestartSec=3
 # 运行时 socket 目录
@@ -471,12 +467,12 @@ EOF
     done
     success "cri-multiplex socket 已就绪: $mux_socket"
 
-    # ⑤ 创建 RuntimeClass（android / e2b / cube）
+    # ⑤ 创建 RuntimeClass（android / e2b）
     if ! command -v kubectl >/dev/null 2>&1; then
         warn "kubectl 未安装，跳过 RuntimeClass 创建（可手动 apply）"
         return
     fi
-    info "创建 RuntimeClass (android / e2b / cube) ..."
+    info "创建 RuntimeClass (android / e2b) ..."
     cat << 'EOF' | kubectl apply -f -
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
@@ -489,12 +485,6 @@ kind: RuntimeClass
 metadata:
   name: e2b
 handler: e2b
----
-apiVersion: node.k8s.io/v1
-kind: RuntimeClass
-metadata:
-  name: cube
-handler: cube
 EOF
     kubectl get runtimeclass 2>/dev/null || true
     success "RuntimeClass 创建完成"
@@ -527,15 +517,14 @@ uninstall_cri_multiplex() {
         info "kubelet 未使用 cri-multiplex endpoint，跳过恢复"
     fi
 
-    # ② 删除 RuntimeClass（android / e2b / cube）
+    # ② 删除 RuntimeClass（android / e2b）
     if command -v kubectl >/dev/null 2>&1; then
-        info "② 删除 RuntimeClass (android / e2b / cube) ..."
+        info "② 删除 RuntimeClass (android / e2b) ..."
         kubectl delete runtimeclass android --ignore-not-found >/dev/null 2>&1 || true
         kubectl delete runtimeclass e2b --ignore-not-found >/dev/null 2>&1 || true
-        kubectl delete runtimeclass cube --ignore-not-found >/dev/null 2>&1 || true
         success "RuntimeClass 已删除"
     else
-        warn "kubectl 未安装，跳过 RuntimeClass 删除（可手动执行: kubectl delete runtimeclass android e2b cube）"
+        warn "kubectl 未安装，跳过 RuntimeClass 删除（可手动执行: kubectl delete runtimeclass android e2b）"
     fi
 
     # ③ 停止并禁用 systemd 服务，删除单元文件
