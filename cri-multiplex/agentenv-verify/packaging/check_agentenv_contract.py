@@ -4,8 +4,6 @@ import argparse
 import json
 from pathlib import Path
 
-import yaml
-
 
 def expand(document, value):
     if isinstance(value, list):
@@ -37,6 +35,8 @@ def check_user_fields(value, location="request"):
 
 
 def check(agentenv_path, kasandbox_path):
+    import yaml
+
     agentenv = yaml.safe_load(agentenv_path.read_text(encoding="utf-8"))
     kasandbox = yaml.safe_load(kasandbox_path.read_text(encoding="utf-8"))
     checked = []

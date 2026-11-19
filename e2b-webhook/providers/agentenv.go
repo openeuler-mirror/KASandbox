@@ -96,7 +96,7 @@ func (p *AgentENVProvider) Resolve(ctx context.Context, req provider.Request) (*
 	}, nil
 }
 
-// AgentENVTemplateResolver 通过 KASandbox 现有只读模板 API 解析模板。
+// AgentENVTemplateResolver 通过 AgentENV 只读模板 API 解析模板。
 type AgentENVTemplateResolver struct {
 	baseURL string
 	apiKey  string

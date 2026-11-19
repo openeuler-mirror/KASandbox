@@ -1054,7 +1054,7 @@ func BenchmarkAdmitPod(b *testing.B) {
 // =============================================================================
 
 func TestBuildMatcherRegistersAllImplementedProviders(t *testing.T) {
-	matcher, err := buildMatcher(providers.NewSandboxTransformer("http://example.invalid", "", time.Second), "http://example.invalid", "", time.Second)
+	matcher, err := buildMatcher(providers.NewSandboxTransformer("http://example.invalid", "", time.Second))
 	if err != nil {
 		t.Fatalf("buildMatcher: %v", err)
 	}
@@ -1074,7 +1074,7 @@ func TestAdmitPod_AndroidEnvSelectsAndroid(t *testing.T) {
 			{Name: "ANDROID_SANDBOX", Value: "true"},
 		}}}},
 	}
-	matcher, err := buildMatcher(providers.NewSandboxTransformer("http://127.0.0.1:1", "", 200*time.Millisecond), "http://127.0.0.1:1", "", 200*time.Millisecond)
+	matcher, err := buildMatcher(providers.NewSandboxTransformer("http://127.0.0.1:1", "", 200*time.Millisecond))
 	if err != nil {
 		t.Fatalf("buildMatcher: %v", err)
 	}

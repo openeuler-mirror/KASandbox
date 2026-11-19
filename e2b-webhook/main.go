@@ -204,7 +204,7 @@ func main() {
 
 	// 创建沙箱转换器 (调用 POST /sandboxes/transform, 每次发起新请求)
 	transformer := providers.NewSandboxTransformer(apiURL, apiKey, apiTimeout)
-	matcher, err := buildMatcher(transformer, apiURL, apiKey, apiTimeout)
+	matcher, err := buildMatcher(transformer)
 	if err != nil {
 		klog.Fatalf("failed to build provider matcher: %v", err)
 	}
@@ -260,16 +260,20 @@ func main() {
 	}
 }
 
-// buildMatcher 注册全部已实现的 Provider。
-func buildMatcher(transformer *providers.SandboxTransformer, apiURL, apiKey string, apiTimeout time.Duration) (*provider.Matcher, error) {
-	templateResolver, err := providers.NewAgentENVTemplateResolver(apiURL, apiKey, apiTimeout)
-	if err != nil {
-		return nil, err
-	}
+// buildMatcher 注册 Provider。AgentENV 启用时使用独立的 API 配置。
+func buildMatcher(transformer *providers.SandboxTransformer) (*provider.Matcher, error) {
 	list := []provider.Provider{
 		providers.NewE2BProvider(transformer),
 		providers.NewAndroidProvider(),
-		providers.NewAgentENVProvider(templateResolver),
+	}
+	if agentENVURL := strings.TrimSpace(os.Getenv("AGENTENV_API_URL")); agentENVURL != "" {
+		resolver, err := providers.NewAgentENVTemplateResolver(
+			agentENVURL, os.Getenv("AGENTENV_API_KEY"), resolveTimeout,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("configure AgentENV provider: %w", err)
+		}
+		list = append(list, providers.NewAgentENVProvider(resolver))
 	}
 	matcher, err := provider.NewMatcher(list...)
 	if err != nil {

@@ -30,7 +30,14 @@ func TestAgentENVAdmissionWithTemplateAPI(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	matcher, err := buildMatcher(providers.NewSandboxTransformer(server.URL, "test-key", time.Second), server.URL, "test-key", time.Second)
+	t.Setenv("AGENTENV_API_URL", server.URL)
+	t.Setenv("AGENTENV_API_KEY", "test-key")
+	e2b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("AgentENV 准入请求访问了 E2B API")
+		http.Error(w, "wrong API", http.StatusInternalServerError)
+	}))
+	defer e2b.Close()
+	matcher, err := buildMatcher(providers.NewSandboxTransformer(e2b.URL, "e2b-key", time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +48,7 @@ func TestAgentENVAdmissionWithTemplateAPI(t *testing.T) {
 		{"ready", "agentenv", "alias", "", true, true},
 		{"missing", "agentenv", "", "", true, false},
 		{"mismatch", "agentenv", "alias", "wrong", true, false},
-		{"unregistered-cube", "cube", "alias", "", true, false},
+		{"unregistered-runtime", "unregistered", "alias", "", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{"sandbox.cri/template": tc.template}}, Spec: corev1.PodSpec{RuntimeClassName: &tc.runtimeClass}}
@@ -70,5 +77,47 @@ func TestAgentENVAdmissionWithTemplateAPI(t *testing.T) {
 				t.Fatalf("注解错误: %s", response.Patch)
 			}
 		})
+	}
+
+	t.Run("batchsandbox", func(t *testing.T) {
+		raw := []byte(`{
+			"apiVersion": "sandbox.opensandbox.io/v1alpha1",
+			"kind": "BatchSandbox",
+			"spec": {"template": {
+				"metadata": {"annotations": {"sandbox.cri/template": "alias"}},
+				"spec": {"runtimeClassName": "agentenv"}
+			}}
+		}`)
+		response := admitBatchSandbox(newAdmissionReview("BatchSandbox", admissionv1.Create, raw), matcher)
+		if !response.Allowed {
+			t.Fatalf("准入失败: %+v", response)
+		}
+		var patches []patchOperation
+		if err := json.Unmarshal(response.Patch, &patches); err != nil {
+			t.Fatal(err)
+		}
+		for _, patch := range patches {
+			if patch.Path == "/spec/template/metadata/annotations/aenv.dev~1template-id" && patch.Value == "canonical" {
+				return
+			}
+		}
+		t.Fatalf("缺少 BatchSandbox 模板注解: %s", response.Patch)
+	})
+}
+
+func TestAgentENVProviderDisabledWithoutAPIURL(t *testing.T) {
+	t.Setenv("AGENTENV_API_URL", "")
+	t.Setenv("AGENTENV_API_KEY", "unused-key")
+	matcher, err := buildMatcher(providers.NewSandboxTransformer("http://example.invalid", "e2b-key", time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := matcher.Resolve("agentenv"); ok {
+		t.Fatal("未配置 AgentENV API 时注册了 AgentENV Provider")
+	}
+	for _, handler := range []string{"e2b", "android"} {
+		if _, ok := matcher.Resolve(handler); !ok {
+			t.Fatalf("缺少原有 Provider %s", handler)
+		}
 	}
 }

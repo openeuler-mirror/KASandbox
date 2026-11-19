@@ -1,4 +1,5 @@
 {{- if .Values.webhook.enabled }}
+{{- $agentenvApiURL := .Values.webhook.agentenvApiURL | default "" | trim }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -63,6 +64,15 @@ spec:
                   optional: true
             - name: E2B_API_TIMEOUT
               value: "4s"
+            {{- if $agentenvApiURL }}
+            - name: AGENTENV_API_URL
+              value: {{ $agentenvApiURL | quote }}
+            - name: AGENTENV_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agentenv-api-key
+                  key: api-key
+            {{- end }}
           volumeMounts:
             - name: tls
               mountPath: /tls
@@ -140,10 +150,19 @@ webhooks:
         - key: kubernetes.io/metadata.name
           operator: NotIn
           values: ["kube-system", "kube-public", "kube-node-lease", "e2b"]
+    {{- if $agentenvApiURL }}
+    matchConditions:
+      - name: sandbox-pod
+        expression: >-
+          (has(object.metadata.labels) &&
+           'batch-sandbox.sandbox.opensandbox.io/pod-index' in object.metadata.labels) ||
+          (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'agentenv')
+    {{- else }}
     objectSelector:                # 只处理由 BatchSandbox 控制器创建的 spotbox pod
       matchExpressions:
         - key: batch-sandbox.sandbox.opensandbox.io/pod-index
           operator: Exists
+    {{- end }}
   - name: batchsandbox.e2b-webhook.e2b.dev
     admissionReviewVersions: ["v1"]
     sideEffects: None

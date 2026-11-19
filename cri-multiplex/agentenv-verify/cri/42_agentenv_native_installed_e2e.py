@@ -13,14 +13,14 @@ from pathlib import Path
 
 
 def main():
-    from e2b import Sandbox, CommandExitException
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True)
     parser.add_argument('--template', required=True)
     parser.add_argument('--node', default='node1')
     parser.add_argument('--socket', default='/run/cri-multiplex.sock')
     args = parser.parse_args()
+    from e2b import Sandbox, CommandExitException
     out = Path(args.output); out.mkdir(parents=True, exist_ok=False)
     ns = 'agentenv-e2e'
     pod_name = 'native-' + uuid.uuid4().hex[:10]
@@ -47,10 +47,14 @@ def main():
         return command(['crictl', '--runtime-endpoint=unix://' + args.socket, *argv])
 
     def snapshot():
+        # 统一 Webhook 由 Kubernetes Deployment 管理，记录该对象的 UID 和 generation。
+        webhook = json.loads(command(['kubectl', '-n', 'e2b', 'get', 'deployment',
+                                      'e2b-webhook', '-o', 'json']))['metadata']
         return {'health': healthy(), 'sandboxes': len(api('/sandboxes')),
                 'boot': Path('/proc/sys/kernel/random/boot_id').read_text(),
                 'services': command(['systemctl', 'show', 'aenv', 'cri-multiplex', 'kubelet', 'containerd',
-                                     'e2b-webhook-agentenv', '-p', 'Id', '-p', 'MainPID', '-p', 'ActiveEnterTimestamp']),
+                                     '-p', 'Id', '-p', 'MainPID', '-p', 'ActiveEnterTimestamp']),
+                'webhook': {field: webhook[field] for field in ('uid', 'generation')},
                 'netns': sorted(x.split()[0] for x in command(['ip', 'netns', 'list']).splitlines()),
                 'pods': json.loads(command(['kubectl', 'get', 'pods', '-A', '-o', 'json']))}
 
@@ -144,7 +148,7 @@ def main():
         if sandbox_id:
             wait(lambda: not any(p['id'] == sandbox_id for p in json.loads(cri('pods', '-o', 'json')).get('items', [])), 'CRI cleanup')
         after = snapshot(); save('after.json', after)
-        for k in ['boot', 'services', 'netns']: assert before[k] == after[k], k
+        for k in ['boot', 'services', 'webhook', 'netns']: assert before[k] == after[k], k
         assert {p['metadata']['uid'] for p in before['pods']['items']} == {p['metadata']['uid'] for p in after['pods']['items']}
     save('result.json', {'result': 'PASS', 'namespace': ns, 'pod': pod_name, 'cleanup': True})
     print('PASS native installed cleanup and shared service audit', flush=True)
