@@ -20,7 +20,10 @@ func (e *Engine) ImageStatus(_ context.Context, req *runtime.ImageStatusRequest)
 	if err := validateVirtualImage(ref); err != nil {
 		return nil, err
 	}
-	return &runtime.ImageStatusResponse{Image: &runtime.Image{Id: ref, RepoTags: []string{ref}}}, nil
+	// kubelet 要求占位镜像大小非零，实际 rootfs 的大小由模板决定。
+	return &runtime.ImageStatusResponse{Image: &runtime.Image{
+		Id: ref, RepoTags: []string{ref}, Size_: 1,
+	}}, nil
 }
 func (e *Engine) ListImages(context.Context, *runtime.ListImagesRequest) (*runtime.ListImagesResponse, error) {
 	return &runtime.ListImagesResponse{}, nil

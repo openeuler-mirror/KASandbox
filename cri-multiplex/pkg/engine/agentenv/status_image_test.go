@@ -116,7 +116,7 @@ func TestVirtualImageProjection(t *testing.T) {
 	ref := "agentenv.dev/app:v1"
 	for i := 0; i < 2; i++ {
 		image, err := instance.ImageStatus(ctx, &runtime.ImageStatusRequest{Image: &runtime.ImageSpec{Image: ref}})
-		if err != nil || image.GetImage().GetId() != ref {
+		if err != nil || image.GetImage().GetId() != ref || image.GetImage().GetSize_() == 0 {
 			t.Fatalf("ImageStatus: %v %v", image, err)
 		}
 		if _, err := instance.RemoveImage(ctx, &runtime.RemoveImageRequest{Image: &runtime.ImageSpec{Image: ref}}); err != nil {
