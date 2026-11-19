@@ -101,6 +101,6 @@ AgentENV 使用统一的逻辑 Sandbox ID：优先取 `sandbox.cri/sandbox-id`�
 
 Runtime 去掉自定义崩溃回收和全局维护屏障，ublk 恢复上游实现；保留正常请求幂等、Sandbox 操作互斥及生命周期处理。Runtime 协议版本为 `3.0.0`，移除私有 Remediate、进程控制和 GetStats RPC；mux 与 Runtime 应配套更新。
 
-新增 Go 单元测试集中于 `agentenv-verify/testdata`。在仓库根目录执行 `python3 cri-multiplex/agentenv-verify/prepare-tests.py --kind go --source . --output /tmp/agentenv-tests-<唯一名称>`，再分别进入输出目录中的 `cri-multiplex`、`e2b-webhook` 执行 `GOWORK=off go test -p 1 ./...`。测试只装配到临时副本；直接在生产源码目录运行 go test 不包含这些用例。
+新增 Go 单元测试集中于 `agentenv-verify/testdata`。在 `cri-multiplex` 目录执行 `bash run-ut.sh all -count=1` 会自动装配临时副本，运行 mux 和 Webhook 测试，结束后清理副本；指定包时仅执行所选包。入口自身的回归检查使用 `python3 agentenv-verify/test_runner.py`。也可手动装配：在仓库根目录执行 `python3 cri-multiplex/agentenv-verify/prepare-tests.py --kind go --source . --output /tmp/agentenv-tests-<唯一名称>`，再分别进入输出目录中的 `cri-multiplex`、`e2b-webhook` 执行 `GOWORK=off go test -p 1 ./...`。测试只装配到临时副本；直接在生产源码目录运行 go test 不包含这些用例。
 
 在 `cri-multiplex` 目录，安装/回退测试使用 `python3 agentenv-verify/packaging/test_install.py --script <Runtime源码>/scripts/release/agentenv-cri-runtime-patch/rpm-control.sh`，不访问系统服务。Runtime 单元测试使用 `CARGO_BUILD_JOBS=2 python3 agentenv-verify/runtime/run-release-regression.py --runtime-source <源码目录> --suite unit --suite runtime-unit --skip-fault-injection --output <新输出目录>`，入口自动在输出目录装配 `runtime/rust` 中的测试。原有上游测试保留，必要的结构体适配随源码提交；这些检查不能替代 VM 和真实 kubelet 验收。

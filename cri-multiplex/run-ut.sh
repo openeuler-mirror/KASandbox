@@ -172,6 +172,7 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     exit 0
 fi
 
+original_args=("$@")
 packages=()
 go_args=()
 list_only=0
@@ -193,6 +194,26 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+# 集中保存的同包测试必须与生产源码装配后执行，不能作为独立 Go 包扫描。
+# 装配结果不包含 agentenv-verify，因此再次调用本脚本不会递归装配。
+if [ -f "${ROOT_DIR}/agentenv-verify/prepare-tests.py" ]; then
+    test_root="$(mktemp -d "${TMPDIR:-/tmp}/agentenv-ut.XXXXXX")"
+    trap 'rm -rf -- "${test_root}"' EXIT
+    python3 "${ROOT_DIR}/agentenv-verify/prepare-tests.py" --kind go \
+        --source "${ROOT_DIR}/.." --output "${test_root}/source"
+    result=0
+    bash "${test_root}/source/cri-multiplex/run-ut.sh" "${original_args[@]}" || result=$?
+    # 默认/all 同时覆盖迁移来的 Webhook 测试；指定包时仍只执行所选包。
+    if [ "${#packages[@]}" -eq 0 ] || { [ "${#packages[@]}" -eq 1 ] && [ "${packages[0]}" = "./..." ]; }; then
+        if [ "${list_only}" = "1" ]; then
+            (cd "${test_root}/source/e2b-webhook" && go test -list '^Test' ./...) || result=$?
+        else
+            (cd "${test_root}/source/e2b-webhook" && go test ./... "${go_args[@]}") || result=$?
+        fi
+    fi
+    exit "${result}"
+fi
 
 mapfile -t resolved_packages < <(resolve_packages "${packages[@]}")
 
