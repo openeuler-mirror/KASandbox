@@ -187,6 +187,35 @@ func TestStateStoreBatchFailureAndRetry(t *testing.T) {
 	}
 }
 
+func TestStateStoreLazySaveReturnsBeforeFlush(t *testing.T) {
+	store := newStateStoreTestStore(t)
+	writes := blockStateWrites(t, store)
+
+	done := make(chan error, 1)
+	go func() { done <- store.SaveBackendStateLazy("cube.pods", map[string]any{"a": 1}) }()
+	first := awaitStateWrite(t, writes)
+	if err := awaitStateResult(t, done); err != nil {
+		t.Fatalf("lazy save should return before disk sync: %v", err)
+	}
+
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- store.Sync() }()
+	select {
+	case err := <-syncDone:
+		t.Fatalf("Sync returned before flush finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	first.release <- nil
+	if err := awaitStateResult(t, syncDone); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	ok, err := store.LoadBackendState("cube.pods", &got)
+	if err != nil || !ok || got["a"] != float64(1) {
+		t.Fatalf("LoadBackendState after Sync = ok=%v err=%v got=%v", ok, err, got)
+	}
+}
+
 func TestStateStoreDeleteDuringFlushDoesNotResurrect(t *testing.T) {
 	store := newStateStoreTestStore(t)
 	writes := blockStateWrites(t, store)

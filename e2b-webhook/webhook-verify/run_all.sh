@@ -30,6 +30,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${SCRIPT_DIR}/lib/webhook.sh"
 . "${SCRIPT_DIR}/lib/provider.sh"
 
+# CI 报告契约：套件 id 由 run-suite.sh 注入；本地直接跑时默认 webhook-verify。
+export E2B_VERIFY_SUITE="${E2B_VERIFY_SUITE:-webhook-verify}"
+
 #==================== 参数 ====================#
 CHECK_ONLY=0
 DEPLOY_ONLY=0
@@ -252,6 +255,11 @@ for entry in "${MODULES[@]}"; do
     IFS='|' read -r category id desc script <<< "${entry}"
     selected "${category}" "${id}" || continue
 
+    # 事件文件按模块（00..05）聚合；case 字段由 pass/fail 的用例编号决定。
+    export E2B_VERIFY_CASE_FILE="${id}"
+    export E2B_VERIFY_CASE_ID="${id}"
+    export E2B_VERIFY_CASE_DESC="${desc}"
+
     # 隐式跳过：--check-only / --deploy-only 只跑 00；--skip-e2e 跳过 04；
     # --mock 时 04 无意义。显式 --only 的模块不被隐式跳过。
     if ! explicitly_selected "${category}" "${id}"; then
@@ -265,6 +273,9 @@ for entry in "${MODULES[@]}"; do
             log_warn "[04] 跳过 e2b 沙箱端到端（--skip-e2e / --mock / WV_E2E=0）"
             RUN_RESULTS+=("04|${desc}|0|0|1|0|0|0")
             TOTAL_SKIP=$((TOTAL_SKIP + 1))
+            report_begin_case "04" "${desc}" "04"
+            report_emit assert skip "跳过 e2b 沙箱端到端（--skip-e2e / --mock / WV_E2E=0）"
+            report_end_case "04" 0 0 "{\"pass\":0,\"fail\":0,\"skip\":1,\"unsupported\":0}"
             continue
         fi
     fi
@@ -384,6 +395,16 @@ while IFS='|' read -r ms id desc; do
 done <<< "${slows}"
 printf '%b\n' "${CYAN}──────────────────────────────────────────────────────────────────${NC}"
 printf '%b\n' "${CYAN}⏱  总耗时 $(format_ms "${RUN_TOTAL_MS}")（${RUN_TOTAL_MS} ms）  ${NOW_AT} → $(date '+%F %T')${NC}"
+
+if [ "${TOTAL_FAIL}" -gt 0 ]; then
+    _run_rc=1
+elif [ "${TOTAL_UNSUPPORTED}" -gt 0 ]; then
+    _run_rc="${UNSUPPORTED_EXIT_CODE}"
+else
+    _run_rc=0
+fi
+report_run_end "${_run_rc}" "${RUN_TOTAL_MS}" \
+    "{\"pass\":${TOTAL_PASS},\"fail\":${TOTAL_FAIL},\"skip\":${TOTAL_SKIP},\"unsupported\":${TOTAL_UNSUPPORTED}}"
 
 if [ "${TOTAL_FAIL}" -gt 0 ]; then
     printf '%b\n' "${RED}✗ 有 ${TOTAL_FAIL} 条用例失败${NC}"

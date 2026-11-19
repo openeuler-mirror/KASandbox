@@ -265,6 +265,7 @@ func buildMatcher(transformer *providers.SandboxTransformer) (*provider.Matcher,
 	list := []provider.Provider{
 		providers.NewE2BProvider(transformer),
 		providers.NewAndroidProvider(),
+		providers.NewCubeProvider(envOr("CUBE_API_URL", "")),
 	}
 	if agentENVURL := strings.TrimSpace(os.Getenv("AGENTENV_API_URL")); agentENVURL != "" {
 		resolver, err := providers.NewAgentENVTemplateResolver(

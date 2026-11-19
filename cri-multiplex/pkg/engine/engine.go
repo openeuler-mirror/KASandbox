@@ -13,6 +13,7 @@ const (
 	EngineTypeContainer EngineType = "container"
 	EngineTypeE2B       EngineType = "e2b"
 	EngineTypeAndroid   EngineType = "android"
+	EngineTypeCube      EngineType = "cube"
 	EngineTypeAgentENV  EngineType = "agentenv"
 )
 
