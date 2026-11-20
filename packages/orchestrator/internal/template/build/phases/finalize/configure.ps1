@@ -14,7 +14,7 @@ TEMPLATE_ID={{ .TemplateID }}
 BUILD_ID={{ .BuildID }}
 "@
 
-$markerPath = Join-Path $env:SystemDrive ".e2b"
+$markerPath = "C:\.e2b"
 Set-Content -Path $markerPath -Value $marker -Encoding ASCII
 
 Write-Output "Wrote build marker to $markerPath"
