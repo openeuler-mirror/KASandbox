@@ -84,6 +84,10 @@ func (s *Sandbox) injectEgressProxyCA(ctx context.Context, netCfg network.Config
 	baseURL := fmt.Sprintf("http://%s:%d", s.Slot.HostIPString(), consts.DefaultEnvdServerPort)
 	accessToken := utils.DerefOrDefault(s.Config.Envd.AccessToken, "")
 
+	if s.Config.VMMConfig.OsType.OrDefault() == vmm.OsWindows {
+		return injectEgressProxyCAWindows(injectCtx, baseURL, accessToken, certPEM)
+	}
+
 	return injectEgressProxyCA(injectCtx, baseURL, accessToken, certPEM)
 }
 
@@ -122,18 +126,18 @@ func injectEgressProxyCA(ctx context.Context, envdBaseURL, accessToken string, c
 	}
 
 	// ② 写入 cert。
-	if err := envdWriteFile(ctx, envdBaseURL, accessToken, egressCAGuestCertPath, certPEM); err != nil {
+	if err := envdWriteFile(ctx, envdBaseURL, accessToken, egressCAGuestCertPath, egressCAEnvdUser, certPEM); err != nil {
 		return fmt.Errorf("write guest CA cert: %w", err)
 	}
 
 	// ③ 刷新系统信任库。
-	if _, err := runEgressCAGuestCommand(ctx, envdBaseURL, accessToken, "update-ca-certificates"); err != nil {
+	if _, err := runEgressCAGuestCommand(ctx, envdBaseURL, accessToken, "update-ca-certificates", vmm.OsLinux); err != nil {
 		return fmt.Errorf("update-ca-certificates failed: %w", err)
 	}
 
 	// ④ 校验信任库内的 cert 可解析。
 	subject, err := runEgressCAGuestCommand(ctx, envdBaseURL, accessToken,
-		"openssl x509 -in "+egressCAGuestTrustedPath+" -noout -subject")
+		"openssl x509 -in "+egressCAGuestTrustedPath+" -noout -subject", vmm.OsLinux)
 	if err != nil {
 		return fmt.Errorf("verify trusted guest CA cert failed: %w", err)
 	}
@@ -180,8 +184,8 @@ func envdReadFile(ctx context.Context, envdBaseURL, accessToken, path string) ([
 }
 
 // envdWriteFile 经 envd REST POST /files（multipart）写 guest 文件（已存在则覆盖，
-// 父目录自动创建）。
-func envdWriteFile(ctx context.Context, envdBaseURL, accessToken, path string, content []byte) error {
+// 父目录自动创建）。username 为空时省略参数，使用 envd 默认用户。
+func envdWriteFile(ctx context.Context, envdBaseURL, accessToken, path, username string, content []byte) error {
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
 	part, err := w.CreateFormFile("file", "e2b-egress-ca.crt")
@@ -195,7 +199,11 @@ func envdWriteFile(ctx context.Context, envdBaseURL, accessToken, path string, c
 		return fmt.Errorf("close multipart writer: %w", err)
 	}
 
-	u := fmt.Sprintf("%s/files?path=%s&username=%s", envdBaseURL, url.QueryEscape(path), egressCAEnvdUser)
+	params := url.Values{"path": {path}}
+	if username != "" {
+		params.Set("username", username)
+	}
+	u := fmt.Sprintf("%s/files?%s", envdBaseURL, params.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, &body)
 	if err != nil {
 		return err
@@ -220,25 +228,31 @@ func envdWriteFile(ctx context.Context, envdBaseURL, accessToken, path string, c
 	return nil
 }
 
-// runEgressCAGuestCommand 经 envd connect-RPC process 服务在 guest 内以 root
-// 执行命令并等待结束；非零退出码返回错误（含 stderr 摘要）。返回 stdout。
-func runEgressCAGuestCommand(ctx context.Context, envdBaseURL, accessToken, command string) (string, error) {
+// runEgressCAGuestCommand 经 envd 执行命令并等待结束。Linux 使用 root/bash，
+// Windows 使用 envd 默认用户/PowerShell。非零退出码返回错误，成功返回 stdout。
+func runEgressCAGuestCommand(ctx context.Context, envdBaseURL, accessToken, command string, osType vmm.OsType) (string, error) {
 	client := processconnect.NewProcessClient(&http.Client{
 		Timeout:   egressCAInjectTimeout,
 		Transport: SandboxHttpTransport,
 	}, envdBaseURL)
 
-	req := connect.NewRequest(&process.StartRequest{
-		Process: &process.ProcessConfig{
-			Cmd:  "/bin/bash",
-			Args: []string{"-l", "-c", command},
-		},
-	})
+	guestProcess := &process.ProcessConfig{
+		Cmd:  "/bin/bash",
+		Args: []string{"-l", "-c", command},
+	}
+	username := egressCAEnvdUser
+	if osType == vmm.OsWindows {
+		guestProcess.Cmd = "powershell.exe"
+		guestProcess.Args = []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command}
+		username = ""
+	}
+	req := connect.NewRequest(&process.StartRequest{Process: guestProcess})
 	if accessToken != "" {
 		req.Header().Set("X-Access-Token", accessToken)
 	}
-	// envd 的 BasicAuth 用户名头（user: 空密码），注入命令必须以 root 运行。
-	grpc.SetUserHeader(req.Header(), egressCAEnvdUser)
+	if username != "" {
+		grpc.SetUserHeader(req.Header(), username)
+	}
 
 	stream, err := client.Start(ctx, req)
 	if err != nil {

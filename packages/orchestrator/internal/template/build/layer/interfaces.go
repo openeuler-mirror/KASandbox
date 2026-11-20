@@ -2,15 +2,10 @@ package layer
 
 import (
 	"context"
-	"time"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox"
 	sbxtemplate "github.com/e2b-dev/infra/packages/orchestrator/internal/sandbox/template"
 	"github.com/e2b-dev/infra/packages/orchestrator/internal/template/metadata"
-)
-
-const (
-	waitEnvdTimeout = 120 * time.Second
 )
 
 // SandboxCreator creates sandboxes for layer building
