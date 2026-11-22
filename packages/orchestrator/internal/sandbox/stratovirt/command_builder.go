@@ -75,6 +75,8 @@ func (b *CommandBuilder) Build(
 		return b.buildAndroidCommand(versions, files, slot, qmpSocket, guestConsoleLogs, memoryMB, vcpuCount, incomingArg, vsockGuestCID)
 	}
 
+	machineType = "microvm"
+
 	serialBackend := "null"
 	if guestConsoleLogs {
 		serialBackend = "redirect-to-log"
@@ -97,11 +99,11 @@ func (b *CommandBuilder) Build(
 			"%s "+
 			"-append \"%s\" "+
 			"-object rng-random,id=objrng0,filename=/dev/urandom "+
-			"-pci virtio-rng-pci,rng=objrng0,max-bytes=%d,period=%d "+
+			"-device virtio-rng-device,id=rng0,rng=objrng0,max-bytes=%d,period=%d "+
 			"-drive file=%s,id=rootfs,readonly=off "+
-			"-pci virtio-blk-pci,drive=rootfs,id=blk "+
+			"-device virtio-blk-device,drive=rootfs,id=blk "+
 			"-netdev tap,id=netdev,ifname=%s "+
-			"-pci virtio-net-pci,netdev=netdev,id=%s,mac=%s "+
+			"-device virtio-net-device,netdev=netdev,id=%s,mac=%s "+
 			"-qmp unix:%s,server,nowait "+
 			"-serial %s "+
 			"%s"+
