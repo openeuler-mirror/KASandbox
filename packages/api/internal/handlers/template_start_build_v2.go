@@ -192,6 +192,7 @@ func (a *APIStore) PostV2TemplatesTemplateIDBuildsBuildID(c *gin.Context, templa
 		body.FromImageRegistry,
 		body.OsType,
 		body.AndroidVersion,
+		body.VmmType,
 		body.Force,
 		body.Steps,
 		clusters.WithClusterFallback(team.ClusterID),
