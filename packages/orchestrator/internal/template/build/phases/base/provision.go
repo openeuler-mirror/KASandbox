@@ -117,6 +117,26 @@ func (bb *BaseBuilder) provisionSandbox(
 
 	logsWriter := io.MultiWriter(prefixedLogsWriter, exitCodeWriter)
 
+	// StratoVirt logs each guest console line with a header, such as
+	// "<time>: [pid][tid][file:line]:INFO: ". Drop it first, then pass the
+	// lines on to the writers above as from the Firecracker serial console.
+	if sandboxConfig.VMMConfig.Backend() == vmm.BackendStratoVirt && sandboxConfig.VMMConfig.OsType.OrDefault() == vmm.OsLinux {
+		consoleReader, consoleWriter := io.Pipe()
+		defer consoleWriter.Close()
+		go func(out io.Writer) {
+			defer io.Copy(io.Discard, consoleReader)
+			scanner := bufio.NewScanner(consoleReader)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if _, message, ok := strings.Cut(line, "]:INFO: "); ok {
+					line = message
+				}
+				_, _ = fmt.Fprintln(out, line)
+			}
+		}(logsWriter)
+		logsWriter = consoleWriter
+	}
+
 	sbx, err := bb.sandboxFactory.CreateSandbox(
 		ctx,
 		sandboxConfig,

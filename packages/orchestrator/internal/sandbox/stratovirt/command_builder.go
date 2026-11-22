@@ -77,6 +77,9 @@ func (b *CommandBuilder) Build(
 
 	machineType = "microvm"
 
+	// The virtio console uses the serial backend too. Keep it in both build and
+	// restore commands, since a silent restore must still instantiate the
+	// devices recorded by the snapshot.
 	serialBackend := "null"
 	if guestConsoleLogs {
 		serialBackend = "redirect-to-log"
@@ -107,6 +110,9 @@ func (b *CommandBuilder) Build(
 			"-device virtio-net-device,netdev=netdev,id=%s,mac=%s "+
 			"-qmp unix:%s,server,nowait "+
 			"-serial %s "+
+			"-chardev %s,id=console0 "+
+			"-device virtio-serial-device,id=virtio-serial0 "+
+			"-device virtconsole,id=console0,chardev=console0 "+
 			"%s"+
 			"%s",
 		b.config.SandboxDir,
@@ -128,6 +134,7 @@ func (b *CommandBuilder) Build(
 		slot.VpeerName(),
 		slot.TapMAC(),
 		qmpSocket,
+		serialBackend,
 		serialBackend,
 		vsockArg,
 		incomingArg,
@@ -368,11 +375,9 @@ func defaultKernelArgs(initScriptPath string, ipv4 string, options vmm.ProcessOp
 	if options.KernelLogs || options.SystemdToKernelLogs {
 		delete(args, "quiet")
 		args["loglevel"] = "5"
-		if runtime.GOARCH == "amd64" || runtime.GOARCH == "386" {
-			args["console"] = "ttyS0"
-		} else {
-			args["console"] = "ttyAMA0"
-		}
+		// The guest kernel has no driver for the arm64 legacy serial, so log to
+		// the virtio console on all architectures.
+		args["console"] = "hvc0"
 	}
 
 	return args
