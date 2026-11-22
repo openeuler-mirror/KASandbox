@@ -94,6 +94,7 @@ func (b *CommandBuilder) Build(
 			"mkdir -p %s &&\n"+
 			"ln -s %s %s &&\n\n"+
 			"ip netns exec %s %s "+
+			"-disable-seccomp "+
 			"-machine type=%s "+
 			"-kernel %s "+
 			"%s "+
