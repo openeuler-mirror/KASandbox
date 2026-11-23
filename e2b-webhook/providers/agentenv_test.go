@@ -25,7 +25,7 @@ func (f *fakeAgentENVResolver) ResolveTemplate(_ context.Context, templateRef st
 	return f.resolution, f.err
 }
 
-func TestAgentENVProviderResolveNormalizesTemplate(t *testing.T) {
+func TestAgentENVProviderResolveKeepsTemplateAlias(t *testing.T) {
 	resolver := &fakeAgentENVResolver{
 		resolution: "tpl-canonical",
 	}
@@ -46,11 +46,8 @@ func TestAgentENVProviderResolveNormalizesTemplate(t *testing.T) {
 	if result.RuntimeClass != agentENVProviderName {
 		t.Fatalf("runtimeClass = %q", result.RuntimeClass)
 	}
-	if got := result.Annotations[provider.AnnTemplate]; got != "tpl-canonical" {
-		t.Fatalf("canonical annotation = %q", got)
-	}
-	if len(result.Annotations) != 1 {
-		t.Fatalf("annotations = %v, want only template", result.Annotations)
+	if len(result.Annotations) != 0 {
+		t.Fatalf("annotations = %v, want no mutation", result.Annotations)
 	}
 }
 

@@ -115,7 +115,7 @@ Runtime 协议源在 `proto/agentenv/runtime/v1/runtime.proto`，与配套 Runti
 protoc -I proto --go_out=. --go_opt=module=github.com/cri-multiplex --go_opt=Magentenv/runtime/v1/runtime.proto=github.com/cri-multiplex/pkg/agentenv/runtime/v1 --go-grpc_out=. --go-grpc_opt=module=github.com/cri-multiplex --go-grpc_opt=Magentenv/runtime/v1/runtime.proto=github.com/cri-multiplex/pkg/agentenv/runtime/v1 proto/agentenv/runtime/v1/runtime.proto
 ```
 
-AgentENV Pod 设置 `spec.runtimeClassName: agentenv`，唯一必填的业务注解是 `metadata.annotations["sandbox.cri/template"]`。使用模板别名时，统一 Webhook 将同一个注解的值规范化为模板 ID。Runtime 根据该模板选择可运行快照，CRI 创建使用 300 秒操作超时和 24 小时生命周期上限。
+AgentENV Pod 设置 `spec.runtimeClassName: agentenv`，唯一必填的业务注解是 `metadata.annotations["sandbox.cri/template"]`。统一 Webhook 保留已有的模板 ID 或别名。Runtime 在创建时使用该值查找可运行快照，CRI 创建使用 300 秒操作超时和 24 小时生命周期上限。
 
 AgentENV 使用 Pod UID 作为逻辑 Sandbox ID。Runtime 原生 UUID 用于调用 Runtime 接口，与 Pod 状态一起保存。Image 接口无状态，rootfs 由模板提供。切换前排空存量 AgentENV Sandbox，更新 Pod 模板并同步升级 cri-multiplex 和 Webhook。旧的自定义 Sandbox ID、Build、资源、网络、环境变量、安全模式和生命周期等注解不再参与 AgentENV 创建。
 

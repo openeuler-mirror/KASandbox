@@ -44,8 +44,7 @@ func (p *AgentENVProvider) Resolve(ctx context.Context, req provider.Request) (*
 	if p == nil || p.resolver == nil {
 		return nil, fmt.Errorf("agentenv template resolver is not configured")
 	}
-	rawTemplate := req.Annotations[provider.AnnTemplate]
-	templateRef := strings.TrimSpace(rawTemplate)
+	templateRef := strings.TrimSpace(req.Annotations[provider.AnnTemplate])
 	if templateRef == "" {
 		return nil, fmt.Errorf("annotation %s is required", provider.AnnTemplate)
 	}
@@ -58,11 +57,7 @@ func (p *AgentENVProvider) Resolve(ctx context.Context, req provider.Request) (*
 		return nil, fmt.Errorf("resolved template ID must be 1..%d bytes", agentENVTemplateRefMaxLen)
 	}
 
-	result := &provider.Result{RuntimeClass: agentENVProviderName}
-	if rawTemplate != canonicalID {
-		result.Annotations = map[string]string{provider.AnnTemplate: canonicalID}
-	}
-	return result, nil
+	return &provider.Result{RuntimeClass: agentENVProviderName}, nil
 }
 
 // AgentENVTemplateResolver 通过 AgentENV 只读模板 API 解析模板。

@@ -85,7 +85,7 @@ def main():
         save('pod-input.json', pod)
         dry = json.loads(command(['kubectl', 'create', '--dry-run=server', '-f', str(out/'pod-input.json'), '-o', 'json']))
         save('pod-dryrun.json', dry)
-        assert dry['metadata']['annotations']['sandbox.cri/template']
+        assert dry['metadata']['annotations']['sandbox.cri/template'] == args.template
         command(['kubectl', 'create', '-f', str(out/'pod-input.json')])
         command(['kubectl', 'wait', '-n', ns, 'pod/' + pod_name, '--for=condition=Ready', '--timeout=180s'], timeout=190)
         live = json.loads(command(['kubectl', 'get', 'pod', pod_name, '-n', ns, '-o', 'json'])); save('pod-live.json', live)

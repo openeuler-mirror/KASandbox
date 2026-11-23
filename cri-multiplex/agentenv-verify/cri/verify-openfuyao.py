@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """模拟扶摇调用，通过统一 Webhook、CRI、Admin v2 和 AgentENV 元数据 API 验证沙箱生命周期。"""
 import argparse
-import base64
 from datetime import datetime, timezone
 from http.client import HTTPConnection, HTTPSConnection
 import ipaddress
@@ -127,21 +126,13 @@ class OpenFuyaoStub:
         }
         response = self.http("POST", self.args.webhook_url, {}, review, tls=self.webhook_tls)["response"]
         check(response["uid"] == uid and response["allowed"], "Webhook 返回的准入结果不匹配")
-        if not response.get("patch"):
-            return annotations.copy()
-        check(response["patchType"] == "JSONPatch", "Webhook 未返回 JSONPatch")
-        # Webhook 将已有的模板别名替换为模板 ID。
-        patches = json.loads(base64.b64decode(response["patch"]))
-        check(len(patches) == 1 and patches[0]["op"] == "replace"
-              and patches[0]["path"] == "/metadata/annotations/sandbox.cri~1template",
-              "Webhook 应只替换 sandbox.cri/template")
-        annotations[TEMPLATE] = patches[0]["value"]
+        check(not response.get("patch"), "Webhook 不应修改已有的模板注解或 RuntimeClass")
         return annotations
 
     def run(self):
         annotations = self.admit(self.args.template)
-        check(annotations == {TEMPLATE: self.args.template_id}, "模板解析注解不匹配")
-        check(self.admit(self.args.template_id) == annotations,
+        check(annotations == {TEMPLATE: self.args.template}, "Webhook 未保留模板别名")
+        check(self.admit(self.args.template_id) == {TEMPLATE: self.args.template_id},
               "按模板 ID 准入的解析结果不匹配")
         check(self.admit(None) == {}, "缺少模板时不应注入模板信息")
         check(self.admit(self.name) == {TEMPLATE: self.name}, "未知模板不应被解析")
@@ -162,7 +153,7 @@ class OpenFuyaoStub:
         check(len(items) == 1 and items[0]["id"] == self.sandbox_id, "幂等重试产生多条实例记录")
         ready = self.cri("PodSandboxStatus", {"podSandboxId": self.sandbox_id})["status"]
         check(ready["state"] == "SANDBOX_READY", "沙箱未 Ready")
-        check(ready["metadata"]["uid"] == self.sandbox_id and ready["annotations"][TEMPLATE] == self.args.template_id,
+        check(ready["metadata"]["uid"] == self.sandbox_id and ready["annotations"][TEMPLATE] == self.args.template,
               "CRI 查询返回的 Pod UID 或模板与创建请求不匹配")
         pod_ip = ipaddress.ip_address(ready["network"]["ip"])
         check(not (pod_ip.is_unspecified or pod_ip.is_loopback), "沙箱未返回有效 Pod IP")

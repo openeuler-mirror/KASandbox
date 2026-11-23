@@ -224,7 +224,7 @@ func defaultProvider(matcher *provider.Matcher, req provider.Request) (provider.
 }
 
 // buildMergedPatch 生成合并后的 patch：runtimeClass（未设置时）+ 注解增量。
-// AgentENV 可原位规范化模板注解。合并后超过总大小限制时丢弃注解变更。
+// 用户已有注解不覆盖；合并后总大小超限时丢弃 Provider 的注解增量。
 func buildMergedPatch(kind, namespace, name string, existing map[string]string, result *provider.Result, handler string, runtimeClassSet bool) []patchOperation {
 	annotationsPath, runtimeClassPath := podAnnotationsPath, podRuntimeClassNamePath
 	if kind == "BatchSandbox" {
@@ -245,32 +245,22 @@ func buildMergedPatch(kind, namespace, name string, existing map[string]string, 
 		patches = append(patches, patchOperation{Op: "add", Path: runtimeClassPath, Value: runtimeClass})
 	}
 
-	var templatePatch []patchOperation
 	deltas := make(map[string]string, len(providerAnnotations))
 	merged := copyMap(existing)
 	for key, value := range providerAnnotations {
-		if current, exists := existing[key]; exists {
-			if handler == "agentenv" && key == provider.AnnTemplate && current != value {
-				templatePatch = append(templatePatch, patchOperation{
-					Op:    "replace",
-					Path:  annotationsPath + "/" + escapeJSONPointer(key),
-					Value: value,
-				})
-				merged[key] = value
-			}
+		if _, exists := existing[key]; exists {
 			continue
 		}
 		deltas[key] = value
 		merged[key] = value
 	}
-	if len(deltas) > 0 || len(templatePatch) > 0 {
+	if len(deltas) > 0 {
 		if annotationBytes(merged) > annotationLimitBytes {
 			klog.Warningf("%s %s/%s: merged annotations exceed %d bytes, dropping provider annotations",
 				kind, namespace, name, annotationLimitBytes)
 			return patches
 		}
 		patches = append(patches, buildPatch(existing, deltas, annotationsPath)...)
-		patches = append(patches, templatePatch...)
 	}
 	return patches
 }

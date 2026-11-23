@@ -15,7 +15,7 @@ def main():
 
     prefix = "agentenv-admission-" + uuid.uuid4().hex[:10]
     for case, template, expected in (
-        ("alias", args.alias, args.template_id),
+        ("alias", args.alias, args.alias),
         ("native-id", args.template_id, args.template_id),
         ("missing-template", None, None),
         ("unknown-template", prefix, prefix),
