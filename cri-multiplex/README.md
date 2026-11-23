@@ -87,7 +87,7 @@ AgentENV backend 默认关闭，通过 `--agentenv-enabled` 和 `--agentenv-runt
 
 AgentENV 与其他 Provider 共用 `e2b-webhook` 的 Deployment、Service 和 `MutatingWebhookConfiguration`。启用现有 Webhook，并在部署环境设置 `AGENTENV_API_URL`，使用从 Webhook Pod 可达的 AgentENV HTTP 地址。Helm 也可通过 `webhook.agentenvApiURL` 指定该地址。预先在 `e2b` 命名空间创建 `agentenv-api-key` Secret，键名为 `api-key`。AgentENV 配置使用自己的 URL 和密钥。启用后，既有 Pod 准入规则同时匹配普通 `runtimeClassName: agentenv` Pod，要求 Kubernetes 1.30+，沿用该条规则的 `failurePolicy: Fail`。若环境已使用旧版独立注册，应在统一规则生效并通过服务端 dry-run 后清理旧的 `agentenv-webhook` 注册。
 
-业务命令统一通过 AgentENV SDK 执行；CRI `ExecSync`、`Exec`、`Attach` 返回 `Unimplemented`，不支持 `kubectl exec/attach` 和 exec 类型探针。CRI Container 仅为逻辑状态投影，不执行 Pod 的 command/args，不采集或转发容器日志。PortForward 返回 Unimplemented；业务访问使用原生 SDK/proxy。ContainerStats 仅返回身份信息，不报告共享 VM 的资源指标。Admin 仅提供 Pause、Checkpoint、GetRuntime；创建和恢复走 CRI，不注册 AdminLifecycle 或主动 Reconciler。
+业务命令统一通过 AgentENV SDK 执行；CRI `ExecSync`、`Exec`、`Attach` 返回 `Unimplemented`，不支持 `kubectl exec/attach` 和 exec 类型探针。CRI Container 仅为逻辑状态投影，不执行 Pod 的 command/args，不采集或转发容器日志。PortForward 返回 Unimplemented；业务访问使用原生 SDK/proxy。ContainerStats 仅返回身份信息，不报告共享 VM 的资源指标。Admin 仅提供 Pause、Checkpoint、GetRuntime。创建走 CRI，暂停后同 ID 恢复走 AgentENV 原生 HTTP `connect`。AgentENV 不注册 AdminLifecycle 或主动 Reconciler。
 
 AgentENV 功能测试统一从 `bash cri-multiplex/agentenv-verify/run.sh` 进入，各套件可用 `--help` 查看参数。Kubernetes 用例使用已配置的测试环境。
 
@@ -96,6 +96,17 @@ bash cri-multiplex/agentenv-verify/run.sh contract --agentenv <Runtime源码>/sr
 bash cri-multiplex/agentenv-verify/run.sh webhook --namespace <测试命名空间> --alias <别名> --template-id <模板ID> --build-id <构建ID>
 bash cri-multiplex/agentenv-verify/run.sh cri --template <模板ID或别名> --output <新输出目录>
 bash cri-multiplex/agentenv-verify/run.sh runtime --suite http --runtime-source <Runtime源码> --output <新输出目录>
+```
+
+扶摇调用打桩套件使用 Python 3.11+ 和 `grpcurl`。在测试环境准备 AgentENV 模板别名及对应 ID、测试凭证、统一 Webhook 的 CA 证书，以及 CRI、Admin v2 和 Runtime 的 Unix socket。用例直接提交 AdmissionReview 并使用返回的模板注解调用 CRI，随后执行查询、检查点、暂停、元数据回调和清理，无需启动扶摇或 Kubernetes 控制面。
+
+```bash
+bash cri-multiplex/agentenv-verify/run.sh openfuyao \
+    --cri-socket "$CRI_SOCKET" --admin-socket "$ADMIN_SOCKET" --runtime-socket "$AGENTENV_SOCKET" \
+    --cri-proto "$CRI_PROTO" --cri-proto-include "$PROTO_IMPORT_ROOT" \
+    --webhook-url "$WEBHOOK_MUTATE_URL" --webhook-ca "$WEBHOOK_CA" \
+    --template "$TEMPLATE_ALIAS" --template-id "$TEMPLATE_ID" \
+    --credentials "$AENV_CREDENTIALS" --output "$RESULT_DIR"
 ```
 
 Runtime 协议源在 `proto/agentenv/runtime/v1/runtime.proto`，与配套 Runtime 源码保持一致；Go 消息及 gRPC 文件由 protoc 生成。生成命令在 `cri-multiplex` 下运行：
