@@ -57,6 +57,7 @@ func (tm *TemplateManager) CreateTemplate(
 	fromImageRegistry *api.FromImageRegistry,
 	osType *api.OsType,
 	androidVersion *api.AndroidVersion,
+	vmmType *api.VmmType,
 	force *bool,
 	steps *[]api.TemplateStep,
 	clusterID uuid.UUID,
@@ -94,12 +95,20 @@ func (tm *TemplateManager) CreateTemplate(
 	var resolvedVMMType BackendType
 	var err error
 	if fromTemplate == nil || *fromTemplate == "" {
-		resolvedOsType, resolvedVMMType, err = resolveBuildVM(osType)
-	} else if osType != nil {
-		// A template derived from another template inherits its VMM from the
-		// source metadata. Preserve an explicitly requested OS only so the
-		// orchestrator can verify that it matches the source template.
-		resolvedOsType, _, err = resolveBuildVM(osType)
+		resolvedOsType, resolvedVMMType, err = resolveBuildVM(osType, vmmType)
+	} else if osType != nil || vmmType != nil {
+		// A template derived from another template inherits its OS and VMM from
+		// the source metadata. Preserve explicitly requested values only so the
+		// orchestrator can verify that they match the source template.
+		var requestedOsType api.OsType
+		var requestedVMMType BackendType
+		requestedOsType, requestedVMMType, err = resolveBuildVM(osType, vmmType)
+		if osType != nil {
+			resolvedOsType = requestedOsType
+		}
+		if vmmType != nil {
+			resolvedVMMType = requestedVMMType
+		}
 	}
 	if err != nil {
 		return err
@@ -318,7 +327,7 @@ const (
 	BackendStratoVirt  BackendType = "stratovirt"
 )
 
-func resolveBuildVM(osType *api.OsType) (api.OsType, BackendType, error) {
+func resolveBuildVM(osType *api.OsType, vmmType *api.VmmType) (api.OsType, BackendType, error) {
 	resolvedOsType := api.Linux
 	if osType != nil {
 		switch *osType {
@@ -332,6 +341,15 @@ func resolveBuildVM(osType *api.OsType) (api.OsType, BackendType, error) {
 	resolvedVMMType := BackendFirecracker
 	if resolvedOsType == api.Windows || resolvedOsType == api.Android {
 		resolvedVMMType = BackendStratoVirt
+	}
+	if vmmType != nil {
+		// The orchestrator validates whether the OS supports this VMM.
+		switch *vmmType {
+		case api.Firecracker, api.Stratovirt:
+			resolvedVMMType = BackendType(*vmmType)
+		default:
+			return "", "", fmt.Errorf("unsupported vmmType %q", *vmmType)
+		}
 	}
 
 	return resolvedOsType, resolvedVMMType, nil

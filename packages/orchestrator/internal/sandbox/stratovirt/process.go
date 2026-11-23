@@ -161,6 +161,7 @@ func (p *Process) Create(
 		p.slot.VpeerName(), p.slot.TapName())
 
 	args := defaultKernelArgs(options.InitScriptPath, ipv4, options)
+	logLinuxConsole := p.Versions.OsType.OrDefault() == vmm.OsLinux && (options.KernelLogs || options.SystemdToKernelLogs)
 
 	kernelArgsStr := args.String()
 
@@ -170,7 +171,7 @@ func (p *Process) Create(
 		p.files,
 		p.slot,
 		kernelArgsStr,
-		env.IsDebug(),
+		env.IsDebug() || logLinuxConsole,
 		memoryMB,
 		vcpuCount,
 		hugePages,

@@ -8,7 +8,13 @@ from e2b.connection_config import ApiParams, ConnectionConfig
 from e2b.template.consts import RESOLVE_SYMLINKS
 from e2b.template.logger import LogEntry, LogEntryEnd, LogEntryStart
 from e2b.template.main import TemplateBase, TemplateClass
-from e2b.template.types import BuildInfo, InstructionType, TemplateTag, TemplateTagInfo
+from e2b.template.types import (
+    BuildInfo,
+    InstructionType,
+    TemplateTag,
+    TemplateTagInfo,
+    VmmType,
+)
 from e2b.template.utils import normalize_build_arguments, read_dockerignore
 
 from .build_api import (
@@ -41,6 +47,7 @@ class AsyncTemplate(TemplateBase):
         memory_mb: int = 1024,
         skip_cache: bool = False,
         on_build_logs: Optional[Callable[[LogEntry], None]] = None,
+        vmm_type: Optional[VmmType] = None,
     ) -> BuildInfo:
         """
         Internal implementation of the template build process
@@ -53,6 +60,9 @@ class AsyncTemplate(TemplateBase):
         :param memory_mb: Amount of memory in MB allocated to the sandbox
         :param skip_cache: If True, forces a complete rebuild ignoring cache
         :param on_build_logs: Callback function to receive build logs during the build process
+        :param vmm_type: VMM used to build and run the template. ``"firecracker"`` supports Linux;
+            ``"stratovirt"`` supports Linux, Windows and Android. When omitted, Linux uses Firecracker
+            and Windows and Android use StratoVirt.
         """
         if skip_cache:
             template._template._force = True
@@ -165,11 +175,15 @@ class AsyncTemplate(TemplateBase):
                 )
             )
 
+        template_data = template._template._serialize(instructions_with_hashes)
+        if vmm_type is not None:
+            template_data["vmmType"] = vmm_type
+
         await trigger_build(
             api_client,
             template_id,
             build_id,
-            template._template._serialize(instructions_with_hashes),
+            template_data,
         )
 
         return BuildInfo(
@@ -191,6 +205,7 @@ class AsyncTemplate(TemplateBase):
         memory_mb: int = 1024,
         skip_cache: bool = False,
         on_build_logs: Optional[Callable[[LogEntry], None]] = None,
+        vmm_type: Optional[VmmType] = None,
         **opts: Unpack[ApiParams],
     ) -> BuildInfo:
         """
@@ -204,6 +219,9 @@ class AsyncTemplate(TemplateBase):
         :param memory_mb: Amount of memory in MB allocated to the sandbox
         :param skip_cache: If True, forces a complete rebuild ignoring cache
         :param on_build_logs: Callback function to receive build logs during the build process
+        :param vmm_type: VMM used to build and run the template. ``"firecracker"`` supports Linux;
+            ``"stratovirt"`` supports Linux, Windows and Android. When omitted, Linux uses Firecracker
+            and Windows and Android use StratoVirt.
 
         Example
         ```python
@@ -250,6 +268,7 @@ class AsyncTemplate(TemplateBase):
                 memory_mb=memory_mb,
                 skip_cache=skip_cache,
                 on_build_logs=on_build_logs,
+                vmm_type=vmm_type,
             )
 
             if on_build_logs:
@@ -291,6 +310,7 @@ class AsyncTemplate(TemplateBase):
         memory_mb: int = 1024,
         skip_cache: bool = False,
         on_build_logs: Optional[Callable[[LogEntry], None]] = None,
+        vmm_type: Optional[VmmType] = None,
         **opts: Unpack[ApiParams],
     ) -> BuildInfo:
         """
@@ -303,6 +323,9 @@ class AsyncTemplate(TemplateBase):
         :param cpu_count: Number of CPUs allocated to the sandbox
         :param memory_mb: Amount of memory in MB allocated to the sandbox
         :param skip_cache: If True, forces a complete rebuild ignoring cache
+        :param vmm_type: VMM used to build and run the template. ``"firecracker"`` supports Linux;
+            ``"stratovirt"`` supports Linux, Windows and Android. When omitted, Linux uses Firecracker
+            and Windows and Android use StratoVirt.
         :return: BuildInfo containing the template ID and build ID
 
         Example
@@ -341,6 +364,7 @@ class AsyncTemplate(TemplateBase):
             memory_mb=memory_mb,
             skip_cache=skip_cache,
             on_build_logs=on_build_logs,
+            vmm_type=vmm_type,
         )
 
     @staticmethod

@@ -173,6 +173,9 @@ class FromImageRaw(TypedDict):
     url: str
 
 
+VmmType = Literal["firecracker", "stratovirt"]
+
+
 class TemplateType(TypedDict):
     """
     Internal representation of a template for the E2B build API.
@@ -182,6 +185,7 @@ class TemplateType(TypedDict):
     fromImageRaw: NotRequired[FromImageRaw]
     osType: NotRequired[OsType]
     androidVersion: NotRequired[str]
+    vmmType: NotRequired[VmmType]
     fromTemplate: NotRequired[str]
     fromImageRegistry: NotRequired[RegistryConfig]
     startCmd: NotRequired[str]

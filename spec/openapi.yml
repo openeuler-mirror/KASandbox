@@ -481,6 +481,13 @@ components:
         - "16"
       description: Android guest version. Required when osType is android; ignored otherwise.
 
+    VmmType:
+      type: string
+      enum:
+        - firecracker
+        - stratovirt
+      description: VMM used to build and run the template. firecracker supports linux; stratovirt supports linux, windows and android. When absent, linux uses firecracker and windows and android use stratovirt.
+
     SandboxDetail:
       required:
         - templateID
@@ -1322,6 +1329,8 @@ components:
           $ref: "#/components/schemas/OsType"
         androidVersion:
           $ref: "#/components/schemas/AndroidVersion"
+        vmmType:
+          $ref: "#/components/schemas/VmmType"
         force:
           default: false
           type: boolean

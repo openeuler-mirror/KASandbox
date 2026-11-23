@@ -53,6 +53,12 @@ func (bb *BaseBuilder) Hash(ctx context.Context, _ phases.LayerResult) (string, 
 
 		// When building from image, use the image name
 		baseSource = bb.Config.FromImage
+		// Firecracker and StratoVirt snapshots are not interchangeable, so a StratoVirt
+		// build must not reuse layers cached by a Firecracker build of the same image.
+		// Firecracker keeps the original key so its existing caches stay valid.
+		if backend := vmm.BackendType(bb.Config.VMMType).OrDefault(); backend != vmm.BackendFirecracker {
+			baseSource = fmt.Sprintf("vmm:%s:image:%s", backend, baseSource)
+		}
 	}
 
 	provisionVersion := provisionScriptFile
