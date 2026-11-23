@@ -121,9 +121,9 @@ EOF
 echo "Increasing inotify watch limit"
 echo 'fs.inotify.max_user_watches=65536' | tee -a /etc/sysctl.conf
 
-echo "Don't wait for ttyS0 (serial console kernel logs)"
-# This is required when the Firecracker kernel args has specified console=ttyS0
-systemctl mask serial-getty@ttyS0.service
+echo "Don't wait for ttyS0 or hvc0 (serial console kernel logs)"
+# This is required when the kernel args specify console=ttyS0 (Firecracker) or console=hvc0 (StratoVirt).
+systemctl mask serial-getty@ttyS0.service serial-getty@hvc0.service
 
 echo "Disable network online wait"
 systemctl mask systemd-networkd-wait-online.service
