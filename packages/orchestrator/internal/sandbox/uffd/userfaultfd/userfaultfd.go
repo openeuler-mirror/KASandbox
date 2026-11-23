@@ -73,8 +73,8 @@ func NewUserfaultfdFromFd(fd uintptr, src block.Slicer, m *memory.Mapping, logge
 	blockSize := src.BlockSize()
 
 	for _, region := range m.Regions {
-		if region.PageSize != uintptr(blockSize) {
-			return nil, fmt.Errorf("block size mismatch: %d != %d for region %d", region.PageSize, blockSize, region.BaseHostVirtAddr)
+		if err := validateRegionPageSize(region, blockSize, uintptr(block.PAGE_SIZE)); err != nil {
+			return nil, err
 		}
 	}
 
@@ -93,6 +93,27 @@ func NewUserfaultfdFromFd(fd uintptr, src block.Slicer, m *memory.Mapping, logge
 	u.wg.SetLimit(maxRequestsInProgress)
 
 	return u, nil
+}
+
+func validateRegionPageSize(region memory.Region, blockSize int64, hostPageSize uintptr) error {
+	if blockSize <= 0 || region.PageSize == 0 {
+		return fmt.Errorf("invalid memory block size %d or region page size %d", blockSize, region.PageSize)
+	}
+
+	if region.PageSize == uintptr(blockSize) {
+		return nil
+	}
+
+	// StratoVirt reports the host base page for ordinary RAM. Each aligned
+	// page can be supplied from several smaller snapshot blocks.
+	if region.PageSize != hostPageSize || region.PageSize%uintptr(blockSize) != 0 {
+		return fmt.Errorf("block size mismatch: %d != %d for region %d", region.PageSize, blockSize, region.BaseHostVirtAddr)
+	}
+	if region.BaseHostVirtAddr%hostPageSize != 0 || region.Size%hostPageSize != 0 || region.Offset%hostPageSize != 0 {
+		return fmt.Errorf("memory region at %#x with size %d and offset %d is not aligned to host page size %d", region.BaseHostVirtAddr, region.Size, region.Offset, hostPageSize)
+	}
+
+	return nil
 }
 
 func (u *Userfaultfd) Close() error {
