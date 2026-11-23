@@ -185,16 +185,6 @@ func requestFingerprint(spec *runtimeapi.SandboxSpec) ([]byte, error) {
 	return sum[:], nil
 }
 
-func rejectSensitiveValues(field string, values map[string]string) error {
-	for key, value := range values {
-		if sensitiveKey(key) || sensitiveValue(value) {
-			return status.Errorf(codes.InvalidArgument,
-				"%s key %q contains credential material; use AccessDescriptor instead", field, key)
-		}
-	}
-	return nil
-}
-
 func cloneStringMap(values map[string]string) map[string]string {
 	if len(values) == 0 {
 		return nil
@@ -295,22 +285,4 @@ func (e *Engine) mapRuntimeError(err error) error {
 		return err
 	}
 	return status.Error(codes.Internal, fmt.Sprintf("AgentENV runtime error: %v", err))
-}
-
-func sensitiveKey(key string) bool {
-	lower := strings.ToLower(strings.TrimSpace(key))
-	for _, marker := range []string{"password", "passwd", "token", "secret", "api_key", "apikey", "private_key", "credential"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func sensitiveValue(value string) bool {
-	lower := strings.ToLower(strings.TrimSpace(value))
-	if strings.HasPrefix(lower, "bearer ") {
-		return true
-	}
-	return strings.Contains(lower, "-----begin") && strings.Contains(lower, "private key-----")
 }
