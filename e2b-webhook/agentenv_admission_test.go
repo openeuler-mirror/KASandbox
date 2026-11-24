@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -42,39 +41,21 @@ func TestAgentENVAdmissionWithTemplateAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name, runtimeClass, template, canonical string
-		allowed, patched                        bool
+		name, runtimeClass, template string
 	}{
-		{"ready", "agentenv", "alias", "", true, true},
-		{"missing", "agentenv", "", "", true, false},
-		{"mismatch", "agentenv", "alias", "wrong", true, false},
-		{"unregistered-runtime", "unregistered", "alias", "", true, false},
+		{"ready-alias", "agentenv", "alias"},
+		{"missing", "agentenv", ""},
+		{"canonical", "agentenv", "canonical"},
+		{"unregistered-runtime", "unregistered", "alias"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{"sandbox.cri/template": tc.template}}, Spec: corev1.PodSpec{RuntimeClassName: &tc.runtimeClass}}
-			if tc.canonical != "" {
-				pod.Annotations["aenv.dev/template-id"] = tc.canonical
-			}
 			response := admitPod(newPodReview(admissionv1.Create, pod), matcher)
-			if response.Allowed != tc.allowed {
+			if !response.Allowed {
 				t.Fatalf("准入结果: %+v", response)
 			}
-			if !tc.patched {
-				if len(response.Patch) != 0 {
-					t.Fatalf("不应修改对象: %s", response.Patch)
-				}
-				return
-			}
-			var patches []patchOperation
-			if err := json.Unmarshal(response.Patch, &patches); err != nil {
-				t.Fatal(err)
-			}
-			found := map[string]interface{}{}
-			for _, patch := range patches {
-				found[patch.Path] = patch.Value
-			}
-			if found["/metadata/annotations/aenv.dev~1template-id"] != "canonical" || found["/metadata/annotations/sandbox.cri~1build"] != "ready-build" {
-				t.Fatalf("注解错误: %s", response.Patch)
+			if len(response.Patch) != 0 {
+				t.Fatalf("不应修改对象: %s", response.Patch)
 			}
 		})
 	}
@@ -92,16 +73,9 @@ func TestAgentENVAdmissionWithTemplateAPI(t *testing.T) {
 		if !response.Allowed {
 			t.Fatalf("准入失败: %+v", response)
 		}
-		var patches []patchOperation
-		if err := json.Unmarshal(response.Patch, &patches); err != nil {
-			t.Fatal(err)
+		if len(response.Patch) != 0 {
+			t.Fatalf("不应修改 BatchSandbox: %s", response.Patch)
 		}
-		for _, patch := range patches {
-			if patch.Path == "/spec/template/metadata/annotations/aenv.dev~1template-id" && patch.Value == "canonical" {
-				return
-			}
-		}
-		t.Fatalf("缺少 BatchSandbox 模板注解: %s", response.Patch)
 	})
 }
 

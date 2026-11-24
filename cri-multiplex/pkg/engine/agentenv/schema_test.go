@@ -1,86 +1,38 @@
 package agentenv
 
 import (
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
-func TestBuildCreatePlanRejectsUnknownAgentENVAnnotation(t *testing.T) {
-	_, err := buildCreatePlan(criRunRequest(map[string]string{
-		annTemplate:        "template-1",
-		"aenv.dev/unknown": "value",
+func TestBuildCreatePlanUsesOnlyTemplateAnnotation(t *testing.T) {
+	plan, err := buildCreatePlan(criRunRequest(map[string]string{annTemplate: "template-1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withLegacyAnnotations, err := buildCreatePlan(criRunRequest(map[string]string{
+		annTemplate:              "template-1",
+		"sandbox.cri/sandbox-id": "other-id",
+		"sandbox.cri/build":      "old-build",
+		"aenv.dev/template-id":   "other-template",
+		"aenv.dev/env-vars":      "invalid-json",
+		"aenv.dev/network":       "invalid-json",
 	}))
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withLegacyAnnotations.criID != plan.criID || !proto.Equal(withLegacyAnnotations.spec, plan.spec) {
+		t.Fatalf("消减的注解影响了 Sandbox 创建请求: %+v", withLegacyAnnotations.spec)
 	}
 }
 
-func TestBuildCreatePlanRejectsReservedVolumeMounts(t *testing.T) {
+func TestBuildCreatePlanRejectsOversizedTemplate(t *testing.T) {
 	_, err := buildCreatePlan(criRunRequest(map[string]string{
-		annTemplate:     "template-1",
-		annVolumeMounts: "[]",
-	}))
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
-	}
-}
-
-func TestBuildCreatePlanRejectsInlineSecret(t *testing.T) {
-	_, err := buildCreatePlan(criRunRequest(map[string]string{
-		annTemplate: "template-1",
-		annEnvVars:  `{"API_TOKEN":"abc"}`,
-	}))
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
-	}
-}
-
-func TestBuildCreatePlanRejectsUnknownAutoResumeField(t *testing.T) {
-	_, err := buildCreatePlan(criRunRequest(map[string]string{
-		annTemplate:   "template-1",
-		annAutoResume: `{"enabled":true,"policy":"always"}`,
-	}))
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
-	}
-}
-
-func TestBuildCreatePlanRejectsDuplicateJSONKey(t *testing.T) {
-	_, err := buildCreatePlan(criRunRequest(map[string]string{
-		annTemplate: "template-1",
-		annEnvVars:  `{"MODE":"one","MODE":"two"}`,
-	}))
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
-	}
-}
-
-func TestBuildCreatePlanRejectsOutOfRangeLifecycle(t *testing.T) {
-	for name, annotations := range map[string]map[string]string{
-		"timeout": {
-			annTemplate:       "template-1",
-			annTimeoutSeconds: "86401",
-		},
-		"max-length": {
-			annTemplate:       "template-1",
-			annMaxLengthHours: "8761",
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := buildCreatePlan(criRunRequest(annotations))
-			if status.Code(err) != codes.InvalidArgument {
-				t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
-			}
-		})
-	}
-}
-
-func TestBuildCreatePlanRejectsNonObjectCustomParams(t *testing.T) {
-	_, err := buildCreatePlan(criRunRequest(map[string]string{
-		annTemplate:     "template-1",
-		annCustomParams: `["not-an-object"]`,
+		annTemplate: strings.Repeat("x", templateRefMaxLength+1),
 	}))
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))

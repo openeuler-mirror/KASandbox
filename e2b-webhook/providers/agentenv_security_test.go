@@ -27,7 +27,7 @@ func TestAgentENVResolverDoesNotFollowRedirect(t *testing.T) {
 	}))
 	defer origin.Close()
 	r, _ := NewAgentENVTemplateResolver(origin.URL, "test-key", time.Second)
-	if _, err := r.ResolveTemplate(context.Background(), "alias", ""); err == nil {
+	if _, err := r.ResolveTemplate(context.Background(), "alias"); err == nil {
 		t.Fatal("重定向应失败")
 	}
 	if calls.Load() != 0 {
@@ -58,7 +58,7 @@ func TestAgentENVResolverRejectsInvalidResponses(t *testing.T) {
 			}))
 			defer server.Close()
 			r, _ := NewAgentENVTemplateResolver(server.URL, "test-key", time.Second)
-			_, err := r.ResolveTemplate(context.Background(), "alias", "")
+			_, err := r.ResolveTemplate(context.Background(), "alias")
 			if err == nil || strings.Contains(err.Error(), "private-response") || strings.Contains(err.Error(), "test-key") {
 				t.Fatalf("错误或信息泄露: %v", err)
 			}
@@ -73,12 +73,12 @@ func TestAgentENVResolverCancellationAndTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
 	defer server.Close()
 	r, _ := NewAgentENVTemplateResolver(server.URL, "", 20*time.Millisecond)
-	if _, err := r.ResolveTemplate(context.Background(), "alias", ""); err == nil {
+	if _, err := r.ResolveTemplate(context.Background(), "alias"); err == nil {
 		t.Fatal("等待响应应超时")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := r.ResolveTemplate(ctx, "alias", ""); err == nil {
+	if _, err := r.ResolveTemplate(ctx, "alias"); err == nil {
 		t.Fatal("已取消请求不应继续解析")
 	}
 }
@@ -99,7 +99,7 @@ func TestAgentENVResolverSharesTimeoutAcrossRequests(t *testing.T) {
 	defer server.Close()
 	r, _ := NewAgentENVTemplateResolver(server.URL, "", 150*time.Millisecond)
 	// 每个请求单独都能在预算内完成，但完整解析不能获得两份预算。
-	if _, err := r.ResolveTemplate(context.Background(), "alias", ""); err == nil {
+	if _, err := r.ResolveTemplate(context.Background(), "alias"); err == nil {
 		t.Fatal("多个模板请求未共享超时预算")
 	}
 }

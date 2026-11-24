@@ -185,16 +185,6 @@ func requestFingerprint(spec *runtimeapi.SandboxSpec) ([]byte, error) {
 	return sum[:], nil
 }
 
-func rejectSensitiveValues(field string, values map[string]string) error {
-	for key, value := range values {
-		if sensitiveKey(key) || sensitiveValue(value) {
-			return status.Errorf(codes.InvalidArgument,
-				"%s key %q contains credential material; use AccessDescriptor instead", field, key)
-		}
-	}
-	return nil
-}
-
 func cloneStringMap(values map[string]string) map[string]string {
 	if len(values) == 0 {
 		return nil
