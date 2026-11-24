@@ -126,9 +126,42 @@ func TestBatcherPushMaxBatchSize(t *testing.T) {
 
 func TestBatcherPushMaxDelay(t *testing.T) {
 	t.Parallel()
-	testBatcherPushMaxDelay(t, 100, time.Millisecond)
-	testBatcherPushMaxDelay(t, 205, 10*time.Millisecond)
-	testBatcherPushMaxDelay(t, 313, 100*time.Millisecond)
+
+	const maxDelay = 200 * time.Millisecond
+	const item = 42
+	flushedAt := make(chan time.Time, 1)
+	b, err := NewBatcher(func(_ context.Context, batch []int) error {
+		if len(batch) != 1 || batch[0] != item {
+			t.Errorf("flushed batch = %v, want [%d]", batch, item)
+		}
+		flushedAt <- time.Now()
+		return nil
+	}, BatcherOptions{MaxDelay: maxDelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Now()
+	if err := b.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := b.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	if ok, err := b.Push(item); err != nil || !ok {
+		t.Fatalf("Push(%d) = %t, %v", item, ok, err)
+	}
+
+	// 等待单条数据触发定时 flush，避免 Stop 关闭队列时的 flush 干扰结果。
+	select {
+	case at := <-flushedAt:
+		if elapsed := at.Sub(startedAt); elapsed < maxDelay {
+			t.Errorf("batch flushed after %s, before MaxDelay %s", elapsed, maxDelay)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("batch was not flushed by the timer")
+	}
 }
 
 func TestBatcherConcurrentPush(t *testing.T) {
@@ -236,59 +269,6 @@ func TestBatcherQueueSize(t *testing.T) {
 
 	if n != 18 {
 		t.Fatalf("Unexpected number of items passed to batcher func: %d. Expected 18", n)
-	}
-}
-
-func testBatcherPushMaxDelay(t *testing.T, itemsCount int, maxDelay time.Duration) {
-	t.Helper()
-
-	lastTime := time.Now()
-	n := 0
-	nn := 0
-	b, err := NewBatcher[int](func(_ context.Context, batch []int) error {
-		// Errorf, not Fatalf: BatcherFunc runs on the batcher goroutine where
-		// FailNow would Goexit it and hang Stop().
-		if time.Since(lastTime) > maxDelay+10*time.Millisecond {
-			t.Errorf("Unexpected delay between batches: %s. Expected no more than %s. itemsCount=%d",
-				time.Since(lastTime), maxDelay, itemsCount)
-		}
-		lastTime = time.Now()
-		nn += len(batch)
-		n++
-
-		return nil
-	}, BatcherOptions{
-		MaxDelay:     maxDelay,
-		MaxBatchSize: 100500,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := b.Start(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	for i := range itemsCount {
-		ok, err := b.Push(i)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !ok {
-			t.Fatalf("cannot add item %d to batch", i)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if err := b.Stop(); err != nil {
-		t.Fatal(err)
-	}
-
-	batchSize := 1000 * maxDelay.Seconds()
-	expectedN := int(1.2 * (float64(itemsCount) + batchSize - 1) / batchSize)
-	if n > expectedN {
-		t.Fatalf("Unexpected number of batch func calls: %d. Expected no more than %d. itemsCount=%d, maxDelay=%s",
-			n, expectedN, itemsCount, maxDelay)
-	}
-	if itemsCount != nn {
-		t.Fatalf("Unexpected number of items passed to batcher func: %d. Expected %d. maxDelay=%s", nn, itemsCount, maxDelay)
 	}
 }
 

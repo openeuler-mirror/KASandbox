@@ -45,6 +45,9 @@ class SandboxBase:
         self.__envd_api_url = self.connection_config.get_sandbox_url(
             self.sandbox_id, self.sandbox_domain
         )
+        self.__checkpointd_api_url = self.connection_config.get_checkpointd_url(
+            self.sandbox_id, self.sandbox_domain
+        )
         self.__mcp_token: Optional[str] = None
 
     @property
@@ -79,6 +82,10 @@ class SandboxBase:
     @property
     def envd_api_url(self) -> str:
         return self.__envd_api_url
+
+    @property
+    def checkpointd_api_url(self) -> str:
+        return self.__checkpointd_api_url
 
     @property
     def sandbox_id(self) -> str:

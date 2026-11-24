@@ -32,6 +32,7 @@ from e2b.sandbox_async.filesystem.filesystem import Filesystem
 from e2b.sandbox_async.git import Git
 from e2b.sandbox_async.sandbox_api import SandboxApi, SandboxInfo
 from e2b.sandbox_async.paginator import AsyncSnapshotPaginator
+from e2b.sandbox_async.checkpoint import AsyncCheckpoint
 from e2b.volume.volume_async import AsyncVolume
 from e2b.api.client.models import SandboxVolumeMount as SandboxVolumeMountAPI
 
@@ -91,6 +92,13 @@ class AsyncSandbox(SandboxApi):
         """
         return self._git
 
+    @property
+    def checkpoint(self) -> AsyncCheckpoint:
+        """
+        Module for checkpointing and restoring sandbox state.
+        """
+        return self._checkpoint
+
     def __init__(
         self,
         **opts: Unpack[SandboxOpts],
@@ -107,6 +115,7 @@ class AsyncSandbox(SandboxApi):
             ),
             transport=self._transport,
             headers=self.connection_config.sandbox_headers,
+            verify=self.connection_config.verify_ssl,
         )
         self._filesystem = Filesystem(
             self.envd_api_url,
@@ -128,6 +137,12 @@ class AsyncSandbox(SandboxApi):
             self._envd_version,
         )
         self._git = Git(self._commands)
+        self._checkpoint = AsyncCheckpoint(
+            self.checkpointd_api_url,
+            self.connection_config,
+            self._transport.pool,
+            self._transport,
+        )
 
     async def is_running(self, request_timeout: Optional[float] = None) -> bool:
         """
@@ -864,6 +879,12 @@ class AsyncSandbox(SandboxApi):
         envd_access_token = sandbox.envd_access_token
         if envd_access_token is not None and not isinstance(envd_access_token, Unset):
             sandbox_headers["X-Access-Token"] = envd_access_token
+
+        # 与 _create 保持一致。少了这两个头，沙箱代理无法把请求路由到具体沙箱，
+        # 凡是走 header 定址的服务（checkpoint 守护进程就是）都会收到
+        # "missing header"。envd 自己不受影响，因为它的地址里带了沙箱 ID。
+        sandbox_headers["E2b-Sandbox-Id"] = sandbox.sandbox_id
+        sandbox_headers["E2b-Sandbox-Port"] = str(ConnectionConfig.envd_port)
 
         connection_config = ConnectionConfig(
             extra_sandbox_headers=sandbox_headers,

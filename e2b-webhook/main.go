@@ -194,6 +194,8 @@ func main() {
 	certFile := envOr("TLS_CERT_FILE", "/tls/tls.crt")
 	keyFile := envOr("TLS_KEY_FILE", "/tls/tls.key")
 	port := envOr("PORT", "8443")
+	// 共享节点可限定监听地址，避免与其他地址上的同端口服务冲突。
+	listenAddress := envOr("LISTEN_ADDRESS", ":"+port)
 
 	// e2b API 配置
 	apiURL := envOr("E2B_API_URL", "http://api.e2b.svc.cluster.local:3000")
@@ -213,7 +215,7 @@ func main() {
 	mux.HandleFunc("/healthz", serveHealth)
 
 	server := &http.Server{
-		Addr:    ":" + port,
+		Addr:    listenAddress,
 		Handler: mux,
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
@@ -224,7 +226,7 @@ func main() {
 		IdleTimeout:  60 * time.Second, // keep-alive 空闲连接
 	}
 
-	klog.Infof("starting e2b-webhook server on :%s (cert=%s key=%s)", port, certFile, keyFile)
+	klog.Infof("starting e2b-webhook server on %s (cert=%s key=%s)", listenAddress, certFile, keyFile)
 	klog.Infof("transform API: %s/sandboxes/transform (timeout=%s)", apiURL, apiTimeout)
 
 	// 监听 SIGINT/SIGTERM 信号，触发优雅退出
@@ -258,12 +260,21 @@ func main() {
 	}
 }
 
-// buildMatcher 注册全部已实现的 Provider。
+// buildMatcher 注册 Provider。AgentENV 启用时使用独立的 API 配置。
 func buildMatcher(transformer *providers.SandboxTransformer) (*provider.Matcher, error) {
 	list := []provider.Provider{
 		providers.NewE2BProvider(transformer),
 		providers.NewAndroidProvider(),
 		providers.NewCubeProvider(envOr("CUBE_API_URL", "")),
+	}
+	if agentENVURL := strings.TrimSpace(os.Getenv("AGENTENV_API_URL")); agentENVURL != "" {
+		resolver, err := providers.NewAgentENVTemplateResolver(
+			agentENVURL, os.Getenv("AGENTENV_API_KEY"), resolveTimeout,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("configure AgentENV provider: %w", err)
+		}
+		list = append(list, providers.NewAgentENVProvider(resolver))
 	}
 	matcher, err := provider.NewMatcher(list...)
 	if err != nil {

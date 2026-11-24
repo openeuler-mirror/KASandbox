@@ -7,12 +7,15 @@
 # 用法:
 #   ./run_all.sh              # 执行全部
 #   ./run_all.sh --skip-setup # 跳过环境准备（已安装过）
-#   ./run_all.sh --only 02    # 只执行 02_lifecycle.sh
+#   ./run_all.sh --only 02,04 # 只执行指定编号（逗号分隔）
 ###############################################################################
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
+
+# CI 报告契约：套件 id 由 run-suite.sh 注入；本地直接跑时默认 e2b-verify。
+export E2B_VERIFY_SUITE="${E2B_VERIFY_SUITE:-e2b-verify}"
 
 #==================== 耗时统计辅助 ====================#
 # 毫秒时间戳（GNU date），格式化成 "12.3s" / "2m05s"。
@@ -96,9 +99,9 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --help|-h)
-            echo "用法: $0 [--skip-setup] [--only <脚本编号>]"
+            echo "用法: $0 [--skip-setup] [--only <脚本编号[,编号...]>]"
             echo "  --skip-setup   跳过环境准备"
-            echo "  --only 02      只执行指定编号的脚本"
+            echo "  --only 02,04   只执行指定编号的脚本（逗号分隔）"
             exit 0
             ;;
         *)
@@ -137,6 +140,16 @@ SCRIPTS=(
     "23|重启 cri-multiplex 并隐藏 direct sandbox|${SCRIPT_DIR}/23_restart_multiplex_hide_direct.sh"
     "26|admin v2 创建/暂停/恢复/检查点验证|${SCRIPT_DIR}/26_adminv2_e2b_lifecycle.sh"
 )
+
+# --only 支持逗号分隔（如 02,04），与 Jenkins CASE_FILTER 透传口径一致。
+only_matches() {
+    [ -z "${ONLY}" ] && return 0
+    local item
+    for item in ${ONLY//,/ }; do
+        [ "${item}" = "$1" ] && return 0
+    done
+    return 1
+}
 
 #==================== 执行 ====================#
 TOTAL_PASS=0
@@ -195,18 +208,24 @@ prepare_shared_e2b_fixture_once() {
 for entry in "${SCRIPTS[@]}"; do
     IFS='|' read -r num desc path <<< "${entry}"
 
-    # --only 过滤
-    if [ -n "${ONLY}" ] && [ "${num}" != "${ONLY}" ]; then
+    # --only 过滤（支持 02,04）
+    if ! only_matches "${num}"; then
         continue
     fi
     MATCHED=$((MATCHED+1))
     case_start_ms=$(now_ms)
+
+    # 每个用例一个事件边界；case 字段 = 用例编号，供 JUnit/Allure 转换器分组。
+    export E2B_VERIFY_CASE_NUM="${num}"
+    export E2B_VERIFY_CASE_DESC="${desc}"
+    report_begin_case "${num}" "${desc}"
 
     # --skip-setup 过滤
     if [ "${SKIP_SETUP}" = "1" ] && [ "${num}" = "00" ]; then
         log_skip "${desc}（--skip-setup）"
         RESULTS+=("${num}|${desc}|SKIP|0")
         TOTAL_SKIP=$((TOTAL_SKIP+1))
+        report_end_case "${num}" 0 "$(( $(now_ms) - case_start_ms ))" "{\"pass\":0,\"fail\":0,\"skip\":1,\"unsupported\":0}"
         continue
     fi
 
@@ -222,6 +241,8 @@ for entry in "${SCRIPTS[@]}"; do
                 if ! run_streamed "${switch_log}" env CNI_ENABLED=0 E2B_FORCE_RESTART=1 "${SCRIPT_DIR}/01_start_multiplex.sh"; then
                     RESULTS+=("01-non-cni|切换 cri-multiplex 到非 CNI 模式|FAIL(0/0/0)|$(( $(now_ms) - case_start_ms ))")
                     TOTAL_FAIL=$((TOTAL_FAIL+1))
+                    report_emit assert fail "切换 cri-multiplex 到非 CNI 模式失败"
+                    report_end_case "${num}" 1 "$(( $(now_ms) - case_start_ms ))" "{\"pass\":0,\"fail\":1,\"skip\":0,\"unsupported\":0}"
                     continue
                 fi
                 ;;
@@ -231,6 +252,8 @@ for entry in "${SCRIPTS[@]}"; do
                 if ! run_streamed "${switch_log}" start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式"; then
                     RESULTS+=("01-cni-android|切换 cri-multiplex 到 CNI+Android runtime 模式|FAIL(0/0/0)|$(( $(now_ms) - case_start_ms ))")
                     TOTAL_FAIL=$((TOTAL_FAIL+1))
+                    report_emit assert fail "切换 cri-multiplex 到 CNI+Android runtime 模式失败"
+                    report_end_case "${num}" 1 "$(( $(now_ms) - case_start_ms ))" "{\"pass\":0,\"fail\":1,\"skip\":0,\"unsupported\":0}"
                     continue
                 fi
                 ;;
@@ -251,11 +274,17 @@ for entry in "${SCRIPTS[@]}"; do
             if ! run_streamed "${switch_log}" start_cni_android_multiplex "切换 cri-multiplex 到 CNI+Android runtime 模式"; then
                 RESULTS+=("01-cni-android|切换 cri-multiplex 到 CNI+Android runtime 模式|FAIL(0/0/0)|$(( $(now_ms) - case_start_ms ))")
                 TOTAL_FAIL=$((TOTAL_FAIL+1))
+                report_emit assert fail "切换 cri-multiplex 到 CNI+Android runtime 模式失败"
+                report_end_case "${num}" 1 "$(( $(now_ms) - case_start_ms ))" "{\"pass\":0,\"fail\":1,\"skip\":0,\"unsupported\":0}"
                 continue
             fi
             if ! prepare_shared_e2b_fixture_once; then
                 RESULTS+=("fixture-e2b|准备 07 及之后共享 E2B fixture|FAIL(0/0/0)|$(( $(now_ms) - case_start_ms ))")
                 TOTAL_FAIL=$((TOTAL_FAIL+1))
+                # 上面的 report_begin_case 已经发过 case_start，这里必须配对收尾，
+                # 否则 07 只剩一条悬空的 case_start，报告里只能给出“没有可判定的断言结果”。
+                report_emit assert fail "准备 07 及之后共享 E2B fixture 失败"
+                report_end_case "${num}" 1 "$(( $(now_ms) - case_start_ms ))" "{\"pass\":0,\"fail\":1,\"skip\":0,\"unsupported\":0}"
                 continue
             fi
         fi
@@ -302,6 +331,13 @@ for entry in "${SCRIPTS[@]}"; do
         fi
         RESULTS+=("${num}|${desc}|FAIL(${sub_pass}/${sub_fail}/${sub_skip})|${case_ms}")
     fi
+
+    # 用例边界事件带退出码/耗时/计数，供转换器生成 JUnit/Allure 用例级结果。
+    # 必须放在上面的 exit_code 归一化之后：子脚本在 print_summary 前异常退出时
+    # parse_count_from_log 解析到 fail=0，归一化会把它补成 1。先发事件会让
+    # case_end.counts 与 RESULTS 表、TOTAL_FAIL/TOTAL_UNSUPPORTED 三处口径不一致。
+    report_end_case "${num}" "${exit_code}" "${case_ms}" \
+        "{\"pass\":${sub_pass},\"fail\":${sub_fail},\"skip\":${sub_skip},\"unsupported\":${sub_unsupported}}"
 done
 
 if [ -n "${ONLY}" ] && [ "${MATCHED}" -eq 0 ]; then
@@ -381,6 +417,17 @@ done <<< "${slows}"
 echo -e "${CYAN}──────────────────────────────────────────────────────────────────${NC}"
 echo -e "${CYAN}⏱  总耗时 $(format_ms "${RUN_ALL_TOTAL_MS}")（${RUN_ALL_TOTAL_MS} ms）  ${RUN_ALL_START_AT} → $(date '+%F %T')${NC}"
 echo ""
+
+# 整轮结束事件（转换器用它填 suite 级耗时/计数）。
+if [ ${TOTAL_FAIL} -gt 0 ]; then
+    _run_rc=1
+elif [ ${TOTAL_UNSUPPORTED} -gt 0 ]; then
+    _run_rc="${UNSUPPORTED_EXIT_CODE}"
+else
+    _run_rc=0
+fi
+report_run_end "${_run_rc}" "${RUN_ALL_TOTAL_MS}" \
+    "{\"pass\":${TOTAL_PASS},\"fail\":${TOTAL_FAIL},\"skip\":${TOTAL_SKIP},\"unsupported\":${TOTAL_UNSUPPORTED}}"
 
 if [ ${TOTAL_FAIL} -eq 0 ] && [ ${TOTAL_UNSUPPORTED} -eq 0 ]; then
     echo -e "${GREEN}✓ 全部验证通过！${NC}"

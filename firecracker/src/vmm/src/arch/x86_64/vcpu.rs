@@ -633,6 +633,14 @@ impl KvmVcpu {
         self.fd.set_tsc_khz(tsc_freq).map_err(SetTscError)
     }
 
+    /// Writes a snapshot's state back onto this vcpu's existing fd, for an
+    /// in-place rollback. On x86_64 the ordinary restore sequence already
+    /// works against the existing fd with no re-creation, so both rollback
+    /// routes collapse into it.
+    pub fn restore_state_in_place(&mut self, state: &VcpuState) -> Result<(), KvmVcpuError> {
+        self.restore_state(state)
+    }
+
     /// Use provided state to populate KVM internal state.
     pub fn restore_state(&self, state: &VcpuState) -> Result<(), KvmVcpuError> {
         // Ordering requirements:

@@ -618,6 +618,54 @@ paths:
           schema:
             $ref: "#/definitions/Error"
 
+  /snapshot/rollback:
+    put:
+      summary: Rolls the microVM back to a snapshot in place. Post-boot only.
+      description:
+        Rewinds the paused microVM to a previously created snapshot without
+        replacing the Firecracker process. Guest memory pages in the revert
+        set are re-read from the memory file; vCPU, interrupt controller and
+        device state are written back onto the live objects. On success the
+        microVM stays paused unless resume_vm is set. A failure past the
+        commit point leaves the microVM in the Faulted state, where only
+        queries and exit are allowed.
+      operationId: rollbackSnapshot
+      parameters:
+        - name: body
+          in: body
+          description: The configuration used for rolling back to a snapshot.
+          required: true
+          schema:
+            $ref: "#/definitions/SnapshotRollbackParams"
+      responses:
+        200:
+          description: Rollback succeeded
+          schema:
+            $ref: "#/definitions/SnapshotRollbackResponse"
+        400:
+          description: Rollback cannot be performed due to bad input
+          schema:
+            $ref: "#/definitions/Error"
+        default:
+          description: Internal server error
+          schema:
+            $ref: "#/definitions/Error"
+
+  /memory/dirty:
+    get:
+      summary: Gets the dirty-page bitmap of the guest memory.
+      description:
+        Returns the current KVM dirty bitmap of the guest memory regions.
+        Reading is destructive on the KVM side (read-and-clear).
+      operationId: getMemoryDirty
+      responses:
+        200:
+          description: The dirty bitmap
+        default:
+          description: Internal server error
+          schema:
+            $ref: "#/definitions/Error"
+
   /memory/mappings:
     get:
       summary: Gets the memory mappings with skippable pages bitmap.
@@ -1285,6 +1333,11 @@ definitions:
       mem_file_path:
         type: string
         description: Path to the file that will contain the guest memory.
+      dirty_bitmap_path:
+        type: string
+        description:
+          Path to a sidecar file receiving the bitmap of pages this snapshot
+          wrote to the memory file. Requires mem_file_path.
       snapshot_path:
         type: string
         description: Path to the file that will contain the microVM state.
@@ -1296,6 +1349,48 @@ definitions:
         description:
           Type of snapshot to create. It is optional and by default, a full
           snapshot is created.
+
+  SnapshotRollbackParams:
+    type: object
+    required:
+      - snapshot_path
+      - mem_file_path
+    properties:
+      snapshot_path:
+        type: string
+        description: Path to the microVM state file to roll back to.
+      mem_file_path:
+        type: string
+        description: Path to the full memory view of that snapshot.
+      revert_bitmap_path:
+        type: string
+        description:
+          Optional bitmap of pages to revert, in the dirty_bitmap_path
+          sidecar format. The live dirty bitmap is always unioned in.
+      resume_vm:
+        type: boolean
+        description: When true the microVM resumes after a successful rollback.
+      vcpu_route:
+        type: string
+        enum:
+          - reinit
+          - registers
+        description:
+          How vCPU state is written back. reinit re-initializes each vCPU
+          first (a KVM-defined reset); registers writes registers only.
+
+  SnapshotRollbackResponse:
+    type: object
+    properties:
+      restored_pages:
+        type: integer
+        description: Number of pages written back from the memory file.
+      restored_bytes:
+        type: integer
+        description: Number of bytes written back from the memory file.
+      timings_us:
+        type: object
+        description: Phase timings in microseconds.
 
   NetworkOverride:
     type: object

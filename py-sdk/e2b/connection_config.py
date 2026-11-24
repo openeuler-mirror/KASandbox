@@ -1,6 +1,7 @@
 import os
+import ssl
 
-from typing import Optional, Dict, TypedDict
+from typing import Optional, Dict, TypedDict, Union
 
 from httpx._types import ProxyTypes
 from typing_extensions import Unpack
@@ -51,6 +52,7 @@ class ConnectionConfig:
     """
 
     envd_port = 49983
+    checkpointd_port = 49984
 
     @staticmethod
     def _domain():
@@ -76,6 +78,13 @@ class ConnectionConfig:
     def _access_token():
         return os.getenv("E2B_ACCESS_TOKEN")
 
+    @staticmethod
+    def _verify_ssl():
+        val = os.getenv("E2B_HTTP_SSL", "true").lower()
+        if val == "false":
+            return False
+        return True
+
     def __init__(
         self,
         domain: Optional[str] = None,
@@ -98,6 +107,9 @@ class ConnectionConfig:
         self.__extra_sandbox_headers = extra_sandbox_headers or {}
 
         self.proxy = proxy
+        self.verify_ssl: Union[str, bool, ssl.SSLContext] = True
+        if ConnectionConfig._verify_ssl() is False:
+            self.verify_ssl = False
 
         self.request_timeout = ConnectionConfig._get_request_timeout(
             REQUEST_TIMEOUT,
@@ -141,6 +153,12 @@ class ConnectionConfig:
             return self._sandbox_url  # type: ignore[return-value]
 
         return f"{'http' if self.debug else 'http'}://{self.get_host(sandbox_id, sandbox_domain, self.envd_port)}"
+
+    def get_checkpointd_url(self, sandbox_id: str, sandbox_domain: str) -> str:
+        # Same scheme rule as get_sandbox_url: this fork's self-hosted deployment
+        # speaks plain HTTP (see 11dcac3ec "use http replace https"). verify_ssl is
+        # still honoured -- it governs httpx certificate checking, not the scheme.
+        return f"{'http' if self.debug else 'http'}://{self.get_host(sandbox_id, sandbox_domain, self.checkpointd_port)}"
 
     def get_host(self, sandbox_id: str, sandbox_domain: str, port: int) -> str:
         """
@@ -205,6 +223,17 @@ class ConnectionConfig:
         return {
             **self.headers,
             **self.__extra_sandbox_headers,
+        }
+
+    @property
+    def checkpointd_headers(self):
+        # No Authorization header: the checkpoint API is served on the host and
+        # authenticates with the sandbox's traffic access token, which the
+        # shared headers already carry.
+        return {
+            **self.headers,
+            **self.__extra_sandbox_headers,
+            "E2b-Sandbox-Port": str(self.checkpointd_port),
         }
 
 

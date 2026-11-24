@@ -10,6 +10,12 @@ set -euo pipefail
 SCRIPT_DIR_COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PATH="${PATH}:/root/go/bin:/usr/local/go/bin"
 
+#==================== 结构化报告事件流 ====================#
+# 未设置 E2B_VERIFY_REPORT_DIR 时 report_emit 全部 no-op，直接跑的输出/退出码
+# 与改造前一致；CI 场景由 run-suite.sh 注入报告目录。
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR_COMMON}/lib/report.sh"
+
 # 测试节点专用于验证：kubelet 的 runtime endpoint 就是验证实例要用的 socket。
 # 脚本只替换 cri-multiplex 二进制（在同一个 socket 上重启），不改 kubelet 配置。
 # 注意：socket 固定跟随 kubelet，不允许用环境变量改成别的路径——否则会出现
@@ -160,12 +166,12 @@ UNSUPPORTED_EXIT_CODE=77
 #==================== 日志函数（输出到 stderr，避免被 $(...) 捕获） ====================#
 log_info()  { echo -e "${CYAN}[INFO]${NC}  $*" >&2; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $*" >&2; }
-log_pass()  { echo -e "${GREEN}[PASS]${NC}  $*" >&2; PASS_COUNT=$((PASS_COUNT+1)); export PASS_COUNT; }
-log_fail()  { echo -e "${RED}[FAIL]${NC}  $*" >&2; FAIL_COUNT=$((FAIL_COUNT+1)); export FAIL_COUNT; }
-log_skip()  { echo -e "${YELLOW}[SKIP]${NC}  $*" >&2; SKIP_COUNT=$((SKIP_COUNT+1)); export SKIP_COUNT; }
-log_unsupported() { echo -e "${YELLOW}[UNSUPPORTED]${NC}  $*" >&2; UNSUPPORTED_COUNT=$((UNSUPPORTED_COUNT+1)); export UNSUPPORTED_COUNT; }
-log_step()  { echo -e "\n${CYAN}========================================${NC}" >&2; echo -e "${CYAN} $* ${NC}" >&2; echo -e "${CYAN}========================================${NC}" >&2; }
-log_section() { echo -e "\n${CYAN}╔══════════════════════════════════════════════════╗${NC}" >&2; echo -e "${CYAN}║  $*${NC}" >&2; echo -e "${CYAN}╚══════════════════════════════════════════════════╝${NC}\n" >&2; }
+log_pass()  { report_emit assert pass "$*"; echo -e "${GREEN}[PASS]${NC}  $*" >&2; PASS_COUNT=$((PASS_COUNT+1)); export PASS_COUNT; }
+log_fail()  { report_emit assert fail "$*"; echo -e "${RED}[FAIL]${NC}  $*" >&2; FAIL_COUNT=$((FAIL_COUNT+1)); export FAIL_COUNT; }
+log_skip()  { report_emit assert skip "$*"; echo -e "${YELLOW}[SKIP]${NC}  $*" >&2; SKIP_COUNT=$((SKIP_COUNT+1)); export SKIP_COUNT; }
+log_unsupported() { report_emit assert unsupported "$*"; echo -e "${YELLOW}[UNSUPPORTED]${NC}  $*" >&2; UNSUPPORTED_COUNT=$((UNSUPPORTED_COUNT+1)); export UNSUPPORTED_COUNT; }
+log_step()  { report_emit step_start "" "$*"; echo -e "\n${CYAN}========================================${NC}" >&2; echo -e "${CYAN} $* ${NC}" >&2; echo -e "${CYAN}========================================${NC}" >&2; }
+log_section() { report_emit step_start "" "$*"; echo -e "\n${CYAN}╔══════════════════════════════════════════════════╗${NC}" >&2; echo -e "${CYAN}║  $*${NC}" >&2; echo -e "${CYAN}╚══════════════════════════════════════════════════╝${NC}\n" >&2; }
 
 # E2B 环境/模板元数据与 systemd 接管辅助函数
 # shellcheck disable=SC1091

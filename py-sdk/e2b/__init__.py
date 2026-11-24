@@ -69,6 +69,7 @@ from .sandbox.filesystem.watch_handle import (
 )
 from .sandbox._git import GitBranches, GitFileStatus, GitStatus
 from .sandbox_sync.git import Git
+from .sandbox.checkpoint.types import CheckpointInfo
 from .sandbox.network import ALL_TRAFFIC
 from .sandbox.signature import get_signature
 from .sandbox.sandbox_api import (
@@ -189,6 +190,9 @@ __all__ = [
     "SnapshotInfo",
     "SnapshotPaginator",
     "AsyncSnapshotPaginator",
+    # Checkpoint
+    "CheckpointInfo",
+
     # Signature
     "get_signature",
     # Sync sandbox

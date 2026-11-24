@@ -1,0 +1,29 @@
+# webhook-verify BatchSandbox 模板（CRD: sandbox.opensandbox.io/v1alpha1）
+#
+# 字段路径与 e2b-webhook/admission.go:requestFromBatchSandbox 对齐：
+#   spec.template.metadata.{labels,annotations}
+#   spec.template.spec.runtimeClassName
+#   spec.template.spec.containers[0].env[TEMPLATE_NAME]
+#
+# CRD 未安装时，A16/K4/E12 会记 SKIP，本文件不会被提交给 apiserver。
+# 占位符同 fixtures/pod.yaml（注意本文件里的缩进比 Pod 深一层）。
+apiVersion: sandbox.opensandbox.io/v1alpha1
+kind: BatchSandbox
+metadata:
+  name: __NAME__
+  namespace: __NS__
+spec:
+  replicas: 1
+  template:
+    metadata:
+__LABELS__
+__ANNOTATIONS__
+    spec:
+__RUNTIMECLASS__
+      containers:
+        - name: sandbox
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: __COMMAND__
+          env:
+__ENV__

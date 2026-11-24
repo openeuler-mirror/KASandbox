@@ -107,6 +107,20 @@ impl VmGenId {
         Ok(u128::from_le_bytes(gen_id_bytes))
     }
 
+    /// Generates a fresh generation ID, writes it into guest memory and
+    /// notifies the guest. For in-place rollback: the guest's memory was just
+    /// rewound to a moment it already lived through once, and the generation
+    /// bump is how it learns that the world diverged (so it reseeds RNGs,
+    /// invalidates UUID caches, and so on).
+    pub fn refresh_generation(&mut self, mem: &GuestMemoryMmap) -> Result<(), VmGenIdError> {
+        let gen_id = Self::make_genid()?;
+        mem.write_slice(&gen_id.to_le_bytes(), self.guest_address)
+            .inspect_err(|err| error!("vmgenid: could not write generation ID to guest: {err}"))?;
+        self.gen_id = gen_id;
+        self.notify_guest().map_err(VmGenIdError::from)?;
+        Ok(())
+    }
+
     /// Send an ACPI notification to guest device.
     ///
     /// This will only have effect if we have updated the generation ID in guest memory, i.e. when

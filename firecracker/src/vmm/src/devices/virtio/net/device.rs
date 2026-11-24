@@ -462,6 +462,34 @@ impl Net {
     }
 
     /// Parse available RX `DescriptorChains` from the queue
+    /// Rebuilds the parsed-RX-descriptor cache from a snapshot's counters.
+    ///
+    /// Mirrors what a snapshot-built device does on a process-replacing
+    /// restore: drop the chains parsed on the timeline being discarded, rewind
+    /// next_avail past the ones the snapshot had parsed, and re-parse them out
+    /// of the avail ring, which the caller has already reverted.
+    pub(crate) fn rollback_rx_buffers(
+        &mut self,
+        parsed_descriptor_chains_nr: u16,
+        used_descriptors: u16,
+        used_bytes: u32,
+    ) {
+        // Cleared in place rather than rebuilt: a fresh RxBuffers would mmap a
+        // new IovDeque, and the vmm thread's seccomp filter has no
+        // memfd_create rule — that syscall is only ever made before the
+        // filters are installed.
+        self.rx_buffer.iovec.clear();
+        self.rx_buffer.parsed_descriptors.clear();
+        self.rx_buffer.used_descriptors = 0;
+        self.rx_buffer.used_bytes = 0;
+        self.rx_buffer.min_buffer_size = 0;
+
+        self.queues[RX_INDEX].next_avail -= parsed_descriptor_chains_nr;
+        self.parse_rx_descriptors();
+        self.rx_buffer.used_descriptors = used_descriptors;
+        self.rx_buffer.used_bytes = used_bytes;
+    }
+
     pub fn parse_rx_descriptors(&mut self) {
         // This is safe since we checked in the event handler that the device is activated.
         let mem = self.device_state.mem().unwrap();

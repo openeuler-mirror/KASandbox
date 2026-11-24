@@ -354,7 +354,7 @@ impl Vcpu {
                     .expect("vcpu channel unexpectedly closed");
             }
             // SaveState cannot be performed on a running Vcpu.
-            Ok(VcpuEvent::SaveState) => {
+            Ok(VcpuEvent::SaveState) | Ok(VcpuEvent::RestoreState(..)) => {
                 self.response_sender
                     .send(VcpuResponse::NotAllowed(String::from(
                         "save/restore unavailable while running",
@@ -405,6 +405,25 @@ impl Vcpu {
                 self.response_sender
                     .send(VcpuResponse::Paused)
                     .expect("vcpu channel unexpectedly closed");
+                StateMachine::next(Self::paused)
+            }
+            Ok(VcpuEvent::RestoreState(state)) => {
+                // Write the snapshot's state back onto this vcpu, in the vcpu
+                // thread like every other state operation — the seccomp
+                // filter of this thread is the one that allows the ioctls.
+                self.kvm_vcpu
+                    .restore_state_in_place(&state)
+                    .map(|()| {
+                        self.response_sender
+                            .send(VcpuResponse::RestoredState)
+                            .expect("vcpu channel unexpectedly closed");
+                    })
+                    .unwrap_or_else(|err| {
+                        self.response_sender
+                            .send(VcpuResponse::Error(VcpuError::VcpuResponse(err)))
+                            .expect("vcpu channel unexpectedly closed");
+                    });
+
                 StateMachine::next(Self::paused)
             }
             Ok(VcpuEvent::SaveState) => {
@@ -634,6 +653,10 @@ pub enum VcpuEvent {
     Resume,
     /// Event to save the state of a paused Vcpu.
     SaveState,
+    /// Event to write a snapshot's state back onto a paused Vcpu in place,
+    /// for rollback. The flag selects route A (re-init) vs route B
+    /// (registers only).
+    RestoreState(std::sync::Arc<VcpuState>),
     /// Event to dump CPU configuration of a paused Vcpu.
     DumpCpuConfig,
 }
@@ -652,6 +675,8 @@ pub enum VcpuResponse {
     Resumed,
     /// Vcpu state is saved.
     SavedState(Box<VcpuState>),
+    /// Vcpu state was written back in place.
+    RestoredState,
     /// Vcpu is in the state where CPU config is dumped.
     DumpedCpuConfig(Box<CpuConfiguration>),
 }
@@ -664,6 +689,7 @@ impl fmt::Debug for VcpuResponse {
             Resumed => write!(f, "VcpuResponse::Resumed"),
             Exited(code) => write!(f, "VcpuResponse::Exited({:?})", code),
             SavedState(_) => write!(f, "VcpuResponse::SavedState"),
+            RestoredState => write!(f, "VcpuResponse::RestoredState"),
             Error(err) => write!(f, "VcpuResponse::Error({:?})", err),
             NotAllowed(reason) => write!(f, "VcpuResponse::NotAllowed({})", reason),
             DumpedCpuConfig(_) => write!(f, "VcpuResponse::DumpedCpuConfig"),
@@ -901,7 +927,8 @@ pub(crate) mod tests {
             // Guard match with no wildcard to make sure we catch new enum variants.
             match self {
                 Paused | Resumed | Exited(_) => (),
-                Error(_) | NotAllowed(_) | SavedState(_) | DumpedCpuConfig(_) => (),
+                Error(_) | NotAllowed(_) | SavedState(_) | DumpedCpuConfig(_)
+                | RestoredState => (),
             };
             match (self, other) {
                 (Paused, Paused) | (Resumed, Resumed) => true,

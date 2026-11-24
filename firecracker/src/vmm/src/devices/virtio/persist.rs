@@ -220,6 +220,19 @@ pub struct MmioTransportConstructorArgs {
     pub is_vhost_user: bool,
 }
 
+impl MmioTransport {
+    /// Writes a snapshot's transport registers onto this live transport, for
+    /// in-place rollback. Plain field writes — the device reference, guest
+    /// memory and interrupt wiring all stay.
+    pub fn apply_state(&mut self, state: &MmioTransportState) {
+        self.features_select = state.features_select;
+        self.acked_features_select = state.acked_features_select;
+        self.queue_select = state.queue_select;
+        self.device_status = state.device_status;
+        self.config_generation = state.config_generation;
+    }
+}
+
 impl Persist<'_> for MmioTransport {
     type State = MmioTransportState;
     type ConstructorArgs = MmioTransportConstructorArgs;

@@ -34,11 +34,11 @@ pub struct NetConfigSpaceState {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct RxBufferState {
     // Number of iovecs we have parsed from the guest
-    parsed_descriptor_chains_nr: u16,
+    pub(crate) parsed_descriptor_chains_nr: u16,
     // Number of used descriptors
-    used_descriptors: u16,
+    pub(crate) used_descriptors: u16,
     // Number of used bytes
-    used_bytes: u32,
+    pub(crate) used_bytes: u32,
 }
 
 impl RxBufferState {
@@ -64,6 +64,19 @@ pub struct NetState {
     config_space: NetConfigSpaceState,
     virtio_state: VirtioDeviceState,
     rx_buffers_state: RxBufferState,
+}
+
+impl NetState {
+    /// The generic virtio half of this state, used by in-place rollback.
+    pub(crate) fn virtio_state(&self) -> &VirtioDeviceState {
+        &self.virtio_state
+    }
+
+    /// The RX descriptor-cache counters, used by in-place rollback to rebuild
+    /// the live device's parsed-chain cache.
+    pub(crate) fn rx_buffers_state(&self) -> &RxBufferState {
+        &self.rx_buffers_state
+    }
 }
 
 /// Auxiliary structure for creating a device when resuming from a snapshot.
