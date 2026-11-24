@@ -71,6 +71,8 @@ const stoppedRetain = 10 * time.Minute
 
 // Config 是 cube engine 的启动配置。
 // Enabled 为 false 时不拨 Cubelet，CRI 入口返回 FailedPrecondition。
+// HideLabel 非空时（key=value），携带该 label 的沙箱从 ListPodSandbox/
+// ListContainers 中隐藏，避免 kubelet 把 agent 直连沙箱当孤儿清掉。
 type Config struct {
 	Deps        engine.Deps
 	Enabled     bool
@@ -78,6 +80,7 @@ type Config struct {
 	NodeName    string
 	Timeout     time.Duration
 	StateStore  engine.StateStore
+	HideLabel   string
 }
 
 // Engine 把 CRI 沙箱翻译成本机 Cubelet 调用。
@@ -90,6 +93,11 @@ type Engine struct {
 	pods     map[string]*CubePodState
 	// envdHTTP dials the guest envd directly (SandboxIP:49983). Tests may replace it.
 	envdHTTP *http.Client
+
+	// Non-empty when -hide-sandbox-label is set; matching pods are omitted from
+	// CRI list responses (same contract as the E2B engine).
+	hideLabelKey   string
+	hideLabelValue string
 
 	// Background persist coalesces whole-map snapshots so Create only does a
 	// short in-memory map insert (e2b tracker style). Pause/Destroy/Close wait.
@@ -144,6 +152,16 @@ func newEngine(cfg Config, client cubeClient) *Engine {
 		persistCh:   make(chan struct{}, 1),
 		persistStop: make(chan struct{}),
 		persistDone: make(chan struct{}),
+	}
+	if hide := strings.TrimSpace(cfg.HideLabel); hide != "" {
+		key, value, found := strings.Cut(hide, "=")
+		if !found || key == "" {
+			log.Printf("[CubeEngine] WARNING: invalid hide-sandbox-label %q (want key=value), disabled", hide)
+		} else {
+			e.hideLabelKey = key
+			e.hideLabelValue = value
+			log.Printf("[CubeEngine] sandboxes with label %s=%s will be hidden from CRI list", key, value)
+		}
 	}
 	e.persistCond = sync.NewCond(&e.persistMu)
 	go e.persistLoop()
@@ -488,9 +506,17 @@ func (e *Engine) PodSandboxStatus(ctx context.Context, req *runtime.PodSandboxSt
 
 func (e *Engine) ListPodSandbox(ctx context.Context, req *runtime.ListPodSandboxRequest) (*runtime.ListPodSandboxResponse, error) {
 	e.dropExpiredStopped()
+	var filter *runtime.PodSandboxFilter
+	if req != nil {
+		filter = req.GetFilter()
+	}
+	revealHidden := filter != nil && e.revealsHiddenFromCRIList(filter.LabelSelector)
 	e.mu.Lock()
 	items := make([]*runtime.PodSandbox, 0, len(e.pods))
 	for _, pod := range e.pods {
+		if e.hiddenFromCRIList(pod) && !revealHidden {
+			continue
+		}
 		items = append(items, &runtime.PodSandbox{
 			Id:          pod.CRISandboxID,
 			Metadata:    podMetadata(*pod),
@@ -501,7 +527,27 @@ func (e *Engine) ListPodSandbox(ctx context.Context, req *runtime.ListPodSandbox
 		})
 	}
 	e.mu.Unlock()
-	return &runtime.ListPodSandboxResponse{Items: filterPodSandbox(items, req.GetFilter())}, nil
+	return &runtime.ListPodSandboxResponse{Items: filterPodSandbox(items, filter)}, nil
+}
+
+// hiddenFromCRIList reports whether the pod should be omitted from CRI list
+// responses. Status/Stop/Remove/Admin by id stay reachable.
+func (e *Engine) hiddenFromCRIList(pod *CubePodState) bool {
+	if e.hideLabelKey == "" || pod == nil {
+		return false
+	}
+	v, ok := pod.Labels[e.hideLabelKey]
+	return ok && v == e.hideLabelValue
+}
+
+// revealsHiddenFromCRIList is true only when the caller label selector exactly
+// requests the hide key=value; kubelet's empty List never sets this.
+func (e *Engine) revealsHiddenFromCRIList(labelSelector map[string]string) bool {
+	if e.hideLabelKey == "" || labelSelector == nil {
+		return false
+	}
+	v, ok := labelSelector[e.hideLabelKey]
+	return ok && v == e.hideLabelValue
 }
 
 func (e *Engine) dropExpiredStopped() {

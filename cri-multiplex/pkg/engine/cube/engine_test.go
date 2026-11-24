@@ -519,3 +519,89 @@ func TestDisabledCubeRejectsRun(t *testing.T) {
 		t.Fatalf("code = %v, err = %v", status.Code(err), err)
 	}
 }
+
+func TestHideSandboxLabelOmitsDirectFromCRIList(t *testing.T) {
+	store, err := engine.NewJSONStateStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := newEngine(Config{
+		Enabled:     true,
+		CubeletAddr: "127.0.0.1:9999",
+		NodeName:    "node-a",
+		Timeout:     time.Second,
+		StateStore:  store,
+		HideLabel:   "flux-sandbox.io/direct=true",
+	}, &fakeClient{})
+	t.Cleanup(func() { _ = eng.Close() })
+
+	req := podRequest()
+	req.Config.Labels["flux-sandbox.io/direct"] = "true"
+	if _, err := eng.RunPodSandbox(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.CreateContainer(context.Background(), &runtime.CreateContainerRequest{
+		PodSandboxId: "uid-1",
+		Config: &runtime.ContainerConfig{
+			Metadata: &runtime.ContainerMetadata{Name: "app"},
+			Image:    &runtime.ImageSpec{Image: "cube.dev/ignored"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := eng.ListPodSandbox(context.Background(), &runtime.ListPodSandboxRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Items) != 0 {
+		t.Fatalf("empty list should hide direct sandbox, got %+v", listed.Items)
+	}
+	containers, err := eng.ListContainers(context.Background(), &runtime.ListContainersRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(containers.Containers) != 0 {
+		t.Fatalf("empty container list should hide direct sandbox, got %+v", containers.Containers)
+	}
+
+	revealed, err := eng.ListPodSandbox(context.Background(), &runtime.ListPodSandboxRequest{
+		Filter: &runtime.PodSandboxFilter{LabelSelector: map[string]string{"flux-sandbox.io/direct": "true"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revealed.Items) != 1 || revealed.Items[0].Id != "uid-1" {
+		t.Fatalf("selector reveal = %+v", revealed.Items)
+	}
+	st, err := eng.PodSandboxStatus(context.Background(), &runtime.PodSandboxStatusRequest{PodSandboxId: "uid-1"})
+	if err != nil || st.Status.Id != "uid-1" {
+		t.Fatalf("status by id must stay reachable: %+v, %v", st, err)
+	}
+}
+
+func TestHideSandboxLabelIgnoresNonMatching(t *testing.T) {
+	store, err := engine.NewJSONStateStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := newEngine(Config{
+		Enabled:     true,
+		CubeletAddr: "127.0.0.1:9999",
+		NodeName:    "node-a",
+		Timeout:     time.Second,
+		StateStore:  store,
+		HideLabel:   "flux-sandbox.io/direct=true",
+	}, &fakeClient{})
+	t.Cleanup(func() { _ = eng.Close() })
+	if _, err := eng.RunPodSandbox(context.Background(), podRequest()); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := eng.ListPodSandbox(context.Background(), &runtime.ListPodSandboxRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Items) != 1 {
+		t.Fatalf("non-direct sandbox must stay visible, got %+v", listed.Items)
+	}
+}

@@ -694,10 +694,12 @@ sudo -E ./k8s-deploy.sh cri-multiplex
 
 脚本会：
 
-1. 写入 `/etc/systemd/system/cri-multiplex.service`（含 `-cube-enabled` / `-cubelet-address`）
+1. 写入 `/etc/systemd/system/cri-multiplex.service`（含 `-cube-enabled` / `-cubelet-address`，以及与 E2B 相同的 `-hide-sandbox-label flux-sandbox.io/direct=true`）
 2. `systemctl enable --now cri-multiplex`，等待 `/run/cri-multiplex.sock`
 3. 将 kubelet runtime endpoint 切到该 socket 并重启 kubelet
 4. 创建 RuntimeClass：`android` / `e2b` / **`cube`**
+
+> OpenFuyao agent 直连创建的 Cube 沙箱没有对应 K8s Pod。必须带上 `-hide-sandbox-label`，Cube 引擎才会把带 `flux-sandbox.io/direct=true` 的沙箱从 CRI List 里藏掉，否则 kubelet 会在约 1 秒内当孤儿清掉。
 
 ### 8.3 RuntimeClass 与 Pod 注解
 
