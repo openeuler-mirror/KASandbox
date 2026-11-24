@@ -206,10 +206,13 @@ func (c *FullFetchChunker) Slice(ctx context.Context, off, length int64) ([]byte
 // storage.BatchReader (e.g. Mooncake), it performs a single batched read; otherwise it falls
 // back to launching one goroutine per chunk for parallel reads (works with S3/GCP/LocalFS/etc.).
 func (c *FullFetchChunker) fetchToCache(ctx context.Context, off, length int64) error {
-	chunks := header.BlocksOffsets(length, storage.MemoryChunkSize)
-
 	startingChunk := header.BlockIdx(off, storage.MemoryChunkSize)
 	startingChunkOffset := header.BlockOffset(startingChunk, storage.MemoryChunkSize)
+
+	// 要拉的块必须盖住 [off, off+length) 整段。off 不在块边界上时（64 KiB 宿主页在
+	// 4 KiB 粒度压实的 memfile 里经常如此），只按 length 算块数会漏掉后半截所在的那一块，
+	// Slice 随即报 BytesNotAvailableError、沙箱被杀（10-09 预热模板 24a1cbb3 实测）。
+	chunks := header.BlocksOffsets(off+length-startingChunkOffset, storage.MemoryChunkSize)
 
 	// Try the Mooncake fast-path: a single batched backend call.
 	/*if batchReader, ok := c.base.(storage.BatchReader); ok {
