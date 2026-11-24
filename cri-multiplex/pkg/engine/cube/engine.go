@@ -43,6 +43,15 @@ const (
 
 	podRunning = "running"
 	podPaused  = "paused"
+	// podParked is a paused sandbox whose CRI Stop/Remove already ran.
+	// OpenFuyao's agent always removes the pod after pause; the snap id has to
+	// stay on this node or the following RunPodSandbox becomes a cold create.
+	podParked = "parked"
+	// podStopped is a destroyed runtime kept only so List reports NOTREADY.
+	// A missing id waits out the scheduler's fresh-row grace plus the orphan
+	// confirm window, which misses a 120s idle check. An explicit stopped
+	// phase releases the slot on the next reconcile after the fresh-row grace.
+	podStopped = "stopped"
 
 	ctrCreated = "created"
 	ctrRunning = "running"
@@ -52,6 +61,13 @@ const (
 	labelHash        = "io.kubernetes.container.hash"
 	labelRestart     = "io.kubernetes.container.restartCount"
 )
+
+// pauseDetachGrace absorbs the Stop+Remove pair the agent issues immediately
+// after pause. A later Remove is a real delete and tombstones the snapshot.
+var pauseDetachGrace = 5 * time.Second
+
+// stoppedRetain is how long a deleted sandbox stays listable as NOTREADY.
+const stoppedRetain = 10 * time.Minute
 
 // Config 是 cube engine 的启动配置。
 // Enabled 为 false 时不拨 Cubelet，CRI 入口返回 FailedPrecondition。
@@ -238,8 +254,15 @@ func (e *Engine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRe
 		}
 		log.Printf("[CubeEngine] RunPodSandbox idempotent cri=%s sandbox=%s", id, pod.SandboxID)
 		return &runtime.RunPodSandboxResponse{PodSandboxId: id}, nil
-	case pod != nil && pod.State == podPaused:
+	case pod != nil && (pod.State == podPaused || pod.State == podParked):
+		// Catalog ids (csnap-) are not cube templates. Resume always uses the
+		// snap-<24 hex> this engine stored at pause, and the original tpl-.
 		return e.resume(ctx, pod)
+	case pod != nil && pod.State == podStopped:
+		if err := e.forget(id); err != nil {
+			return nil, err
+		}
+		return e.coldCreate(ctx, req, id, beginMs, totalStart)
 	default:
 		return e.coldCreate(ctx, req, id, beginMs, totalStart)
 	}
@@ -333,7 +356,8 @@ func (e *Engine) resume(ctx context.Context, pod *CubePodState) (*runtime.RunPod
 }
 
 // Pause 把运行中的沙箱打成暂停包。失败时索引保持 Running。
-// 控制面入口还没接；Resume 是对同一个 cri id 再次 RunPodSandbox。
+// Resume 是对同一个 cri id 再次 RunPodSandbox，用的是这里分配的 snap-<24 hex>。
+// 目录号 csnap- 不是 Cube 模板，也不能代替这个暂停包。
 func (e *Engine) Pause(ctx context.Context, criSandboxID string) (string, error) {
 	pod, err := e.begin(criSandboxID)
 	if err != nil {
@@ -410,17 +434,48 @@ func (e *Engine) destroy(ctx context.Context, id string) error {
 	if pod == nil || pod.SandboxID == "" {
 		return e.forget(id)
 	}
+	if pod.State == podStopped {
+		return nil
+	}
+	if pod.State == podPaused || pod.State == podParked {
+		if pod.State == podParked && !pod.ParkedAt.IsZero() && time.Since(pod.ParkedAt) >= pauseDetachGrace {
+			return e.hardDestroy(ctx, pod)
+		}
+		pod.State = podParked
+		if pod.ParkedAt.IsZero() {
+			pod.ParkedAt = time.Now()
+		}
+		log.Printf("[CubeEngine] parked paused sandbox cri=%s snap=%s", id, pod.PauseSnapshotID)
+		return e.commitSync(*pod)
+	}
+	return e.hardDestroy(ctx, pod)
+}
+
+// hardDestroy tears the cubelet sandbox down and leaves a NOTREADY record.
+// Forgetting the id immediately makes the scheduler treat the runtime as
+// missing, and that confirm window is too slow for the idle check. The
+// record stays listable so the agent reports phase stopped.
+func (e *Engine) hardDestroy(ctx context.Context, pod *CubePodState) error {
 	annotations := map[string]string{
 		annInstanceType:                    instanceTypeCubebox,
 		"cube.master.instance.kill_reason": "request",
 	}
-	if pod.State == podPaused {
+	if pod.State == podPaused || pod.State == podParked {
 		annotations[annDeleteTombstone] = "true"
 	}
 	if err := e.client.Destroy(ctx, pod.SandboxID, annotations); err != nil {
 		return err
 	}
-	return e.forget(id)
+	pod.State = podStopped
+	pod.StoppedAt = time.Now()
+	pod.SandboxIP = ""
+	if pod.ContainerState == ctrRunning {
+		pod.ContainerState = ctrExited
+		pod.ContainerFinishedAt = pod.StoppedAt
+		pod.ContainerExitCode = 0
+	}
+	log.Printf("[CubeEngine] stopped cri=%s sandbox=%s", pod.CRISandboxID, pod.SandboxID)
+	return e.commitSync(*pod)
 }
 
 func (e *Engine) PodSandboxStatus(ctx context.Context, req *runtime.PodSandboxStatusRequest) (*runtime.PodSandboxStatusResponse, error) {
@@ -432,6 +487,7 @@ func (e *Engine) PodSandboxStatus(ctx context.Context, req *runtime.PodSandboxSt
 }
 
 func (e *Engine) ListPodSandbox(ctx context.Context, req *runtime.ListPodSandboxRequest) (*runtime.ListPodSandboxResponse, error) {
+	e.dropExpiredStopped()
 	e.mu.Lock()
 	items := make([]*runtime.PodSandbox, 0, len(e.pods))
 	for _, pod := range e.pods {
@@ -448,10 +504,35 @@ func (e *Engine) ListPodSandbox(ctx context.Context, req *runtime.ListPodSandbox
 	return &runtime.ListPodSandboxResponse{Items: filterPodSandbox(items, req.GetFilter())}, nil
 }
 
+func (e *Engine) dropExpiredStopped() {
+	now := time.Now()
+	e.mu.Lock()
+	var expired []string
+	for id, pod := range e.pods {
+		if pod.State != podStopped || pod.StoppedAt.IsZero() {
+			continue
+		}
+		if now.Sub(pod.StoppedAt) >= stoppedRetain {
+			expired = append(expired, id)
+		}
+	}
+	for _, id := range expired {
+		delete(e.pods, id)
+	}
+	e.mu.Unlock()
+	if len(expired) > 0 {
+		e.schedulePersist()
+	}
+}
+
 func coldSpecFromAnnotations(annotations map[string]string) (coldSpec, error) {
 	templateID := strings.TrimSpace(annotations[annTemplateID])
 	if templateID == "" {
 		return coldSpec{}, status.Error(codes.InvalidArgument, "cube.dev/template-id is required")
+	}
+	if strings.HasPrefix(templateID, "csnap-") {
+		return coldSpec{}, status.Errorf(codes.InvalidArgument,
+			"template id %q is a catalog snapshot, not a cube template; resume uses the local pause snapshot", templateID)
 	}
 	if !strings.HasPrefix(templateID, "tpl-") && !strings.HasPrefix(templateID, "snap-") {
 		return coldSpec{}, status.Errorf(codes.InvalidArgument, "template id %q must start with tpl- or snap-", templateID)

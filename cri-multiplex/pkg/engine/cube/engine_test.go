@@ -345,7 +345,44 @@ func TestPauseFailureKeepsRunning(t *testing.T) {
 	}
 }
 
-func TestDestroyPausedSendsTombstoneAndIsIdempotent(t *testing.T) {
+func TestPauseRemoveKeepsSnapshotForResume(t *testing.T) {
+	fake := &fakeClient{}
+	eng := newTestEngine(t, fake)
+	if _, err := eng.RunPodSandbox(context.Background(), podRequest()); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := eng.Pause(context.Background(), "uid-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The agent issues Stop then Remove immediately after pause.
+	if _, err := eng.StopPodSandbox(context.Background(), &runtime.StopPodSandboxRequest{PodSandboxId: "uid-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "uid-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.destroys) != 0 {
+		t.Fatalf("pause cleanup destroyed the snapshot: %+v", fake.destroys)
+	}
+	req := podRequest()
+	req.Config.Annotations[annTemplateID] = "csnap-268d988dc802"
+	if _, err := eng.RunPodSandbox(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.creates) != 2 || fake.creates[1].Resume == nil {
+		t.Fatalf("resume create = %+v", fake.creates)
+	}
+	if fake.creates[1].Resume.PauseSnapshotID != snap || fake.creates[1].Cold != nil {
+		t.Fatalf("resume used catalog id, request = %+v", fake.creates[1])
+	}
+}
+
+func TestLaterRemoveOfPausedSandboxTombstones(t *testing.T) {
+	orig := pauseDetachGrace
+	pauseDetachGrace = 0
+	t.Cleanup(func() { pauseDetachGrace = orig })
+
 	fake := &fakeClient{}
 	eng := newTestEngine(t, fake)
 	if _, err := eng.RunPodSandbox(context.Background(), podRequest()); err != nil {
@@ -354,17 +391,68 @@ func TestDestroyPausedSendsTombstoneAndIsIdempotent(t *testing.T) {
 	if _, err := eng.Pause(context.Background(), "uid-1"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := eng.StopPodSandbox(context.Background(), &runtime.StopPodSandboxRequest{PodSandboxId: "uid-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.destroys) != 0 {
+		t.Fatalf("stop parked, destroys = %+v", fake.destroys)
+	}
 	if _, err := eng.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "uid-1"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.destroys) != 1 || fake.destroys[0].ann[annDeleteTombstone] != "true" {
 		t.Fatalf("destroys = %+v", fake.destroys)
 	}
+	st, err := eng.PodSandboxStatus(context.Background(), &runtime.PodSandboxStatusRequest{PodSandboxId: "uid-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status.State != runtime.PodSandboxState_SANDBOX_NOTREADY {
+		t.Fatalf("state = %s", st.Status.State)
+	}
 	if _, err := eng.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "uid-1"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.destroys) != 1 {
 		t.Fatalf("second remove called cubelet, destroys = %+v", fake.destroys)
+	}
+}
+
+func TestRunningDeleteStaysVisibleAsNotReady(t *testing.T) {
+	fake := &fakeClient{}
+	eng := newTestEngine(t, fake)
+	if _, err := eng.RunPodSandbox(context.Background(), podRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.StopPodSandbox(context.Background(), &runtime.StopPodSandboxRequest{PodSandboxId: "uid-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.RemovePodSandbox(context.Background(), &runtime.RemovePodSandboxRequest{PodSandboxId: "uid-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.destroys) != 1 || fake.destroys[0].ann[annDeleteTombstone] == "true" {
+		t.Fatalf("destroys = %+v", fake.destroys)
+	}
+	listed, err := eng.ListPodSandbox(context.Background(), &runtime.ListPodSandboxRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Items) != 1 || listed.Items[0].State != runtime.PodSandboxState_SANDBOX_NOTREADY {
+		t.Fatalf("list = %+v", listed.Items)
+	}
+}
+
+func TestCatalogSnapshotWithoutLocalPauseIsRejected(t *testing.T) {
+	fake := &fakeClient{}
+	eng := newTestEngine(t, fake)
+	req := podRequest()
+	req.Config.Annotations[annTemplateID] = "csnap-268d988dc802"
+	_, err := eng.RunPodSandbox(context.Background(), req)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "catalog snapshot") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(fake.creates) != 0 {
+		t.Fatalf("create calls = %d", len(fake.creates))
 	}
 }
 

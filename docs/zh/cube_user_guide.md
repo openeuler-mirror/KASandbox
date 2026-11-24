@@ -627,9 +627,9 @@ cd /path/to/KASandbox/cri-multiplex/cube-verify
 
 | 动作 | 协议 |
 |------|------|
-| Create / Resume | CRI `RunPodSandbox`（同 uid 且本地 paused → Resume） |
+| Create / Resume | CRI `RunPodSandbox`（同 uid 且本地 paused/parked → Resume，用引擎自己的 `snap-<24 hex>`，不用目录号 `csnap-`） |
 | Pause / Checkpoint / GetRuntime | Admin v2 |
-| Remove | CRI `RemovePodSandbox` → Cubelet Destroy |
+| Remove | 运行中：Cubelet Destroy，列表里留 NOTREADY。刚暂停：只把快照留在本机，供同 uid Resume；过几秒再 Remove 才 Destroy |
 
 ### 7.3 压测脚本
 
