@@ -64,8 +64,6 @@ spec:
                   optional: true
             - name: E2B_API_TIMEOUT
               value: "4s"
-            - name: CUBE_TEAM_ID
-              value: {{ dig "teamId" "" .Values.webhook | quote }}
             {{- if $agentenvApiURL }}
             - name: AGENTENV_API_URL
               value: {{ $agentenvApiURL | quote }}

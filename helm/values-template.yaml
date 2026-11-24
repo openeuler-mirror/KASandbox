@@ -14,8 +14,6 @@ image:
 # e2b-webhook 开关：true 部署，false 不部署（默认）
 webhook:
   enabled: ${ENABLE_WEBHOOK}
-  # 空则 Cube pause 使用零 UUID。须为 UUID，非 UUID 会被忽略。
-  teamId: ""
   agentenvApiURL: "${AGENTENV_API_URL}"
 pullPolicy: IfNotPresent
 # postgres 访问地址：默认内置 Service；ENABLE_POSTGRES=false 时由 POSTGRES_URL 环境变量指向外部实例
