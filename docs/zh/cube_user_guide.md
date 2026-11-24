@@ -727,6 +727,7 @@ e2b-webhook 随 KASandbox 提供。CubeProvider 行为：
 
 - Pod 指定 `runtimeClassName: cube`（或策略选中 cube）时只注入 `cube.dev/*`（与 engine 一致，不双写 `sandbox.cri/*`）
 - 若缺少 `template-id` / `vcpu` / `ram-mb`，且配置了 `CUBE_API_URL`，则请求 CubeAPI `POST /templates/resolve` 补全
+- 若缺少 `disk-mb`，再 `GET /templates/{id}` 从 `writable_layer_size`（或 volume size_limit）补齐；须与模板可写层一致，否则冷启动会对快照 rootfs resize 失败
 
 按集群需要用 Helm / 部署脚本拉起 webhook，并保证其能访问 CubeAPI。
 

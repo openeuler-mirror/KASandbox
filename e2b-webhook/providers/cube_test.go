@@ -16,6 +16,7 @@ func TestCubeProviderUsesExistingAnnotations(t *testing.T) {
 			"cube.dev/template-id": "tpl-base",
 			"cube.dev/vcpu":        "2",
 			"cube.dev/ram-mb":      "2048",
+			"cube.dev/disk-mb":     "1G",
 		},
 	})
 	if err != nil {
@@ -27,6 +28,9 @@ func TestCubeProviderUsesExistingAnnotations(t *testing.T) {
 	if result.Annotations["cube.dev/vcpu"] != "2" || result.Annotations["cube.dev/ram-mb"] != "2048" {
 		t.Fatalf("annotations = %v", result.Annotations)
 	}
+	if result.Annotations["cube.dev/disk-mb"] != "1G" {
+		t.Fatalf("disk = %v", result.Annotations)
+	}
 	for key := range result.Annotations {
 		if len(key) >= 12 && key[:12] == "sandbox.cri/" {
 			t.Fatalf("unexpected sandbox.cri annotation %q in %v", key, result.Annotations)
@@ -34,13 +38,23 @@ func TestCubeProviderUsesExistingAnnotations(t *testing.T) {
 	}
 }
 
-func TestCubeProviderResolvesTemplate(t *testing.T) {
+func TestCubeProviderResolvesTemplateAndDisk(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/templates/resolve" {
-			t.Fatalf("path = %s", r.URL.Path)
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"template_id":"tpl-ready","vcpu":4,"ram_mb":8192}`))
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/templates/resolve":
+			_, _ = w.Write([]byte(`{"template_id":"tpl-ready","vcpu":4,"ram_mb":8192}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/templates/tpl-ready":
+			_, _ = w.Write([]byte(`{
+				"templateID":"tpl-ready",
+				"createRequest":{
+					"annotations":{"cube.master.rootfs.writable_layer_size":"1536Mi"},
+					"volumes":[{"name":"cube_rootfs_rw","volume_source":{"empty_dir":{"size_limit":"1536Mi"}}}]
+				}
+			}`))
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
 	}))
 	defer srv.Close()
 
@@ -51,7 +65,70 @@ func TestCubeProviderResolvesTemplate(t *testing.T) {
 	if result.Annotations["cube.dev/template-id"] != "tpl-ready" || result.Annotations["cube.dev/vcpu"] != "4" || result.Annotations["cube.dev/ram-mb"] != "8192" {
 		t.Fatalf("annotations = %v", result.Annotations)
 	}
+	if result.Annotations["cube.dev/disk-mb"] != "1536Mi" {
+		t.Fatalf("disk-mb = %v", result.Annotations)
+	}
 	if _, ok := result.Annotations["sandbox.cri/backend"]; ok {
 		t.Fatalf("should not dual-write sandbox.cri: %v", result.Annotations)
+	}
+}
+
+func TestCubeProviderFillsDiskWhenSpecPresent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/templates/tpl-ready" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"template_id":"tpl-ready",
+			"createRequest":{
+				"annotations":{"cube.master.rootfs.writable_layer_size":"2G"}
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	result, err := NewCubeProvider(srv.URL).Resolve(context.Background(), provider.Request{
+		Annotations: map[string]string{
+			"cube.dev/template-id": "tpl-ready",
+			"cube.dev/vcpu":        "2",
+			"cube.dev/ram-mb":      "2048",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if result.Annotations["cube.dev/disk-mb"] != "2G" {
+		t.Fatalf("annotations = %v", result.Annotations)
+	}
+}
+
+func TestCubeProviderUsesResolveDiskWhenPresent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/templates/resolve" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"template_id":"tpl-ready","vcpu":2,"ram_mb":2048,"disk_mb":"1024Mi"}`))
+	}))
+	defer srv.Close()
+
+	result, err := NewCubeProvider(srv.URL).Resolve(context.Background(), provider.Request{Template: "ready"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if result.Annotations["cube.dev/disk-mb"] != "1024Mi" {
+		t.Fatalf("annotations = %v", result.Annotations)
+	}
+}
+
+func TestDiskFromTemplatePayload(t *testing.T) {
+	disk, err := diskFromTemplatePayload([]byte(`{
+		"createRequest":{
+			"volumes":[{"volumeSource":{"emptyDir":{"sizeLimit":"940Mi"}}}]
+		}
+	}`))
+	if err != nil || disk != "940Mi" {
+		t.Fatalf("disk=%q err=%v", disk, err)
 	}
 }
