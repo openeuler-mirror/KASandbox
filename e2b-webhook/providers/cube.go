@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -18,19 +19,27 @@ const (
 	annCubeVCPU     = "cube.dev/vcpu"
 	annCubeRAM      = "cube.dev/ram-mb"
 	annCubeDisk     = "cube.dev/disk-mb"
+	annE2BTeamID    = "e2b.dev/team-id"
+
+	// nilTeamID is a real UUID meaning "no team". Cube templates are not
+	// scoped by team, but pause-snapshot requires team_id to be a UUID.
+	nilTeamID = "00000000-0000-0000-0000-000000000000"
 )
 
 // CubeProvider 把模板解析成 cube.dev/* 注解。
 // 注解里已经有 template-id、vcpu、ram-mb、disk-mb 时不再请求 CubeAPI。
 type CubeProvider struct {
 	apiURL string
+	teamID string
 	client *http.Client
 }
 
 // NewCubeProvider 创建 cube Provider。apiURL 为空时只接受调用方已经写好的规格注解。
+// team 取 CUBE_TEAM_ID：须为 UUID，否则暂停时回退到零 UUID。
 func NewCubeProvider(apiURL string) *CubeProvider {
 	return &CubeProvider{
 		apiURL: strings.TrimRight(strings.TrimSpace(apiURL), "/"),
+		teamID: strings.TrimSpace(os.Getenv("CUBE_TEAM_ID")),
 		client: &http.Client{Timeout: 5 * time.Second},
 	}
 }
@@ -87,6 +96,7 @@ func (p *CubeProvider) Resolve(ctx context.Context, req provider.Request) (*prov
 		annCubeTemplate: templateID,
 		annCubeVCPU:     vcpu,
 		annCubeRAM:      ram,
+		annE2BTeamID:    cubeTeamID(annotation(req, annE2BTeamID), p.teamID),
 	}
 	if disk != "" {
 		annotations[annCubeDisk] = disk
@@ -260,6 +270,44 @@ func normalizeDiskQuantity(raw json.RawMessage) string {
 		return num.String()
 	}
 	return strings.Trim(s, `"`)
+}
+
+// cubeTeamID picks the team written onto e2b.dev/team-id.
+// A UUID already on the request wins, then CUBE_TEAM_ID, then the nil UUID.
+// Non-UUID values such as "team-1" are skipped: pause-snapshot rejects them.
+func cubeTeamID(candidate, configured string) string {
+	if id, ok := parseTeamUUID(candidate); ok {
+		return id
+	}
+	if id, ok := parseTeamUUID(configured); ok {
+		return id
+	}
+	return nilTeamID
+}
+
+func parseTeamUUID(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if len(raw) != 36 {
+		return "", false
+	}
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return "", false
+			}
+		default:
+			if !isHex(c) {
+				return "", false
+			}
+		}
+	}
+	return raw, true
+}
+
+func isHex(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
 func annotation(req provider.Request, key string) string {

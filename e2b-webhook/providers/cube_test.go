@@ -122,6 +122,60 @@ func TestCubeProviderUsesResolveDiskWhenPresent(t *testing.T) {
 	}
 }
 
+func TestCubeProviderTeamID(t *testing.T) {
+	const configured = "22222222-2222-2222-2222-222222222222"
+	const fromRequest = "11111111-1111-1111-1111-111111111111"
+	spec := map[string]string{
+		"cube.dev/template-id": "tpl-base",
+		"cube.dev/vcpu":        "2",
+		"cube.dev/ram-mb":      "2048",
+		"cube.dev/disk-mb":     "1G",
+	}
+	resolve := func(extra map[string]string) map[string]string {
+		t.Helper()
+		anns := map[string]string{}
+		for k, v := range spec {
+			anns[k] = v
+		}
+		for k, v := range extra {
+			anns[k] = v
+		}
+		result, err := NewCubeProvider("").Resolve(context.Background(), provider.Request{
+			Template:    "base",
+			Annotations: anns,
+		})
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		return result.Annotations
+	}
+
+	t.Run("nil uuid when unset", func(t *testing.T) {
+		t.Setenv("CUBE_TEAM_ID", "")
+		if got := resolve(nil)[annE2BTeamID]; got != nilTeamID {
+			t.Fatalf("team-id = %q", got)
+		}
+	})
+	t.Run("configured uuid", func(t *testing.T) {
+		t.Setenv("CUBE_TEAM_ID", configured)
+		if got := resolve(map[string]string{annE2BTeamID: "team-1"})[annE2BTeamID]; got != configured {
+			t.Fatalf("team-id = %q", got)
+		}
+	})
+	t.Run("request uuid wins", func(t *testing.T) {
+		t.Setenv("CUBE_TEAM_ID", configured)
+		if got := resolve(map[string]string{annE2BTeamID: fromRequest})[annE2BTeamID]; got != fromRequest {
+			t.Fatalf("team-id = %q", got)
+		}
+	})
+	t.Run("invalid configured uuid falls back", func(t *testing.T) {
+		t.Setenv("CUBE_TEAM_ID", "default")
+		if got := resolve(nil)[annE2BTeamID]; got != nilTeamID {
+			t.Fatalf("team-id = %q", got)
+		}
+	})
+}
+
 func TestDiskFromTemplatePayload(t *testing.T) {
 	disk, err := diskFromTemplatePayload([]byte(`{
 		"createRequest":{
