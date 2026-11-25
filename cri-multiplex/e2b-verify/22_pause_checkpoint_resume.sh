@@ -319,8 +319,8 @@ cur_ver=$(kubectl -n e2b exec deploy/postgres -- psql -U postgres -d mydatabase 
 log_info "当前迁移版本: ${cur_ver}"
 if [ "${cur_ver}" -lt "${GOOSE_MIN_VERSION}" ]; then
     log_info "版本不足，执行 goose up"
-    (cd "${SCRIPT_DIR}/../../packages/db" && \
-        GOOSE_DBSTRING="${DSN}" go tool goose -table _migrations -dir migrations postgres up) \
+    GOOSE_DBSTRING="${DSN}" /opt/e2b-infra/bin/goose -table _migrations \
+        -dir /opt/e2b-infra/bin/migrations postgres up \
         >>"${DETAIL_LOG}" 2>&1 || die "goose up 失败，见 ${DETAIL_LOG}"
     cur_ver=$(kubectl -n e2b exec deploy/postgres -- psql -U postgres -d mydatabase -tA -c 'select max(version_id) from "_migrations"' | tr -d '[:space:]')
 fi
