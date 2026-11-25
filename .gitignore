@@ -10,3 +10,4 @@ e2b-scripts/test-results/
 
 # go build output in the webhook module
 e2b-webhook/e2b-webhook
+/bin/
