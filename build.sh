@@ -268,6 +268,10 @@ detect_architecture() {
 GOARCH=$(detect_architecture)
 readonly BIN_DIR="bin/${GOARCH}"
 
+# 源码包版本号（原 VERSION 文件已删除，内联于此；与打包仓库 spec 的
+# pkg_version 保持一致，发布新版本时同步修改）
+readonly PROJECT_VERSION="1.0.25"
+
 # ============================================================================
 # 二进制构建
 # ============================================================================
@@ -613,7 +617,7 @@ package_source_code() {
     
     log_section "打包源码"
     
-    local project_version=$(cat VERSION 2>/dev/null || echo "latest")
+    local project_version="${PROJECT_VERSION}"
     local timestamp=$(date +%Y%m%d_%H%M%S)
     local compression=$(detect_compression)
     
@@ -702,7 +706,7 @@ package_source_code_slim() {
     
     log_section "打包最小化构建包"
     
-    local project_version=$(cat VERSION 2>/dev/null || echo "latest")
+    local project_version="${PROJECT_VERSION}"
     local timestamp=$(date +%Y%m%d_%H%M%S)
     local compression=$(detect_compression)
     

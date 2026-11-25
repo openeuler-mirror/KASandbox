@@ -67,10 +67,9 @@ DOCKER_SKIP_TESTS=(
 )
 
 # 格式: 包路径|测试路径|需要sudo|说明
-# e2b 编排栈（packages/*）已由 e2b-infra 仓维护，这里只跑 KASandbox 自有模块
+# e2b 编排栈（packages/*）已由 e2b-infra 仓维护，这里只跑 cri-multiplex
 PKG_LIST=(
   "cri-multiplex|./...|false|CRI multiplex shim"
-  "e2b-webhook|./...|false|Admission webhook"
 )
 
 usage() {
