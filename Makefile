@@ -16,7 +16,3 @@ fmt:
 lint:
 	cd cri-multiplex && golangci-lint run ./...
 	cd e2b-webhook && golangci-lint run ./...
-
-.PHONY: tidy
-tidy:
-	@scripts/golang-dependencies-integrity.sh
