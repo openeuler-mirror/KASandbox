@@ -219,16 +219,16 @@ log_step "3.1 验证 ListPodSandbox 多后端合并"
 pods_output=""
 for _ in $(seq 1 30); do
     pods_output=$(${CRICTL} pods 2>&1 || true)
-    if echo "${pods_output}" | grep -q "${DEFAULT_POD}" &&
-       echo "${pods_output}" | grep -q "${E2B_POD}" &&
-       { [ "${ANDROID_AVAILABLE}" = "0" ] || echo "${pods_output}" | grep -q "${ANDROID_POD}"; }; then
+    if grep -q "${DEFAULT_POD}" <<< "${pods_output}" &&
+       grep -q "${E2B_POD}" <<< "${pods_output}" &&
+       { [ "${ANDROID_AVAILABLE}" = "0" ] || grep -q "${ANDROID_POD}" <<< "${pods_output}"; }; then
         break
     fi
     sleep 1
 done
-if echo "${pods_output}" | grep -q "${DEFAULT_POD}" &&
-   echo "${pods_output}" | grep -q "${E2B_POD}" &&
-   { [ "${ANDROID_AVAILABLE}" = "0" ] || echo "${pods_output}" | grep -q "${ANDROID_POD}"; }; then
+if grep -q "${DEFAULT_POD}" <<< "${pods_output}" &&
+   grep -q "${E2B_POD}" <<< "${pods_output}" &&
+   { [ "${ANDROID_AVAILABLE}" = "0" ] || grep -q "${ANDROID_POD}" <<< "${pods_output}"; }; then
     if [ "${ANDROID_AVAILABLE}" = "1" ]; then
         log_pass "ListPodSandbox 同时包含 containerd 默认、Android 和 E2B Pod"
     else
@@ -251,17 +251,17 @@ for _ in $(seq 1 30); do
     containers_output=$(grpc_call "runtime.v1.RuntimeService/ListContainers" 2>&1 || true)
     if [ -n "${DEFAULT_CID}" ] &&
        [ -n "${E2B_CID}" ] &&
-       echo "${containers_output}" | grep -q "${DEFAULT_CID}" &&
-       echo "${containers_output}" | grep -q "${E2B_CID}" &&
-       { [ "${ANDROID_AVAILABLE}" = "0" ] || { [ -n "${ANDROID_CID}" ] && echo "${containers_output}" | grep -q "${ANDROID_CID}"; }; }; then
+       grep -q "${DEFAULT_CID}" <<< "${containers_output}" &&
+       grep -q "${E2B_CID}" <<< "${containers_output}" &&
+       { [ "${ANDROID_AVAILABLE}" = "0" ] || { [ -n "${ANDROID_CID}" ] && grep -q "${ANDROID_CID}" <<< "${containers_output}"; }; }; then
         break
     fi
     sleep 1
 done
 if [ -n "${DEFAULT_CID}" ] && [ -n "${E2B_CID}" ] &&
-   echo "${containers_output}" | grep -q "${DEFAULT_CID}" &&
-   echo "${containers_output}" | grep -q "${E2B_CID}" &&
-   { [ "${ANDROID_AVAILABLE}" = "0" ] || { [ -n "${ANDROID_CID}" ] && echo "${containers_output}" | grep -q "${ANDROID_CID}"; }; }; then
+   grep -q "${DEFAULT_CID}" <<< "${containers_output}" &&
+   grep -q "${E2B_CID}" <<< "${containers_output}" &&
+   { [ "${ANDROID_AVAILABLE}" = "0" ] || { [ -n "${ANDROID_CID}" ] && grep -q "${ANDROID_CID}" <<< "${containers_output}"; }; }; then
     if [ "${ANDROID_AVAILABLE}" = "1" ]; then
         log_pass "ListContainers 同时包含 containerd 默认、Android 和 E2B Container"
     else

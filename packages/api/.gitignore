@@ -1,6 +1,0 @@
-bin
-mkfcenv.tar.gz
-.env
-/.clickhouse
-/.db
-/.shared

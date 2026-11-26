@@ -67,17 +67,9 @@ DOCKER_SKIP_TESTS=(
 )
 
 # 格式: 包路径|测试路径|需要sudo|说明
+# e2b 编排栈（packages/*）已由 e2b-infra 仓维护，这里只跑 cri-multiplex
 PKG_LIST=(
-  "packages/api|./...|false|API gateway"
-  "packages/client-proxy|./...|false|Client proxy"
-  "packages/db|./...|false|Database"
-  "packages/docker-reverse-proxy|./...|false|Docker reverse proxy"
-  "packages/shared|./pkg/...|false|Shared library"
-  "packages/envd|./...|true|In-sandbox daemon"
-  "packages/orchestrator|./...|true|Orchestrator"
-  "packages/auth|./...|false|Authentication"
-  "packages/clickhouse|./...|false|ClickHouse"
-  "packages/local-dev|./...|false|Local development"
+  "cri-multiplex|./...|false|CRI multiplex shim"
 )
 
 usage() {
@@ -85,9 +77,9 @@ usage() {
 Usage: $0 [options]
 
 Options:
-  -p, --package PKG    Only run package (api/client-proxy/db/shared/envd/orchestrator/...)
+  -p, --package PKG    Only run package (cri-multiplex/e2b-webhook)
   --no-race            Disable -race
-  --sudo               Also run envd/orchestrator (needs root)
+  --sudo               Kept for compatibility; no sudo-requiring packages remain
   --skip-docker        Skip Docker/testcontainers tests (for gate CI without Docker)
   -q, --quiet          Omit -v
   -h, --help           Show help

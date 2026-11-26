@@ -106,22 +106,18 @@ show_usage() {
 用法: ./build.sh [选项]
 
 选项:
-  -m, --mooncake         启用 Mooncake 存储后端编译 (包含 CGo 链接)
+  -m, --mooncake         已废弃：Mooncake 编排二进制由 e2b-infra 包提供，此选项不再影响产物
   -f, --firecracker      构建 Firecracker 微虚拟机 (需要 Docker)
   -c, --cri-multiplex    构建 CRI 多路复用器
-  -i, --images [名称]  构建 Docker 镜像；不带参数构建全部 (api/orchestrator/client-proxy/e2b-webhook)，
-                         带参数仅构建指定镜像（可用逗号分隔多个，webhook 是 e2b-webhook 别名）
+  -i, --images [名称]  构建 e2b-webhook Docker 镜像（webhook 是 e2b-webhook 别名）
   -p, --package          打包源码 (包含所有源代码，15MB)
   --package-slim         打包最小化构建包 (仅构建所需文件，< 5MB)
   -n, --package-name NAME 指定打包输出文件名 (不含扩展名，自动追加 .tar.*)
   -h, --help             显示此帮助信息
 
 示例:
-  ./build.sh                              # 标准构建
-  ./build.sh -m -i                        # 使用 Mooncake + 构建镜像
-  ./build.sh -i                           # 构建全部 Docker 镜像
-  ./build.sh -i orchestrator              # 仅构建 orchestrator 镜像
-  ./build.sh -i api,webhook               # 构建 api 与 e2b-webhook 镜像
+  ./build.sh                              # 标准构建（e2b-webhook）
+  ./build.sh -i                           # 构建 e2b-webhook Docker 镜像
   ./build.sh -f                           # 构建 Firecracker
   ./build.sh -c -p                        # 构建 CRI 多路复用 + 打包源码
   ./build.sh --package-slim               # 打包最小化构建包（推荐）
@@ -168,7 +164,8 @@ done
 
 setup_mooncake() {
     log_section "Mooncake Store 依赖准备"
-    
+    log_warn "Mooncake 编排二进制已由 e2b-infra 包提供，-m 在此仅保留兼容性，不再影响产物"
+
     BUILD_TAGS="-tags mooncake"
     
     # 构建 CGo 编译器标志
@@ -204,8 +201,8 @@ setup_mooncake() {
 }
 
 setup_standard_build() {
-    log_section "标准构建（无 Mooncake）"
-    log_warn "提示: 使用 -m 启用 Mooncake，-f 构建 Firecracker，-c 构建 CRI 多路复用器，-i 构建 Docker 镜像"
+    log_section "标准构建（e2b-webhook）"
+    log_warn "提示: -f 构建 Firecracker，-c 构建 CRI 多路复用器，-i 构建 e2b-webhook 镜像"
 }
 
 if $ENABLE_MOONCAKE; then
@@ -223,35 +220,20 @@ export CGO_ENABLED=1
 setup_go_dependencies() {
     log_section "Go Modules 整理和依赖处理"
     
+    # e2b 编排栈（packages/*）已移至 e2b-infra 包，这里只需整理 e2b-webhook
     local tidy_dirs=(
-        "packages/shared"
-        "packages/api"
-        "packages/client-proxy"
-        "packages/envd"
-        "packages/orchestrator"
-        "packages/db"
         "e2b-webhook"
     )
-    
-    local mooncake_src="packages/shared/pkg/storage/storage_mooncake.go"
-    
-    # 非 mooncake 模式下，临时移除 mooncake 源文件避免 tidy 将其依赖加入
-    if ! $ENABLE_MOONCAKE && [ -f "$mooncake_src" ]; then
-        log_warn "移除临时 mooncake 源文件..."
-        mv "$mooncake_src" "${mooncake_src}.bak"
-        # 注册清理函数
-        trap "restore_mooncake_src '$mooncake_src'" EXIT
-    fi
-    
+
     # 执行 go mod tidy 和 vendor（并行执行）
     local dir
     local pids=()
-    
+
     for dir in "${tidy_dirs[@]}"; do
         if ! check_dir "$dir"; then
             continue
         fi
-        
+
         log_warn "→ 进入 $dir 执行 go mod tidy 和 go mod vendor..."
         (
             cd "$dir"
@@ -261,25 +243,12 @@ setup_go_dependencies() {
         ) &
         pids+=($!)
     done
-    
+
     # 等待所有后台任务完成
     local pid
     for pid in "${pids[@]}"; do
         wait "$pid" || log_error "进程 $pid 执行失败"
     done
-    
-    # 恢复 mooncake 源文件
-    restore_mooncake_src "$mooncake_src"
-    trap - EXIT
-}
-
-restore_mooncake_src() {
-    local src=$1
-    local backup="${src}.bak"
-    if [ -f "$backup" ]; then
-        mv "$backup" "$src"
-        log_warn "已恢复 mooncake 源文件"
-    fi
 }
 
 # ============================================================================
@@ -298,6 +267,10 @@ detect_architecture() {
 
 GOARCH=$(detect_architecture)
 readonly BIN_DIR="bin/${GOARCH}"
+
+# 源码包版本号（原 VERSION 文件已删除，内联于此；与打包仓库 spec 的
+# pkg_version 保持一致，发布新版本时同步修改）
+readonly PROJECT_VERSION="1.0.25"
 
 # ============================================================================
 # 二进制构建
@@ -342,12 +315,10 @@ build_go_module() {
 }
 
 # 构建主要二进制文件（并行）
+# e2b 编排栈（api/client-proxy/envd/orchestrator）已由 e2b-infra 包提供，
+# 这里只构建 KASandbox 自有的 e2b-webhook。
 build_main_binaries() {
     local tasks=(
-        "packages/api:../../${BIN_DIR}/api:."
-        "packages/client-proxy:../../${BIN_DIR}/client-proxy:."
-        "packages/envd:../../${BIN_DIR}/envd:./main.go"
-        "packages/orchestrator:../../${BIN_DIR}/orchestrator:."
         "e2b-webhook:../${BIN_DIR}/e2b-webhook:."
     )
     
@@ -371,68 +342,6 @@ build_main_binaries() {
         log_error "✗ $failed 个二进制构建失败"
         return 1
     fi
-}
-
-# 构建数据库相关工具（并行）
-build_db_tools() {
-    local db_dir="packages/db"
-    
-    if ! check_dir "$db_dir"; then
-        return
-    fi
-    
-    local pids=()
-    
-    # migrator 后台构建
-    (
-        log_warn "→ 构建 $db_dir 的 migrator"
-        cd "$db_dir"
-        export CGO_CFLAGS=""
-        export CGO_LDFLAGS=""
-        go build -o "../../${BIN_DIR}/migrator" ./scripts/migrator.go
-        log_info "✓ ${BIN_DIR}/migrator 构建完成"
-    ) &
-    pids+=($!)
-    
-    # seed-db 后台构建
-    (
-        log_warn "→ 构建 $db_dir 的 seed-db"
-        cd "$db_dir"
-        export CGO_CFLAGS=""
-        export CGO_LDFLAGS=""
-        go build -o "../../${BIN_DIR}/seed-db" ./scripts/seed/postgres/seed-db.go
-        log_info "✓ ${BIN_DIR}/seed-db 构建完成"
-    ) &
-    pids+=($!)
-    
-    # 等待两个构建完成
-    local pid failed=0
-    for pid in "${pids[@]}"; do
-        wait "$pid" || failed=$((failed + 1))
-    done
-    
-    if [ "$failed" -gt 0 ]; then
-        log_error "✗ DB 工具构建失败"
-        return 1
-    fi
-}
-
-# 构建 fc-netns-exec（不需要 CGO）
-build_fc_netns_exec() {
-    local orch_dir="packages/orchestrator"
-    local exec_dir="$orch_dir/cmd/fc-netns-exec"
-    
-    if [ ! -d "$exec_dir" ]; then
-        log_error "✗ 目录不存在: $exec_dir"
-        return
-    fi
-    
-    log_warn "→ 构建 $orch_dir 的 fc-netns-exec"
-    (
-        cd "$orch_dir"
-        CGO_ENABLED=0 GOOS=linux go build -o "../../${BIN_DIR}/fc-netns-exec" ./cmd/fc-netns-exec
-    )
-    log_info "✓ ${BIN_DIR}/fc-netns-exec 构建完成"
 }
 
 # 构建 CRI 多路复用器
@@ -485,21 +394,9 @@ build_docker_images() {
         ensure_webhook_binary
     fi
     
-    # Mooncake 模式：orchestrator 改用专用 Dockerfile（集成 urma/numactl 依赖并安装 Mooncake RPM）
-    local orchestrator_task="${ORCHESTRATOR_IMAGE_NAME}|packages/orchestrator/Dockerfile|packages/orchestrator|orchestrator,fc-netns-exec"
-    if $ENABLE_MOONCAKE; then
-        if ! ls /opt/e2b-infra/bin/*.rpm >/dev/null 2>&1; then
-            log_error "✗ Mooncake 镜像构建需要 RPM 包，请先将 mooncake-*.rpm / spdiag-*.rpm 复制到 /opt/e2b-infra/bin/（见用户指南 4.5.1）"
-            return 1
-        fi
-        orchestrator_task="${ORCHESTRATOR_IMAGE_NAME}|deploy/dockerfiles/orchestrator-mooncake.Dockerfile|deploy/dockerfiles|orchestrator,fc-netns-exec"
-    fi
-    
     # 定义镜像构建任务：镜像名|Dockerfile|构建上下文|需要的二进制
+    # （api/orchestrator/client-proxy 镜像已由 e2b-infra 包提供，此处只留 webhook）
     local image_tasks=(
-        "${API_IMAGE_NAME}|packages/api/Dockerfile|packages/api|api"
-        "$orchestrator_task"
-        "${CLIENT_PROXY_IMAGE_NAME}|packages/client-proxy/Dockerfile|packages/client-proxy|client-proxy"
         "${WEBHOOK_IMAGE_NAME}|e2b-webhook/webhook.Dockerfile|e2b-webhook|e2b-webhook"
     )
 
@@ -516,7 +413,7 @@ build_docker_images() {
             fi
         done
         if [ ${#selected_tasks[@]} -eq 0 ]; then
-            log_error "未匹配任何镜像：$IMAGES_FILTER（可选：${API_IMAGE_NAME}/${ORCHESTRATOR_IMAGE_NAME}/${CLIENT_PROXY_IMAGE_NAME}/${WEBHOOK_IMAGE_NAME}）"
+            log_error "未匹配任何镜像：$IMAGES_FILTER（可选：${WEBHOOK_IMAGE_NAME}）"
             return 1
         fi
         log_info "仅构建指定镜像：$IMAGES_FILTER"
@@ -608,46 +505,28 @@ build_docker_image() {
         log_error "✗ 缺少必要二进制文件，跳过 $img_name"
         return 1
     fi
-    
+
     # 拷贝二进制到构建上下文
     if ! copy_binaries_to_context "$ctx" "$binaries"; then
         log_error "✗ 拷贝二进制到 $ctx 失败，跳过 $img_name"
         return 1
     fi
-    
-    # Mooncake orchestrator 镜像：暂存 RPM 包到构建上下文，并按目标架构传参
-    local staged_rpms=()
-    local build_args=()
-    if $ENABLE_MOONCAKE && [ "$img_name" = "$ORCHESTRATOR_IMAGE_NAME" ]; then
-        local rpm
-        for rpm in /opt/e2b-infra/bin/*.rpm; do
-            cp -f "$rpm" "$ctx/"
-            staged_rpms+=("$ctx/$(basename "$rpm")")
-        done
-        case "$GOARCH" in
-            arm64) build_args=(--build-arg oe_arch=aarch64 --build-arg probe_arch=arm64) ;;
-            *)     build_args=(--build-arg oe_arch=x86_64  --build-arg probe_arch=amd64) ;;
-        esac
-    fi
-    
+
     # 执行 Docker 构建（失败也要继续走清理，避免二进制残留在构建上下文）
     local build_failed=0
-    docker build --platform "linux/${GOARCH}" "${build_args[@]}" \
+    docker build --platform "linux/${GOARCH}" \
         -f "$dockerfile" \
         -t "$img_name" \
         "$ctx" || build_failed=1
-    
-    # 清理拷贝的二进制与 RPM
+
+    # 清理拷贝的二进制
     cleanup_binaries_from_context "$ctx" "$binaries"
-    if [ ${#staged_rpms[@]} -gt 0 ]; then
-        rm -f "${staged_rpms[@]}"
-    fi
-    
+
     if [ "$build_failed" -ne 0 ]; then
         log_error "✗ 镜像 $img_name 构建失败"
         return 1
     fi
-    
+
     log_info "✓ 镜像 $img_name 构建完成"
 }
 
@@ -738,7 +617,7 @@ package_source_code() {
     
     log_section "打包源码"
     
-    local project_version=$(cat VERSION 2>/dev/null || echo "latest")
+    local project_version="${PROJECT_VERSION}"
     local timestamp=$(date +%Y%m%d_%H%M%S)
     local compression=$(detect_compression)
     
@@ -827,7 +706,7 @@ package_source_code_slim() {
     
     log_section "打包最小化构建包"
     
-    local project_version=$(cat VERSION 2>/dev/null || echo "latest")
+    local project_version="${PROJECT_VERSION}"
     local timestamp=$(date +%Y%m%d_%H%M%S)
     local compression=$(detect_compression)
     
@@ -861,7 +740,7 @@ package_source_code_slim() {
     
     log_warn "→ 创建最小化构建包: $package_name"
     log_warn "  压缩算法: $compression"
-    log_warn "  包含: build.sh、cri-multiplex、e2b-webhook、deploy、packages/{api,client-proxy,envd,orchestrator,shared}"
+    log_warn "  包含: build.sh、cri-multiplex、e2b-webhook、deploy、helm"
     
     # 显式指定打包内容（而非排除法），仅包含构建与部署所需文件
     # 同时排除各目录内的 vendor、缓存、生成文件等
@@ -887,14 +766,7 @@ package_source_code_slim() {
             "$repo_dir/cri-multiplex" \
             "$repo_dir/e2b-webhook" \
             "$repo_dir/deploy" \
-            "$repo_dir/packages/api" \
-            "$repo_dir/packages/client-proxy" \
-            "$repo_dir/packages/envd" \
-            "$repo_dir/packages/orchestrator" \
-            "$repo_dir/packages/db" \
-            "$repo_dir/packages/auth" \
-            "$repo_dir/packages/clickhouse" \
-            "$repo_dir/packages/shared"
+            "$repo_dir/helm"
     )
     
     if [ -f "$SCRIPT_DIR/$package_name" ]; then
@@ -997,8 +869,6 @@ else
     mkdir -p "$BIN_DIR"
     log_section "构建二进制文件 ${BUILD_TAGS:+($BUILD_TAGS)} [${GOARCH}]"
     build_main_binaries
-    build_db_tools
-    build_fc_netns_exec
 fi
 
 # ============================================================================

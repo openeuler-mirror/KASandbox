@@ -131,10 +131,10 @@ func (f *fakeSandboxServiceClient) Delete(ctx context.Context, in *orchestrator.
 	return &emptypb.Empty{}, f.deleteErr
 }
 
-func (f *fakeSandboxServiceClient) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (f *fakeSandboxServiceClient) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest, opts ...grpc.CallOption) (*orchestrator.SandboxPauseResponse, error) {
 	f.pauseCalls++
 	f.lastPause = in
-	return &emptypb.Empty{}, f.pauseErr
+	return &orchestrator.SandboxPauseResponse{}, f.pauseErr
 }
 
 func (f *fakeSandboxServiceClient) Checkpoint(ctx context.Context, in *orchestrator.SandboxCheckpointRequest, opts ...grpc.CallOption) (*orchestrator.SandboxCheckpointResponse, error) {

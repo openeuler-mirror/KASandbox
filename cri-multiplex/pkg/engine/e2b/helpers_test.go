@@ -112,7 +112,7 @@ func TestAnnotationsToSandboxConfigUsesDefaultsWhenOptionalAnnotationsOmitted(t 
 		cfg.BaseTemplateId != "" || cfg.ExecutionId != "" || cfg.EnvdAccessToken != nil {
 		t.Fatalf("optional zero-value defaults mismatch: %+v", cfg)
 	}
-	if cfg.KernelVersion != "vmlinux-6.1.158" || cfg.FirecrackerVersion != "v1.13.1" {
+	if cfg.KernelVersion != "vmlinux-6.1.158" || cfg.FirecrackerVersion != "v1.14.4" {
 		t.Fatalf("runtime version defaults mismatch: %+v", cfg)
 	}
 	if cfg.Metadata["app"] != "e2b" || strDeref(cfg.Alias) != "alias-a" || cfg.SandboxId != "sandbox-a" {

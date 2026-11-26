@@ -1651,18 +1651,23 @@ func (e *Engine) UpdateRuntimeConfig(ctx context.Context, req *runtime.UpdateRun
 
 func (e *Engine) annotationsToSandboxConfig(annotations map[string]string, sandboxID, alias string, labels map[string]string) (*orchestrator.SandboxConfig, error) {
 	cfg := &orchestrator.SandboxConfig{
-		SandboxId:          sandboxID,
-		Alias:              &alias,
-		Metadata:           labels,
-		TemplateId:         defaultSandboxConfig.TemplateID,
-		BuildId:            defaultSandboxConfig.BuildID,
-		TeamId:             defaultSandboxConfig.TeamID,
-		Vcpu:               defaultSandboxConfig.VCPU,
-		RamMb:              defaultSandboxConfig.RAMMB,
-		EnvdVersion:        defaultSandboxConfig.EnvdVersion,
-		MaxSandboxLength:   defaultSandboxConfig.MaxSandboxLength,
+		SandboxId:        sandboxID,
+		Alias:            &alias,
+		Metadata:         labels,
+		TemplateId:       defaultSandboxConfig.TemplateID,
+		BuildId:          defaultSandboxConfig.BuildID,
+		TeamId:           defaultSandboxConfig.TeamID,
+		Vcpu:             defaultSandboxConfig.VCPU,
+		RamMb:            defaultSandboxConfig.RAMMB,
+		EnvdVersion:      defaultSandboxConfig.EnvdVersion,
+		MaxSandboxLength: defaultSandboxConfig.MaxSandboxLength,
+		// The kernel and Firecracker fallbacks (pods without e2b.dev/kernel-version or e2b.dev/firecracker-version)
+		// follow the upstream 2026.30 defaults: kernel vmlinux-6.1.158 (the e2b-infra
+		// ARM64 patch no longer overrides it; deploy scripts place the asset) and
+		// Firecracker v1.14.4, which the e2b-infra package ships. e2b-webhook sets
+		// both from the template build.
 		KernelVersion:      "vmlinux-6.1.158",
-		FirecrackerVersion: "v1.13.1",
+		FirecrackerVersion: "v1.14.4",
 	}
 	if defaultSandboxConfig.AllowInternet {
 		v := true
