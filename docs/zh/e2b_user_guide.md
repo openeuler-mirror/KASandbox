@@ -16,6 +16,7 @@
   - [2.1 部署模式选择](#21-部署模式选择)
   - [2.2 Nomad 模式快速上手](#22-nomad-模式快速上手)
   - [2.3 K8S 模式快速上手](#23-k8s-模式快速上手)
+  - [2.4 安装 e2b-infra-android 变体（Android 沙箱场景）](#24-安装-e2b-infra-android-变体android-沙箱场景)
 - [3. 概述](#3-概述)
   - [3.1 核心概念](#31-核心概念)
   - [3.2 架构与端口一览](#32-架构与端口一览)
@@ -279,6 +280,42 @@ python3 create_sandbox.py --server-ip <SERVER_IP>
 
 > **说明**：上述两条快速路径省略了大量可选项（Harbor 协议、Mooncake、cri-multiplex、e2b-webhook 等），完整步骤见对应章节。执行 `--install` 前可先运行 `./check-env.sh` 检查前置条件。
 
+### 2.4 安装 e2b-infra-android 变体（Android 沙箱场景）
+
+e2b-infra 源码构建会同时产出两个变体 RPM，两者包内文件结构完全一致，唯一差别是运行栈二进制是否打入了 Android/Windows 编排体系补丁：
+
+| 变体 | 说明 |
+|------|------|
+| `e2b-infra-<版本>.<arch>.rpm` | 标准变体，未打 Android 相关补丁 |
+| `e2b-infra-android-<版本>.<arch>.rpm` | Android 变体，额外打入 VMM 抽象 / StratoVirt backend、hostservice、Android 模板构建等补丁 |
+
+同一节点按场景二选一安装，**不要把两个变体同时当作生效运行栈使用**。Android 变体的安装路径是 `/opt/e2b-infra-android/`。
+
+KASandbox RPM 负责提供部署脚本与 cri-multiplex / e2b-webhook，两个变体通用；差别只在 e2b-infra 这一个包上。安装流程：
+
+```bash
+# 1. 安装 KASandbox（提供部署资产与 cri-multiplex / e2b-webhook）
+rpm -ivh KASandbox-*.aarch64.rpm
+cd /opt/e2b-infra
+
+# 2. 安装 e2b-infra-android 变体（替代标准 e2b-infra 包；若已装标准包先 rpm -e e2b-infra）
+rpm -ivh e2b-infra-android-*.aarch64.rpm
+
+# 3. rsync 桥接：部署资产（deploy 脚本、systemd unit、helm、nomad）固定引用 /opt/e2b-infra，
+#    需要把 Android 变体运行栈同步到 /opt/e2b-infra/bin/ 后才生效
+rsync -a /opt/e2b-infra-android/bin/ /opt/e2b-infra/bin/
+chmod +x /opt/e2b-infra/bin/*.sh
+
+# 4. 重启运行栈使新二进制生效
+systemctl restart e2b-orchestrator cri-multiplex
+```
+
+> **说明**：
+> - 从 Release 43 起，`/fc-*` 资产已随 e2b-infra 两个变体包安装，桥接时无需另行处理 firecracker 内核镜像。
+> - 重装 / 升级 KASandbox RPM 会用包内自带配置覆盖 `/opt/e2b-infra/.env`，升级后请重新检查关键配置项（`SERVER_IP`、`DEPLOY_MODE`、`ENABLE_WEBHOOK`、`ORCHESTRATOR_TYPE`、`ORCHESTRATOR_STATIC_NODES`、Mooncake 相关地址等），再执行部署或重启服务。
+> - 切回标准变体：`rpm -e e2b-infra-android`，再安装标准 `e2b-infra-*.rpm`（标准包直接落位 `/opt/e2b-infra/`），随后 `systemctl restart e2b-orchestrator cri-multiplex`。
+
+---
 ---
 
 ## 3. 概述
