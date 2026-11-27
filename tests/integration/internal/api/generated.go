@@ -582,6 +582,12 @@ type NewSandbox struct {
 	VolumeMounts *[]SandboxVolumeMount `json:"volumeMounts,omitempty"`
 }
 
+// NewSandboxTransform Request body for the sandbox-transform endpoint.
+type NewSandboxTransform struct {
+	// TemplateName Identifier (ID or alias) of the required template.
+	TemplateName string `json:"templateName"`
+}
+
 // NewSecret defines model for NewSecret.
 type NewSecret struct {
 	// Metadata Customer metadata of the secret. Always present, empty when unset. At most 32 entries; keys are limited to 128 bytes, values to 1024 bytes, and a secret's metadata to 8192 bytes in total.
@@ -854,8 +860,59 @@ type SandboxAutoResumeConfig struct {
 	Enabled SandboxAutoResumeEnabled `json:"enabled"`
 }
 
+// SandboxAutoResumeConfigGrpc Mirrors the orchestrator gRPC SandboxAutoResumeConfig.
+type SandboxAutoResumeConfigGrpc struct {
+	Policy *string `json:"policy,omitempty"`
+}
+
 // SandboxAutoResumeEnabled Auto-resume enabled flag for paused sandboxes. Default false.
 type SandboxAutoResumeEnabled = bool
+
+// SandboxConfigGrpc Mirrors the orchestrator gRPC SandboxConfig.
+type SandboxConfigGrpc struct {
+	Alias               *string `json:"alias,omitempty"`
+	AllowInternetAccess *bool   `json:"allowInternetAccess,omitempty"`
+	AutoPause           *bool   `json:"autoPause,omitempty"`
+
+	// AutoResume Mirrors the orchestrator gRPC SandboxAutoResumeConfig.
+	AutoResume         *SandboxAutoResumeConfigGrpc `json:"autoResume,omitempty"`
+	BaseTemplateId     *string                      `json:"baseTemplateId,omitempty"`
+	BuildId            *string                      `json:"buildId,omitempty"`
+	EnvVars            *EnvVars                     `json:"envVars,omitempty"`
+	EnvdAccessToken    *string                      `json:"envdAccessToken,omitempty"`
+	EnvdVersion        *string                      `json:"envdVersion,omitempty"`
+	ExecutionId        *string                      `json:"executionId,omitempty"`
+	FirecrackerVersion *string                      `json:"firecrackerVersion,omitempty"`
+	HugePages          *bool                        `json:"hugePages,omitempty"`
+	KernelVersion      *string                      `json:"kernelVersion,omitempty"`
+
+	// MaxSandboxLength Maximum length of the sandbox in hours
+	MaxSandboxLength *int64           `json:"maxSandboxLength,omitempty"`
+	Metadata         *SandboxMetadata `json:"metadata,omitempty"`
+
+	// Network Mirrors the orchestrator gRPC SandboxNetworkConfig.
+	Network         *SandboxNetworkConfigGrpc `json:"network,omitempty"`
+	RamMb           *int64                    `json:"ramMb,omitempty"`
+	SandboxId       *string                   `json:"sandboxId,omitempty"`
+	Snapshot        *bool                     `json:"snapshot,omitempty"`
+	TeamId          *string                   `json:"teamId,omitempty"`
+	TemplateId      *string                   `json:"templateId,omitempty"`
+	TotalDiskSizeMb *int64                    `json:"totalDiskSizeMb,omitempty"`
+	Vcpu            *int64                    `json:"vcpu,omitempty"`
+	VolumeMounts    *[]SandboxVolumeMountGrpc `json:"volumeMounts,omitempty"`
+}
+
+// SandboxCreateRequest Mirrors the orchestrator gRPC SandboxCreateRequest. Returned by the transform endpoint.
+type SandboxCreateRequest struct {
+	// EndTime Sandbox end time (RFC 3339)
+	EndTime time.Time `json:"endTime"`
+
+	// Sandbox Mirrors the orchestrator gRPC SandboxConfig.
+	Sandbox SandboxConfigGrpc `json:"sandbox"`
+
+	// StartTime Sandbox start time (RFC 3339)
+	StartTime time.Time `json:"startTime"`
+}
 
 // SandboxDetail defines model for SandboxDetail.
 type SandboxDetail struct {
@@ -1059,6 +1116,28 @@ type SandboxNetworkConfig struct {
 	Rules *map[string][]SandboxNetworkRule `json:"rules,omitempty"`
 }
 
+// SandboxNetworkConfigGrpc Mirrors the orchestrator gRPC SandboxNetworkConfig.
+type SandboxNetworkConfigGrpc struct {
+	// Egress Mirrors the orchestrator gRPC SandboxNetworkEgressConfig.
+	Egress *SandboxNetworkEgressConfigGrpc `json:"egress,omitempty"`
+
+	// Ingress Mirrors the orchestrator gRPC SandboxNetworkIngressConfig.
+	Ingress *SandboxNetworkIngressConfigGrpc `json:"ingress,omitempty"`
+}
+
+// SandboxNetworkEgressConfigGrpc Mirrors the orchestrator gRPC SandboxNetworkEgressConfig.
+type SandboxNetworkEgressConfigGrpc struct {
+	AllowedCidrs   *[]string `json:"allowedCidrs,omitempty"`
+	AllowedDomains *[]string `json:"allowedDomains,omitempty"`
+	DeniedCidrs    *[]string `json:"deniedCidrs,omitempty"`
+}
+
+// SandboxNetworkIngressConfigGrpc Mirrors the orchestrator gRPC SandboxNetworkIngressConfig.
+type SandboxNetworkIngressConfigGrpc struct {
+	MaskRequestHost    *string `json:"maskRequestHost,omitempty"`
+	TrafficAccessToken *string `json:"trafficAccessToken,omitempty"`
+}
+
 // SandboxNetworkRule Transform rule applied to egress requests matching a domain pattern.
 type SandboxNetworkRule struct {
 	// Transform Transformations applied to matching egress requests before forwarding.
@@ -1126,6 +1205,13 @@ type SandboxVolumeMount struct {
 
 	// Path Path of the volume
 	Path string `json:"path"`
+}
+
+// SandboxVolumeMountGrpc Mirrors the orchestrator gRPC SandboxVolumeMount.
+type SandboxVolumeMountGrpc struct {
+	MountPath *string `json:"mountPath,omitempty"`
+	ReadOnly  *bool   `json:"readOnly,omitempty"`
+	VolumeId  *string `json:"volumeId,omitempty"`
 }
 
 // SandboxesWithMetrics defines model for SandboxesWithMetrics.
@@ -1888,6 +1974,9 @@ type PostNodesNodeIDJSONRequestBody = NodeStatusChange
 // PostSandboxesJSONRequestBody defines body for PostSandboxes for application/json ContentType.
 type PostSandboxesJSONRequestBody = NewSandbox
 
+// PostSandboxesTransformJSONRequestBody defines body for PostSandboxesTransform for application/json ContentType.
+type PostSandboxesTransformJSONRequestBody = NewSandboxTransform
+
 // PostSandboxesSandboxIDConnectJSONRequestBody defines body for PostSandboxesSandboxIDConnect for application/json ContentType.
 type PostSandboxesSandboxIDConnectJSONRequestBody = ConnectSandbox
 
@@ -2382,6 +2471,24 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /sandboxes/metrics (the `GetSandboxesMetrics` operationId).
 	GetSandboxesMetrics(ctx context.Context, params *GetSandboxesMetricsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostSandboxesTransformWithBody Transform sandbox create request
+	//
+	// Transform a sandbox-create request into orchestrator gRPC parameters.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sandboxes/transform (the `PostSandboxesTransform` operationId).
+	PostSandboxesTransformWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostSandboxesTransform Transform sandbox create request
+	//
+	// Transform a sandbox-create request into orchestrator gRPC parameters.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sandboxes/transform (the `PostSandboxesTransform` operationId).
+	PostSandboxesTransform(ctx context.Context, body PostSandboxesTransformJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// DeleteSandboxesSandboxID Kill sandbox
 	//
@@ -3421,6 +3528,44 @@ func (c *Client) PostSandboxes(ctx context.Context, body PostSandboxesJSONReques
 // Corresponds with GET /sandboxes/metrics (the `GetSandboxesMetrics` operationId).
 func (c *Client) GetSandboxesMetrics(ctx context.Context, params *GetSandboxesMetricsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSandboxesMetricsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostSandboxesTransformWithBody Transform sandbox create request
+//
+// Transform a sandbox-create request into orchestrator gRPC parameters.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sandboxes/transform (the `PostSandboxesTransform` operationId).
+func (c *Client) PostSandboxesTransformWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostSandboxesTransformRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostSandboxesTransform Transform sandbox create request
+//
+// Transform a sandbox-create request into orchestrator gRPC parameters.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sandboxes/transform (the `PostSandboxesTransform` operationId).
+func (c *Client) PostSandboxesTransform(ctx context.Context, body PostSandboxesTransformJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostSandboxesTransformRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -5567,6 +5712,46 @@ func NewGetSandboxesMetricsRequest(server string, params *GetSandboxesMetricsPar
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewPostSandboxesTransformRequest calls the generic PostSandboxesTransform builder with application/json body
+func NewPostSandboxesTransformRequest(server string, body PostSandboxesTransformJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostSandboxesTransformRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPostSandboxesTransformRequestWithBody constructs an http.Request for the PostSandboxesTransform method, with any body, and a specified content type
+func NewPostSandboxesTransformRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sandboxes/transform")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -8303,6 +8488,24 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /sandboxes/metrics (the `GetSandboxesMetrics` operationId).
 	GetSandboxesMetricsWithResponse(ctx context.Context, params *GetSandboxesMetricsParams, reqEditors ...RequestEditorFn) (*GetSandboxesMetricsResponse, error)
 
+	// PostSandboxesTransformWithBodyWithResponse Transform sandbox create request
+	//
+	// Transform a sandbox-create request into orchestrator gRPC parameters.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /sandboxes/transform (the `PostSandboxesTransform` operationId).
+	PostSandboxesTransformWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostSandboxesTransformResponse, error)
+
+	// PostSandboxesTransformWithResponse Transform sandbox create request
+	//
+	// Transform a sandbox-create request into orchestrator gRPC parameters.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /sandboxes/transform (the `PostSandboxesTransform` operationId).
+	PostSandboxesTransformWithResponse(ctx context.Context, body PostSandboxesTransformJSONRequestBody, reqEditors ...RequestEditorFn) (*PostSandboxesTransformResponse, error)
+
 	// DeleteSandboxesSandboxIDWithResponse Kill sandbox
 	//
 	// Kill a sandbox.
@@ -10244,6 +10447,68 @@ func (r GetSandboxesMetricsResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r GetSandboxesMetricsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PostSandboxesTransformResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *SandboxCreateRequest
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *N400
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *N401
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *N500
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostSandboxesTransformResponse) GetJSON200() *SandboxCreateRequest {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostSandboxesTransformResponse) GetJSON400() *N400 {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostSandboxesTransformResponse) GetJSON401() *N401 {
+	return r.JSON401
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostSandboxesTransformResponse) GetJSON500() *N500 {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PostSandboxesTransformResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostSandboxesTransformResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostSandboxesTransformResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostSandboxesTransformResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -13803,6 +14068,36 @@ func (c *ClientWithResponses) GetSandboxesMetricsWithResponse(ctx context.Contex
 	return ParseGetSandboxesMetricsResponse(rsp)
 }
 
+// PostSandboxesTransformWithBodyWithResponse Transform sandbox create request
+//
+// Transform a sandbox-create request into orchestrator gRPC parameters.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /sandboxes/transform (the `PostSandboxesTransform` operationId).
+func (c *ClientWithResponses) PostSandboxesTransformWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostSandboxesTransformResponse, error) {
+	rsp, err := c.PostSandboxesTransformWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostSandboxesTransformResponse(rsp)
+}
+
+// PostSandboxesTransformWithResponse Transform sandbox create request
+//
+// Transform a sandbox-create request into orchestrator gRPC parameters.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /sandboxes/transform (the `PostSandboxesTransform` operationId).
+func (c *ClientWithResponses) PostSandboxesTransformWithResponse(ctx context.Context, body PostSandboxesTransformJSONRequestBody, reqEditors ...RequestEditorFn) (*PostSandboxesTransformResponse, error) {
+	rsp, err := c.PostSandboxesTransform(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostSandboxesTransformResponse(rsp)
+}
+
 // DeleteSandboxesSandboxIDWithResponse Kill sandbox
 //
 // Kill a sandbox.
@@ -15815,6 +16110,53 @@ func ParseGetSandboxesMetricsResponse(rsp *http.Response) (*GetSandboxesMetricsR
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest SandboxesWithMetrics
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostSandboxesTransformResponse parses an HTTP response from a PostSandboxesTransformWithResponse call
+func ParsePostSandboxesTransformResponse(rsp *http.Response) (*PostSandboxesTransformResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostSandboxesTransformResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SandboxCreateRequest
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
