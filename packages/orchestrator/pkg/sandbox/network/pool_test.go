@@ -243,7 +243,10 @@ func TestParseConfigIsolateNetNSDirDefault(t *testing.T) {
 	cfg, err := ParseConfig()
 	require.NoError(t, err)
 	// Default auto: shouldIsolateNetNSDir decides by the environment.
-	assert.Equal(t, "auto", cfg.IsolateNetNSDir)
+	// 默认 false：裸机与 k8s Pod 内都不隔离 /run/netns。
+	assert.Equal(t, "false", cfg.IsolateNetNSDir)
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	assert.False(t, cfg.shouldIsolateNetNSDir())
 }
 
 func TestShouldIsolateNetNSDir(t *testing.T) {

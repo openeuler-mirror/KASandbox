@@ -118,7 +118,7 @@ type Config struct {
 	// cri-multiplex creates on the host through propagation) must not do it:
 	// making the directory private cuts that propagation and setns fails with
 	// EINVAL.
-	IsolateNetNSDir string `env:"ORCHESTRATOR_ISOLATE_NETNS_DIR" envDefault:"auto"`
+	IsolateNetNSDir string `env:"ORCHESTRATOR_ISOLATE_NETNS_DIR" envDefault:"false"`
 
 	// Slot pool capacities for the v1/v2 network slot pools.
 	// Set NETWORK_POOL_NEW_SLOTS_SIZE=0 to disable pre-warming entirely — this is
