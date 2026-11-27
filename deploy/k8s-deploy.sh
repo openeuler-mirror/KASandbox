@@ -371,10 +371,32 @@ switch_kubelet_endpoint() {
     fi
 }
 
+# 未设置 CRI_MULTIPLEX_BIN 时，与 k8s-deploy.sh 放在同一棵目录：
+# /opt/e2b-infra/standard/k8s-deploy.sh → /opt/e2b-infra/standard/bin/cri-multiplex。
+# 只有旁边没有可执行文件时，才退回旧布局 /opt/e2b-infra/bin/cri-multiplex。
+default_cri_multiplex_bin() {
+    if [ -n "${CRI_MULTIPLEX_BIN:-}" ]; then
+        printf '%s\n' "${CRI_MULTIPLEX_BIN}"
+        return
+    fi
+    local script_dir beside legacy
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    beside="${script_dir}/bin/cri-multiplex"
+    legacy="/opt/e2b-infra/bin/cri-multiplex"
+    if [ -x "${beside}" ]; then
+        printf '%s\n' "${beside}"
+    elif [ -x /opt/e2b-infra/standard/bin/cri-multiplex ]; then
+        printf '%s\n' /opt/e2b-infra/standard/bin/cri-multiplex
+    else
+        printf '%s\n' "${legacy}"
+    fi
+}
+
 # 部署 cri-multiplex（多 runtime 复用器，让 kubelet 通过单一 socket 调度 containerd / 自定义 runtime）
 # 流程: 创建 systemd 服务 -> 启动 cri-multiplex -> 切换 kubelet endpoint -> 重启 kubelet -> 创建 RuntimeClass
 deploy_cri_multiplex() {
-    local bin="${CRI_MULTIPLEX_BIN:-/opt/e2b-infra/bin/cri-multiplex}"
+    local bin
+    bin="$(default_cri_multiplex_bin)"
     local mux_socket="/run/cri-multiplex.sock"
     local containerd_socket="/run/containerd/containerd.sock"
     local orchestrator_addr="${CRI_MULTIPLEX_ORCHESTRATOR:-localhost:5008}"
@@ -389,8 +411,7 @@ deploy_cri_multiplex() {
 
     # ① 检查二进制
     if [ ! -x "$bin" ]; then
-        warn "未找到可执行文件 $bin，跳过 cri-multiplex 部署（可通过 CRI_MULTIPLEX_BIN 指定路径）"
-        return
+        error "未找到可执行文件 $bin（可通过 CRI_MULTIPLEX_BIN 指定路径）"
     fi
 
     # e2b 专有 CNI 配置目录（与集群 CNI 的 /etc/cni/net.d 隔离，避免误用 calico 插件链）
@@ -469,7 +490,12 @@ EOF
     systemctl restart cri-multiplex
     # 持续等待 socket 就绪
     info "等待 cri-multiplex socket 就绪: $mux_socket ..."
+    local wait_i=0
     while [ ! -S "$mux_socket" ]; do
+        wait_i=$((wait_i + 1))
+        if [ "$wait_i" -gt 60 ]; then
+            error "cri-multiplex socket 未就绪: $mux_socket（见 journalctl -u cri-multiplex -n 50）"
+        fi
         sleep 0.5
     done
     success "cri-multiplex socket 已就绪: $mux_socket"
@@ -704,7 +730,7 @@ main() {
             echo "  CONFIG_FILE              指定配置文件路径（create/all 使用）"
             echo "  HOST_IP                  本机 IP（默认自动探测，prep 生成配置时使用）"
             echo "  NODE_PASSWORD            节点 SSH 密码（必须通过环境变量提供）"
-            echo "  CRI_MULTIPLEX_BIN          cri-multiplex 二进制路径（默认 /opt/e2b-infra/bin/cri-multiplex）"
+            echo "  CRI_MULTIPLEX_BIN          cri-multiplex 二进制路径（默认：脚本同目录 bin/cri-multiplex，即 /opt/e2b-infra/standard/bin/cri-multiplex；没有则 /opt/e2b-infra/bin/cri-multiplex）"
             echo "  CRI_MULTIPLEX_ORCHESTRATOR orchestrator 地址（默认 localhost:5008）"
             echo "  KUBELET_FLAGS_FILE         kubelet 启动参数文件路径（默认 /var/lib/kubelet/kubeadm-flags.env）"
             echo "  E2B_CNI_SUBNET             e2b bridge 子网（默认 10.12.0.0/22；多节点各节点须不重叠）"
