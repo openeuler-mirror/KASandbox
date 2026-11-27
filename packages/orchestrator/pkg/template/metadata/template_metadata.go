@@ -101,6 +101,12 @@ func (c Context) WithUser(user string) Context {
 	return c
 }
 
+func (c Context) WithOsType(osType string) Context {
+	c.OsType = osType
+
+	return c
+}
+
 type FromTemplate struct {
 	Alias   string `json:"alias"`
 	BuildID string `json:"build_id"`

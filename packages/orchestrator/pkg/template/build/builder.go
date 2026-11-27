@@ -427,15 +427,25 @@ func runBuild(
 	builders := []phases.BuilderPhase{
 		baseBuilder,
 	}
+	// Android images run envd as root and skip the default-user phase; Windows
+	// skips the whole guest build step pipeline.
+	skipDefaultUser := bc.Config.IsWindows() || bc.Config.IsAndroid()
+	skipGuestBuildPhases := bc.Config.IsWindows()
+	if skipGuestBuildPhases && len(bc.Config.Steps) > 0 {
+		return nil, fmt.Errorf("build steps are not supported for Windows templates")
+	}
+
 	// Default user is only set for version TemplateDefaultUserVersion
 	ok, err := utils.IsGTEVersion(bc.Version, templates.TemplateV2ReleaseVersion)
 	if err != nil {
 		return nil, fmt.Errorf("error checking build version: %w", err)
 	}
-	if ok {
+	if ok && !skipDefaultUser {
 		builders = append(builders, userBuilder)
 	}
-	builders = append(builders, stepBuilders...)
+	if !skipGuestBuildPhases {
+		builders = append(builders, stepBuilders...)
+	}
 	// Grow the quiescent rootfs before finalize cold-boots it.
 	if builder.featureFlags.BoolFlag(ctx, featureflags.BuildEnsureFreeDiskSpace) {
 		builders = append(builders, ensurefreedisk.New(

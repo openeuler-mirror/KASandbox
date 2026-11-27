@@ -157,6 +157,10 @@ func (ppb *PostProcessingBuilder) Build(
 	defaultUser := new(currentLayer.Metadata.Context.User)
 	defaultWorkdir := currentLayer.Metadata.Context.WorkDir
 
+	// Non-Linux guests have no template default user; only Windows also drops
+	// the default workdir (Android resolves it inside the guest).
+	osType := vmm.OsType(ppb.BuildContext.Config.OsType).OrDefault()
+
 	ok, err := utils.IsGTEVersion(ppb.Version, templates.TemplateV2ReleaseVersion)
 	if err != nil {
 		return phases.LayerResult{}, fmt.Errorf("error checking build version: %w", err)
@@ -165,6 +169,12 @@ func (ppb *PostProcessingBuilder) Build(
 		// For older builds, always use the template default user
 		// and do not set a default workdir (defaults to the user homedir).
 		defaultUser = new(consts.TemplateDefaultUser)
+		defaultWorkdir = nil
+	}
+	if osType == vmm.OsWindows || osType == vmm.OsAndroid {
+		defaultUser = nil
+	}
+	if osType == vmm.OsWindows {
 		defaultWorkdir = nil
 	}
 

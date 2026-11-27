@@ -18,6 +18,7 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/proxy"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/sandboxtools"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/storage/paths"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/metadata"
@@ -35,6 +36,8 @@ type Copy struct {
 var _ Command = (*Copy)(nil)
 
 type copyScriptData struct {
+	IsAndroid bool
+
 	SourcePath  string
 	TargetPath  string
 	Owner       string
@@ -112,7 +115,12 @@ func (c *Copy) Execute(
 
 	// The file is automatically cleaned up by the sandbox restart in the last step.
 	// This is happening because the /tmp is mounted as a tmpfs and deleted on restart.
-	sbxTargetPath := filepath.Join("/tmp", fmt.Sprintf("%s.tar", step.GetFilesHash()))
+	tempDir := "/tmp"
+	isAndroid := cmdMetadata.OsType == string(vmm.OsAndroid)
+	if isAndroid {
+		tempDir = "/mnt/tmp"
+	}
+	sbxTargetPath := filepath.Join(tempDir, fmt.Sprintf("%s.tar", step.GetFilesHash()))
 	// 2) Copy the tar file to the sandbox
 	err = sandboxtools.CopyFile(ctx, proxy, sandboxID, "root", tmpFile.Name(), sbxTargetPath)
 	if err != nil {
@@ -120,7 +128,7 @@ func (c *Copy) Execute(
 	}
 
 	// Create nested unpack directory to allow multiple files in the root be correctly detected
-	sbxUnpackPath := filepath.Join("/tmp", step.GetFilesHash(), "unpack")
+	sbxUnpackPath := filepath.Join(tempDir, step.GetFilesHash(), "unpack")
 
 	// 3) Extract the tar file in the sandbox's /tmp directory
 	err = sandboxtools.RunCommand(
@@ -136,6 +144,8 @@ func (c *Copy) Execute(
 
 	var moveScript bytes.Buffer
 	err = copyScriptTemplate.Execute(&moveScript, copyScriptData{
+		IsAndroid: isAndroid,
+
 		Workdir: utils.DerefOrDefault(cmdMetadata.WorkDir, ""),
 		User:    cmdMetadata.User,
 

@@ -125,3 +125,8 @@ func (e TemplateConfig) RootfsBlockSize() int64 {
 func (c TemplateConfig) IsAndroid() bool {
 	return vmm.OsType(c.OsType).OrDefault() == vmm.OsAndroid
 }
+
+// IsWindows reports whether the build targets a Windows guest.
+func (c TemplateConfig) IsWindows() bool {
+	return vmm.OsType(c.OsType).OrDefault() == vmm.OsWindows
+}
