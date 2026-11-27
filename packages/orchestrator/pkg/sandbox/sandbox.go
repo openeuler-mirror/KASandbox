@@ -30,9 +30,12 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/cgroup"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/envdbin"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/stratovirt"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/nbd"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/rootfs"
+	rootfspkg "github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/rootfs"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/uffd"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/uffd/prefetch"
@@ -131,6 +134,10 @@ type Config struct {
 	Envd EnvdMetadata
 
 	FirecrackerConfig fc.Config
+
+	// VMM selects the VMM backend and guest OS family for this sandbox.
+	// The zero value boots Linux on Firecracker, exactly as before.
+	VMM vmm.VMMConfig
 
 	// SkipEnvdWait skips the post-resume wait for envd readiness. Used by the
 	// resume-build gdb debugging flow: the guest is held at a gdb entry
@@ -388,7 +395,7 @@ type Sandbox struct {
 
 	featureFlags *featureflags.Client
 
-	process      *fc.Process
+	process      vmm.Process
 	cgroupHandle *cgroup.CgroupHandle
 
 	// inPlaceCheckpointInFlight excludes concurrent in-place checkpoints of
@@ -500,6 +507,26 @@ type Sandbox struct {
 	// from the WithoutLiveRegistration resume option.
 	skipStartupMetrics bool
 }
+
+// fcProcess returns the Firecracker process when this sandbox runs on
+// Firecracker, or nil for StratoVirt-backed guests.
+func (s *Sandbox) fcProcess() *fc.Process {
+	if p, ok := s.process.(*fc.Process); ok {
+		return p
+	}
+
+	return nil
+}
+
+// newVMMProcessFactory picks the VMM backend factory for a sandbox.
+func newVMMProcessFactory(t vmm.BackendType) vmm.Factory {
+	if t.OrDefault() == vmm.BackendStratoVirt {
+		return stratovirt.NewFactory()
+	}
+
+	return fc.NewDefaultFactory()
+}
+
 
 // BeginInPlaceCheckpoint marks an in-place checkpoint in flight; false means
 // one is already running and the caller must refuse. Pair with
@@ -981,18 +1008,26 @@ func (f *Factory) CreateSandbox(
 		return cgroupHandle.Remove(ctx)
 	})
 
-	fcHandle, err := fc.NewProcess(
+	vmmConfig := vmm.VMMConfig{
+		Type:           config.VMM.Type,
+		KernelVersion:  config.FirecrackerConfig.KernelVersion,
+		VMMVersion:     config.FirecrackerConfig.FirecrackerVersion,
+		OsType:         config.VMM.OsType,
+		AndroidVersion: config.VMM.AndroidVersion,
+	}
+	vmmFactory := newVMMProcessFactory(vmmConfig.Type)
+	fcHandle, err := vmmFactory.NewProcess(
 		ctx,
 		execCtx,
 		f.config,
 		ips,
 		sandboxFiles,
-		config.FirecrackerConfig,
-		rootfsProvider,
-		fc.ConstantRootfsPaths,
+		vmmConfig,
+		[]rootfspkg.Provider{rootfsProvider},
+		vmm.RootfsPaths(fc.ConstantRootfsPaths),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to init FC: %w", err)
+		return nil, fmt.Errorf("failed to init VMM: %w", err)
 	}
 
 	throttleConfig := featureflags.GetTCPFirewallEgressThrottleConfig(ctx, f.featureFlags)
@@ -1544,23 +1579,34 @@ func (f *Factory) ResumeSandbox(
 		return cgroupHandle.Remove(ctx)
 	})
 
-	fcHandle, fcErr := fc.NewProcess(
+	vmmConfig := vmm.VMMConfig{
+		Type:           config.VMM.Type,
+		KernelVersion:  config.FirecrackerConfig.KernelVersion,
+		VMMVersion:     config.FirecrackerConfig.FirecrackerVersion,
+		OsType:         config.VMM.OsType,
+		AndroidVersion: config.VMM.AndroidVersion,
+	}
+	vmmFactory := newVMMProcessFactory(vmmConfig.Type)
+	fcHandle, fcErr := vmmFactory.NewProcess(
 		ctx,
 		execCtx,
 		f.config,
 		ips,
 		sandboxFiles,
 		// The versions need to base exactly the same as the paused sandbox template because of the FC compatibility.
-		config.FirecrackerConfig,
-		overlay,
-		fc.RootfsPaths{
+		vmmConfig,
+		[]rootfspkg.Provider{overlay},
+		vmm.RootfsPaths(fc.RootfsPaths{
 			TemplateVersion: meta.Version,
 			TemplateID:      config.BaseTemplateID,
 			BuildID:         rootfs.Header().Metadata.BaseBuildId.String(),
-		},
+		}),
 	)
 	if fcErr != nil {
-		return nil, fmt.Errorf("failed to create FC: %w", fcErr)
+		return nil, fmt.Errorf("failed to create VMM: %w", fcErr)
+	}
+	if sv, ok := fcHandle.(*stratovirt.Process); ok {
+		sv.SetResumeResources(config.Vcpu, config.RamMB, config.HugePages)
 	}
 
 	resumeThrottleConfig := featureflags.GetTCPFirewallEgressThrottleConfig(ctx, f.featureFlags)
@@ -2091,11 +2137,13 @@ func (s *Sandbox) Pause(
 	// Drain free-page-hinting before pause so the snapshot doesn't capture
 	// pages the guest already considers free. Timeout per use case; 0 disables.
 	if t := featureflags.GetFreePageHintingTimeout(ctx, s.featureFlags, string(useCase), sandboxLDContext(s.Runtime, s.Config)); t > 0 {
-		drainCtx, cancel := context.WithTimeout(ctx, t)
-		if err := s.process.DrainBalloon(drainCtx); err != nil {
-			telemetry.ReportError(ctx, "balloon hinting drain failed (continuing pause)", err)
+		if fcProc := s.fcProcess(); fcProc != nil {
+			drainCtx, cancel := context.WithTimeout(ctx, t)
+			if err := fcProc.DrainBalloon(drainCtx); err != nil {
+				telemetry.ReportError(ctx, "balloon hinting drain failed (continuing pause)", err)
+			}
+			cancel()
 		}
-		cancel()
 	}
 
 	// For an in-place checkpoint the VM must come back up even if the snapshot
@@ -2132,7 +2180,12 @@ func (s *Sandbox) Pause(
 			// bound (nothing in the FC client stack sets one): without it
 			// a wedged FC API socket would hang this cleanup forever.
 			resumeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), inPlaceStateFlipTimeout)
-			err := s.process.ResumeInPlace(resumeCtx)
+			var err error
+			if fcProc := s.fcProcess(); fcProc != nil {
+				err = fcProc.ResumeInPlace(resumeCtx)
+			} else {
+				err = errors.New("in-place checkpoint resume requires the firecracker backend")
+			}
 			cancel()
 			if err != nil {
 				// Same failure mode and same handling as the success-path
@@ -2209,7 +2262,9 @@ func (s *Sandbox) Pause(
 
 	// Best-effort flush before the rootfs export goroutine closes the FC API
 	// socket. Non-blocking on the reader; trades precision for pause latency.
-	_ = s.process.FlushMetrics(ctx)
+	if fcProc := s.fcProcess(); fcProc != nil {
+		_ = fcProc.FlushMetrics(ctx)
+	}
 
 	// Snapfile is not closed as it's returned and cached for later use (like resume)
 	snapfile := template.NewLocalFileLink(cachePaths.CacheSnapfile())
@@ -2306,7 +2361,12 @@ func (s *Sandbox) Pause(
 		// checkpoint guard, with a frozen VM nothing reaps. On timeout the
 		// ErrSandboxLost branch below tears the sandbox down instead.
 		resumeCtx, cancelResume := context.WithTimeout(context.WithoutCancel(ctx), inPlaceStateFlipTimeout)
-		err := s.process.ResumeInPlace(resumeCtx)
+		var err error
+		if fcProc := s.fcProcess(); fcProc != nil {
+			err = fcProc.ResumeInPlace(resumeCtx)
+		} else {
+			err = errors.New("in-place checkpoint resume requires the firecracker backend")
+		}
 		cancelResume()
 		if err != nil {
 			// Final resume failed -> VM stuck paused and unrecoverable. Tear it
@@ -2489,17 +2549,23 @@ func (s *Sandbox) processMemorySnapshot(ctx context.Context, buildID uuid.UUID, 
 		s.featureFlags.BoolFlag(ctx, featureflags.DeferMemoryExportFlag, sandboxLDContext(s.Runtime, s.Config))
 	fprPaused := false
 	if deferOK {
-		reporting, fprErr := s.process.BalloonFreePageReporting(ctx)
+		if s.fcProcess() == nil {
+			deferOK = false
+		}
+	}
+	if deferOK {
+		fcProc := s.fcProcess()
+		reporting, fprErr := fcProc.BalloonFreePageReporting(ctx)
 		switch {
 		case fprErr != nil:
 			sbxlogger.I(s).Warn(ctx, "defer-memory-export: balloon query failed; using sync copy", zap.Error(fprErr))
 			deferOK = false
 		case reporting:
-			if pauseErr := s.process.PauseFreePageReporting(ctx); pauseErr != nil {
+			if pauseErr := fcProc.PauseFreePageReporting(ctx); pauseErr != nil {
 				sbxlogger.I(s).Warn(ctx, "defer-memory-export: pausing free-page reporting failed; using sync copy",
 					zap.Error(pauseErr))
 				deferOK = false
-			} else if paused, stErr := s.process.FreePageReportingPaused(ctx); stErr != nil || !paused {
+			} else if paused, stErr := fcProc.FreePageReportingPaused(ctx); stErr != nil || !paused {
 				sbxlogger.I(s).Warn(ctx, "defer-memory-export: free-page reporting pause not confirmed; using sync copy",
 					zap.Bool("paused", paused), zap.Error(stErr))
 				s.resumeFreePageReportingBestEffort(ctx)
@@ -2529,7 +2595,7 @@ func (s *Sandbox) processMemorySnapshot(ctx context.Context, buildID uuid.UUID, 
 		}
 	}()
 
-	memfileDiffMetadata, err := s.Resources.memory.DiffMetadata(ctx, s.process, useTrackerDirty)
+	memfileDiffMetadata, err := s.Resources.memory.DiffMetadata(ctx, s.fcProcess(), useTrackerDirty)
 	if err != nil {
 		return MemorySnapshot{}, nil, fmt.Errorf("failed to get memfile metadata: %w", err)
 	}
@@ -2625,13 +2691,17 @@ func (s *Sandbox) processMemorySnapshot(ctx context.Context, buildID uuid.UUID, 
 		memfd = s.memory.Memfd(ctx)
 	}
 
+	fcProc := s.fcProcess()
+	if fcProc == nil {
+		return MemorySnapshot{}, nil, errors.New("in-place memory export requires the firecracker backend")
+	}
 	memfileDiff, memfileDiffHeader, provMemfileHeader, provMemfileDiff, provMemfileSwapDone, err := pauseProcessMemory(
 		ctx,
 		buildID,
 		memfileHeader,
 		memfileDiffMetadata,
 		s.config.DefaultCacheDir,
-		s.process,
+		fcProc,
 		memfd,
 		s.featureFlags.BoolFlag(ctx, featureflags.MemfdBackgroundCopyFlag, sandboxLDContext(s.Runtime, s.Config)),
 		dedupBase,
@@ -2962,7 +3032,13 @@ func (s *Sandbox) runDeferredMemoryExport(
 // stopped freeing memory).
 func (s *Sandbox) resumeFreePageReportingBestEffort(ctx context.Context) {
 	runFPRResume(context.WithoutCancel(ctx), fprResumeDeps{
-		resume:         s.process.ResumeFreePageReporting,
+		resume: func(ctx context.Context) error {
+			if fcProc := s.fcProcess(); fcProc != nil {
+				return fcProc.ResumeFreePageReporting(ctx)
+			}
+
+			return nil
+		},
 		fcExited:       s.process.Exit().Done(),
 		pauseGen:       s.fprPauseGen.Load,
 		attemptTimeout: 2 * time.Second,
@@ -3072,7 +3148,12 @@ func (s *Sandbox) waitForMemorySeal(ctx context.Context) error {
 // FlushAndReadBalloonMetrics triggers an FC metrics flush and returns the
 // updated cumulative virtio-balloon counters. Used by the FPH bench.
 func (s *Sandbox) FlushAndReadBalloonMetrics(ctx context.Context) (fc.BalloonMetricsSnapshot, error) {
-	return s.process.FlushAndReadBalloonMetrics(ctx)
+	fcProc := s.fcProcess()
+	if fcProc == nil {
+		return fc.BalloonMetricsSnapshot{}, errors.New("balloon metrics require the firecracker backend")
+	}
+
+	return fcProc.FlushAndReadBalloonMetrics(ctx)
 }
 
 // MemoryPrefetchData returns the ordered page fault data for prefetch mapping.

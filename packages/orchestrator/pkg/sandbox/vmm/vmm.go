@@ -73,6 +73,8 @@ type Process interface {
 		dedupInflightServe bool,
 		keepMemfdOpen bool,
 	) (block.DiffSource, error)
+	ResumeVM(ctx context.Context) error
+	OrdinarySnapshotEpoch() uint64
 	Pid() (int, error)
 	Exit() *utils.ErrorOnce
 }

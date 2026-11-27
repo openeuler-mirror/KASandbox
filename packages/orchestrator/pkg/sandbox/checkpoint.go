@@ -55,6 +55,10 @@ func (s *Sandbox) CheckpointToFiles(ctx context.Context, snapfilePath string, me
 	}
 
 	process := s.process
+	fcProcess, fcOk := process.(*fc.Process)
+	if !fcOk {
+		return false, nil, errors.New("in-place checkpoint requires the firecracker backend")
+	}
 
 	// How long the sandbox is frozen is the cost that matters here — not how
 	// long the whole operation takes — so it is measured on its own.
@@ -84,7 +88,7 @@ func (s *Sandbox) CheckpointToFiles(ctx context.Context, snapfilePath string, me
 	)
 	snapshotStart := time.Now()
 	if err := timings.Timed("snapshot", func() error {
-		return process.CreateSnapshotWithMemFile(ctx, snapfilePath, memfilePath, dirtyBitmapPath, diff)
+		return fcProcess.CreateSnapshotWithMemFile(ctx, snapfilePath, memfilePath, dirtyBitmapPath, diff)
 	}); err != nil {
 		logger.L().Error(ctx, "failed to create VM snapshot",
 			logger.WithSandboxID(s.Runtime.SandboxID),
@@ -204,6 +208,10 @@ func (s *Sandbox) RollbackInPlace(
 	layers []RestoreLayer,
 	timings PhaseTimings,
 ) (e error) {
+	fcProcess, fcOk := s.process.(*fc.Process)
+	if !fcOk {
+		return RollbackTornError{Err: errors.New("in-place rollback requires the firecracker backend")}
+	}
 	ctx, span := tracer.Start(ctx, "sandbox-rollback-in-place")
 	defer span.End()
 
@@ -238,7 +246,7 @@ func (s *Sandbox) RollbackInPlace(
 	}
 
 	liveBitmapPath := filepath.Join(filepath.Dir(snapfilePath), "live_bitmap.tmp")
-	if err := timings.Timed("save_live_bitmap", func() error { return process.SaveDirtyBitmap(ctx, liveBitmapPath) }); err != nil {
+	if err := timings.Timed("save_live_bitmap", func() error { return fcProcess.SaveDirtyBitmap(ctx, liveBitmapPath) }); err != nil {
 		return resumeOnError(fmt.Errorf("failed to export live dirty bitmap: %w", err))
 	}
 	defer os.Remove(liveBitmapPath)
@@ -285,7 +293,7 @@ func (s *Sandbox) RollbackInPlace(
 	// The rollback endpoint distinguishes failures before its commit point
 	// (VM untouched, resumable) from after (VM faulted).
 	fcStart := time.Now()
-	result, err := process.RollbackSnapshot(ctx, snapfilePath, memfilePath, revertBitmapPath)
+	result, err := fcProcess.RollbackSnapshot(ctx, snapfilePath, memfilePath, revertBitmapPath)
 	timings.Mark("fc_rollback", fcStart)
 
 	if mb, ok := diskReadSince(fcPid, fcBefore, fcOK); ok {

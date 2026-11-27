@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -43,6 +44,8 @@ var _ vmm.Process = (*Process)(nil)
 var androidDiskNames = []string{storage.RootfsName, storage.PersistentName, storage.SDCardName}
 
 type Process struct {
+	ordinarySnapshotEpoch atomic.Uint64
+
 	// Resume 启动命令所需的资源规格，Create 时记录；恢复路径由 SetResumeResources 设置。
 	vcpuCount int64
 	memoryMB  int64
@@ -492,6 +495,8 @@ func (p *Process) CreateSnapshot(ctx context.Context, snapfilePath string) error
 		return fmt.Errorf("pack stratovirt snapshot: %w", err)
 	}
 
+	p.ordinarySnapshotEpoch.Add(1)
+
 	return nil
 }
 
@@ -528,4 +533,17 @@ func (p *Process) SetResumeResources(vcpuCount int64, memoryMB int64, hugePages 
 	p.vcpuCount = vcpuCount
 	p.memoryMB = memoryMB
 	p.hugePages = hugePages
+}
+
+// ResumeVM resumes a VM paused for an ordinary snapshot (QMP cont).
+func (p *Process) ResumeVM(ctx context.Context) error {
+	ctx, childSpan := tracer.Start(ctx, "resume-vm-stratovirt")
+	defer childSpan.End()
+
+	return p.qmpClient.resumeVM(ctx)
+}
+
+// OrdinarySnapshotEpoch counts the ordinary snapshots taken by this process.
+func (p *Process) OrdinarySnapshotEpoch() uint64 {
+	return p.ordinarySnapshotEpoch.Load()
 }

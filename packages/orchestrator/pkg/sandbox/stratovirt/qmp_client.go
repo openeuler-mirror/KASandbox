@@ -225,6 +225,10 @@ func (c *qmpClient) stopVM(ctx context.Context) error {
 	return c.executeCommandWithReturn(ctx, "stop", nil, nil)
 }
 
+func (c *qmpClient) resumeVM(ctx context.Context) error {
+	return c.executeCommandWithReturn(ctx, "cont", nil, nil)
+}
+
 func (c *qmpClient) migrate(ctx context.Context, uri string) error {
 	return c.executeCommandWithReturn(ctx, "migrate", map[string]any{"uri": uri}, nil)
 }
