@@ -139,15 +139,17 @@ cd /path/to/KASandbox/cri-multiplex/cube-verify
 # 节点已装 CubeSandbox（控制面或 install-compute.sh）且模板 READY 后：
 
 # 1. 安装**带 Cube 能力**的 KASandbox（含 cri-multiplex、k8s-deploy.sh）
-#    装完必须能：/opt/e2b-infra/standard/bin/cri-multiplex --help | grep cube-enabled
+#    新包（src-openeuler ≥1.0.25-2）平铺到 /opt/e2b-infra；旧包可能仍有 /opt/e2b-infra/standard
+#    装完必须能：…/bin/cri-multiplex --help | grep cube-enabled
 #    发行包若无该 flag，改用含 Cube 的包，或从源码/验证分支编译后设 CRI_MULTIPLEX_BIN
 rpm -ivh KASandbox-*.rpm
-cd /opt/e2b-infra/standard
+cd /opt/e2b-infra
+# 若只有旧布局：cd /opt/e2b-infra/standard
 
 # 2. 部署 cri-multiplex 并切换 kubelet endpoint、创建 RuntimeClass cube
 export CRI_MULTIPLEX_CUBE_ENABLED=true
 export CRI_MULTIPLEX_CUBELET=127.0.0.1:9999
-# export CRI_MULTIPLEX_BIN=/opt/e2b-infra/standard/bin/cri-multiplex
+# export CRI_MULTIPLEX_BIN=/opt/e2b-infra/bin/cri-multiplex
 sudo -E ./k8s-deploy.sh cri-multiplex
 
 # 3. Pod：runtimeClassName: cube，并带齐附录 C 冷启动注解（见 §8.3；webhook 不能代替完整注解）
@@ -202,8 +204,8 @@ kubectl get runtimeclass cube
 | RPM / 源仓 | 装什么 | 装到哪 | 是否含 Cubelet |
 |------------|--------|--------|----------------|
 | **`cubesandbox`**（[src-openeuler/CubeSandbox](https://atomgit.com/src-openeuler/CubeSandbox)） | Cubelet / CubeMaster / CubeAPI / shim / guest 等 | `/usr/local/services/cubetoolbox` | **是** |
-| **`KASandbox`**（[src-openeuler/KASandbox](https://atomgit.com/src-openeuler/KASandbox)） | cri-multiplex、e2b-webhook、`k8s-deploy.sh` 等 | `/opt/e2b-infra/standard` | **否** |
-| **`e2b-infra`**（[src-openeuler/e2b-infra](https://atomgit.com/src-openeuler/e2b-infra)） | E2B 编排栈（api / orchestrator / envd / …） | `/opt/e2b-infra` | **否** |
+| **`KASandbox`**（[src-openeuler/KASandbox](https://atomgit.com/src-openeuler/KASandbox)） | cri-multiplex、e2b-webhook、`k8s-deploy.sh` 等 | **`/opt/e2b-infra`**（平铺；`1.0.25-2` 起已去掉 `KASandbox-standard` / `…/standard`） | **否** |
+| **`e2b-infra`**（[src-openeuler/e2b-infra](https://atomgit.com/src-openeuler/e2b-infra)） | E2B 编排栈（api / orchestrator / envd / …） | 同一 **`/opt/e2b-infra`**（先装 KASandbox，再装本包往里填编排二进制） | **否** |
 
 运行时产品是上游 [TencentCloud/CubeSandbox](https://github.com/TencentCloud/CubeSandbox) **v0.7.2**。`cubesandbox` RPM 来自 [src-openeuler/CubeSandbox](https://atomgit.com/src-openeuler/CubeSandbox)（本地目录 `CubeSandbox/`），在这份上游上加了 webhook resolve、CRI 归属护栏和 `/internal` 门面。第 5.1 节的官方 one-click 没有这三项。
 
@@ -289,7 +291,7 @@ docker compose version  # 或 docker-compose version
 **方式 A（与 E2B 同机、已装 e2b-infra / 带 deploy 脚本的包时）**：
 
 ```bash
-cd /opt/e2b-infra/standard   # 若目录不存在，再试 /opt/e2b-infra
+cd /opt/e2b-infra              # 新包；旧布局再试 /opt/e2b-infra/standard
 ./build.sh --download          # 拉 docker-25.0.5.tgz 与 compose
 sudo ./build.sh --deploy docker
 docker version && docker compose version
@@ -621,7 +623,8 @@ cd cri-multiplex && ./build.sh
 
 # 或 RPM
 rpm -ivh KASandbox-*.rpm
-ls -l /opt/e2b-infra/standard/bin/cri-multiplex
+ls -l /opt/e2b-infra/bin/cri-multiplex
+# 旧包：ls -l /opt/e2b-infra/standard/bin/cri-multiplex
 ```
 
 ### 7.2 启动与生命周期冒烟
@@ -708,13 +711,14 @@ ROUNDS=5 CUBE_PROXY_NODE_IP=<节点IP> \
 ### 8.2 部署 cri-multiplex（开 Cube）
 
 ```bash
-cd /opt/e2b-infra/standard
+cd /opt/e2b-infra
+# 旧包若只有 standard 树：cd /opt/e2b-infra/standard
 # 确认二进制支持 Cube：
-/opt/e2b-infra/standard/bin/cri-multiplex --help | grep cube-enabled
+/opt/e2b-infra/bin/cri-multiplex --help | grep cube-enabled
 
 export CRI_MULTIPLEX_CUBE_ENABLED=true
 export CRI_MULTIPLEX_CUBELET=127.0.0.1:9999
-# 二进制默认 /opt/e2b-infra/standard/bin/cri-multiplex
+# 二进制默认与脚本同树：./bin/cri-multiplex → 常为 /opt/e2b-infra/bin/cri-multiplex
 # export CRI_MULTIPLEX_BIN=/path/to/cri-multiplex-with-cube
 
 sudo -E ./k8s-deploy.sh cri-multiplex
@@ -866,7 +870,8 @@ systemctl status cube-sandbox-cube-api
 ### 10.2 卸载 cri-multiplex
 
 ```bash
-cd /opt/e2b-infra/standard
+cd /opt/e2b-infra
+# 旧包：cd /opt/e2b-infra/standard
 sudo ./k8s-deploy.sh cri-multiplex-uninstall
 ```
 
@@ -910,7 +915,7 @@ sudo systemctl restart cube-sandbox-cube-api
 | Harbor HTTPS x509 / 拉镜像失败 | docker push 成功不够；给 CubeMaster/TemplateCenter 配 `SSL_CERT_FILE`（含 Harbor 证书）并重启（§6.3）。**勿指望** `http://` 镜像前缀绕过 |
 | Harbor 入口起不来 / `lookup core no such host` | compose 网络丢了 `core` 等别名；`docker compose down && up -d`，确认容器同网；`:80` 被 cube-proxy 占用时改 HTTP 映射（如 2900） |
 | cri-multiplex 无 cube | `systemctl cat cri-multiplex` 须有 `-cube-enabled=true`；二进制 `--help` 须支持该 flag；并能连 `CUBELET_ADDR`。发行包无 Cube 时换包或自备二进制 |
-| `k8s-deploy.sh: No such file` / `rc=127` | 脚本在 `/opt/e2b-infra/standard/`，不要只 `cd /opt/e2b-infra` |
+| `k8s-deploy.sh: No such file` / `rc=127` | 新包在 `/opt/e2b-infra/`；仅旧包才有 `/opt/e2b-infra/standard/`。先 `ls /opt/e2b-infra/k8s-deploy.sh` |
 | Create 缺字段失败 / Pod 一直 ContainerCreating | 补齐附录 C（含 image/command/rootfs）；webhook 只补 id/vcpu/ram/disk/team-id，**不能**单靠 webhook 冷启动；节点 Ready ≠ 注解已齐 |
 | cube-verify 02：`template not found` / sandbox-code 404 | 设 `CUBE_E2E_TEMPLATE` 为任一 READY alias 或 `tpl-…`（`run_all` 不会自动回退） |
 | pause 422，`team_id` 不是 UUID | 不要填 `team-1`。webhook 写 `e2b.dev/team-id`：已有 UUID 优先，否则 `CUBE_TEAM_ID`，否则零 UUID |
@@ -963,9 +968,9 @@ ROUNDS=5 CUBE_PROXY_NODE_IP=<节点IP> \
 # —— K8S ——
 export CRI_MULTIPLEX_CUBE_ENABLED=true
 export CRI_MULTIPLEX_CUBELET=127.0.0.1:9999
-sudo -E /opt/e2b-infra/standard/k8s-deploy.sh cri-multiplex
+sudo -E /opt/e2b-infra/k8s-deploy.sh cri-multiplex
 kubectl get runtimeclass cube
-sudo /opt/e2b-infra/standard/k8s-deploy.sh cri-multiplex-uninstall
+sudo /opt/e2b-infra/k8s-deploy.sh cri-multiplex-uninstall
 
 # —— SandboxSched ——
 bash CubeSandbox/docs/sandboxsched-cube-smoke.sh
@@ -987,7 +992,7 @@ sudo /usr/local/services/cubetoolbox/scripts/uninstall-internal-meta.sh --purge-
 | `CUBELET_ADDR` / `-cubelet-address` | `127.0.0.1:9999` | CubeboxMgr 地址 |
 | `CRI_MULTIPLEX_CUBE_ENABLED` | `true`（K8S 部署时显式打开） | 写 systemd 时打开 Cube 后端 |
 | `CRI_MULTIPLEX_CUBELET` | `127.0.0.1:9999` | 部署脚本传入的 Cubelet 地址 |
-| `CRI_MULTIPLEX_BIN` | `/opt/e2b-infra/standard/bin/cri-multiplex` | cri-multiplex 路径 |
+| `CRI_MULTIPLEX_BIN` | `/opt/e2b-infra/bin/cri-multiplex`（旧包可能是 `…/standard/bin/…`） | cri-multiplex 路径 |
 | `CUBE_API_URL` | `http://127.0.0.1:3000` | 模板查询 / webhook resolve；openfuyao `backend=cube` 时 internal 基址也指这里 |
 | `CUBE_TEAM_ID` | 未设置则用零 UUID | webhook 写入 `e2b.dev/team-id` 的备选；须为 UUID |
 | `CUBE_ADMIN_TOKEN` | 安装脚本生成 | `/internal` 的 `X-Admin-Token`，写在 `/etc/cube/cube-api.env` |
@@ -1010,8 +1015,8 @@ sudo /usr/local/services/cubetoolbox/scripts/uninstall-internal-meta.sh --purge-
 | `/usr/local/services/cubetoolbox/scripts/uninstall-internal-meta.sh` | 清除 env；`--purge-db` 删 catalog |
 | `/etc/cube/cube-api.env` | `CUBE_ADMIN_TOKEN` / `CUBE_INTERNAL_META_DB` |
 | `/data/cubelet` | Cubelet 数据（须 XFS） |
-| `/opt/e2b-infra/standard/bin/cri-multiplex` | KASandbox 的 cri-multiplex（须支持 `-cube-enabled`） |
-| `/opt/e2b-infra/standard/k8s-deploy.sh` | K8S 节点部署 |
+| `/opt/e2b-infra/bin/cri-multiplex` | KASandbox 的 cri-multiplex（须支持 `-cube-enabled`；旧包在 `…/standard/bin/`） |
+| `/opt/e2b-infra/k8s-deploy.sh` | K8S 节点部署（旧包在 `…/standard/`） |
 | `KASandbox/cri-multiplex/cube-verify/` | 本机验证脚本 |
 | `CubeSandbox/docs/cri-cube-deploy.md` | CRI+Cube 部署备忘 |
 | `CubeSandbox/docs/sandboxsched-cube-smoke.sh` | SandboxSched→Cube 冒烟 |

@@ -371,24 +371,29 @@ switch_kubelet_endpoint() {
     fi
 }
 
-# 未设置 CRI_MULTIPLEX_BIN 时，与 k8s-deploy.sh 放在同一棵目录：
-# /opt/e2b-infra/standard/k8s-deploy.sh → /opt/e2b-infra/standard/bin/cri-multiplex。
-# 只有旁边没有可执行文件时，才退回旧布局 /opt/e2b-infra/bin/cri-multiplex。
+# 未设置 CRI_MULTIPLEX_BIN 时解析二进制路径（新包平铺 /opt/e2b-infra）：
+# 1) 与本脚本同树的 bin/cri-multiplex（/opt/e2b-infra/k8s-deploy.sh → …/bin/cri-multiplex）
+# 2) 固定新布局 /opt/e2b-infra/bin/cri-multiplex
+# 3) 旧 subpackage 布局 /opt/e2b-infra/standard/bin/cri-multiplex（兼容）
 default_cri_multiplex_bin() {
     if [ -n "${CRI_MULTIPLEX_BIN:-}" ]; then
         printf '%s\n' "${CRI_MULTIPLEX_BIN}"
         return
     fi
-    local script_dir beside legacy
+    local script_dir beside flat legacy
     script_dir="$(cd "$(dirname "$0")" && pwd)"
     beside="${script_dir}/bin/cri-multiplex"
-    legacy="/opt/e2b-infra/bin/cri-multiplex"
+    flat="/opt/e2b-infra/bin/cri-multiplex"
+    legacy="/opt/e2b-infra/standard/bin/cri-multiplex"
     if [ -x "${beside}" ]; then
         printf '%s\n' "${beside}"
-    elif [ -x /opt/e2b-infra/standard/bin/cri-multiplex ]; then
-        printf '%s\n' /opt/e2b-infra/standard/bin/cri-multiplex
-    else
+    elif [ -x "${flat}" ]; then
+        printf '%s\n' "${flat}"
+    elif [ -x "${legacy}" ]; then
         printf '%s\n' "${legacy}"
+    else
+        # 默认报新布局路径，便于错误信息与现行 RPM 一致
+        printf '%s\n' "${flat}"
     fi
 }
 
