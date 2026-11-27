@@ -119,6 +119,29 @@ func TestClose_CleansUpEverySlot(t *testing.T) {
 	assert.Empty(t, pool.reusedSlots)
 }
 
+// TestReserveWarmSlot_KeepsConfiguredNewSlots: the new slots in the channel
+// plus those the Populate workers are creating never exceed the configured
+// size, however many workers run.
+func TestReserveWarmSlot_KeepsConfiguredNewSlots(t *testing.T) {
+	t.Parallel()
+
+	pool := NewPool(3, 0, &fakeStorage{}, Config{})
+	for i := range 3 {
+		require.True(t, pool.reserveWarmSlot(), "reservation %d", i)
+	}
+	require.False(t, pool.reserveWarmSlot(), "a fourth slot was allowed")
+
+	// One worker hands its slot over: still three in the pool.
+	pool.newSlots <- newTestSlot(1)
+	pool.releaseWarmSlot()
+	require.False(t, pool.reserveWarmSlot(), "a slot in the channel was not counted")
+
+	// Get takes it: room for one more.
+	<-pool.newSlots
+	require.True(t, pool.reserveWarmSlot())
+	require.False(t, pool.reserveWarmSlot())
+}
+
 func TestReturn_AfterCloseCleansUpLocally(t *testing.T) {
 	t.Parallel()
 

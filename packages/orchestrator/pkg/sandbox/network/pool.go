@@ -234,6 +234,14 @@ type Pool struct {
 
 	newSlotsSize int
 
+	// warming counts new slots the Populate workers are creating or holding
+	// until the channel takes them. A worker reserves one before creating, so
+	// the channel plus warming never exceeds newSlotsSize: with one worker the
+	// size-1 channel left exactly room for the slot it held, with eight each
+	// worker would otherwise hold one more.
+	warmMu  sync.Mutex
+	warming int
+
 	newSlots    chan *Slot
 	reusedSlots chan *Slot
 
@@ -327,8 +335,22 @@ func (p *Pool) populateLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
+			if !p.reserveWarmSlot() {
+				// The pool is full; check again once a slot may have been taken.
+				select {
+				case <-p.done:
+					return
+				case <-ctx.Done():
+					return
+				case <-time.After(populateFullWait):
+				}
+
+				continue
+			}
+
 			slot, err := p.createNetworkSlot(ctx)
 			if err != nil {
+				p.releaseWarmSlot()
 				logger.L().Error(ctx, "[network slot pool]: failed to create network", zap.Error(err))
 
 				select {
@@ -344,6 +366,7 @@ func (p *Pool) populateLoop(ctx context.Context) {
 
 			select {
 			case p.newSlots <- slot:
+				p.releaseWarmSlot()
 				newSlotsAvailableCounter.Add(ctx, 1)
 				logger.L().Info(ctx, "[Pool Status] newSlots/reusedSlots",
 					zap.Int("newSlots_len", len(p.newSlots)),
@@ -357,6 +380,7 @@ func (p *Pool) populateLoop(ctx context.Context) {
 			case <-ctx.Done():
 			}
 
+			p.releaseWarmSlot()
 			if err := p.cleanup(context.WithoutCancel(ctx), slot); err != nil {
 				logger.L().Error(ctx, "[network slot pool]: failed to cleanup created slot while closing", zap.Error(err), zap.Int("slot_index", slot.Idx))
 			}
@@ -364,6 +388,33 @@ func (p *Pool) populateLoop(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// populateFullWait is how long a Populate worker waits before checking a full
+// pool again. Creating a slot takes about a second, so the refill delay does
+// not matter.
+const populateFullWait = 50 * time.Millisecond
+
+// reserveWarmSlot lets a Populate worker create one more new slot if the
+// slots in the channel and those being created stay within newSlotsSize.
+func (p *Pool) reserveWarmSlot() bool {
+	p.warmMu.Lock()
+	defer p.warmMu.Unlock()
+
+	if len(p.newSlots)+p.warming >= p.newSlotsSize {
+		return false
+	}
+	p.warming++
+
+	return true
+}
+
+// releaseWarmSlot ends a reservation: the slot went into the channel, or
+// was not created, or was cleaned up.
+func (p *Pool) releaseWarmSlot() {
+	p.warmMu.Lock()
+	p.warming--
+	p.warmMu.Unlock()
 }
 
 func (p *Pool) Get(ctx context.Context, network *orchestrator.SandboxNetworkConfig, class EgressClass) (*Slot, error) {
