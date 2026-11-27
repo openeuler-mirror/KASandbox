@@ -1111,7 +1111,7 @@ func (f *Factory) CreateSandbox(
 		defer span.End()
 
 		// If the process exists, stop the sandbox properly
-		fcErr := fcHandle.Exit.Wait()
+		fcErr := fcHandle.Exit().Wait()
 		err := sbx.Stop(ctx)
 
 		exit.SetError(errors.Join(err, fcErr))
@@ -1778,13 +1778,13 @@ func (f *Factory) ResumeSandbox(
 		// Wait for either uffd or fc process to exit
 		select {
 		case <-fcUffd.Exit().Done():
-		case <-fcHandle.Exit.Done():
+		case <-fcHandle.Exit().Done():
 		}
 
 		err := sbx.Stop(ctx)
 
 		uffdWaitErr := fcUffd.Exit().Wait()
-		fcErr := fcHandle.Exit.Wait()
+		fcErr := fcHandle.Exit().Wait()
 		exit.SetError(errors.Join(err, fcErr, uffdWaitErr))
 	}()
 
@@ -1854,7 +1854,7 @@ func (s *Sandbox) doStop(ctx context.Context) error {
 	// FC's own exit error is reported via the exit waiters, not as a stop
 	// failure, so only a canceled wait counts as an error here.
 	select {
-	case <-s.process.Exit.Done():
+	case <-s.process.Exit().Done():
 	case <-ctx.Done():
 		errs = append(errs, fmt.Errorf("failed waiting for FC exit: %w", ctx.Err()))
 	}
@@ -2963,7 +2963,7 @@ func (s *Sandbox) runDeferredMemoryExport(
 func (s *Sandbox) resumeFreePageReportingBestEffort(ctx context.Context) {
 	runFPRResume(context.WithoutCancel(ctx), fprResumeDeps{
 		resume:         s.process.ResumeFreePageReporting,
-		fcExited:       s.process.Exit.Done(),
+		fcExited:       s.process.Exit().Done(),
 		pauseGen:       s.fprPauseGen.Load,
 		attemptTimeout: 2 * time.Second,
 		retryDelay:     500 * time.Millisecond,
@@ -3796,11 +3796,11 @@ func (s *Sandbox) bestEffortEnvdReinit(ctx context.Context) {
 			cancel(errors.New("envd re-init budget exceeded"))
 		case <-initCtx.Done():
 			return
-		case <-s.process.Exit.Done():
+		case <-s.process.Exit().Done():
 			// Exit.Error() is nil for every orchestrator-initiated teardown
 			// (SIGTERM/SIGKILL both store nil); a nil %w renders as
 			// %!w(<nil>), garbling the dominant cause string.
-			if exitErr := s.process.Exit.Error(); exitErr != nil {
+			if exitErr := s.process.Exit().Error(); exitErr != nil {
 				cancel(fmt.Errorf("%w: %w", ErrFcProcessExited, exitErr))
 			} else {
 				cancel(ErrFcProcessExited)
@@ -4233,10 +4233,10 @@ func (s *Sandbox) WaitForEnvd(
 			cancel(ErrWaitForEnvdTimeout)
 		case <-ctx.Done():
 			return
-		case <-s.process.Exit.Done():
+		case <-s.process.Exit().Done():
 			// Exit.Error() is nil for orchestrator-initiated teardowns; a nil
 			// %w renders as %!w(<nil>).
-			if exitErr := s.process.Exit.Error(); exitErr != nil {
+			if exitErr := s.process.Exit().Error(); exitErr != nil {
 				cancel(fmt.Errorf("%w: %w", ErrFcProcessExited, exitErr))
 			} else {
 				cancel(ErrFcProcessExited)

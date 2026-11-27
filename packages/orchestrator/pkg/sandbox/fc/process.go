@@ -27,6 +27,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/rootfs"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/socket"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/shared/pkg/fc/client/operations"
 	"github.com/e2b-dev/infra/packages/shared/pkg/keys"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
@@ -85,62 +86,14 @@ func (f *fcLogFilter) Write(p []byte) (n int, err error) {
 // journal on mount.
 const ext4RootFlags = "discard"
 
-type ProcessOptions struct {
-	// IoEngine is the io engine to use for the rootfs drive.
-	IoEngine *string
+type ProcessOptions = vmm.ProcessOptions
 
-	// InitScriptPath is the path to the init script that will be executed inside the VM on kernel start.
-	InitScriptPath string
 
-	// KernelLogs is a flag to enable kernel logs output to the process stdout.
-	KernelLogs bool
+type TokenBucketConfig = vmm.TokenBucketConfig
 
-	// SystemdToKernelLogs is a flag to enable systemd logs output to the console.
-	// It enabled the kernel logs by default too.
-	SystemdToKernelLogs bool
 
-	// KvmClock is a flag to enable kvm-clock as the clocksource for the kernel.
-	KvmClock bool
+type RateLimiterConfig = vmm.RateLimiterConfig
 
-	// CmdlineArgs are extra guest kernel command line arguments overlaid on the
-	// defaults. Empty is the command line every sandbox has always booted with.
-	// Rejected wholesale if they include a key the orchestrator reserves
-	// (see ValidateCmdlineArgs).
-	//
-	// Only boots that produce or restore a template's kernel need to set this: the
-	// layer sandbox whose memory becomes the template, and the cold boot of a
-	// filesystem-only snapshot. A memory resume never re-reads the command line.
-	CmdlineArgs map[string]string
-
-	// AccessToken, when non-nil, makes Create write the guest MMDS metadata
-	// (sandbox/template IDs, logs address, and the access-token hash) before the
-	// VM boots, so a cold-booted envd can authenticate /init the same way it does
-	// after a memory resume. An empty string hashes to the "no token" value,
-	// matching Resume. Template-build cold boots leave it nil and skip the write,
-	// preserving their existing behavior.
-	AccessToken *string
-
-	// Stdout is the writer to which the process stdout will be written.
-	Stdout io.Writer
-
-	// Stderr is the writer to which the process stderr will be written.
-	Stderr io.Writer
-}
-
-// TokenBucketConfig holds parameters for a single Firecracker token bucket.
-// BucketSize < 0 disables the bucket.
-type TokenBucketConfig struct {
-	BucketSize   int64
-	OneTimeBurst int64
-	RefillTimeMs int64
-}
-
-// RateLimiterConfig holds rate limit parameters for a Firecracker device (network or block).
-// Mirrors the Firecracker RateLimiter structure: two independent token buckets.
-type RateLimiterConfig struct {
-	Ops       TokenBucketConfig // packets; effective rate = BucketSize * 1000 / RefillTimeMs ops/s
-	Bandwidth TokenBucketConfig // bytes;   effective rate = BucketSize * 1000 / RefillTimeMs bytes/s
-}
 
 type Process struct {
 	ordinarySnapshotEpoch atomic.Uint64
@@ -162,7 +115,7 @@ type Process struct {
 	kernelPath     string
 	files          *storage.SandboxFiles
 
-	Exit *utils.ErrorOnce
+	exit *utils.ErrorOnce
 
 	client *apiClient
 
@@ -231,7 +184,7 @@ func NewProcess(
 
 	p := &Process{
 		Versions:              versions,
-		Exit:                  utils.NewErrorOnce(),
+		exit:                  utils.NewErrorOnce(),
 		cmd:                   cmd,
 		closeNetnsFD:          closeNetnsFD,
 		firecrackerSocketPath: files.SandboxFirecrackerSocketPath(),
@@ -323,7 +276,7 @@ func (p *Process) configure(
 			if errors.As(waitErr, &exitErr) {
 				// Check if the process was killed by a signal
 				if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() && (status.Signal() == syscall.SIGKILL || status.Signal() == syscall.SIGTERM) {
-					p.Exit.SetError(nil)
+					p.exit.SetError(nil)
 
 					return
 				}
@@ -332,14 +285,14 @@ func (p *Process) configure(
 			logger.L().Error(ctx, "error waiting for fc process", zap.Error(waitErr))
 
 			errMsg := fmt.Errorf("error waiting for fc process: %w", waitErr)
-			p.Exit.SetError(errMsg)
+			p.exit.SetError(errMsg)
 
 			cancelStart(errMsg)
 
 			return
 		}
 
-		p.Exit.SetError(nil)
+		p.exit.SetError(nil)
 	}()
 
 	// Wait for the FC process to start so we can use FC API
@@ -715,6 +668,11 @@ func (p *Process) Resume(
 	return nil
 }
 
+// Exit exposes the process exit signal for the VMM backend contract.
+func (p *Process) Exit() *utils.ErrorOnce {
+	return p.exit
+}
+
 func (p *Process) Pid() (int, error) {
 	if p.cmd.Process == nil {
 		return 0, errors.New("fc process not started")
@@ -739,7 +697,7 @@ func (p *Process) Stop(ctx context.Context) error {
 	// Check if the Firecracker leader has already exited. Descendant cleanup is
 	// handled by the sandbox cgroup so Stop never signals a numeric process group.
 	select {
-	case <-p.Exit.Done():
+	case <-p.Exit().Done():
 		logger.L().Info(ctx, "fc process already exited", logger.WithSandboxID(p.files.SandboxID))
 
 		return nil
@@ -765,7 +723,7 @@ func (p *Process) Stop(ctx context.Context) error {
 	defer termDeadline.Stop()
 
 	select {
-	case <-p.Exit.Done():
+	case <-p.Exit().Done():
 		return nil
 	case <-termDeadline.C:
 		killErr := p.cmd.Process.Kill()
@@ -787,7 +745,7 @@ func (p *Process) Stop(ctx context.Context) error {
 		defer killDeadline.Stop()
 
 		select {
-		case <-p.Exit.Done():
+		case <-p.Exit().Done():
 			return nil
 		case <-killDeadline.C:
 			return fmt.Errorf("fc process %d still exists after SIGKILL", pid)

@@ -287,6 +287,14 @@ func (s *Slot) TapName() string {
 	return tapInterfaceName
 }
 
+// ExtraTapName is the second TAP device of a slot, used by the standalone
+// config_server of Android sandboxes (cvd-mtap). The device itself is
+// created by the network stack when a slot requests it; the name is fixed
+// so the StratoVirt command builder can reference it.
+func (s *Slot) ExtraTapName() string {
+	return "cvd-mtap"
+}
+
 func (s *Slot) TapIP() net.IP {
 	return s.tapIp
 }

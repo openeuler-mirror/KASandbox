@@ -1,0 +1,384 @@
+package stratovirt
+
+import (
+	"fmt"
+	"path/filepath"
+	"runtime"
+	"strings"
+
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/cfg"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/vmm"
+	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
+)
+
+const androidMobileNetdevID = "eth1"
+
+type CommandBuilder struct {
+	config cfg.BuilderConfig
+}
+
+func NewCommandBuilder(config cfg.BuilderConfig) *CommandBuilder {
+	return &CommandBuilder{config: config}
+}
+
+type CommandResult struct {
+	Value      string
+	RootfsPath string
+	KernelPath string
+	QmpSocket  string
+}
+
+func (b *CommandBuilder) Build(
+	versions Config,
+	files *storage.SandboxFiles,
+	slot *network.Slot,
+	kernelArgs string,
+	guestConsoleLogs bool,
+	memoryMB int64,
+	vcpuCount int64,
+	_ bool,
+	incomingURI string,
+	vsockGuestCID int64,
+) *CommandResult {
+	kernelPath := filepath.Join(b.config.SandboxDir, versions.SandboxKernelDir(), SandboxKernelFile)
+	rootfsPath := filepath.Join(b.config.SandboxDir, SandboxRootfsFile)
+	hostKernelPath := versions.HostKernelPath(b.config)
+	hostRootfsLinkPath := files.SandboxCacheRootfsLinkPath(b.config.StorageConfig)
+	qmpSocket := files.SandboxFirecrackerSocketPath()
+	memArgs := fmt.Sprintf("-smp %d -m %d", vcpuCount, memoryMB)
+
+	incomingArg := ""
+	if incomingURI != "" {
+		incomingArg = fmt.Sprintf("-incoming \"%s\" ", incomingURI)
+	}
+
+	machineType := "virt"
+	if runtime.GOARCH == "amd64" || runtime.GOARCH == "386" {
+		machineType = "q35"
+	}
+
+	if versions.OsType.OrDefault() == vmm.OsWindows {
+		return b.buildWindowsCommand(
+			versions,
+			rootfsPath,
+			hostRootfsLinkPath,
+			qmpSocket,
+			slot,
+			machineType,
+			memArgs,
+			guestConsoleLogs,
+			incomingArg,
+		)
+	}
+	if versions.OsType.OrDefault() == vmm.OsAndroid {
+		return b.buildAndroidCommand(versions, files, slot, qmpSocket, guestConsoleLogs, memoryMB, vcpuCount, incomingArg, vsockGuestCID)
+	}
+
+	machineType = "microvm"
+
+	// The virtio console uses the serial backend too. Keep it in both build and
+	// restore commands, since a silent restore must still instantiate the
+	// devices recorded by the snapshot.
+	serialBackend := "null"
+	if guestConsoleLogs {
+		serialBackend = "redirect-to-log"
+	}
+
+	vsockArg := ""
+	if vsockGuestCID > 0 {
+		vsockArg = fmt.Sprintf("-device vhost-vsock-device,id=vsock0,guest-cid=%d ", vsockGuestCID)
+	}
+
+	cmd := fmt.Sprintf(
+		"mount --make-rprivate / &&\n"+
+			"mount -t tmpfs tmpfs %s -o X-mount.mkdir &&\n\n"+
+			"ln -s %s %s &&\n"+
+			"mkdir -p %s &&\n"+
+			"ln -s %s %s &&\n\n"+
+			"ip netns exec %s %s "+
+			"-disable-seccomp "+
+			"-machine type=%s "+
+			"-kernel %s "+
+			"%s "+
+			"-append \"%s\" "+
+			"-object rng-random,id=objrng0,filename=/dev/urandom "+
+			"-device virtio-rng-device,id=rng0,rng=objrng0,max-bytes=%d,period=%d "+
+			"-drive file=%s,id=rootfs,readonly=off "+
+			"-device virtio-blk-device,drive=rootfs,id=blk "+
+			"-netdev tap,id=netdev,ifname=%s "+
+			"-device virtio-net-device,netdev=netdev,id=%s,mac=%s "+
+			"-qmp unix:%s,server,nowait "+
+			"-serial %s "+
+			"-chardev %s,id=console0 "+
+			"-device virtio-serial-device,id=virtio-serial0 "+
+			"-device virtconsole,id=console0,chardev=console0 "+
+			"%s"+
+			"%s",
+		b.config.SandboxDir,
+		hostRootfsLinkPath,
+		rootfsPath,
+		filepath.Join(b.config.SandboxDir, versions.SandboxKernelDir()),
+		hostKernelPath,
+		kernelPath,
+		slot.NamespaceID(),
+		versions.StratoVirtPath(b.config),
+		machineType,
+		kernelPath,
+		memArgs,
+		kernelArgs,
+		entropyBytesSize,
+		entropyRefillTime,
+		rootfsPath,
+		slot.TapName(),
+		slot.VpeerName(),
+		slot.TapMAC(),
+		qmpSocket,
+		serialBackend,
+		serialBackend,
+		vsockArg,
+		incomingArg,
+	)
+
+	return &CommandResult{
+		Value:      cmd,
+		RootfsPath: rootfsPath,
+		KernelPath: kernelPath,
+		QmpSocket:  qmpSocket,
+	}
+}
+
+func (b *CommandBuilder) buildAndroidCommand(versions Config, files *storage.SandboxFiles, slot *network.Slot, qmpSocket string, guestConsoleLogs bool, memoryMB, vcpuCount int64, incomingArg string, vsockGuestCID int64) *CommandResult {
+	diskNames := []string{storage.RootfsName, storage.PersistentName, storage.SDCardName}
+	guestDiskPaths := make([]string, len(diskNames))
+	var preamble strings.Builder
+	preamble.WriteString("mount --make-rprivate / &&\n")
+	fmt.Fprintf(&preamble, "mount -t tmpfs tmpfs %s -o X-mount.mkdir &&\n", b.config.SandboxDir)
+	for i, name := range diskNames {
+		guestDiskPaths[i] = filepath.Join(b.config.SandboxDir, fmt.Sprintf("android-disk-%d.raw", i))
+		fmt.Fprintf(&preamble, "ln -s %s %s &&\n", files.SandboxCacheDiskLinkPath(b.config.StorageConfig, name), guestDiskPaths[i])
+	}
+	// pipeDir lives under SandboxHostDir because stratovirt's unshare -m
+	// mounts a tmpfs over SandboxDir, which would hide FIFOs from secure_env
+	// in the orchestrator namespace.
+	pipeDir := filepath.Join(files.SandboxHostDir(), "android-pipes")
+	// The FIFO block is wrapped in a brace group so its "|| true" tolerances
+	// only apply to mkfifo. Left bare, the trailing "|| true" would bind to
+	// the whole "mount && ln && ..." chain and swallow mount/disk-link
+	// failures, letting the VM launch with missing disks.
+	fmt.Fprintf(&preamble, "mkdir -p %s &&\n{ ", pipeDir)
+	// Create all FIFOs referenced by pipeByPort: stratovirt's -chardev pipe
+	// opens <name>.in/.out at startup and aborts if they're missing. Port<->FIFO
+	// assignment is e2b-defined (matches upstream cuttlefish only for the stable
+	// ports 3/4/10/11); the remaining HAL ports (bt/gnsshvc/locationhvc/uwb/
+	// nfc/sensors) are unused by E2B and rendered as -chardev null below.
+	pipeNames := []string{"keymaster_fifo_vm", "gatekeeper_fifo_vm", "oemlock_fifo_vm", "keymint_fifo_vm"}
+	for _, name := range pipeNames {
+		path := filepath.Join(pipeDir, name)
+		fmt.Fprintf(&preamble, "mkfifo -m 600 %s.in %s.out 2>/dev/null || true; ", path, path)
+	}
+	preamble.WriteString("} &&\n\n")
+
+	diskArgs := buildAndroidDiskArgs(guestDiskPaths)
+	virtconsoleArgs := buildAndroidVirtconsoleArgs(pipeDir, guestConsoleLogs)
+	serialBackend := "null"
+	if guestConsoleLogs {
+		serialBackend = "redirect-to-log"
+	}
+
+	vsockArg := ""
+	if vsockGuestCID > 0 {
+		vsockArg = fmt.Sprintf("-device vhost-vsock-pci,id=vsock0,guest-cid=%d,bus=pcie.0,addr=0x6 ", vsockGuestCID)
+	}
+
+	cmd := fmt.Sprintf(
+		"ip netns exec %s %s "+
+			"-disable-seccomp "+
+			"-machine virt,gic-version=3,dump-guest-core=off,mem-share=on "+
+			"-accel kvm "+
+			"-smp %d,cores=%d,threads=1 "+
+			"-m size=%dM,maxmem=%dM "+
+			"-uuid 699acfc4-c8c4-11e7-882b-%012x "+
+			"-cpu host "+
+			"-drive file=%s,if=pflash,unit=0,readonly=true "+
+			"%s"+
+			"-boot strict=on -msg timestamp=on -rtc base=utc "+
+			"-device virtio-serial-pci,id=virtio-serial0,bus=pcie.0,addr=0x11,max-ports=31 "+
+			"%s"+
+			"%s"+
+			"-netdev tap,id=netdev0,ifname=%s -device virtio-net-pci,netdev=netdev0,id=%s,bus=pcie.0,addr=0x8,mac=00:1a:11:e0:cf:00 "+
+			"-netdev tap,id=netdev1,ifname=%s -device virtio-net-pci,netdev=netdev1,id=%s,bus=pcie.0,addr=0x9,mac=00:1a:11:e1:cf:00 "+
+			"-device virtio-gpu-pci,id=gpu0,bus=pcie.0,addr=0x10,xres=720,yres=1280 "+
+			"-object rng-random,id=objrng0,filename=/dev/urandom -device virtio-rng-pci,id=rng0,rng=objrng0,bus=pcie.0,addr=0x5,max-bytes=1024,period=2000 "+
+			"-device virtio-balloon-pci,id=balloon0,bus=pcie.0,addr=0x7,free-page-reporting=true "+
+			"-qmp unix:%s,server,nowait "+
+			"-serial %s "+
+			"%s",
+		slot.NamespaceID(),
+		versions.StratoVirtPath(b.config),
+		vcpuCount,
+		vcpuCount,
+		memoryMB,
+		memoryMB+4,
+		slot.Idx,
+		filepath.Join(b.config.FirmwareDirForVersion(string(versions.AndroidVersion)), androidBootloaderFile),
+		diskArgs,
+		virtconsoleArgs,
+		vsockArg,
+		slot.ExtraTapName(), // netdev0 ifname = cvd-mtap
+		androidMobileNetdevID,
+		slot.TapName(),   // netdev1 ifname = tap0
+		slot.VpeerName(), // netdev1 id = eth0 (MMDS)
+		qmpSocket,
+		serialBackend,
+		incomingArg,
+	)
+
+	rootfsPath := guestDiskPaths[0]
+	return &CommandResult{Value: preamble.String() + cmd, RootfsPath: rootfsPath, QmpSocket: qmpSocket}
+}
+
+// buildAndroidDiskArgs renders the Android data disks (os/persistent/sdcard)
+// as virtio-blk-pci devices. Disk 0 gets bootindex=1 so the guest boots from it.
+func buildAndroidDiskArgs(guestDiskPaths []string) string {
+	var args strings.Builder
+	for i, path := range guestDiskPaths {
+		bootIndex := ""
+		if i == 0 {
+			bootIndex = ",bootindex=1"
+		}
+		fmt.Fprintf(&args, "-drive file=%s,format=raw,if=none,id=drive-virtio-disk%d,aio=threads -device virtio-blk-pci,drive=drive-virtio-disk%d,id=virtio-disk%d,bus=pcie.0,addr=0x%x%s ",
+			path, i, i, i, i+2, bootIndex)
+	}
+	return args.String()
+}
+
+// buildAndroidVirtconsoleArgs renders the 31 virtio-serial ports for the Android HALs
+func buildAndroidVirtconsoleArgs(pipeDir string, guestConsoleLogs bool) string {
+	var args strings.Builder
+	pipeByPort := map[int]string{
+		3:  "keymaster_fifo_vm",
+		4:  "gatekeeper_fifo_vm",
+		10: "oemlock_fifo_vm",
+		11: "keymint_fifo_vm",
+	}
+	for port := 0; port < 31; port++ {
+		switch port {
+		case 0:
+			backend := "null"
+			if guestConsoleLogs {
+				backend = "redirect-to-log"
+			}
+			fmt.Fprintf(&args, "-chardev %s,id=hvc0 -device virtconsole,id=hvc0,chardev=hvc0,nr=0 ", backend)
+		default:
+			if name, ok := pipeByPort[port]; ok {
+				fmt.Fprintf(&args, "-chardev pipe,id=hvc%d,path=%s -device virtconsole,id=hvc%d,chardev=hvc%d,nr=%d ", port, filepath.Join(pipeDir, name), port, port, port)
+			} else {
+				fmt.Fprintf(&args, "-chardev null,id=hvc%d -device virtconsole,id=hvc%d,chardev=hvc%d,nr=%d ", port, port, port, port)
+			}
+		}
+	}
+	return args.String()
+}
+
+// buildWindowsCommand builds the StratoVirt invocation for a Windows guest.
+// Unlike the Linux path it boots from UEFI pflash, drives a raw disk, and
+// exposes a graphical console via virtio-gpu + VNC. Launches in the sandbox
+// netns so the proxy and VNC listener stay isolated.
+func (b *CommandBuilder) buildWindowsCommand(
+	versions Config,
+	rootfsPath string,
+	hostRootfsLinkPath string,
+	qmpSocket string,
+	slot *network.Slot,
+	machineType string,
+	memArgs string,
+	guestConsoleLogs bool,
+	incomingArg string,
+) *CommandResult {
+	serialBackend := "null"
+	if guestConsoleLogs {
+		serialBackend = "redirect-to-log"
+	}
+
+	cmd := fmt.Sprintf(
+		"mount --make-rprivate / &&\n"+
+			"mount -t tmpfs tmpfs %s -o X-mount.mkdir &&\n\n"+
+			"ln -s %s %s &&\n\n"+
+			"ip netns exec %s %s "+
+			"-disable-seccomp "+
+			"-machine type=%s "+
+			"%s "+
+			"-cpu host,pmu=on "+
+			"-drive file=%s,if=pflash,unit=0,readonly=true "+
+			"-drive file=%s,format=raw,id=disk,readonly=off,direct=off,aio=threads "+
+			"-device virtio-blk-pci,drive=disk,id=blk,bus=pcie.0,addr=0x2.0x0 "+
+			"-device virtio-gpu-pci,id=gpu,bus=pcie.0,addr=0x7,xres=1280,yres=720 "+
+			"-vnc 0.0.0.0:2 "+
+			"-netdev tap,id=netdev,ifname=%s "+
+			"-device virtio-net-pci,netdev=netdev,id=%s,bus=pcie.0,addr=0x6,mac=%s "+
+			"-qmp unix:%s,server,nowait "+
+			"-serial %s "+
+			"%s",
+		b.config.SandboxDir,
+		hostRootfsLinkPath,
+		rootfsPath,
+		slot.NamespaceID(),
+		versions.StratoVirtPath(b.config),
+		machineType,
+		memArgs,
+		filepath.Join(b.config.FirmwarePackagesRoot, windowsUEFIFirmwareFile),
+		rootfsPath,
+		slot.TapName(),
+		slot.VpeerName(), slot.TapMAC(),
+		qmpSocket,
+		serialBackend,
+		incomingArg,
+	)
+
+	return &CommandResult{
+		Value:      cmd,
+		RootfsPath: rootfsPath,
+		QmpSocket:  qmpSocket,
+	}
+}
+
+func defaultKernelArgs(initScriptPath string, ipv4 string, options vmm.ProcessOptions) vmm.KernelArgs {
+	args := vmm.KernelArgs{
+		"quiet":    "",
+		"loglevel": "1",
+
+		"init": initScriptPath,
+
+		"root":          "/dev/vda",
+		"rw":            "",
+		"ip":            ipv4,
+		"ipv6.disable":  "0",
+		"ipv6.autoconf": "1",
+
+		"panic":  "1",
+		"reboot": "k",
+	}
+
+	if runtime.GOARCH == "amd64" || runtime.GOARCH == "386" {
+		args["pci"] = "off"
+		args["i8042.nokbd"] = ""
+		args["i8042.noaux"] = ""
+		args["random.trust_cpu"] = "on"
+		args["clocksource"] = "kvm-clock"
+	}
+
+	if options.SystemdToKernelLogs {
+		args["systemd.journald.forward_to_console"] = ""
+	}
+
+	if options.KernelLogs || options.SystemdToKernelLogs {
+		delete(args, "quiet")
+		args["loglevel"] = "5"
+		// The guest kernel has no driver for the arm64 legacy serial, so log to
+		// the virtio console on all architectures.
+		args["console"] = "hvc0"
+	}
+
+	return args
+}

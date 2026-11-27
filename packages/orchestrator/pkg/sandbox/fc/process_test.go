@@ -42,7 +42,7 @@ func TestProcessStopIsIdempotent(t *testing.T) {
 
 	p := &Process{
 		cmd:         cmd,
-		Exit:        exit,
+		exit:        exit,
 		files:       &storage.SandboxFiles{SandboxID: "test"},
 		metricsPath: t.TempDir() + "/metrics.fifo",
 	}
@@ -96,7 +96,7 @@ func TestProcessStopDoesNotSignalProcessGroupAfterLeaderExit(t *testing.T) {
 
 	p := &Process{
 		cmd:         cmd,
-		Exit:        exit,
+		exit:        exit,
 		files:       &storage.SandboxFiles{SandboxID: "test"},
 		metricsPath: filepath.Join(t.TempDir(), "metrics.fifo"),
 	}

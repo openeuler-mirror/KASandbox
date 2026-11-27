@@ -24,6 +24,8 @@ type BuilderConfig struct {
 	DomainName                 string `env:"DOMAIN_NAME"              envDefault:""`
 	FirecrackerNetnsExecHelper string `env:"E2B_FC_NETNS_EXEC_HELPER" envDefault:"/opt/e2b-infra/bin/fc-netns-exec"`
 	FirecrackerVersionsDir     string `env:"FIRECRACKER_VERSIONS_DIR" envDefault:"/fc-versions"`
+	StratoVirtVersionsDir      string `env:"STRATOVIRT_VERSIONS_DIR"  envDefault:"/stratovirt-versions"`
+	FirmwarePackagesRoot       string `env:"FIRMWARE_PACKAGES_ROOT"   envDefault:"/firmware"`
 	BusyboxVersion             string `env:"BUSYBOX_VERSION"          envDefault:"1.35"`
 	HostBusyboxDir             string `env:"HOST_BUSYBOX_DIR"         envDefault:"/fc-busybox"`
 	HostEnvdPath               string `env:"HOST_ENVD_PATH"           envDefault:"/fc-envd/envd"`
@@ -46,6 +48,8 @@ func makePathsAbsolute(c *BuilderConfig) error {
 		&c.DefaultCacheDir,
 		&c.FirecrackerNetnsExecHelper,
 		&c.FirecrackerVersionsDir,
+		&c.StratoVirtVersionsDir,
+		&c.FirmwarePackagesRoot,
 		&c.HostBusyboxDir,
 		&c.HostEnvdPath,
 		&c.HostKernelsDir,
@@ -75,6 +79,13 @@ func makePathsAbsolute(c *BuilderConfig) error {
 	}
 
 	return nil
+}
+
+// FirmwareDirForVersion resolves the firmware directory for the given
+// Android version: <FirmwarePackagesRoot>/android-<version>. Only
+// meaningful for Android guests.
+func (c BuilderConfig) FirmwareDirForVersion(version string) string {
+	return filepath.Join(c.FirmwarePackagesRoot, "android-"+version)
 }
 
 type Config struct {

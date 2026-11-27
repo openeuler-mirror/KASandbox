@@ -11,6 +11,9 @@ const (
 	MemfileName  = "memfile"
 	RootfsName   = "rootfs.ext4"
 	SnapfileName = "snapfile"
+	// Android data disks attached by the StratoVirt backend.
+	PersistentName = "persistent.img"
+	SDCardName     = "sdcard.img"
 	MetadataName = "metadata.json"
 
 	HeaderSuffix = ".header"

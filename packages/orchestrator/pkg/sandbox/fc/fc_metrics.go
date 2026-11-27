@@ -321,7 +321,7 @@ func (p *Process) startMetricsReader(ctx context.Context) {
 		ticker := time.NewTicker(metricsFlushInterval)
 		defer ticker.Stop()
 
-		runMetricsFlushLoop(ctx, p.Exit.Done(), ticker.C, p.client.flushMetrics, func(err error) {
+		runMetricsFlushLoop(ctx, p.Exit().Done(), ticker.C, p.client.flushMetrics, func(err error) {
 			logger.L().Warn(ctx, "failed to flush fc metrics",
 				zap.Error(err),
 				logger.WithSandboxID(sandboxID),
@@ -360,7 +360,7 @@ func (p *Process) startMetricsReader(ctx context.Context) {
 
 		// Drop our write reference on exit so the scanner can receive EOF.
 		go func() {
-			<-p.Exit.Done()
+			<-p.Exit().Done()
 			rwFd.Close()
 		}()
 
