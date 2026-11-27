@@ -26,31 +26,63 @@ func connectEnvelope(flags byte, payload string) []byte {
 }
 
 func TestExecSyncViaEnvd(t *testing.T) {
+	const wantToken = "test-envd-token-69"
 	var gotPath string
 	var gotAuth string
+	var gotAccessToken string
+	var gotInitToken string
 	var gotBody []byte
+	var tokenSet bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotAuth = r.Header.Get("Authorization")
-		gotBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", envdConnectContentType)
-		stdout := base64.StdEncoding.EncodeToString([]byte("hi\n"))
-		_, _ = w.Write(connectEnvelope(0, `{"event":{"data":{"stdout":"`+stdout+`"}}}`))
-		_, _ = w.Write(connectEnvelope(0, `{"event":{"end":{"exitCode":0,"exited":true,"status":"exit status 0"}}}`))
-		_, _ = w.Write(connectEnvelope(envdConnectEndStream, `{}`))
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/init":
+			var body struct {
+				AccessToken string `json:"accessToken"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			gotInitToken = body.AccessToken
+			tokenSet = body.AccessToken != ""
+			w.WriteHeader(http.StatusNoContent)
+			return
+		case r.URL.Path == "/process.Process/Start":
+			gotPath = r.URL.Path
+			gotAuth = r.Header.Get("Authorization")
+			gotAccessToken = r.Header.Get(envdAccessTokenHeader)
+			gotBody, _ = io.ReadAll(r.Body)
+			if tokenSet && gotAccessToken != gotInitToken {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", envdConnectContentType)
+			stdout := base64.StdEncoding.EncodeToString([]byte("hi\n"))
+			_, _ = w.Write(connectEnvelope(0, `{"event":{"data":{"stdout":"`+stdout+`"}}}`))
+			_, _ = w.Write(connectEnvelope(0, `{"event":{"end":{"exitCode":0,"exited":true,"status":"exit status 0"}}}`))
+			_, _ = w.Write(connectEnvelope(envdConnectEndStream, `{}`))
+			return
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer srv.Close()
 
 	fake := &fakeClient{}
 	eng := newTestEngine(t, fake)
-	// httptest is host:port; execViaEnvd always dials SandboxIP:49983. Rewrite
-	// the outbound host so the fake envd receives the request.
+	// httptest is host:port; cube always dials SandboxIP:49983. Rewrite host.
 	eng.envdHTTP = &http.Client{Transport: rewriteHostTransport{
 		base: srv.Client().Transport,
 		host: strings.TrimPrefix(srv.URL, "http://"),
 	}}
-	if _, err := eng.RunPodSandbox(context.Background(), podRequest()); err != nil {
+	req := podRequest()
+	req.Config.Annotations[annEnvdAccessToken] = wantToken
+	if _, err := eng.RunPodSandbox(context.Background(), req); err != nil {
 		t.Fatal(err)
+	}
+	pod, ok := eng.get("uid-1")
+	if !ok || pod.EnvdAccessToken != wantToken {
+		t.Fatalf("stored token = %q ok=%v", pod.EnvdAccessToken, ok)
+	}
+	if gotInitToken != wantToken {
+		t.Fatalf("init token = %q, want %q", gotInitToken, wantToken)
 	}
 
 	created, err := eng.CreateContainer(context.Background(), &runtime.CreateContainerRequest{
@@ -84,6 +116,9 @@ func TestExecSyncViaEnvd(t *testing.T) {
 	if !strings.HasPrefix(gotAuth, "Basic ") {
 		t.Fatalf("auth = %q", gotAuth)
 	}
+	if gotAccessToken != wantToken {
+		t.Fatalf("X-Access-Token = %q, want %q", gotAccessToken, wantToken)
+	}
 	// Request body is Connect-framed JSON.
 	if len(gotBody) < 5 {
 		t.Fatalf("body too short: %d", len(gotBody))
@@ -94,6 +129,46 @@ func TestExecSyncViaEnvd(t *testing.T) {
 	}
 	if start.Process.Cmd != "/bin/bash" || len(start.Process.Args) < 3 || start.Process.Args[2] != "echo hi" {
 		t.Fatalf("process = %+v", start.Process)
+	}
+}
+
+func TestEnvdRejectsExecWithoutToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/init" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Header.Get(envdAccessTokenHeader) == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	eng := newTestEngine(t, &fakeClient{})
+	eng.envdHTTP = &http.Client{Transport: rewriteHostTransport{
+		base: srv.Client().Transport,
+		host: strings.TrimPrefix(srv.URL, "http://"),
+	}}
+	if _, err := eng.RunPodSandbox(context.Background(), podRequest()); err != nil {
+		t.Fatal(err)
+	}
+	// Clear stored token so ExecSync omits X-Access-Token.
+	eng.mu.Lock()
+	p := eng.pods["uid-1"]
+	p.EnvdAccessToken = ""
+	p.ContainerID = "uid-1-c"
+	p.ContainerState = ctrRunning
+	eng.mu.Unlock()
+
+	_, err := eng.ExecSync(context.Background(), &runtime.ExecSyncRequest{
+		ContainerId: "uid-1-c",
+		Cmd:         []string{"id"},
+		Timeout:     2,
+	})
+	if err == nil {
+		t.Fatal("expected unauthorized exec to fail")
 	}
 }
 

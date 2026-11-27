@@ -40,6 +40,7 @@ const (
 	annDesiredSandboxID      = "cube.master.desired.sandbox.id"
 	annSnapshotAttachedAt    = "cube.master.runtime.snapshot.attached_at"
 	annDeleteTombstone       = "cube.pause.delete_tombstone"
+	annEnvdAccessToken       = "cube.dev/envd-access-token"
 
 	podRunning = "running"
 	podPaused  = "paused"
@@ -267,6 +268,13 @@ func (e *Engine) RunPodSandbox(ctx context.Context, req *runtime.RunPodSandboxRe
 
 	switch {
 	case pod != nil && pod.State == podRunning:
+		if strings.TrimSpace(pod.EnvdAccessToken) == "" && strings.TrimSpace(pod.SandboxIP) != "" {
+			token := resolveEnvdAccessToken(req.GetConfig().GetAnnotations(), "")
+			if err := e.ensureEnvdAccessToken(ctx, pod.SandboxIP, token); err != nil {
+				return nil, err
+			}
+			pod.EnvdAccessToken = token
+		}
 		if err := e.persist(*pod); err != nil {
 			return nil, err
 		}
@@ -305,26 +313,32 @@ func (e *Engine) coldCreate(ctx context.Context, req *runtime.RunPodSandboxReque
 		}
 		return nil, status.Error(codes.Internal, "cubelet create returned empty sandbox id or ip")
 	}
+	token := resolveEnvdAccessToken(req.GetConfig().GetAnnotations(), "")
+	if err := e.ensureEnvdAccessToken(ctx, result.SandboxIP, token); err != nil {
+		_ = e.client.Destroy(ctx, result.SandboxID, nil)
+		return nil, err
+	}
 	buildStart := time.Now()
 	now := time.Now()
 	meta := req.GetConfig().GetMetadata()
 	pod := CubePodState{
-		CRISandboxID: id,
-		SandboxID:    result.SandboxID,
-		SandboxUUID:  result.SandboxUUID,
-		SandboxIP:    result.SandboxIP,
-		OriginNode:   e.cfg.NodeName,
-		TemplateID:   spec.TemplateID,
-		VCPU:         spec.CPU,
-		Memory:       spec.Memory,
-		DiskLimit:    spec.DiskLimit,
-		State:        podRunning,
-		Name:         meta.GetName(),
-		Namespace:    meta.GetNamespace(),
-		PodUID:       meta.GetUid(),
-		Labels:       copyMap(req.GetConfig().GetLabels()),
-		Annotations:  copyMap(req.GetConfig().GetAnnotations()),
-		CreatedAt:    now,
+		CRISandboxID:    id,
+		SandboxID:       result.SandboxID,
+		SandboxUUID:     result.SandboxUUID,
+		SandboxIP:       result.SandboxIP,
+		EnvdAccessToken: token,
+		OriginNode:      e.cfg.NodeName,
+		TemplateID:      spec.TemplateID,
+		VCPU:            spec.CPU,
+		Memory:          spec.Memory,
+		DiskLimit:       spec.DiskLimit,
+		State:           podRunning,
+		Name:            meta.GetName(),
+		Namespace:       meta.GetNamespace(),
+		PodUID:          meta.GetUid(),
+		Labels:          copyMap(req.GetConfig().GetLabels()),
+		Annotations:     copyMap(req.GetConfig().GetAnnotations()),
+		CreatedAt:       now,
 	}
 	buildMs := time.Since(buildStart).Milliseconds()
 	commitStart := time.Now()
@@ -361,8 +375,13 @@ func (e *Engine) resume(ctx context.Context, pod *CubePodState) (*runtime.RunPod
 	if result.SandboxIP == "" {
 		return nil, status.Error(codes.Internal, "cubelet resume returned empty sandbox ip")
 	}
+	token := resolveEnvdAccessToken(pod.Annotations, pod.EnvdAccessToken)
+	if err := e.ensureEnvdAccessToken(ctx, result.SandboxIP, token); err != nil {
+		return nil, err
+	}
 	pod.State = podRunning
 	pod.SandboxIP = result.SandboxIP
+	pod.EnvdAccessToken = token
 	if result.SandboxUUID != "" {
 		pod.SandboxUUID = result.SandboxUUID
 	}

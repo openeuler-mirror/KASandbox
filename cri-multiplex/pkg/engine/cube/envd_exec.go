@@ -3,8 +3,10 @@ package cube
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +32,8 @@ const (
 	envdMaxExecOutputBytesDefault = 16 * 1024 * 1024
 	envdDefaultUser               = "root"
 	envdDefaultTimeout            = 60 * time.Second
+	envdInitRetryDelay            = 50 * time.Millisecond
+	envdAccessTokenHeader         = "X-Access-Token"
 )
 
 // Overridable in tests.
@@ -86,7 +90,93 @@ func (e *Engine) envdClient() *http.Client {
 	return e.envdHTTP
 }
 
-func (e *Engine) execViaEnvd(ctx context.Context, sandboxIP string, cmd []string, timeoutSec int64) (*envdExecResult, error) {
+func resolveEnvdAccessToken(annotations map[string]string, existing string) string {
+	if existing = strings.TrimSpace(existing); existing != "" {
+		return existing
+	}
+	if annotations != nil {
+		if tok := strings.TrimSpace(annotations[annEnvdAccessToken]); tok != "" {
+			return tok
+		}
+	}
+	return newEnvdAccessToken()
+}
+
+func newEnvdAccessToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Extremely unlikely; fall back to time-derived bytes so create can proceed.
+		return hex.EncodeToString([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
+	}
+	return hex.EncodeToString(b)
+}
+
+// ensureEnvdAccessToken POSTs /init until envd accepts the token (Cube has no
+// MMDS; first-time setup is allowed when guest token is unset).
+func (e *Engine) ensureEnvdAccessToken(ctx context.Context, sandboxIP, accessToken string) error {
+	ip := strings.TrimSpace(sandboxIP)
+	token := strings.TrimSpace(accessToken)
+	if ip == "" {
+		return status.Error(codes.FailedPrecondition, "sandbox has no IP for envd init")
+	}
+	if token == "" {
+		return status.Error(codes.InvalidArgument, "envd access token is empty")
+	}
+
+	timeout := e.cfg.Timeout
+	if timeout <= 0 {
+		timeout = envdDefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	body, err := json.Marshal(map[string]any{
+		"accessToken": token,
+		"timestamp":   time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return status.Errorf(codes.Internal, "marshal envd init: %v", err)
+	}
+
+	url := fmt.Sprintf("http://%s:%d/init", ip, envdHTTPPort)
+	client := e.envdClient()
+	var lastErr error
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return status.Errorf(codes.Internal, "create envd init request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		// Resume / retry: already-authorized envd accepts the same token on /init.
+		req.Header.Set(envdAccessTokenHeader, token)
+
+		resp, err := client.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+				return nil
+			}
+			lastErr = fmt.Errorf("envd init returned %d", resp.StatusCode)
+			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+				return status.Errorf(codes.PermissionDenied, "envd init rejected token: %v", lastErr)
+			}
+		} else {
+			lastErr = err
+		}
+
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return status.Errorf(codes.Unavailable, "envd init failed: %v", lastErr)
+			}
+			return status.Errorf(codes.DeadlineExceeded, "envd init timed out: %v", ctx.Err())
+		case <-time.After(envdInitRetryDelay):
+		}
+	}
+}
+
+func (e *Engine) execViaEnvd(ctx context.Context, sandboxIP, accessToken string, cmd []string, timeoutSec int64) (*envdExecResult, error) {
 	ip := strings.TrimSpace(sandboxIP)
 	if ip == "" {
 		return nil, status.Error(codes.FailedPrecondition, "sandbox has no IP for envd exec")
@@ -125,6 +215,9 @@ func (e *Engine) execViaEnvd(ctx context.Context, sandboxIP string, cmd []string
 	req.Header.Set("Connect-Protocol-Version", envdConnectProtoVer)
 	req.Header.Set("Connect-Content-Encoding", "identity")
 	req.SetBasicAuth(envdDefaultUser, "")
+	if tok := strings.TrimSpace(accessToken); tok != "" {
+		req.Header.Set(envdAccessTokenHeader, tok)
+	}
 
 	resp, err := e.envdClient().Do(req)
 	if err != nil {
@@ -135,6 +228,10 @@ func (e *Engine) execViaEnvd(ctx context.Context, sandboxIP string, cmd []string
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, status.Errorf(codes.PermissionDenied, "envd unauthorized: %s", strings.TrimSpace(string(body)))
+	}
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, status.Errorf(codes.Internal, "envd returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))

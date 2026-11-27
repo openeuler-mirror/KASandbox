@@ -181,7 +181,7 @@ func (e *Engine) ExecSync(ctx context.Context, req *runtime.ExecSyncRequest) (*r
 	// Align with the CubeSandbox SDK / direct path: run the command through
 	// guest envd (SandboxIP:49983), which returns stdout/stderr/exit code.
 	// CubeboxMgr.Exec only returns Ret and is not used here.
-	result, err := e.execViaEnvd(ctx, pod.SandboxIP, req.GetCmd(), req.GetTimeout())
+	result, err := e.execViaEnvd(ctx, pod.SandboxIP, pod.EnvdAccessToken, req.GetCmd(), req.GetTimeout())
 	if err != nil {
 		return nil, err
 	}
