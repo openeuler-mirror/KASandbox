@@ -469,6 +469,33 @@ func TestMuxFanOutListPartialAndAllFailure(t *testing.T) {
 	}
 }
 
+// TestMuxFanOutListEmptySuccessWithPartialFailure covers Cube-only (#55):
+// healthy engines may return an empty filtered list while e2b dial fails.
+// That must succeed with zero items, not "all engines failed".
+func TestMuxFanOutListEmptySuccessWithPartialFailure(t *testing.T) {
+	container := newFakeEngine(engine.EngineTypeContainer) // empty success
+	e2b := newFakeEngine(engine.EngineTypeE2B)
+	e2b.err = errors.New("connection refused")
+	cube := newFakeEngine(engine.EngineTypeCube) // empty success
+	s := NewMuxServerLegacy(container, e2b, cube)
+
+	resp, err := s.ListPodSandbox(context.Background(), &runtime.ListPodSandboxRequest{})
+	if err != nil {
+		t.Fatalf("ListPodSandbox empty success with e2b down: %v", err)
+	}
+	if len(resp.Items) != 0 {
+		t.Fatalf("item count = %d, want 0", len(resp.Items))
+	}
+
+	containers, err := s.ListContainers(context.Background(), &runtime.ListContainersRequest{})
+	if err != nil {
+		t.Fatalf("ListContainers empty success with e2b down: %v", err)
+	}
+	if len(containers.Containers) != 0 {
+		t.Fatalf("container count = %d, want 0", len(containers.Containers))
+	}
+}
+
 func TestMuxImageRouting(t *testing.T) {
 	container := newFakeEngine(engine.EngineTypeContainer)
 	e2b := newFakeEngine(engine.EngineTypeE2B)

@@ -8,9 +8,9 @@ set -euo pipefail
 #   ./k8s-deploy.sh create   # 根据配置文件创建集群
 #   ./k8s-deploy.sh all      # prep + create（需先通过 CONFIG_FILE 指定已编辑的配置文件）
 #   ./k8s-deploy.sh configure-domain  # 单独配置 *.e2b.app 域名访问
-#   ./k8s-deploy.sh cri-multiplex   # 部署 cri-multiplex 并切换 kubelet endpoint
-#   ./k8s-deploy.sh cri-multiplex-uninstall  # 卸载 cri-multiplex 并恢复 kubelet endpoint
-#   ./k8s-deploy.sh kubelet-endpoint  # 仅切换 kubelet endpoint 并重启
+#   ./k8s-deploy.sh cri-multiplex   # 部署 cri-multiplex、创建 RuntimeClass（默认不改 kubelet）
+#   ./k8s-deploy.sh cri-multiplex-uninstall  # 卸载 cri-multiplex（若曾切换则恢复 kubelet）
+#   ./k8s-deploy.sh kubelet-endpoint  # 显式切换 kubelet endpoint 并重启
 #   ./k8s-deploy.sh buildkit        # 安装并启用 buildkit
 #   ./k8s-deploy.sh download-cni    # 单独下载 CNI 插件
 # 完整说明执行: ./k8s-deploy.sh help
@@ -371,21 +371,53 @@ switch_kubelet_endpoint() {
     fi
 }
 
+# 未设置 CRI_MULTIPLEX_BIN 时解析二进制路径（新包平铺 /opt/e2b-infra）：
+# 1) 与本脚本同树的 bin/cri-multiplex（/opt/e2b-infra/k8s-deploy.sh → …/bin/cri-multiplex）
+# 2) 固定新布局 /opt/e2b-infra/bin/cri-multiplex
+# 3) 旧 subpackage 布局 /opt/e2b-infra/standard/bin/cri-multiplex（兼容）
+default_cri_multiplex_bin() {
+    if [ -n "${CRI_MULTIPLEX_BIN:-}" ]; then
+        printf '%s\n' "${CRI_MULTIPLEX_BIN}"
+        return
+    fi
+    local script_dir beside flat legacy
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    beside="${script_dir}/bin/cri-multiplex"
+    flat="/opt/e2b-infra/bin/cri-multiplex"
+    legacy="/opt/e2b-infra/standard/bin/cri-multiplex"
+    if [ -x "${beside}" ]; then
+        printf '%s\n' "${beside}"
+    elif [ -x "${flat}" ]; then
+        printf '%s\n' "${flat}"
+    elif [ -x "${legacy}" ]; then
+        printf '%s\n' "${legacy}"
+    else
+        # 默认报新布局路径，便于错误信息与现行 RPM 一致
+        printf '%s\n' "${flat}"
+    fi
+}
+
 # 部署 cri-multiplex（多 runtime 复用器，让 kubelet 通过单一 socket 调度 containerd / 自定义 runtime）
-# 流程: 创建 systemd 服务 -> 启动 cri-multiplex -> 切换 kubelet endpoint -> 重启 kubelet -> 创建 RuntimeClass
+# 流程: 创建 systemd 服务 -> 启动 cri-multiplex -> 创建 RuntimeClass
+# 默认不切换 kubelet endpoint；需要时另跑: ./k8s-deploy.sh kubelet-endpoint
 deploy_cri_multiplex() {
-    local bin="${CRI_MULTIPLEX_BIN:-/opt/e2b-infra/bin/cri-multiplex}"
+    local bin
+    bin="$(default_cri_multiplex_bin)"
     local mux_socket="/run/cri-multiplex.sock"
     local containerd_socket="/run/containerd/containerd.sock"
     local orchestrator_addr="${CRI_MULTIPLEX_ORCHESTRATOR:-localhost:5008}"
+    # Cube CRI backend. Defaults keep android/e2b-only behavior;
+    # export CRI_MULTIPLEX_CUBE_ENABLED=true to open Cube.
+    local cube_enabled="${CRI_MULTIPLEX_CUBE_ENABLED:-false}"
+    local cubelet_address="${CRI_MULTIPLEX_CUBELET:-127.0.0.1:9999}"
     local unit_file="/etc/systemd/system/cri-multiplex.service"
 
     info "部署 cri-multiplex ..."
+    info "cube-enabled=${cube_enabled} cubelet-address=${cubelet_address}"
 
     # ① 检查二进制
     if [ ! -x "$bin" ]; then
-        warn "未找到可执行文件 $bin，跳过 cri-multiplex 部署（可通过 CRI_MULTIPLEX_BIN 指定路径）"
-        return
+        error "未找到可执行文件 $bin（可通过 CRI_MULTIPLEX_BIN 指定路径）"
     fi
 
     # e2b 专有 CNI 配置目录（与集群 CNI 的 /etc/cni/net.d 隔离，避免误用 calico 插件链）
@@ -448,7 +480,9 @@ ExecStart=${bin} -socket ${mux_socket} -containerd-socket ${containerd_socket} -
   -cni-bin-dir /opt/cni/bin \
   -cni-ifname eth0 \
   -cni-netns-dir /var/run/netns \
-  -hide-sandbox-label flux-sandbox.io/direct=true
+  -hide-sandbox-label flux-sandbox.io/direct=true \
+  -cube-enabled=${cube_enabled} \
+  -cubelet-address ${cubelet_address}
 Restart=always
 RestartSec=3
 # 运行时 socket 目录
@@ -462,17 +496,23 @@ EOF
     systemctl restart cri-multiplex
     # 持续等待 socket 就绪
     info "等待 cri-multiplex socket 就绪: $mux_socket ..."
+    local wait_i=0
     while [ ! -S "$mux_socket" ]; do
+        wait_i=$((wait_i + 1))
+        if [ "$wait_i" -gt 60 ]; then
+            error "cri-multiplex socket 未就绪: $mux_socket（见 journalctl -u cri-multiplex -n 50）"
+        fi
         sleep 0.5
     done
     success "cri-multiplex socket 已就绪: $mux_socket"
+    info "未切换 kubelet endpoint（默认保留 containerd）。需要时执行: $0 kubelet-endpoint"
 
-    # ⑤ 创建 RuntimeClass（android / e2b）
+    # ③ 创建 RuntimeClass（android / e2b / cube）
     if ! command -v kubectl >/dev/null 2>&1; then
         warn "kubectl 未安装，跳过 RuntimeClass 创建（可手动 apply）"
         return
     fi
-    info "创建 RuntimeClass (android / e2b) ..."
+    info "创建 RuntimeClass (android / e2b / cube) ..."
     cat << 'EOF' | kubectl apply -f -
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
@@ -485,6 +525,12 @@ kind: RuntimeClass
 metadata:
   name: e2b
 handler: e2b
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: cube
+handler: cube
 EOF
     kubectl get runtimeclass 2>/dev/null || true
     success "RuntimeClass 创建完成"
@@ -517,14 +563,15 @@ uninstall_cri_multiplex() {
         info "kubelet 未使用 cri-multiplex endpoint，跳过恢复"
     fi
 
-    # ② 删除 RuntimeClass（android / e2b）
+    # ② 删除 RuntimeClass（android / e2b / cube）
     if command -v kubectl >/dev/null 2>&1; then
-        info "② 删除 RuntimeClass (android / e2b) ..."
+        info "② 删除 RuntimeClass (android / e2b / cube) ..."
         kubectl delete runtimeclass android --ignore-not-found >/dev/null 2>&1 || true
         kubectl delete runtimeclass e2b --ignore-not-found >/dev/null 2>&1 || true
+        kubectl delete runtimeclass cube --ignore-not-found >/dev/null 2>&1 || true
         success "RuntimeClass 已删除"
     else
-        warn "kubectl 未安装，跳过 RuntimeClass 删除（可手动执行: kubectl delete runtimeclass android e2b）"
+        warn "kubectl 未安装，跳过 RuntimeClass 删除（可手动执行: kubectl delete runtimeclass android e2b cube）"
     fi
 
     # ③ 停止并禁用 systemd 服务，删除单元文件
@@ -642,16 +689,16 @@ main() {
             configure_domain_access
             ;;
         cri-multiplex)
-            # 部署 cri-multiplex 并切换 kubelet endpoint（节点级操作，每个节点执行）
+            # 部署 cri-multiplex 并创建 RuntimeClass（默认不改 kubelet endpoint）
             deploy_cri_multiplex
             ;;
         cri-multiplex-uninstall)
-            # 卸载 cri-multiplex：恢复 kubelet endpoint、删除 RuntimeClass、移除 systemd 服务
+            # 卸载 cri-multiplex：若曾切换则恢复 kubelet endpoint、删除 RuntimeClass、移除 systemd 服务
             uninstall_cri_multiplex
             ;;
         kubelet-endpoint)
-            # 单独切换 kubelet 运行时 endpoint（containerd.sock -> cri-multiplex.sock）并重启 kubelet
-            # 适用于 cri-multiplex 已部署、仅需切换 endpoint 的场景
+            # 显式切换 kubelet 运行时 endpoint（containerd.sock -> cri-multiplex.sock）并重启 kubelet
+            # 须在 cri-multiplex 已部署后按需执行，不作为 cri-multiplex 子命令的默认步骤
             switch_kubelet_endpoint
             ;;
         buildkit)
@@ -670,12 +717,12 @@ main() {
             echo "  all               prep + create（需通过 CONFIG_FILE 指定已编辑的配置）"
             echo "  configure-domain  单独配置 *.e2b.app 域名访问（CoreDNS rewrite + wildcard Ingress）"
             echo "                    （e2b 部署后执行以补建 wildcard Ingress）"
-            echo "  cri-multiplex     部署 cri-multiplex、切换 kubelet endpoint、创建 RuntimeClass"
+            echo "  cri-multiplex     部署 cri-multiplex、创建 RuntimeClass（默认不切换 kubelet endpoint）"
             echo "                    （节点级操作，需在每个节点执行；需先安装 cri-multiplex 二进制）"
-            echo "  cri-multiplex-uninstall  卸载 cri-multiplex：恢复 kubelet endpoint、删除 RuntimeClass、"
+            echo "  cri-multiplex-uninstall  卸载 cri-multiplex：若曾切换则恢复 kubelet endpoint、删除 RuntimeClass、"
             echo "                    移除 systemd 服务（节点级操作，需在每个节点执行）"
-            echo "  kubelet-endpoint  单独切换 kubelet 运行时 endpoint 并重启 kubelet"
-            echo "                    （cri-multiplex 已部署、仅需切换 endpoint 时使用）"
+            echo "  kubelet-endpoint  显式切换 kubelet 运行时 endpoint 并重启 kubelet"
+            echo "                    （cri-multiplex 已部署后按需执行；不随 cri-multiplex 默认执行）"
             echo "  buildkit          安装并启用 buildkit"
             echo "  download-cni      单独下载并安装 CNI 插件到 /opt/cni/bin"
             echo ""
@@ -687,7 +734,7 @@ main() {
             echo "  CONFIG_FILE              指定配置文件路径（create/all 使用）"
             echo "  HOST_IP                  本机 IP（默认自动探测，prep 生成配置时使用）"
             echo "  NODE_PASSWORD            节点 SSH 密码（必须通过环境变量提供）"
-            echo "  CRI_MULTIPLEX_BIN          cri-multiplex 二进制路径（默认 /opt/e2b-infra/bin/cri-multiplex）"
+            echo "  CRI_MULTIPLEX_BIN          cri-multiplex 二进制路径（默认：脚本同目录 bin/cri-multiplex，即 /opt/e2b-infra/standard/bin/cri-multiplex；没有则 /opt/e2b-infra/bin/cri-multiplex）"
             echo "  CRI_MULTIPLEX_ORCHESTRATOR orchestrator 地址（默认 localhost:5008）"
             echo "  KUBELET_FLAGS_FILE         kubelet 启动参数文件路径（默认 /var/lib/kubelet/kubeadm-flags.env）"
             echo "  E2B_CNI_SUBNET             e2b bridge 子网（默认 10.12.0.0/22；多节点各节点须不重叠）"
