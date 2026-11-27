@@ -1,0 +1,168 @@
+# --- Basic variables ---
+environment: "${ENVIRONMENT}"
+orchestratorType: "k8s"
+# --- Database / Redis / Harbor ---
+registry: "${REGISTRY_URL}"
+image:
+  api: "${API_DOCKER_IMAGE}"
+  edge: "${CLIENT_PROXY_DOCKER_IMAGE}"
+  migrator: "${DB_MIGRATOR_DOCKER_IMAGE}"
+  busybox: "${BUSYBOX_IMAGE}"
+  webhook: "${WEBHOOK_DOCKER_IMAGE}"
+# e2b-webhook 开关：true 部署，false 不部署（默认）
+webhook:
+  enabled: ${ENABLE_WEBHOOK}
+pullPolicy: IfNotPresent
+postgresUrl: postgres.e2b.svc.cluster.local
+sandboxStorageBackend: ${SANDBOX_STORAGE_BACKEND}
+redisUrl: redis.e2b.svc.cluster.local
+redisClusterUrl: 
+minioEndpoint: ${MINIO_ENDPOINT}
+minioAccessKey: ${MINIO_ACCESS_KEY}
+minioSecretKey: ${MINIO_SECRET_KEY}
+
+# --- Other secrets ---
+supabaseJwtSecrets: ${SUPABASE_JWT_SECRETS}
+posthogApiKey: ${POSTHOG_API_KEY}
+analyticsCollectorHost: ${ANALYTICS_COLLECTOR_HOST}
+analyticsCollectorApiToken: ${ANALYTICS_COLLECTOR_API_TOKEN}
+launchDarklyApiKey: ${LAUNCH_DARKLY_API_KEY}
+apiAdminToken: ${API_ADMIN_TOKEN}
+sandboxAccessTokenHashSeed: ${SANDBOX_ACCESS_TOKEN_HASH_SEED}
+logsCollectorAddress: ${LOGS_COLLECTOR_ADDRESS}
+otelCollectorGrpcEndpoint: ${OTEL_COLLECTOR_GRPC_ENDPOINT}
+localClusterEndpoint: ${LOCAL_CLUSTER_ENDPOINT}
+
+# --- ClickHouse (optional) ---
+clickhouseServerCount: ${CLICKHOUSE_SERVER_COUNT}
+clickhouseBackupBucketName: ${CLICKHOUSE_BACKUPS_BUCKET_NAME}
+clickhouseUsername: ${CLICKHOUSE_USERNAME}
+clickhousePassword: ${CLICKHOUSE_PASSWORD}
+clickhouseDatabase: ${CLICKHOUSE_DATABASE}
+clickhouseResourcesCpuCount: ${CLICKHOUSE_RESOURCES_CPU_COUNT}
+clickhouseResourcesMemoryMb: ${CLICKHOUSE_RESOURCES_MEMORY_MB}
+clickhouseServerSecret: ${CLICKHOUSE_SERVER_SECRET}
+clickhouseHost: ${CLICKHOUSE_HOST}
+
+# --- api ---
+apiResourcesCpuCount: ${API_RESOURCES_CPU_COUNT}
+apiResourcesMemoryMb: ${API_RESOURCES_MEMORY_MB}
+apiLimitsCpuCount: ${API_LIMITS_CPU_COUNT}
+apiLimitsMemoryMb: ${API_LIMITS_MEMORY_MB}
+
+# --- Loki / Logs collector ---
+logsCollectorPublicIp: ${LOGS_COLLECTOR_PUBLIC_IP}
+
+# --- docker-reverse-proxy ---
+dockerReverseProxyCount: ${DOCKER_REVERSE_PROXY_PORT}
+harborHost: ${HARBOR_HOST}
+harborProject: ${HARBOR_PROJECT}
+harborUsername: ${HARBOR_USERNAME}
+harborPassword: ${HARBOR_PASSWORD}
+domainName: ${DOMAIN_NAME}
+
+# --- edge ---
+clientProxyCount: ${CLIENT_PROXY_COUNT}
+clientProxyResourcesCpuCount: ${CLIENT_PROXY_RESOURCES_CPU_COUNT}
+clientProxyResourcesMemoryMb: ${CLIENT_PROXY_RESOURCES_MEMORY_MB}
+clientProxyMaxResourcesMemoryMb: ${CLIENT_PROXY_MAX_RESOURCES_MEMORY_MB}
+edgeApiSecret: ${EDGE_API_SECRET}
+lokiUrl: ${LOKI_URL}
+apiGrpcAddress: ${API_GRPC_ADDRESS}
+
+
+
+# --- loki ---
+lokiBucketName: ${LOKI_BUCKET_NAME}
+lokiResourcesCpuCount: ${LOKI_RESOURCES_CPU_COUNT}
+lokiProxyResourcesMemoryMb: ${LOKI_PROXY_RESOURCES_MEMORY_MB}
+lokiProxyMaxResourcesMemoryMb: ${LOKI_PROXY_MAX_RESOURCES_MEMORY_MB}
+
+# --- orchestrator ---
+otelTracingPrint: ${OTEL_TRACING_PRINT}
+envdTimeout: ${ENVD_TIMEOUT}
+templateBucketName: ${TEMPLATE_BUCKET_NAME}
+allowSandboxInternet: ${ALLOW_SANDBOX_INTERNET}
+sandboxDeniedPodCIDR: ${SANDBOX_DENIED_POD_CIDR}
+sandboxFirewallAllowedCIDRs: ${SANDBOX_FIREWALL_ALLOWED_CIDRS}
+sharedChunkCachePath: ${SHARED_CHUNK_CACHE_PATH}
+storageProvider: ${STORAGE_PROVIDER}
+artifactsRegistryProvider: ${ARTIFACTS_REGISTRY_PROVIDER}
+
+# --- otel-collector ---
+otelCollectorResourcesCpuCount: ${OTEL_COLLECTOR_RESOURCES_CPU_COUNT}
+otelCollectorProxyResourcesMemoryMb: ${OTEL_COLLECTOR_PROXY_RESOURCES_MEMORY_MB}
+otelCollectorProxyMaxResourcesMemoryMb: ${OTEL_COLLECTOR_PROXY_MAX_RESOURCES_MEMORY_MB}
+grafanaUsername: "${GRAFANA_USERNAME}"
+grafanaOtelCollectorToken: "${GRAFANA_OTEL_COLLECTOR_TOKEN}"
+grafanaOtlpUrl: "${GRAFANA_OTLP_URL}"
+
+# --- postgres ---
+postgresImage: ${POSTGRES_DOCKER_IMAGE}
+postgresPort: ${POSTGRES_PORT}
+postgresResourcesCpuCount: ${POSTGRES_RESOURCES_CPU_COUNT}
+postgresResourcesMemoryMb: ${POSTGRES_RESOURCES_MEMORY_MB}
+postgresLimitsCpuCount: ${POSTGRES_LIMITS_CPU_COUNT}
+postgresLimitsMemoryMb: ${POSTGRES_LIMITS_MEMORY_MB}
+postgresUser: ${POSTGRES_USER}
+postgresPassword: ${POSTGRES_PASSWORD}
+
+
+
+# --- template-manager ---
+buildCacheBucketName: "${BUILD_CACHE_BUCKET_NAME}"
+templateManagerResourcesCpuCount: ${TEMPLATE_MANAGER_RESOURCES_CPU_COUNT}
+templateManagerResourcesMemoryMb: ${TEMPLATE_MANAGER_RESOURCES_MEMORY_MB}
+templateManagerLimitsCpuCount: ${TEMPLATE_MANAGER_LIMITS_CPU_COUNT}
+templateManagerLimitsMemoryMb: ${TEMPLATE_MANAGER_LIMITS_MEMORY_MB}
+
+# --- Mooncake ---
+mooncakeNodeIp: "${NODE_IP}"
+mooncakeGlogLogtostderr: "${GLOG_logtostderr}"
+mooncakeMasterAddr: "${MOONCAKE_MASTER_ADDR}"
+mooncakeMetadataServer: "${MOONCAKE_METADATA_SERVER}"
+mooncakeLocalBufferSize: "${MOONCAKE_LOCAL_BUFFER_SIZE}"
+mooncakeGlobalSegmentSize: "${MOONCAKE_GLOBAL_SEGMENT_SIZE}"
+mooncakeProtocol: "${MOONCAKE_PROTOCOL}"
+mcUrmaTransMode: "${MC_URMA_TRANS_MODE}"
+mooncakeDeviceName: "${MOONCAKE_DEVICE_NAME}"
+mcLogEnable: "${MC_LOG_ENABLE}"
+mcLogDir: "${MC_LOG_DIR}"
+mcLogLevel: "${MC_LOG_LEVEL}"
+mcStoreLocalHotCacheUseShm: "${MC_STORE_LOCAL_HOT_CACHE_USE_SHM}"
+mcStoreLocalHotBlockSize: "${MC_STORE_LOCAL_HOT_BLOCK_SIZE}"
+mcStoreLocalHotAdmissionThreshold: "${MC_STORE_LOCAL_HOT_ADMISSION_THRESHOLD}"
+mcSliceSize: "${MC_SLICE_SIZE}"
+mcWorkersPerCtx: "${MC_WORKERS_PER_CTX}"
+mcMaxWr: "${MC_MAX_WR}"
+mcUrmaBondingMultipathEnable: "${MC_URMA_BONDING_MULTIPATH_ENABLE}"
+mcUbNumaAffinityEnable: "${MC_UB_NUMA_AFFINITY_ENABLE}"
+
+# --- Ports ---
+apiPort: ${API_PORT}
+apiGrpcPort: ${API_GRPC_PORT}
+edgeApiPort: ${EDGE_API_PORT}
+edgeProxyPort: ${EDGE_PROXY_PORT}
+edgeHealthPort: ${EDGE_HEALTH_PORT}
+orchestratorPort: ${ORCHESTRATOR_PORT}
+templateManagerHost: "template-manager.e2b.svc.cluster.local:5008"
+orchestratorProxyPort: ${ORCHESTRATOR_PROXY_PORT}
+templateManagerPort: ${TEMPLATE_MANAGER_PORT}
+redisPort: ${REDIS_PORT}
+dockerReverseProxyPort: ${DOCKER_REVERSE_PROXY_PORT}
+lokiServicePort: ${LOKI_SERVICE_PORT}
+logsProxyPort: ${LOGS_PROXY_PORT}
+logsHealthProxyPort: ${LOGS_HEALTH_PROXY_PORT}
+otelCollectorGrpcPort: ${OTEL_COLLECTOR_GRPC_PORT}
+clickhouseServerPort: ${CLICKHOUSE_SERVER_PORT}
+clickhouseMetricPort: ${CLICKHOUSE_METRICS_PORT}
+dnsPort: ${DNS_PORT}
+
+api:
+  pool: ${API_NODE_POOL}
+build:
+  pool: ${BUILD_NODE_POOL}
+default:
+  pool: default
+postgres:
+  pool: postgres

@@ -1,0 +1,248 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: template-manager
+  namespace: e2b
+spec:
+  selector:
+    matchLabels: { app: template-manager }
+  template:
+    metadata:
+      labels: { app: template-manager }
+    spec:
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/{{ .Values.build.pool }}
+                operator: Exists
+      containers:
+      - name: template-manager
+        volumeMounts:
+        - name: hugepages
+          mountPath: /mnt/hugepages
+        - name: snapshot-cache
+          mountPath: /mnt/snapshot-cache
+        - name: host-dev
+          mountPath: /dev
+        - name: build-cache
+          mountPath: /orchestrator
+        - name: dev-net-tun
+          mountPath: /dev/net/tun
+        - name: fc-envd
+          mountPath: /fc-envd
+        - name: fc-kernels
+          mountPath: /fc-kernels
+        - name: fc-versions
+          mountPath: /fc-versions
+        - name: fc-vm
+          mountPath: /fc-vm
+        - name: fc-busybox
+          mountPath: /fc-busybox
+        - name: tmp-templates
+          mountPath: /tmp/templates
+        - name: host-var-run-netns
+          mountPath: /var/run/netns
+          mountPropagation: HostToContainer
+        - name: harbor-ca-cert
+          mountPath: /etc/nginx/ssl/harbor.crt
+          subPath: harbor.crt
+          readOnly: true
+        securityContext:
+          privileged: true
+        image: {{ .Values.registry }}/orchestrator
+        imagePullPolicy: IfNotPresent
+        command: ["/usr/bin/orchestrator"]
+        args: ["--port", "{{ .Values.templateManagerPort | int }}"]
+        ports:
+        - containerPort: {{ .Values.templateManagerPort | int }}
+          name: grpc
+        env:
+        - name: NODE_ID
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+        - name: GCP_DOCKER_REPOSITORY_NAME
+          value: "{{ .Values.harborHost }}"
+        - name: API_SECRET
+          value: "{{ .Values.edgeApiSecret }}"
+        - name: OTEL_TRACING_PRINT
+          value: "{{ .Values.otelTracingPrint }}"
+        - name: ENVIRONMENT
+          value: "{{ .Values.environment }}"
+        - name: TEMPLATE_BUCKET_NAME
+          value: "{{ .Values.templateBucketName }}"
+        - name: BUILD_CACHE_BUCKET_NAME
+          value: "{{ .Values.buildCacheBucketName }}"
+        - name: OTEL_COLLECTOR_GRPC_ENDPOINT
+          value: "{{ .Values.otelCollectorGrpcEndpoint }}"
+        - name: LOGS_COLLECTOR_ADDRESS
+          value: "{{ .Values.logsCollectorAddress }}"
+        - name: ORCHESTRATOR_SERVICES
+          value: "orchestrator,template-manager"
+        - name: LOGS_COLLECTOR_PUBLIC_IP
+          value: "{{ .Values.logsCollectorPublicIp }}"
+        - name: ALLOW_SANDBOX_INTERNET
+          value: "{{ .Values.allowSandboxInternet }}"
+        - name: SANDBOX_DENIED_POD_CIDR
+          value: "{{ .Values.sandboxDeniedPodCIDR }}"
+        - name: SANDBOX_FIREWALL_ALLOWED_CIDRS
+          value: "{{ .Values.sandboxFirewallAllowedCIDRs }}"
+        - name: SHARED_CHUNK_CACHE_PATH
+          value: "{{ .Values.sharedChunkCachePath }}"
+        - name: CLICKHOUSE_CONNECTION_STRING
+          value: "clickhouse://{{ .Values.clickhouseUsername }}:{{ .Values.clickhousePassword }}@127.0.0.1:{{ .Values.clickhouseServerPort | int }}/{{ .Values.clickhouseDatabase }}"
+        - name: STORAGE_PROVIDER
+          value: "{{ .Values.storageProvider }}"
+        - name: ARTIFACTS_REGISTRY_PROVIDER
+          value: "{{ .Values.artifactsRegistryProvider }}"
+        - name: MINIO_ENDPOINT
+          value: "{{ .Values.minioEndpoint }}"
+        - name: MINIO_ACCESS_KEY
+          value: "{{ .Values.minioAccessKey }}"
+        - name: MINIO_SECRET_KEY
+          value: "{{ .Values.minioSecretKey }}"
+        - name: AWS_ACCESS_KEY_ID
+          value: "{{ .Values.minioAccessKey }}"
+        - name: AWS_SECRET_ACCESS_KEY
+          value: "{{ .Values.minioSecretKey }}"
+        - name: S3_USE_PATH_STYLE
+          value: "true"
+        - name: DEFAULT_FIRECRACKER_VERSION
+          value: "v1.14.4"
+        - name: HOST_BUSYBOX_DIR
+          value: "/fc-busybox"
+        - name: BUSYBOX_VERSION
+          value: "1.35"
+        - name: E2B_FC_NETNS_EXEC_HELPER
+          value: "/opt/e2b-infra/bin/fc-netns-exec"
+        - name: DOMAIN_NAME
+          value: "{{ .Values.domainName }}"
+        - name: GRPC_PORT
+          value: "{{ .Values.templateManagerPort }}"
+        - name: GIN_MODE
+          value: "release"
+        - name: SSL_CERT_FILE
+          value: "/etc/nginx/ssl/harbor.crt"
+        # --- Mooncake ---
+        - name: GLOG_logtostderr
+          value: "{{ .Values.mooncakeGlogLogtostderr }}"
+        - name: MOONCAKE_LOCAL_HOSTNAME
+          valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+        - name: MOONCAKE_MASTER_ADDR
+          value: "{{ .Values.mooncakeMasterAddr }}"
+        - name: MOONCAKE_METADATA_SERVER
+          value: "{{ .Values.mooncakeMetadataServer }}"
+        - name: MC_TCP_BIND_ADDRESS
+          valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+        - name: MOONCAKE_LOCAL_BUFFER_SIZE
+          value: "{{ .Values.mooncakeLocalBufferSize }}"
+        - name: MOONCAKE_GLOBAL_SEGMENT_SIZE
+          value: "{{ .Values.mooncakeGlobalSegmentSize }}"
+        - name: MOONCAKE_PROTOCOL
+          value: "{{ .Values.mooncakeProtocol }}"
+        - name: MC_URMA_TRANS_MODE
+          value: "{{ .Values.mcUrmaTransMode }}"
+        - name: MOONCAKE_DEVICE_NAME
+          value: "{{ .Values.mooncakeDeviceName }}"
+        - name: MC_LOG_ENABLE
+          value: "{{ .Values.mcLogEnable }}"
+        - name: MC_LOG_DIR
+          value: "{{ .Values.mcLogDir }}"
+        - name: MC_LOG_LEVEL
+          value: "{{ .Values.mcLogLevel }}"
+        - name: MC_STORE_LOCAL_HOT_CACHE_USE_SHM
+          value: "{{ .Values.mcStoreLocalHotCacheUseShm }}"
+        - name: MC_STORE_LOCAL_HOT_BLOCK_SIZE
+          value: "{{ .Values.mcStoreLocalHotBlockSize }}"
+        - name: MC_STORE_LOCAL_HOT_ADMISSION_THRESHOLD
+          value: "{{ .Values.mcStoreLocalHotAdmissionThreshold }}"
+        - name: MC_SLICE_SIZE
+          value: "{{ .Values.mcSliceSize }}"
+        - name: MC_WORKERS_PER_CTX
+          value: "{{ .Values.mcWorkersPerCtx }}"
+        - name: MC_MAX_WR
+          value: "{{ .Values.mcMaxWr }}"
+        - name: MC_URMA_BONDING_MULTIPATH_ENABLE
+          value: "{{ .Values.mcUrmaBondingMultipathEnable }}"
+        - name: MC_UB_NUMA_AFFINITY_ENABLE
+          value: "{{ .Values.mcUbNumaAffinityEnable }}"
+        resources:
+          requests:
+            cpu: {{ .Values.templateManagerResourcesCpuCount }}m
+            memory: {{ .Values.templateManagerResourcesMemoryMb }}Mi
+            hugepages-2Mi: 8Gi
+          limits:   { cpu: "{{ .Values.templateManagerLimitsCpuCount }}m", memory: "{{ .Values.templateManagerLimitsMemoryMb }}Mi", hugepages-2Mi: "8Gi" }
+        livenessProbe:
+          exec:
+            command: ["/bin/grpc_health_probe", "-addr=:{{ .Values.templateManagerPort | int }}"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: hugepages
+        hostPath:
+          path: /mnt/hugepages
+          type: DirectoryOrCreate
+      - name: snapshot-cache
+        hostPath:
+          path: /mnt/snapshot-cache
+          type: DirectoryOrCreate
+      - name: host-dev
+        hostPath:
+          path: /dev
+          type: Directory
+      - name: build-cache
+        hostPath:
+          path: /orchestrator
+          type: DirectoryOrCreate
+      - name: dev-net-tun
+        hostPath:
+          path: /dev/net/tun
+          type: CharDevice
+      - name: fc-envd
+        hostPath:
+          path: /fc-envd
+          type: DirectoryOrCreate
+      - name: fc-kernels
+        hostPath:
+          path: /fc-kernels
+          type: DirectoryOrCreate
+      - name: fc-versions
+        hostPath:
+          path: /fc-versions
+          type: DirectoryOrCreate
+      - name: fc-vm
+        hostPath:
+          path: /fc-vm
+          type: DirectoryOrCreate
+      - name: fc-busybox
+        hostPath:
+          path: /fc-busybox
+          type: DirectoryOrCreate
+      - name: tmp-templates
+        hostPath:
+          path: /tmp
+          type: DirectoryOrCreate
+      - name: host-var-run-netns
+        hostPath:
+          path: /var/run/netns
+          type: DirectoryOrCreate
+      - name: harbor-ca-cert
+        configMap:
+          name: harbor-ca-cert
+          defaultMode: 0444
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: template-manager
+  namespace: e2b
+spec:
+  clusterIP: None
+  ports:
+  - port: {{ .Values.templateManagerPort | int }}
+    targetPort: grpc
+    name: grpc
+  selector: { app: template-manager }
