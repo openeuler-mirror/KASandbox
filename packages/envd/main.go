@@ -20,6 +20,7 @@ import (
 	"github.com/e2b-dev/infra/packages/envd/internal/api"
 	"github.com/e2b-dev/infra/packages/envd/internal/execcontext"
 	"github.com/e2b-dev/infra/packages/envd/internal/host"
+	"github.com/e2b-dev/infra/packages/envd/internal/platform"
 	"github.com/e2b-dev/infra/packages/envd/internal/logs"
 	"github.com/e2b-dev/infra/packages/envd/internal/logs/exporter"
 	"github.com/e2b-dev/infra/packages/envd/internal/permissions"
@@ -176,17 +177,17 @@ func run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := os.MkdirAll(host.E2BRunDir, 0o755); err != nil {
+	if err := os.MkdirAll(platform.E2BRunDir(), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "error creating E2B run directory: %v\n", err)
 	}
 
 	defaults := &execcontext.Defaults{
-		User:    execcontext.BuiltinDefaultUser,
+		User:    platform.DefaultUser(execcontext.BuiltinDefaultUser),
 		EnvVars: utils.NewEnvVars(),
 	}
 	isFCBoolStr := strconv.FormatBool(!isNotFC)
 	defaults.EnvVars.Store("E2B_SANDBOX", isFCBoolStr)
-	if err := os.WriteFile(filepath.Join(host.E2BRunDir, ".E2B_SANDBOX"), []byte(isFCBoolStr), 0o444); err != nil {
+	if err := os.WriteFile(filepath.Join(platform.E2BRunDir(), ".E2B_SANDBOX"), []byte(isFCBoolStr), 0o444); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing sandbox file: %v\n", err)
 	}
 
@@ -481,36 +482,7 @@ func createCgroupManager() (m cgroups.Manager) {
 		return nil
 	}
 
-	// try to keep 1/8 of the memory free, but no more than 128 MB
-	maxMemoryReserved := min(metrics.MemTotal/8, uint64(128)*megabyte)
-	memoryMax := metrics.MemTotal - maxMemoryReserved
-	memoryHigh := memoryMax // same as memory.max — OOM-kill immediately when throttling can't reclaim enough
-
-	opts := []cgroups.Cgroup2ManagerOption{
-		cgroups.WithCgroup2ProcessType(cgroups.ProcessTypePTY, "ptys", map[string]string{
-			"cpu.weight":  "200",
-			"io.weight":   "default 50",
-			"memory.high": fmt.Sprintf("%d", memoryHigh),
-			"memory.max":  fmt.Sprintf("%d", memoryMax),
-		}),
-		cgroups.WithCgroup2ProcessType(cgroups.ProcessTypeSocat, "socats", map[string]string{
-			"cpu.weight": "150",
-			"io.weight":  "default 50",
-			"memory.min": fmt.Sprintf("%d", 5*megabyte),
-			"memory.low": fmt.Sprintf("%d", 8*megabyte),
-		}),
-		cgroups.WithCgroup2ProcessType(cgroups.ProcessTypeUser, "user", map[string]string{
-			"memory.high": fmt.Sprintf("%d", memoryHigh),
-			"memory.max":  fmt.Sprintf("%d", memoryMax),
-			"cpu.weight":  "50",
-			"io.weight":   "default 10",
-		}),
-	}
-	if cgroupRoot != "" {
-		opts = append(opts, cgroups.WithCgroup2RootSysFSPath(cgroupRoot))
-	}
-
-	mgr, err := cgroups.NewCgroup2Manager(opts...)
+	mgr, err := platform.NewDefaultCgroupManager(cgroupRoot, metrics.MemTotal)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create cgroup2 manager: %v\n", err)
 

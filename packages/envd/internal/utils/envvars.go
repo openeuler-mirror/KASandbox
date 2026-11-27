@@ -80,3 +80,15 @@ func (e *EnvVars) ReplaceUserVars(newVars map[string]string) {
 		e.m[k] = envVarEntry{value: v}
 	}
 }
+
+// Range iterates default env vars (android/windows platform helpers).
+func (e *EnvVars) Range(f func(key, value string) bool) {
+	if e == nil {
+		return
+	}
+	for k, v := range e.All() {
+		if !f(k, v) {
+			return
+		}
+	}
+}
