@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -141,7 +144,23 @@ func (s *Store) WaitForStateChange(ctx context.Context, teamID uuid.UUID, sandbo
 	return s.storage.WaitForStateChange(ctx, teamID, sandboxID)
 }
 
+// KillOrphanSandboxesEnv turns the orphan kill below on. It is off by default,
+// as in KASandbox: cri-multiplex creates sandboxes on the orchestrator
+// directly, so they are never in the store and would be killed a minute after
+// they start.
+const KillOrphanSandboxesEnv = "E2B_KILL_ORPHAN_SANDBOXES"
+
+func killOrphanSandboxes() bool {
+	kill, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(KillOrphanSandboxesEnv)))
+
+	return err == nil && kill
+}
+
 func (s *Store) Reconcile(ctx context.Context, sandboxes []NodeSandbox, nodeID string) {
+	if !killOrphanSandboxes() {
+		return
+	}
+
 	// Redis is the source of truth — divergent sandboxes are orphans running
 	// on the node but not present in the store. Kill them.
 	orphans := s.storage.Reconcile(ctx, sandboxes, nodeID)
