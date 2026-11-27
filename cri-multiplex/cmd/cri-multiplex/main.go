@@ -117,7 +117,7 @@ func main() {
 	orphanGracePeriod := flag.Duration("orphan-grace-period", 120*time.Second, "Grace period before reclaiming orphan resources")
 	cleanupMaxRetries := flag.Int("cleanup-max-retries", 10, "Maximum cleanup retry attempts")
 	cleanupDryRun := flag.Bool("cleanup-dry-run", false, "Log orphan cleanup actions without deleting resources")
-	hideSandboxLabel := flag.String("hide-sandbox-label", "", "Hide E2B sandboxes carrying this label (key=value, e.g. flux-sandbox.io/direct=true) from ListPodSandbox/ListContainers, so kubelet does not garbage-collect them as orphans; empty keeps them visible")
+	hideSandboxLabel := flag.String("hide-sandbox-label", "", "Hide E2B/Cube sandboxes carrying this label (key=value, e.g. flux-sandbox.io/direct=true) from ListPodSandbox/ListContainers, so kubelet does not garbage-collect them as orphans; empty keeps them visible")
 	cubeEnabled := flag.Bool("cube-enabled", false, "Enable the Cube runtime (Cubelet CubeboxMgr)")
 	cubeletAddress := flag.String("cubelet-address", "127.0.0.1:9999", "Local Cubelet CubeboxMgr gRPC address")
 	unknownHandlerPolicy := flag.String("unknown-handler-policy", string(server.UnknownHandlerPassthrough), "Behaviour for an unregistered runtime handler: passthrough (fall back to the default backend) or reject")
@@ -222,6 +222,7 @@ func main() {
 		Deps:        engine.Deps{Store: stateStore, NodeName: *nodeName, NodeIP: *nodeIP},
 		Enabled:     *cubeEnabled,
 		CubeletAddr: *cubeletAddress,
+		HideLabel:   *hideSandboxLabel,
 	})
 	if err != nil {
 		log.Fatalf("initialize cube backend: %v", err)

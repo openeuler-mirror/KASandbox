@@ -203,6 +203,33 @@ func TestParseEnvdProcessStreamExitZeroOmitted(t *testing.T) {
 	}
 }
 
+func TestParseEnvdProcessStreamCapsOutput(t *testing.T) {
+	prev := envdMaxExecOutputBytes
+	envdMaxExecOutputBytes = 8
+	t.Cleanup(func() { envdMaxExecOutputBytes = prev })
+
+	chunk := base64.StdEncoding.EncodeToString([]byte("abcdefghij")) // 10 bytes
+	var buf bytes.Buffer
+	_, _ = buf.Write(connectEnvelope(0, `{"event":{"data":{"stdout":"`+chunk+`"}}}`))
+	_, _ = buf.Write(connectEnvelope(0, `{"event":{"data":{"stdout":"`+chunk+`"}}}`))
+	_, _ = buf.Write(connectEnvelope(0, `{"event":{"end":{"exitCode":0,"exited":true,"status":"exit status 0"}}}`))
+	_, _ = buf.Write(connectEnvelope(envdConnectEndStream, `{}`))
+
+	result, err := parseEnvdProcessStream(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("exit = %d", result.ExitCode)
+	}
+	if got := len(result.Stdout) + len(result.Stderr); got != 8 {
+		t.Fatalf("retained = %d, want 8 (stdout=%q stderr=%q)", got, result.Stdout, result.Stderr)
+	}
+	if string(result.Stdout) != "abcdefgh" {
+		t.Fatalf("stdout = %q", result.Stdout)
+	}
+}
+
 func TestShellQuoteArgs(t *testing.T) {
 	if got := shellQuoteArgs([]string{"echo", "a b"}); got != "echo 'a b'" {
 		t.Fatalf("got %q", got)
