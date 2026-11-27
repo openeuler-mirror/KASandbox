@@ -554,6 +554,7 @@ func TestHideSandboxLabelOmitsDirectFromCRIList(t *testing.T) {
 		StateStore:  store,
 		HideLabel:   "flux-sandbox.io/direct=true",
 	}, &fakeClient{})
+	attachStubEnvd(t, eng)
 	t.Cleanup(func() { _ = eng.Close() })
 
 	req := podRequest()
@@ -614,6 +615,7 @@ func TestHideSandboxLabelIgnoresNonMatching(t *testing.T) {
 		StateStore:  store,
 		HideLabel:   "flux-sandbox.io/direct=true",
 	}, &fakeClient{})
+	attachStubEnvd(t, eng)
 	t.Cleanup(func() { _ = eng.Close() })
 	if _, err := eng.RunPodSandbox(context.Background(), podRequest()); err != nil {
 		t.Fatal(err)
