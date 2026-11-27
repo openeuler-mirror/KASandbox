@@ -262,8 +262,7 @@ func (p *Process) configure(
 	// The cgroup is created and owned by the caller (Sandbox); Process only
 	// uses the FD during clone.
 	if cgroupFD != cgroup.NoCgroupFD {
-		p.cmd.SysProcAttr.UseCgroupFD = true
-		p.cmd.SysProcAttr.CgroupFD = cgroupFD
+		// UseCgroupFD (CLONE_INTO_CGROUP) is disabled on openEuler 6.6 hosts.
 	}
 
 	// Create the metrics FIFO before Firecracker starts.

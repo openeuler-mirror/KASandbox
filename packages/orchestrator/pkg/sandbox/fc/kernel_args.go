@@ -5,6 +5,7 @@ package fc
 import (
 	"fmt"
 	"maps"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -99,13 +100,16 @@ func buildKernelArgs(ipv4 string, options ProcessOptions) KernelArgs {
 		// Wait 1 second before exiting FC after panic or reboot
 		"panic": "1",
 
-		"reboot":           "k",
-		"pci":              "off",
-		"i8042.nokbd":      "",
-		"i8042.noaux":      "",
-		"random.trust_cpu": "on",
+		"reboot": "k",
 
 		"rootflags": ext4RootFlags,
+	}
+
+	if runtime.GOARCH == "amd64" || runtime.GOARCH == "386" {
+		args["pci"] = "off"
+		args["i8042.nokbd"] = ""
+		args["i8042.noaux"] = ""
+		args["random.trust_cpu"] = "on"
 	}
 
 	if options.KvmClock {

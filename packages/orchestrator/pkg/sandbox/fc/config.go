@@ -35,16 +35,35 @@ func (t Config) SandboxKernelDir() string {
 func (t Config) HostKernelPath(config cfg.BuilderConfig) string {
 	// Prefer arch-prefixed path ({version}/{arch}/vmlinux.bin) for multi-arch support.
 	// Fall back to legacy flat path ({version}/vmlinux.bin) for existing production nodes.
-	archPath := filepath.Join(config.HostKernelsDir, t.KernelVersion, utils.TargetArch(), artifact.KernelFileName)
+	path := t.hostKernelPathForVersion(config, t.KernelVersion)
+	if _, err := os.Stat(path); err == nil {
+		return path
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return path
+	}
+
+	// openEuler default pin is 6.6; if that binary is absent, fall back to 6.1
+	// so nodes that only installed the legacy guest kernel still boot.
+	const fallbackKernel = "vmlinux-6.1.158"
+	if t.KernelVersion != fallbackKernel && t.KernelVersion == "vmlinux-6.6.0-132.0.0" {
+		fallback := t.hostKernelPathForVersion(config, fallbackKernel)
+		if _, err := os.Stat(fallback); err == nil {
+			return fallback
+		}
+	}
+
+	return path
+}
+
+func (t Config) hostKernelPathForVersion(config cfg.BuilderConfig, version string) string {
+	archPath := filepath.Join(config.HostKernelsDir, version, utils.TargetArch(), artifact.KernelFileName)
 	if _, err := os.Stat(archPath); err == nil {
 		return archPath
 	} else if !errors.Is(err, os.ErrNotExist) {
-		// Non-existence errors (e.g. permission denied) should not silently fall back
-		// to the legacy path, as that could use the wrong binary.
 		return archPath
 	}
 
-	return filepath.Join(config.HostKernelsDir, t.KernelVersion, artifact.KernelFileName)
+	return filepath.Join(config.HostKernelsDir, version, artifact.KernelFileName)
 }
 
 func (t Config) FirecrackerPath(config cfg.BuilderConfig) string {

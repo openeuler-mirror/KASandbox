@@ -3,6 +3,9 @@
 package fc
 
 import (
+	"runtime"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,33 +29,37 @@ func TestBuildKernelArgs_DefaultIsUnchanged(t *testing.T) {
 		{
 			name:    "production defaults",
 			options: ProcessOptions{InitScriptPath: "/sbin/init"},
-			want: "i8042.noaux i8042.nokbd init=/sbin/init ip=" + testIPv4 +
-				" ipv6.autoconf=1 ipv6.disable=0 loglevel=1 panic=1 pci=off quiet" +
-				" random.trust_cpu=on reboot=k rootflags=discard",
+			want: archKernelArgs(
+				"init=/sbin/init ip=" + testIPv4 +
+					" ipv6.autoconf=1 ipv6.disable=0 loglevel=1 panic=1 quiet reboot=k rootflags=discard",
+			),
 		},
 		{
 			name:    "kvm clock",
 			options: ProcessOptions{InitScriptPath: "/sbin/init", KvmClock: true},
-			want: "clocksource=kvm-clock i8042.noaux i8042.nokbd init=/sbin/init ip=" + testIPv4 +
-				" ipv6.autoconf=1 ipv6.disable=0 loglevel=1 panic=1 pci=off quiet" +
-				" random.trust_cpu=on reboot=k rootflags=discard",
+			want: archKernelArgs(
+				"clocksource=kvm-clock init=/sbin/init ip=" + testIPv4 +
+					" ipv6.autoconf=1 ipv6.disable=0 loglevel=1 panic=1 quiet reboot=k rootflags=discard",
+			),
 		},
 		{
 			// Kernel logs drop `quiet` and raise the log level; asserted because the
 			// variant overlay is applied after these adjustments.
 			name:    "kernel logs",
 			options: ProcessOptions{InitScriptPath: "/sbin/init", KernelLogs: true},
-			want: "console=ttyS0 i8042.noaux i8042.nokbd init=/sbin/init ip=" + testIPv4 +
-				" ipv6.autoconf=1 ipv6.disable=0 loglevel=5 panic=1 pci=off" +
-				" random.trust_cpu=on reboot=k rootflags=discard",
+			want: archKernelArgs(
+				"console=ttyS0 init=/sbin/init ip=" + testIPv4 +
+					" ipv6.autoconf=1 ipv6.disable=0 loglevel=5 panic=1 reboot=k rootflags=discard",
+			),
 		},
 		{
 			name:    "systemd to kernel logs",
 			options: ProcessOptions{InitScriptPath: "/sbin/init", SystemdToKernelLogs: true},
-			want: "console=ttyS0 i8042.noaux i8042.nokbd init=/sbin/init ip=" + testIPv4 +
-				" ipv6.autoconf=1 ipv6.disable=0 loglevel=5 panic=1 pci=off" +
-				" random.trust_cpu=on reboot=k rootflags=discard" +
-				" systemd.journald.forward_to_console",
+			want: archKernelArgs(
+				"console=ttyS0 init=/sbin/init ip=" + testIPv4 +
+					" ipv6.autoconf=1 ipv6.disable=0 loglevel=5 panic=1 reboot=k rootflags=discard" +
+					" systemd.journald.forward_to_console",
+			),
 		},
 	}
 
@@ -212,4 +219,21 @@ func TestValidateCmdlineArgs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func archKernelArgs(armBase string) string {
+	if runtime.GOARCH == "amd64" || runtime.GOARCH == "386" {
+		return insertX86KernelArgs(armBase)
+	}
+	return armBase
+}
+
+func insertX86KernelArgs(armBase string) string {
+	// buildKernelArgs sorts keys; reconstruct by running it is the source of truth.
+	// Fall back to inserting the x86-only tokens in sorted order.
+	extras := []string{"i8042.noaux", "i8042.nokbd", "pci=off", "random.trust_cpu=on"}
+	parts := strings.Fields(armBase)
+	parts = append(parts, extras...)
+	sort.Strings(parts)
+	return strings.Join(parts, " ")
 }

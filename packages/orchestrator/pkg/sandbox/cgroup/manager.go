@@ -351,17 +351,29 @@ type Manager interface {
 
 type managerImpl struct{}
 
-// NewManager creates a new cgroup manager
-// Returns error if cgroups v2 is not available on the system
+// NewManager creates a new cgroup manager.
+// On legacy cgroup v1 hosts (no unified cgroup.controllers), returns a noop
+// manager so the orchestrator can still start — same tolerance as the
+// 2026.09 / KASandbox openEuler patch (resource accounting disabled).
 func NewManager() (Manager, error) {
-	if _, err := os.Stat(filepath.Join(cgroupV2MountPoint, "cgroup.controllers")); err != nil {
-		return nil, fmt.Errorf("cgroups v2 not available: %w", err)
+	if !isCgroupV2() {
+		return NewNoopManager(), nil
 	}
 
 	return &managerImpl{}, nil
 }
 
+func isCgroupV2() bool {
+	_, err := os.Stat(filepath.Join(cgroupV2MountPoint, "cgroup.controllers"))
+	return err == nil
+}
+
 func (m *managerImpl) Initialize(ctx context.Context) error {
+	if !isCgroupV2() {
+		logger.L().Info(ctx, "cgroup v1 detected, skipping initialization")
+		return nil
+	}
+
 	if err := os.MkdirAll(RootCgroupPath, 0o755); err != nil {
 		return fmt.Errorf("failed to create root cgroup directory: %w", err)
 	}
@@ -377,6 +389,10 @@ func (m *managerImpl) Initialize(ctx context.Context) error {
 }
 
 func (m *managerImpl) Create(ctx context.Context, cgroupName string) (*CgroupHandle, error) {
+	if !isCgroupV2() {
+		return newNoopHandle(cgroupName), nil
+	}
+
 	cgroupPath := m.cgroupPath(cgroupName)
 
 	if err := os.MkdirAll(cgroupPath, 0o755); err != nil {
@@ -423,6 +439,10 @@ func (m *managerImpl) Create(ctx context.Context, cgroupName string) (*CgroupHan
 // Destroy kills any remaining processes in an existing sandbox cgroup and
 // removes it.
 func (m *managerImpl) Destroy(ctx context.Context, cgroupName string) error {
+	if !isCgroupV2() {
+		return nil
+	}
+
 	handle, err := m.openExisting(ctx, cgroupName)
 	if err != nil {
 		return err

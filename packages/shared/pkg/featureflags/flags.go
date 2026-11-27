@@ -179,7 +179,7 @@ var (
 	// UseMemFdFlag asks Firecracker to back guest memory with a memfd and
 	// pass the fd over the UFFD socket; the orchestrator then mmaps it
 	// directly instead of using process_vm_readv on pause.
-	UseMemFdFlag = NewBoolFlag("use-memfd", true)
+	UseMemFdFlag = NewBoolFlag("use-memfd", false)
 
 	// UseSyncWPFlag asks Firecracker (via use_sync_wp on snapshot load) to
 	// register guest memory for SYNCHRONOUS userfault write-protect events,
@@ -718,8 +718,8 @@ const (
 // TODO: The short tag here has only 7 characters — the one from our build pipeline will likely have exactly 8 so this will break.
 const (
 	DefaultFirecrackerV1_10Version = "v1.10.1_30cbb07"
-	DefaultFirecrackerV1_12Version = "v1.12.1_210cbac"
-	DefaultFirecrackerV1_14Version = "v1.14.1_431f1fc"
+	DefaultFirecrackerV1_12Version = "v1.12.1"
+	DefaultFirecrackerV1_14Version = "v1.14.4"
 	// The v1.14-0 release line. 0.2.0 introduces the in-place checkpoint's
 	// balloon reporting-pause API; filesystem-only snapshots ship with every
 	// e2b release from 0.1.0 — the per-feature floors live in fcversion.
@@ -728,7 +728,7 @@ const (
 	// resolving within their own line below (cross-line upgrades are an
 	// operator decision via the firecracker-versions flag, never a baked
 	// default — the map invariant key == LDKey(value) enforces it).
-	DefaultFirecrackerVersion = DefaultFirecrackerV1_14_0Version
+	DefaultFirecrackerVersion = DefaultFirecrackerV1_14Version
 )
 
 var FirecrackerVersionMap = map[string]string{

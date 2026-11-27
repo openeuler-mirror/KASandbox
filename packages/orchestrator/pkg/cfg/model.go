@@ -18,19 +18,20 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 )
 
-const DefaultBusyboxVersion = "1.36.1"
+const DefaultBusyboxVersion = "1.35"
 
 type BuilderConfig struct {
-	DomainName             string `env:"DOMAIN_NAME"              envDefault:""`
-	FirecrackerVersionsDir string `env:"FIRECRACKER_VERSIONS_DIR" envDefault:"/fc-versions"`
-	BusyboxVersion         string `env:"BUSYBOX_VERSION"          envDefault:"1.36.1"`
-	HostBusyboxDir         string `env:"HOST_BUSYBOX_DIR"         envDefault:"/fc-busybox"`
-	HostEnvdPath           string `env:"HOST_ENVD_PATH"           envDefault:"/fc-envd/envd"`
-	HostKernelsDir         string `env:"HOST_KERNELS_DIR"         envDefault:"/fc-kernels"`
-	OrchestratorBaseDir    string `env:"ORCHESTRATOR_BASE_PATH"   envDefault:"/orchestrator"`
-	SandboxDir             string `env:"SANDBOX_DIR"              envDefault:"/fc-vm"`
-	SharedChunkCacheDir    string `env:"SHARED_CHUNK_CACHE_PATH"`
-	TemplatesDir           string `env:"TEMPLATES_DIR,expand"     envDefault:"${ORCHESTRATOR_BASE_PATH}/build-templates"`
+	DomainName                 string `env:"DOMAIN_NAME"              envDefault:""`
+	FirecrackerNetnsExecHelper string `env:"E2B_FC_NETNS_EXEC_HELPER" envDefault:"/opt/e2b-infra/bin/fc-netns-exec"`
+	FirecrackerVersionsDir     string `env:"FIRECRACKER_VERSIONS_DIR" envDefault:"/fc-versions"`
+	BusyboxVersion             string `env:"BUSYBOX_VERSION"          envDefault:"1.35"`
+	HostBusyboxDir             string `env:"HOST_BUSYBOX_DIR"         envDefault:"/fc-busybox"`
+	HostEnvdPath               string `env:"HOST_ENVD_PATH"           envDefault:"/fc-envd/envd"`
+	HostKernelsDir             string `env:"HOST_KERNELS_DIR"         envDefault:"/fc-kernels"`
+	OrchestratorBaseDir        string `env:"ORCHESTRATOR_BASE_PATH"   envDefault:"/orchestrator"`
+	SandboxDir                 string `env:"SANDBOX_DIR"              envDefault:"/fc-vm"`
+	SharedChunkCacheDir        string `env:"SHARED_CHUNK_CACHE_PATH"`
+	TemplatesDir               string `env:"TEMPLATES_DIR,expand"     envDefault:"${ORCHESTRATOR_BASE_PATH}/build-templates"`
 
 	DefaultCacheDir string `env:"DEFAULT_CACHE_DIR,expand" envDefault:"${ORCHESTRATOR_BASE_PATH}/build"`
 
@@ -43,6 +44,7 @@ type BuilderConfig struct {
 func makePathsAbsolute(c *BuilderConfig) error {
 	for _, item := range []*string{
 		&c.DefaultCacheDir,
+		&c.FirecrackerNetnsExecHelper,
 		&c.FirecrackerVersionsDir,
 		&c.HostBusyboxDir,
 		&c.HostEnvdPath,

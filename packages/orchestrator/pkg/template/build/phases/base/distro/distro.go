@@ -74,7 +74,7 @@ var Profiles = []Profile{
 		// kernel-devel would resolve against a kernel that isn't running. RHEL's
 		// UBI repos also carry neither chrony nor nfs-utils. Accepting those IDs
 		// promised a fidelity this can't deliver; they now fail fast instead.
-		IDs: []string{"fedora", "centos", "rocky", "almalinux"},
+		IDs: []string{"fedora", "centos", "rocky", "almalinux", "openeuler", "openEuler"},
 		// "iptables" (not iptables-nft) and "tar" cover yum-era CentOS 7, which
 		// lacks the nft package and doesn't ship tar.
 		Packages: []string{
