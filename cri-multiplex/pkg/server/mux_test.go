@@ -22,6 +22,7 @@ type fakeRuntimeEngine struct {
 	podID       string
 	containerID string
 	calls       map[string]int
+	removed     map[string]bool
 
 	listPods       []*runtime.PodSandbox
 	listContainers []*runtime.Container
@@ -58,12 +59,25 @@ func (f *fakeRuntimeEngine) StopPodSandbox(ctx context.Context, req *runtime.Sto
 
 func (f *fakeRuntimeEngine) RemovePodSandbox(ctx context.Context, req *runtime.RemovePodSandboxRequest) (*runtime.RemovePodSandboxResponse, error) {
 	f.record("RemovePodSandbox")
-	return &runtime.RemovePodSandboxResponse{}, f.err
+	if f.err != nil {
+		return &runtime.RemovePodSandboxResponse{}, f.err
+	}
+	if f.removed == nil {
+		f.removed = map[string]bool{}
+	}
+	f.removed[req.GetPodSandboxId()] = true
+	return &runtime.RemovePodSandboxResponse{}, nil
 }
 
 func (f *fakeRuntimeEngine) PodSandboxStatus(ctx context.Context, req *runtime.PodSandboxStatusRequest) (*runtime.PodSandboxStatusResponse, error) {
 	f.record("PodSandboxStatus")
-	return &runtime.PodSandboxStatusResponse{Status: &runtime.PodSandboxStatus{Id: req.PodSandboxId}}, f.err
+	if f.err != nil {
+		return &runtime.PodSandboxStatusResponse{Status: &runtime.PodSandboxStatus{Id: req.PodSandboxId}}, f.err
+	}
+	if f.removed[req.GetPodSandboxId()] {
+		return nil, status.Error(codes.NotFound, "sandbox not found")
+	}
+	return &runtime.PodSandboxStatusResponse{Status: &runtime.PodSandboxStatus{Id: req.PodSandboxId}}, nil
 }
 
 func (f *fakeRuntimeEngine) ListPodSandbox(ctx context.Context, req *runtime.ListPodSandboxRequest) (*runtime.ListPodSandboxResponse, error) {

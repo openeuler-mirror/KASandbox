@@ -113,16 +113,24 @@ func (e *Engine) RemoveContainer(ctx context.Context, req *runtime.RemoveContain
 }
 
 func (e *Engine) ListContainers(ctx context.Context, req *runtime.ListContainersRequest) (*runtime.ListContainersResponse, error) {
+	var filter *runtime.ContainerFilter
+	if req != nil {
+		filter = req.GetFilter()
+	}
+	revealHidden := filter != nil && e.revealsHiddenFromCRIList(filter.LabelSelector)
 	e.mu.Lock()
 	items := make([]*runtime.Container, 0, len(e.pods))
 	for _, pod := range e.pods {
 		if pod.ContainerID == "" {
 			continue
 		}
+		if e.hiddenFromCRIList(pod) && !revealHidden {
+			continue
+		}
 		items = append(items, containerStatusItem(*pod))
 	}
 	e.mu.Unlock()
-	return &runtime.ListContainersResponse{Containers: filterContainers(items, req.GetFilter())}, nil
+	return &runtime.ListContainersResponse{Containers: filterContainers(items, filter)}, nil
 }
 
 func (e *Engine) ContainerStatus(ctx context.Context, req *runtime.ContainerStatusRequest) (*runtime.ContainerStatusResponse, error) {

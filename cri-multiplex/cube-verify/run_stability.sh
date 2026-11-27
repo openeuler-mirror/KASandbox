@@ -18,6 +18,10 @@
 #   ENSURE_OE_XFS=1      mount opencloudos-home → /mnt/oc9-xfs → /home/data (33468 OE profile)
 #   CUBELET_ADDR         override cubelet address for cri-multiplex
 #                        (default: unix:///data/cubelet/cubelet.sock if sock exists, else 127.0.0.1:9999)
+#   PATCH_CUBELET_QUOTA=1
+#                        Explicitly allow rewriting Cubelet dynamicconf quotas for the
+#                        run. Default is off (KASandbox #68). When enabled, conf.yaml is
+#                        backed up first and restored on EXIT (including failure).
 #
 set -euo pipefail
 
@@ -48,13 +52,48 @@ ensure_oe_xfs_data() {
   cp --reflink=always /data/.oe-cube-xfs-ok /data/.reflink-stab-check 2>/dev/null && echo REFLINK_OK || true
 }
 
+QUOTA_CFG="${QUOTA_CFG:-/usr/local/services/cubetoolbox/Cubelet/dynamicconf/conf.yaml}"
+QUOTA_BAK=""
+QUOTA_STATUS=""
+
+restore_quota() {
+  if [[ -z "${QUOTA_BAK}" || ! -f "${QUOTA_BAK}" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${QUOTA_CFG}" ]]; then
+    log "WARN quota backup present but cfg missing: ${QUOTA_CFG}"
+    return 0
+  fi
+  cp -a "${QUOTA_BAK}" "${QUOTA_CFG}"
+  rm -f "${QUOTA_BAK}"
+  QUOTA_BAK=""
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart cube-sandbox-cubelet.service || true
+  fi
+  log "quota restored from backup"
+}
+
+# Mutates QUOTA_STATUS / QUOTA_BAK in the *current* shell. Do not call via
+# $(ensure_quota) when PATCH_CUBELET_QUOTA=1 — that would run the backup/trap
+# in a subshell and restore immediately (KASandbox #68).
 ensure_quota() {
-  local CFG=/usr/local/services/cubetoolbox/Cubelet/dynamicconf/conf.yaml
-  [[ -f "$CFG" ]] || { echo "quota_skip_no_cfg"; return 0; }
-  python3 - <<'PY'
+  local CFG="${QUOTA_CFG}"
+  QUOTA_STATUS="quota_skip_no_cfg"
+  [[ -f "$CFG" ]] || { echo "${QUOTA_STATUS}"; return 0; }
+  if [[ "${PATCH_CUBELET_QUOTA:-0}" != "1" ]]; then
+    QUOTA_STATUS="quota_skip_need_PATCH_CUBELET_QUOTA=1"
+    echo "${QUOTA_STATUS}"
+    return 0
+  fi
+  QUOTA_BAK="${CFG}.stability.bak.$$"
+  cp -a "$CFG" "${QUOTA_BAK}"
+  # Restore even on early failure / Ctrl-C.
+  trap restore_quota EXIT
+  QUOTA_STATUS="$(python3 - "$CFG" <<'PY'
 from pathlib import Path
 import re
-p = Path("/usr/local/services/cubetoolbox/Cubelet/dynamicconf/conf.yaml")
+import sys
+p = Path(sys.argv[1])
 text = p.read_text(encoding="utf-8")
 text2 = text
 text2 = re.sub(r'(?m)^(\s*mcpu_limit:\s*).*$', r'\g<1>1000000', text2, count=1)
@@ -66,6 +105,8 @@ if text2 != text:
 else:
     print("quota_ok")
 PY
+)"
+  echo "${QUOTA_STATUS}"
 }
 
 wait_cubelet_ready() {
@@ -387,9 +428,10 @@ mkdir -p "$OUT" "$ROOT/rounds" /tmp/cube-verify/state
 echo -e "kind\tround\tmetric\tvalue" >> "$SUMMARY"
 : > "$ROOT/run.log"
 log "START rounds=$ROUNDS node=$NODE root=$ROOT"
-qout=$(ensure_quota)
+ensure_quota >/dev/null
+qout="${QUOTA_STATUS}"
 log "quota: $qout"
-if echo "$qout" | grep -q quota_patched; then
+if [[ "$qout" == "quota_patched" ]]; then
   systemctl restart cube-sandbox-cubelet.service || true
 fi
 systemctl is-active cube-sandbox-cubelet.service cube-sandbox-cube-api.service cube-sandbox-cubemaster.service || true
