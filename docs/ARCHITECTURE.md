@@ -202,6 +202,13 @@ Key mechanisms (all under `pkg/sandbox/`):
 - **Sandbox proxy** (:5007, `pkg/proxy/`): reverse-proxies incoming traffic from client-proxy to
   the sandbox's slot IP and requested port over HTTP or configured HTTPS, enforcing per-sandbox
   traffic access tokens. HTTPS backends may use self-signed certificates.
+- **Sandbox-local checkpoints** (`pkg/checkpoint/`): sandbox port 49984 is handled on the
+  host through the sandbox proxy and supports create, restore, list and delete. Memory and
+  sealed rootfs layers stay under the node cache, isolated by sandbox lifecycle. Incremental
+  capture and in-place rollback require the separate checkpoint-enabled Firecracker build;
+  the bundled Firecracker is unchanged. The checkpoint index lives in process memory, so
+  recovery across orchestrator restarts or nodes is outside this API's contract. This API
+  shares the sandbox snapshot lock with the existing pause/checkpoint operations.
 - Writes sandbox lifecycle **events** and cgroup **host stats** to ClickHouse; exports metrics via
   OTel. Sandbox and template-build log writes go through a flag-resolved HTTP route: the legacy
   collector remains the fallback primary destination, and configured shadow destinations can mirror

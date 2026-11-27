@@ -82,6 +82,7 @@ var (
 	uffdStartupPagesHistogram       = utils.Must(telemetry.GetHistogram(meter, telemetry.UffdStartupPagesHistogramName))
 	uffdStartupSourcePagesHistogram = utils.Must(telemetry.GetHistogram(meter, telemetry.UffdStartupSourcePagesHistogramName))
 	uffdStartupBytesHistogram       = utils.Must(telemetry.GetHistogram(meter, telemetry.UffdStartupBytesHistogramName))
+	checkpointPausedHistogram       = utils.Must(telemetry.GetHistogram(meter, telemetry.SandboxCheckpointPausedHistogramName))
 )
 
 // Sandbox start types recorded on sandbox start/init metrics via the
@@ -317,6 +318,13 @@ type Resources struct {
 	memory uffd.MemoryBackend
 }
 
+// Rootfs returns the block device backing the sandbox's disk. A checkpoint
+// restore resets the view this provider serves; the provider itself never
+// changes.
+func (r *Resources) Rootfs() rootfs.Provider {
+	return r.rootfs
+}
+
 type internalConfig struct {
 	EnvdInitRequestTimeout time.Duration
 
@@ -359,7 +367,8 @@ type Sandbox struct {
 	*Resources
 	*Metadata
 
-	updateMu sync.Mutex
+	updateMu     sync.Mutex
+	checkpointMu sync.Mutex // serializes upstream snapshots with the host-side checkpoint API
 
 	// LifecycleID is a unique identifier for each Firecracker process.
 	// It is used internally by the orchestrator for map eviction guards
@@ -1949,6 +1958,8 @@ func (s *Sandbox) Pause(
 	useCase SnapshotUseCase,
 	opts ...PauseOption,
 ) (st *Snapshot, e error) {
+	s.checkpointMu.Lock()
+	defer s.checkpointMu.Unlock()
 	var pauseOpts pauseOptions
 	for _, opt := range opts {
 		opt(&pauseOpts)

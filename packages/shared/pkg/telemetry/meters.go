@@ -39,6 +39,8 @@ const (
 
 	TeamSandboxCreated CounterType = "e2b.team.sandbox.created"
 
+	SandboxCheckpointCalls CounterType = "orchestrator.sandbox.checkpoint.calls"
+
 	EnvdInitCalls CounterType = "orchestrator.sandbox.envd.init.calls"
 
 	// 2 MiB chunks the pre-pause envd heap collapse attempted, split by the
@@ -336,15 +338,18 @@ const (
 	BuildStepDurationHistogramName  HistogramType = "template.build.step.duration"
 
 	// Sandbox timing histograms
-	OrchestratorSandboxCreateDurationName HistogramType = "orchestrator.sandbox.create.duration"
-	WaitForEnvdDurationHistogramName      HistogramType = "orchestrator.sandbox.envd.init.duration"
-	GuestSyncDurationHistogramName        HistogramType = "orchestrator.sandbox.guest_sync.duration"
-	PauseDurationHistogramName            HistogramType = "orchestrator.sandbox.pause.duration"
-	SnapshotProcessMemoryDurationName     HistogramType = "orchestrator.sandbox.snapshot.process_memory.duration"
-	SnapshotProcessRootfsDurationName     HistogramType = "orchestrator.sandbox.snapshot.process_rootfs.duration"
-	SnapshotRootfsSealDurationName        HistogramType = "orchestrator.sandbox.snapshot.rootfs_seal.duration"
-	SnapshotGuestFreezeDurationName       HistogramType = "orchestrator.sandbox.snapshot.guest_freeze.duration"
-	SnapshotMemorySealDurationName        HistogramType = "orchestrator.sandbox.snapshot.memory_seal.duration"
+	OrchestratorSandboxCreateDurationName  HistogramType = "orchestrator.sandbox.create.duration"
+	SandboxCheckpointDurationHistogramName HistogramType = "orchestrator.sandbox.checkpoint.duration"
+	SandboxCheckpointPausedHistogramName   HistogramType = "orchestrator.sandbox.checkpoint.paused.duration"
+
+	WaitForEnvdDurationHistogramName  HistogramType = "orchestrator.sandbox.envd.init.duration"
+	GuestSyncDurationHistogramName    HistogramType = "orchestrator.sandbox.guest_sync.duration"
+	PauseDurationHistogramName        HistogramType = "orchestrator.sandbox.pause.duration"
+	SnapshotProcessMemoryDurationName HistogramType = "orchestrator.sandbox.snapshot.process_memory.duration"
+	SnapshotProcessRootfsDurationName HistogramType = "orchestrator.sandbox.snapshot.process_rootfs.duration"
+	SnapshotRootfsSealDurationName    HistogramType = "orchestrator.sandbox.snapshot.rootfs_seal.duration"
+	SnapshotGuestFreezeDurationName   HistogramType = "orchestrator.sandbox.snapshot.guest_freeze.duration"
+	SnapshotMemorySealDurationName    HistogramType = "orchestrator.sandbox.snapshot.memory_seal.duration"
 
 	// OrchestratorSandboxExecutionDurationName is one sample per Firecracker
 	// run, so a sandbox that is paused and resumed records one per run.
@@ -542,6 +547,7 @@ var counterDesc = map[CounterType]string{
 	BuildCacheResultCounterName:                  "Number of build cache results",
 	TeamSandboxCreated:                           "Counter of started sandboxes for the team in the interval",
 	OrchestratorHostBalanceDirtyPagesThreads:     "Cumulative stalled thread-polls during sandbox resume; rate() gives throttle intensity",
+	SandboxCheckpointCalls:                       "Number of sandbox checkpoint operations, by operation and outcome",
 	EnvdInitCalls:                                "Number of envd initialization calls",
 	EnvdCollapseChunks:                           "2 MiB chunks the pre-pause envd heap collapse attempted, by result",
 	OrchestratorSandboxKilledCounterName:         "Number of sandboxes killed, labeled by kill reason",
@@ -602,6 +608,7 @@ var counterUnits = map[CounterType]string{
 	BuildCacheResultCounterName:                  "{layer}",
 	TeamSandboxCreated:                           "{sandbox}",
 	OrchestratorHostBalanceDirtyPagesThreads:     "{thread}",
+	SandboxCheckpointCalls:                       "1",
 	EnvdInitCalls:                                "1",
 	EnvdCollapseChunks:                           "{chunk}",
 	OrchestratorSandboxKilledCounterName:         "{sandbox}",
@@ -796,6 +803,8 @@ var histogramDesc = map[HistogramType]string{
 	OrchestratorSandboxExecutionDurationName:          "Time a single sandbox execution ran, from the guest being ready until it stopped executing, labeled by stop reason",
 	OrchestratorEnvdUpgradeDurationName:               "Wall-time of a resume-time envd upgrade (delivery + trigger + WaitForEnvd)",
 	OrchestratorEnvdUpgradePhaseDurationName:          "Wall-time of one resume-time envd upgrade phase (resolve|deliver|ready); resolve is absent from the combined histogram",
+	SandboxCheckpointDurationHistogramName:            "Time taken by a sandbox checkpoint operation, by operation",
+	SandboxCheckpointPausedHistogramName:              "Time a sandbox VM spends paused while taking a checkpoint",
 	WaitForEnvdDurationHistogramName:                  "Time taken for Envd to initialize successfully",
 	EnvdCollapseDurationHistogramName:                 "Time taken for the pre-pause envd heap collapse round-trip",
 	GuestSyncDurationHistogramName:                    "Time taken for the mandatory pre-pause guest sync (filesystem-only pause)",
@@ -872,6 +881,8 @@ var histogramUnits = map[HistogramType]string{
 	OrchestratorEnvdUpgradePhaseDurationName:          "ms",
 	OrchestratorEnvdOfflineUpgradeDurationName:        "ms",
 	OrchestratorFsRecoveryDurationName:                "ms",
+	SandboxCheckpointDurationHistogramName:            "ms",
+	SandboxCheckpointPausedHistogramName:              "ms",
 	WaitForEnvdDurationHistogramName:                  "ms",
 	EnvdCollapseDurationHistogramName:                 "ms",
 	GuestSyncDurationHistogramName:                    "ms",

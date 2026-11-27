@@ -16,6 +16,8 @@ import (
 //
 // swagger:model SnapshotCreateParams
 type SnapshotCreateParams struct {
+	// Optional FCDB dirty-page bitmap sidecar, supported by the checkpoint FC fork.
+	DirtyBitmapPath string `json:"dirty_bitmap_path,omitempty"`
 
 	// Path to the file that will contain the guest memory. It is optional. In case that a user doesn't provide a path, they are responsible to ensure they store the microVM's memory state via external means.
 	MemFilePath string `json:"mem_file_path,omitempty"`

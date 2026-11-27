@@ -15,6 +15,7 @@ import (
 
 	"go.opentelemetry.io/otel/metric"
 
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/checkpoint"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/envd"
 	"github.com/e2b-dev/infra/packages/shared/pkg/connlimit"
@@ -149,7 +150,17 @@ func newDestinationResolver(sandboxes *sandbox.Map) func(r *http.Request) (*pool
 	}
 }
 
-func NewSandboxProxy(meterProvider metric.MeterProvider, port uint16, sandboxes *sandbox.Map, featureFlags *featureflags.Client) (*SandboxProxy, error) {
+// CheckpointService handles the host-side API addressed on sandbox port 49984.
+type CheckpointService interface {
+	ServeCheckpoint(w http.ResponseWriter, r *http.Request, sandboxID string)
+}
+
+func NewSandboxProxy(meterProvider metric.MeterProvider, port uint16, sandboxes *sandbox.Map, featureFlags *featureflags.Client, checkpointServices ...CheckpointService) (*SandboxProxy, error) {
+	var checkpoints CheckpointService
+	if len(checkpointServices) > 0 {
+		checkpoints = checkpointServices[0]
+	}
+	getTargetFromRequest := reverseproxy.GetTargetFromRequest()
 	limiter := connlimit.NewConnectionLimiter()
 	metrics := NewMetrics(meterProvider)
 
@@ -203,6 +214,23 @@ func NewSandboxProxy(meterProvider metric.MeterProvider, port uint16, sandboxes 
 	})
 	if err != nil {
 		return nil, fmt.Errorf("error registering orchestrator proxy pool size metric (%s): %w", telemetry.OrchestratorProxyPoolSizeMeterCounterName, err)
+	}
+
+	// Checkpoint requests are addressed to a port inside the sandbox, but are
+	// answered out here: taking a memory snapshot means pausing the VM, which
+	// a daemon inside it cannot do to itself.
+	if checkpoints != nil {
+		proxied := proxy.Handler
+		proxy.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sandboxID, port, err := getTargetFromRequest(r)
+			if err == nil && checkpoint.Handles(port, r.URL.Path) {
+				checkpoints.ServeCheckpoint(w, r, sandboxID)
+
+				return
+			}
+
+			proxied.ServeHTTP(w, r)
+		})
 	}
 
 	sandboxProxy := &SandboxProxy{

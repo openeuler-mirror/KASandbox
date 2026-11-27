@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ import (
 	clickhouseevents "github.com/e2b-dev/infra/packages/clickhouse/pkg/events"
 	clickhousehoststats "github.com/e2b-dev/infra/packages/clickhouse/pkg/hoststats"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/cfg"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/checkpoint"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/chrooted"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/events"
 	e2bhealthcheck "github.com/e2b-dev/infra/packages/orchestrator/pkg/healthcheck"
@@ -714,11 +716,23 @@ func run(config cfg.Config, opts Options) (success bool) {
 	})
 	closers = append(closers, closer{"host metrics poller", hostMetrics.Close})
 
+	checkpointDir := filepath.Join(config.DefaultCacheDir, "checkpoints")
+	checkpointStore, err := checkpoint.NewStore(checkpointDir)
+	if err != nil {
+		logger.L().Fatal(ctx, "failed to create checkpoint store", zap.Error(err))
+	}
+	checkpointService := checkpoint.NewService(checkpointStore, sandboxes)
+	sandboxes.Subscribe(checkpointService)
+	logger.L().Info(ctx, "checkpoint capabilities", zap.String("store", checkpointDir),
+		zap.Bool("track_dirty_pages", fc.TrackDirtyPagesEnabled()),
+		zap.String("track_dirty_pages_reason", fc.TrackDirtyPagesReason()))
+
 	// sandbox proxy
-	sandboxProxy, err := proxy.NewSandboxProxy(tel.MeterProvider, config.ProxyPort, sandboxes, featureFlags)
+	sandboxProxy, err := proxy.NewSandboxProxy(tel.MeterProvider, config.ProxyPort, sandboxes, featureFlags, checkpointService)
 	if err != nil {
 		logger.L().Fatal(ctx, "failed to create sandbox proxy", zap.Error(err))
 	}
+	checkpointService.SetConnectionDropper(sandboxProxy.RemoveFromPool)
 	startService("sandbox proxy", func() error {
 		err := sandboxProxy.Start(ctx)
 		if errors.Is(err, http.ErrServerClosed) {

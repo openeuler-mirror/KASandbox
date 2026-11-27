@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage/header"
 )
 
 type Overlay struct {
+	mu     sync.RWMutex // guards device changes during checkpoint seal/restore
 	device ReadonlyDevice
 	// cache is the writable target. It is loaded atomically on every read/write
 	// so it can be swapped for a fresh cache (SwapCache) while the overlay stays
@@ -54,6 +56,8 @@ func isCacheClosed(err error) bool {
 }
 
 func (o *Overlay) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
 	// Snapshot both cache pointers once so a concurrent SwapCache/collapse can't
 	// change the layering mid-read.
 	cache := o.cache.Load()
@@ -118,6 +122,9 @@ func (o *Overlay) ReadAt(ctx context.Context, p []byte, off int64) (int, error) 
 // has not yet been released via ReleaseSealing. The caller must ensure no writes
 // are in flight during the swap (the VM is FC-paused at snapshot time).
 func (o *Overlay) SwapCache(newCache *Cache) (*Cache, error) {
+	if err := o.foldCheckpointLayers(); err != nil {
+		return nil, err
+	}
 	if o.cacheEjected.Load() {
 		return nil, errors.New("cache ejected")
 	}
@@ -167,6 +174,9 @@ func (o *Overlay) FoldSealing() (*Cache, error) {
 }
 
 func (o *Overlay) EjectCache() (*Cache, error) {
+	if err := o.foldCheckpointLayers(); err != nil {
+		return nil, err
+	}
 	if !o.cacheEjected.CompareAndSwap(false, true) {
 		return nil, errors.New("cache already ejected")
 	}
@@ -178,6 +188,9 @@ func (o *Overlay) EjectCache() (*Cache, error) {
 // the cache. The overlay stays usable for a sandbox that keeps running after the
 // export.
 func (o *Overlay) ExportDiffInPlace(ctx context.Context, out *os.File) (*header.DiffMetadata, error) {
+	if err := o.foldCheckpointLayers(); err != nil {
+		return nil, err
+	}
 	if o.cacheEjected.Load() {
 		return nil, errors.New("cache ejected")
 	}
@@ -194,10 +207,14 @@ func (o *Overlay) Slice(_ context.Context, _, _ int64) ([]byte, error) {
 }
 
 func (o *Overlay) WriteAt(p []byte, off int64) (int, error) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
 	return o.cache.Load().WriteAt(p, off)
 }
 
 func (o *Overlay) WriteZeroesAt(off, length int64) (int, error) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
 	return o.cache.Load().WriteZeroesAt(off, length)
 }
 
@@ -210,6 +227,8 @@ func (o *Overlay) BlockSize() int64 {
 }
 
 func (o *Overlay) Close() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	var errs []error
 
 	// Close any outstanding sealing cache first; it is never ejected (only the
@@ -222,13 +241,101 @@ func (o *Overlay) Close() error {
 		errs = append(errs, o.cache.Load().Close())
 	}
 
+	if view, ok := o.device.(*SealedView); ok {
+		errs = append(errs, view.Close())
+	}
 	return errors.Join(errs...)
 }
 
 func (o *Overlay) Header() *header.Header {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
 	return o.device.Header()
 }
 
 func (o *Overlay) SwapHeader(h *header.Header) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
 	o.device.SwapHeader(h)
+}
+
+// Seal freezes the current write layer and installs newCache as a fresh empty
+// one. The sealed layer stays on the read path: it is folded into the device
+// below as a SealedView, exactly like OverlayFS demoting an upper to a
+// read-only lower and opening a new upper.
+//
+// The caller must have quiesced writes first — VM paused and the NBD device
+// flushed — so the sealed layer is a crash-consistent image of the disk at
+// the pause instant. Returns the sealed layer's cache; its file now holds the
+// layer and must not be deleted with Close (use CloseKeepFile).
+func (o *Overlay) Seal(newCache *Cache) (*Cache, error) {
+	if o.cacheEjected.Load() {
+		return nil, fmt.Errorf("cache already ejected")
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if o.sealing.Load() != nil {
+		return nil, errors.New("a previous cache is still sealing")
+	}
+	sealed := o.cache.Load()
+	o.device = NewSealedView(o.device, sealed)
+	o.cache.Store(newCache)
+
+	return sealed, nil
+}
+
+// ResetView replaces the overlay's entire view in one swap: the read path
+// below and the write layer above. It is the disk half of an in-place
+// rollback — the NBD dispatchers keep their Device pointer (this overlay),
+// while everything behind it becomes the restored checkpoint's stack plus a
+// fresh write layer.
+//
+// The old write layer belongs to the timeline being discarded and is closed
+// (its file deleted); old sealed views are unmapped, their files staying with
+// the checkpoint store. The caller must have quiesced I/O — VM paused, NBD
+// flushed — exactly as for Seal.
+func (o *Overlay) ResetView(device ReadonlyDevice, cache *Cache) error {
+	if o.cacheEjected.Load() {
+		return fmt.Errorf("cache already ejected")
+	}
+
+	o.mu.Lock()
+	if o.sealing.Load() != nil {
+		o.mu.Unlock()
+		return errors.New("a previous cache is still sealing")
+	}
+	oldDevice, oldCache := o.device, o.cache.Load()
+	o.device = device
+	o.cache.Store(cache)
+	o.mu.Unlock()
+
+	var errs []error
+
+	// The discarded timeline's write layer: file and all.
+	errs = append(errs, oldCache.Close())
+
+	// Sealed layers of the old chain: unmap only, the files belong to the
+	// checkpoint store and other checkpoints' views may reference them.
+	if view, ok := oldDevice.(*SealedView); ok {
+		errs = append(errs, view.Close())
+	}
+
+	return errors.Join(errs...)
+}
+
+// foldCheckpointLayers makes the writable cache a complete diff against the
+// template before the upstream synchronous/deferred/in-place export paths use it.
+// Newest data and explicit zero blocks in the writable cache always win.
+func (o *Overlay) foldCheckpointLayers() error {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	cache := o.cache.Load()
+	for view, ok := o.device.(*SealedView); ok; view, ok = view.device.(*SealedView) {
+		if err := cache.FillMissingFrom(view.cache); err != nil {
+			return fmt.Errorf("folding checkpoint layer: %w", err)
+		}
+	}
+	return nil
 }
