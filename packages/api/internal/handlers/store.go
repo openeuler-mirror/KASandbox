@@ -81,7 +81,7 @@ func newServiceDiscovery(ctx context.Context, config cfg.Config, newKube kubeCli
 	case cfg.ServiceDiscoveryProviderLocal:
 		return newLocalServiceDiscovery(config)
 	case cfg.ServiceDiscoveryProviderStatic:
-		return newStaticServiceDiscovery(config)
+		return newStaticServiceDiscovery(ctx, config)
 	default: // ServiceDiscoveryProviderNomad
 		return newNomadServiceDiscovery(config)
 	}
@@ -119,8 +119,10 @@ func serviceDiscoveryProvider(config cfg.Config, localEnv bool) string {
 
 	// KASandbox systemd deployments name their orchestrators in
 	// ORCHESTRATOR_STATIC_NODES; no Nomad agent knows about them.
-	if config.OrchestratorType == cfg.OrchestratorTypeSystemd && len(parseStaticNodes(config.OrchestratorStaticNodes, 0)) > 0 {
-		return cfg.ServiceDiscoveryProviderStatic
+	if config.OrchestratorType == cfg.OrchestratorTypeSystemd {
+		if items, _ := parseStaticNodes(config.OrchestratorStaticNodes, 0); len(items) > 0 {
+			return cfg.ServiceDiscoveryProviderStatic
+		}
 	}
 
 	if localEnv {

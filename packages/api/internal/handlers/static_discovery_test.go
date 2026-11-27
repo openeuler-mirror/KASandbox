@@ -13,7 +13,7 @@ import (
 func TestParseStaticNodes_FollowsTheKASandboxRules(t *testing.T) {
 	t.Parallel()
 
-	got := parseStaticNodes(" node1=10.0.0.1 , node2=10.0.0.2:5009,,node3,=10.0.0.9,node4=10.0.0.4:x,node5=10.0.0.1", 5008)
+	got, ignored := parseStaticNodes(" node1=10.0.0.1 , node2=10.0.0.2:5009,,node3,=10.0.0.9,node4=10.0.0.4:x,node5=10.0.0.1,node2=10.0.0.6", 5008)
 
 	want := []servicediscovery.Instance{
 		{WorkloadID: "10.0.0.1:5008", NodeID: "node1", IPAddress: "10.0.0.1", Port: 5008, Backend: servicediscovery.BackendStatic},
@@ -22,7 +22,27 @@ func TestParseStaticNodes_FollowsTheKASandboxRules(t *testing.T) {
 		{WorkloadID: "10.0.0.4:5008", NodeID: "node4", IPAddress: "10.0.0.4", Port: 5008, Backend: servicediscovery.BackendStatic},
 	}
 	assert.Equal(t, want, got)
-	assert.Empty(t, parseStaticNodes(" , ,", 5008))
+	assert.Equal(t, []string{"=10.0.0.9", "node5=10.0.0.1", "node2=10.0.0.6"}, ignored)
+
+	got, ignored = parseStaticNodes(" , ,", 5008)
+	assert.Empty(t, got)
+	assert.Empty(t, ignored)
+}
+
+// A node name listed again is dropped even when its address is new, and an
+// address listed again is dropped even under a new name: the first entry wins
+// either way, so builds find exactly one builder per node.
+func TestParseStaticNodes_FirstEntryWins(t *testing.T) {
+	t.Parallel()
+
+	got, ignored := parseStaticNodes("node1=10.0.0.1,node1=10.0.0.2,node2=10.0.0.1:5008,node2=10.0.0.3", 5008)
+
+	want := []servicediscovery.Instance{
+		{WorkloadID: "10.0.0.1:5008", NodeID: "node1", IPAddress: "10.0.0.1", Port: 5008, Backend: servicediscovery.BackendStatic},
+		{WorkloadID: "10.0.0.3:5008", NodeID: "node2", IPAddress: "10.0.0.3", Port: 5008, Backend: servicediscovery.BackendStatic},
+	}
+	assert.Equal(t, want, got)
+	assert.Equal(t, []string{"node1=10.0.0.2", "node2=10.0.0.1:5008"}, ignored)
 }
 
 func TestServiceDiscoveryProvider_SystemdWithStaticNodesIsStatic(t *testing.T) {

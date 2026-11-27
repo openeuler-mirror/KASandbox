@@ -106,8 +106,10 @@ type Config struct {
 	// settings. OrchestratorStaticNodes lists the orchestrators as
 	// "node1=10.0.0.1,node2=10.0.0.2:5009,node3": an entry without "=address"
 	// dials the node name, and an address without a valid port uses
-	// ORCHESTRATOR_PORT. With OrchestratorType=systemd and a non-empty list,
-	// an unset ServiceDiscoveryProvider resolves to static.
+	// ORCHESTRATOR_PORT. A node name or address listed again is ignored, and
+	// each node name has to be the NODE_ID that node's orchestrator reports.
+	// With OrchestratorType=systemd and a non-empty list, an unset
+	// ServiceDiscoveryProvider resolves to static.
 	OrchestratorType        string `env:"ORCHESTRATOR_TYPE"`
 	OrchestratorStaticNodes string `env:"ORCHESTRATOR_STATIC_NODES"`
 

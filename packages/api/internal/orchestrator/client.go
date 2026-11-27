@@ -133,6 +133,7 @@ func (o *Orchestrator) listNomadNodes(ctx context.Context) ([]nodemanager.NodePl
 	for _, i := range instances {
 		result = append(result, nodemanager.NodePlaneInstance{
 			WorkloadID:          i.WorkloadID,
+			NodeID:              i.NodeID,
 			OrchestratorAddress: i.Address(),
 			IPAddress:           i.IPAddress,
 			Backend:             i.Backend,

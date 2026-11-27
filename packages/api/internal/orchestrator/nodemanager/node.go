@@ -18,6 +18,7 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/consts"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	"github.com/e2b-dev/infra/packages/shared/pkg/machineinfo"
+	"github.com/e2b-dev/infra/packages/shared/pkg/servicediscovery"
 	"github.com/e2b-dev/infra/packages/shared/pkg/smap"
 )
 
@@ -34,6 +35,9 @@ const (
 
 type NodePlaneInstance struct {
 	WorkloadID string
+	// NodeID is the node the discovery source names. The node itself is keyed
+	// on the ID its orchestrator reports; see warnOnStaticNodeIDMismatch.
+	NodeID string
 
 	OrchestratorAddress string
 	IPAddress           string
@@ -96,6 +100,8 @@ func New(
 		return nil, fmt.Errorf("failed to get node service info: %w", err)
 	}
 
+	warnOnStaticNodeIDMismatch(ctx, discoveredNode, nodeInfo.GetNodeId())
+
 	nodeStatus, ok := OrchestratorToApiNodeStateMapper[nodeInfo.GetServiceStatus()]
 	if !ok {
 		logger.L().Error(ctx, "Unknown service info status", zap.String("status", nodeInfo.GetServiceStatus().String()), logger.WithNodeID(nodeInfo.GetNodeId()))
@@ -138,6 +144,24 @@ func New(
 	n.setLabels(nodeInfo.GetLabels())
 
 	return n, nil
+}
+
+// warnOnStaticNodeIDMismatch logs an ORCHESTRATOR_STATIC_NODES entry whose node
+// name differs from the node ID its orchestrator reports. The node plane keys
+// the node on the reported ID while the template builder plane keys the same
+// orchestrator on the listed name, so builds and snapshots on that node are
+// recorded under one ID and looked up under the other. Nomad and Kubernetes
+// take both from the same node name; only a hand-written list can disagree.
+func warnOnStaticNodeIDMismatch(ctx context.Context, discovered NodePlaneInstance, reportedNodeID string) {
+	if discovered.Backend != servicediscovery.BackendStatic || discovered.NodeID == "" || discovered.NodeID == reportedNodeID {
+		return
+	}
+
+	logger.L().Warn(ctx, "ORCHESTRATOR_STATIC_NODES names this node differently from its orchestrator, list it under the orchestrator's NODE_ID",
+		zap.String("listed_node_id", discovered.NodeID),
+		logger.WithNodeID(reportedNodeID),
+		zap.String("address", discovered.OrchestratorAddress),
+	)
 }
 
 func NewClusterNode(ctx context.Context, client *clusters.GRPCClient, clusterID uuid.UUID, sandboxDomain *string, i *clusters.Instance) (*Node, error) {
