@@ -261,6 +261,16 @@ message SandboxListResponse {
   repeated RunningSandbox sandboxes = 1;
 }
 
+// KASandbox: cri-multiplex lists the templates cached on the node as CRI images.
+message CachedBuildInfo {
+  string build_id = 1;
+  google.protobuf.Timestamp expiration_time = 2;
+}
+
+message SandboxListCachedBuildsResponse {
+  repeated CachedBuildInfo builds = 1;
+}
+
 service SandboxService {
   rpc Create(SandboxCreateRequest) returns (SandboxCreateResponse);
   rpc Update(SandboxUpdateRequest) returns (google.protobuf.Empty);
@@ -268,4 +278,6 @@ service SandboxService {
   rpc Delete(SandboxDeleteRequest) returns (google.protobuf.Empty);
   rpc Pause(SandboxPauseRequest) returns (SandboxPauseResponse);
   rpc Checkpoint(SandboxCheckpointRequest) returns (SandboxCheckpointResponse);
+
+  rpc ListCachedBuilds(google.protobuf.Empty) returns (SandboxListCachedBuildsResponse);
 }
