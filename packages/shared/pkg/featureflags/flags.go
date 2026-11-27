@@ -135,6 +135,13 @@ func OverrideBoolFlag(flag BoolFlag, value bool) {
 	launchDarklyOfflineStore.Update(builder)
 }
 
+// OverrideStringFlag forces a string flag to a specific value in the offline store.
+// Only takes effect when LAUNCH_DARKLY_API_KEY is not set (i.e. dev/CLI tools).
+func OverrideStringFlag(flag StringFlag, value string) {
+	builder := launchDarklyOfflineStore.Flag(flag.name).ValueForAll(ldvalue.String(value))
+	launchDarklyOfflineStore.Update(builder)
+}
+
 // OverrideJSONFlag forces a JSON flag to a specific value in the offline store.
 // Only takes effect when LAUNCH_DARKLY_API_KEY is not set (i.e. dev/CLI tools).
 func OverrideJSONFlag(flag JSONFlag, value ldvalue.Value) {
@@ -565,6 +572,19 @@ var (
 	// the worst-case slot hold modest. Tunable per rollout via LD; the fallback
 	// (returned when LD is unavailable or the flag is unset) is the default.
 	PauseResumePrefetchHarvestTimeoutMsFlag = NewIntFlag("pause-resume-prefetch-harvest-timeout-ms", 15000) // 15s
+
+	// PauseWaitUploadFlag makes Pause wait for the snapshot storage upload to
+	// finish before returning (2026.09 semantics). Off by default preserves the
+	// async-upload path; enable on high-concurrency pause/resume benches so the
+	// customer's resume does not contend with in-flight uploads for disk IO.
+	PauseWaitUploadFlag = NewBoolFlag("pause-wait-upload", false)
+
+	// PauseWaitPrefetchReadyFlag makes Pause wait until the pause-resume prefetch
+	// harvest has installed a same-node overlay (and, after upload, durable
+	// metadata) when harvest+consume are on. Off by default; enable with
+	// pause-resume-prefetch-harvest/consume so the next resume can actually
+	// replay the mapping instead of demand-faulting.
+	PauseWaitPrefetchReadyFlag = NewBoolFlag("pause-wait-prefetch-ready", false)
 
 	// TCPFirewallMaxConnectionsPerSandbox is the maximum number of concurrent TCP firewall
 	// connections allowed per sandbox. Negative means no limit.

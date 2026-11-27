@@ -972,6 +972,24 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 		s.harvestResumePrefetchAsync(ctx, sbx, res, in.GetBuildId(), res.objectMetadata)
 	}
 
+	// Optional Pause-side waits (off by default). pause-wait-upload restores
+	// 2026.09-like semantics so the customer's resume does not fight in-flight
+	// snapshot uploads for disk IO. pause-wait-prefetch-ready waits until the
+	// harvest has published a same-node Prefetch overlay (when harvest+consume
+	// are enabled), so the next resume can actually consume it.
+	if s.featureFlags.BoolFlag(ctx, featureflags.PauseWaitUploadFlag) {
+		if waitErr := res.upload.Wait(ctx); waitErr != nil {
+			sbxlogger.I(sbx).Warn(ctx, "pause-wait-upload: snapshot upload failed", zap.Error(waitErr))
+		}
+	}
+	if s.featureFlags.BoolFlag(ctx, featureflags.PauseWaitPrefetchReadyFlag) && res.prefetchReady != nil {
+		select {
+		case <-res.prefetchReady:
+		case <-ctx.Done():
+			sbxlogger.I(sbx).Warn(ctx, "pause-wait-prefetch-ready: cancelled before harvest signaled", zap.Error(ctx.Err()))
+		}
+	}
+
 	teamID, buildId, eventsTTLDays, eventData := s.prepareSandboxEventData(ctx, sbx)
 	eventData[executionEventDataKey] = s.getSandboxExecutionData(sbx)
 
@@ -1465,6 +1483,10 @@ type snapshotResult struct {
 	// waitMemorySealed (Snapshot.WaitMemorySealed) settles.
 	memoryExportDeferred bool
 	waitMemorySealed     func(ctx context.Context) error
+	// prefetchReady is closed when the pause-resume prefetch harvest has
+	// published a same-node overlay (or finished without one). Nil when harvest
+	// was not started. Pause may wait on it when pause-wait-prefetch-ready is on.
+	prefetchReady chan struct{}
 }
 
 // snapshotAndCacheSandbox creates a snapshot of a sandbox and adds it to the

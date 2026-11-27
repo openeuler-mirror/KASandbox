@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -109,6 +110,9 @@ type harvestInstance interface {
 type harvestTemplates interface {
 	GetTemplate(ctx context.Context, buildID string, isSnapshot, isBuilding bool, opts ...sbxtemplate.GetTemplateOpts) (sbxtemplate.Template, error)
 	UpdateMetadata(buildID string, meta metadata.Template) error
+	// SetPrefetchOverlay publishes Prefetch for same-node resume before the
+	// async upload finishes (metafile rewrite is deferred until after Wait).
+	SetPrefetchOverlay(buildID string, prefetch *metadata.Prefetch) error
 }
 
 // harvestUpload is the subset of the in-flight snapshot upload the harvest waits on.
@@ -211,9 +215,16 @@ func (s *Server) harvestResumePrefetchAsync(
 	consume := s.featureFlags.BoolFlag(ctx, featureflags.PauseResumePrefetchConsumeFlag)
 	harvester := s.newPrefetchHarvester()
 
+	if res.prefetchReady == nil {
+		res.prefetchReady = make(chan struct{})
+	}
+	var overlaySignaled sync.Once
+	signalOverlay := func() { overlaySignaled.Do(func() { close(res.prefetchReady) }) }
+
 	releaseWork := s.info.TrackWork()
 	go func() {
 		defer releaseWork()
+		defer signalOverlay() // also covers harvest-only / failure paths
 
 		// Detach from the request (Pause has returned) but keep the LD context
 		// values; bound the whole harvest so a stuck resume can't pin the slot.
@@ -247,7 +258,7 @@ func (s *Server) harvestResumePrefetchAsync(
 		if sealWaitErr != nil {
 			result.outcome, err = harvestSkipped, fmt.Errorf("waiting for rootfs seal: %w", sealWaitErr)
 		} else {
-			result, err = harvester.run(hCtx, sbx, res.meta, res.upload, buildID, objectMetadata, consume)
+			result, err = harvester.run(hCtx, sbx, res.meta, res.upload, buildID, objectMetadata, consume, signalOverlay)
 		}
 
 		resultAttr := metric.WithAttributes(attribute.String("result", string(result.outcome)))
@@ -297,6 +308,7 @@ func (h *prefetchHarvester) run(
 	buildID string,
 	objectMetadata storage.ObjectMetadata,
 	consume bool,
+	onOverlayReady func(),
 ) (harvestRun, error) {
 	// The throwaway resume and its start slot are confined to resumeMapping, so
 	// they are released before we wait on the upload below — which is exactly why
@@ -315,6 +327,22 @@ func (h *prefetchHarvester) run(
 		// Harvest-only: trace measured (page count returned/logged), persist
 		// nothing, so the customer's resume is unaffected.
 		return result, nil
+	}
+
+	prefetch := &metadata.Prefetch{Memory: mapping}
+	meta = meta.WithPrefetch(prefetch)
+
+	// Publish an in-memory overlay BEFORE waiting on the async upload so a
+	// same-node resume that races the upload can already replay the mapping.
+	// Rewriting the metafile still waits for upload.Wait (torn-read risk).
+	if err := h.templates.SetPrefetchOverlay(buildID, prefetch); err != nil {
+		return result, fmt.Errorf("set prefetch overlay: %w", err)
+	}
+	// Signal Pause waiters as soon as the overlay is consumable (not after
+	// durable persist). The deferred close in harvestResumePrefetchAsync is a
+	// safety net when harvest fails before this point.
+	if onOverlayReady != nil {
+		onOverlayReady()
 	}
 
 	// Everything from here on is resource-free: resumeMapping has already released
@@ -346,10 +374,7 @@ func (h *prefetchHarvester) run(
 		return result, fmt.Errorf("waiting for snapshot upload: %w", persistCtx.Err())
 	}
 
-	// Carry the mapping through the same-version pause metadata. The local cache
-	// update is enough for a same-node resume, so do it regardless of whether the
-	// remote upload succeeded.
-	meta = meta.WithPrefetch(&metadata.Prefetch{Memory: mapping})
+	// Durable local metafile rewrite. UpdateMetadata also clears the overlay.
 	var localUpdateErr error
 	if err := h.templates.UpdateMetadata(buildID, meta); err != nil {
 		localUpdateErr = fmt.Errorf("update local metadata: %w", err)
@@ -360,7 +385,7 @@ func (h *prefetchHarvester) run(
 
 	// Only enrich the remote metadata if the snapshot actually landed; on upload
 	// failure the remote build is incomplete, so there is nothing to enrich (the
-	// local update above still lets a same-node resume prefetch).
+	// local overlay/update above still lets a same-node resume prefetch).
 	if uploadErr != nil {
 		return result, localUpdateErr
 	}

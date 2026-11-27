@@ -95,6 +95,10 @@ func (f *fakeHarvestTemplates) UpdateMetadata(_ string, meta metadata.Template) 
 	return f.updateErr
 }
 
+func (f *fakeHarvestTemplates) SetPrefetchOverlay(_ string, _ *metadata.Prefetch) error {
+	return nil
+}
+
 type fakeHarvestUpload struct {
 	err    error
 	called bool
@@ -161,7 +165,7 @@ func newHarvestProbe() *harvestProbe {
 }
 
 func (p *harvestProbe) run(ctx context.Context, consume bool) (int, harvestOutcome, error) {
-	res, err := p.h.run(ctx, testHarvestSandbox(), metadata.Template{}, p.upload, "build-1", storage.ObjectMetadata{}, consume)
+	res, err := p.h.run(ctx, testHarvestSandbox(), metadata.Template{}, p.upload, "build-1", storage.ObjectMetadata{}, consume, nil)
 	p.last = res
 
 	return res.pages, res.outcome, err

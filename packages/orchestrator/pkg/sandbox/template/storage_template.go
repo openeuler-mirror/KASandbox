@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -46,6 +47,12 @@ type storageTemplate struct {
 
 	metrics     blockmetrics.Metrics
 	persistence storage.StorageProvider
+
+	// prefetchOverlay holds a harvested Prefetch mapping that must be visible to
+	// same-node Resume before the async snapshot upload finishes (and therefore
+	// before UpdateMetadata can safely rewrite the metafile). Metadata() merges
+	// it over the on-disk metafile; UpdateMetadata clears it once durable.
+	prefetchOverlay atomic.Pointer[metadata.Prefetch]
 }
 
 func newTemplateFromStorage(
@@ -361,7 +368,22 @@ func (t *storageTemplate) Metadata() (metadata.Template, error) {
 		return metadata.Template{}, fmt.Errorf("failed to get metafile: %w", err)
 	}
 
-	return metadata.FromFile(metafile.Path())
+	meta, err := metadata.FromFile(metafile.Path())
+	if err != nil {
+		return metadata.Template{}, err
+	}
+	if overlay := t.prefetchOverlay.Load(); overlay != nil {
+		meta = meta.WithPrefetch(overlay)
+	}
+
+	return meta, nil
+}
+
+// SetPrefetchOverlay publishes a harvested Prefetch mapping for same-node
+// resumes without rewriting the metafile (safe while uploadSnapshotAsync still
+// reads it). Pass nil to clear.
+func (t *storageTemplate) SetPrefetchOverlay(prefetch *metadata.Prefetch) {
+	t.prefetchOverlay.Store(prefetch)
 }
 
 func (t *storageTemplate) UpdateMetadata(meta metadata.Template) error {
@@ -370,5 +392,12 @@ func (t *storageTemplate) UpdateMetadata(meta metadata.Template) error {
 		return fmt.Errorf("failed to get metafile: %w", err)
 	}
 
-	return meta.ReplaceFile(metafile.Path())
+	if err := meta.ReplaceFile(metafile.Path()); err != nil {
+		return err
+	}
+	// Durable metafile now carries Prefetch (or intentionally lacks it); drop
+	// the overlay so Metadata() does not double-apply a stale pointer.
+	t.prefetchOverlay.Store(nil)
+
+	return nil
 }

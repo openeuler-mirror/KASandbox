@@ -430,6 +430,25 @@ func (c *Cache) UpdateMetadata(buildID string, meta metadata.Template) error {
 	return t.UpdateMetadata(meta)
 }
 
+// SetPrefetchOverlay publishes a harvested Prefetch onto the cached template for
+// same-node resume before the async upload finishes.
+func (c *Cache) SetPrefetchOverlay(buildID string, prefetch *metadata.Prefetch) error {
+	t, ok := c.GetCachedTemplate(buildID)
+	if !ok {
+		return fmt.Errorf("template %q not in cache", buildID)
+	}
+	type overlaySetter interface {
+		SetPrefetchOverlay(prefetch *metadata.Prefetch)
+	}
+	if s, ok := t.(overlaySetter); ok {
+		s.SetPrefetchOverlay(prefetch)
+
+		return nil
+	}
+
+	return fmt.Errorf("template %q does not support prefetch overlay", buildID)
+}
+
 func (c *Cache) useNFSCache(ctx context.Context, isBuilding bool, isSnapshot bool) (string, bool) {
 	if isBuilding {
 		// caching this layer doesn't speed up the next sandbox launch,

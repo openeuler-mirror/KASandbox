@@ -78,3 +78,13 @@ func (c *MaskTemplate) Metadata() (metadata.Template, error) {
 func (c *MaskTemplate) UpdateMetadata(meta metadata.Template) error {
 	return c.template.UpdateMetadata(meta)
 }
+
+// SetPrefetchOverlay forwards to the underlying storage template when present.
+func (c *MaskTemplate) SetPrefetchOverlay(prefetch *metadata.Prefetch) {
+	type overlaySetter interface {
+		SetPrefetchOverlay(prefetch *metadata.Prefetch)
+	}
+	if s, ok := c.template.(overlaySetter); ok {
+		s.SetPrefetchOverlay(prefetch)
+	}
+}
