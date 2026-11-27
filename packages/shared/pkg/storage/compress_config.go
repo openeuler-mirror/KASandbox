@@ -31,6 +31,11 @@ type CompressConfig struct {
 	MinPartSizeMB      int    `env:"COMPRESS_MIN_PART_SIZE_MB"     envDefault:"0"`
 	FrameEncodeWorkers int    `env:"COMPRESS_FRAME_ENCODE_WORKERS" envDefault:"0"`
 	EncoderConcurrency int    `env:"COMPRESS_ENCODER_CONCURRENCY"  envDefault:"0"`
+
+	// PerUploadCompressors makes each upload build its own compressor pool
+	// instead of sharing one across uploads with the same config. Set only by
+	// the compress-shared-compressors kill switch.
+	PerUploadCompressors bool
 }
 
 // CompressionType returns the parsed CompressionType.

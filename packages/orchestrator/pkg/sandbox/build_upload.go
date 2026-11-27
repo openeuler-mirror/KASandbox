@@ -221,6 +221,10 @@ func resolveCompressConfig(ctx context.Context, base storage.CompressConfig, ff 
 		return storage.CompressConfig{}, false, err
 	}
 
+	if ff != nil {
+		resolved.PerUploadCompressors = !ff.BoolFlag(ctx, featureflags.CompressSharedCompressorsFlag)
+	}
+
 	return resolved, useV4, nil
 }
 

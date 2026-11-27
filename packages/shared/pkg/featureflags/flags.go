@@ -375,6 +375,13 @@ var (
 	// supersedes V4HeaderForUncompressedFlag for uncompressed uploads.
 	HeaderV5WriteFlag = NewBoolFlag("header-v5-write", false)
 
+	// CompressSharedCompressorsFlag is a kill switch for sharing compressor
+	// pools across uploads. Off makes every upload build its own encoders and
+	// drop them when it finishes. The compressed bytes are the same either
+	// way. Evaluated per upload with the compress-config file type and use
+	// case.
+	CompressSharedCompressorsFlag = NewBoolFlag("compress-shared-compressors", true)
+
 	// ResumeOriginNodeRemapFlag enables repointing a snapshot's origin_node_id to
 	// the fallback node a resume timed out on. The node's local cache is warming
 	// from the in-progress snapshot pull, so pinning the retry to it avoids

@@ -61,6 +61,51 @@ func zstdEncoderConcurrency(cfg CompressConfig) int {
 	return 1
 }
 
+// compressorPoolKey holds every config field that changes how a compressor
+// from newCompressorPool encodes or what it returns. Uploads whose configs
+// have equal keys share one pool. Keep it in step with newCompressorPool.
+type compressorPoolKey struct {
+	compressionType    CompressionType
+	level              int
+	frameSize          int
+	encoderConcurrency int
+}
+
+func newCompressorPoolKey(cfg CompressConfig) compressorPoolKey {
+	return compressorPoolKey{
+		compressionType:    cfg.CompressionType(),
+		level:              cfg.Level,
+		frameSize:          cfg.FrameSize(),
+		encoderConcurrency: cfg.EncoderConcurrency,
+	}
+}
+
+// compressorPools maps a compressorPoolKey to its *sync.Pool for the life of
+// the process. Keys come from the few distinct compression configs, so the
+// map stays small. sync.Pool drops idle compressors on GC, so a quiet process
+// keeps no encoders.
+var compressorPools sync.Map
+
+// sharedCompressorPool returns the pool shared by every upload with cfg's
+// key, creating and validating it on first use. A pool per upload hands each
+// frame to a new goroutine whose P rarely holds the encoder the last frame
+// put back, so it builds an encoder for most frames and drops them all when
+// the upload ends.
+func sharedCompressorPool(cfg CompressConfig) (*sync.Pool, error) {
+	key := newCompressorPoolKey(cfg)
+	if pool, ok := compressorPools.Load(key); ok {
+		return pool.(*sync.Pool), nil
+	}
+
+	pool, err := newCompressorPool(cfg)
+	if err != nil {
+		return nil, err
+	}
+	actual, _ := compressorPools.LoadOrStore(key, pool)
+
+	return actual.(*sync.Pool), nil
+}
+
 // newCompressorPool returns a pool of compressors for the given config.
 // Both LZ4 and zstd encoders are pooled and reused via Reset/EncodeAll.
 // The config is validated eagerly — if zstd options are invalid, an error
