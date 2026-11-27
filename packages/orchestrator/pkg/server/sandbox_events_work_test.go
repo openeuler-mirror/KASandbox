@@ -210,7 +210,8 @@ func TestUpdateDeleteNotFoundReleaseWork(t *testing.T) {
 	_, err := s.Update(t.Context(), &orchestrator.SandboxUpdateRequest{SandboxId: "missing"})
 	require.Equal(t, codes.NotFound, status.Code(err))
 	require.Zero(t, s.info.OutstandingWork())
+	// Delete is idempotent: a missing sandbox is already deleted.
 	_, err = s.Delete(t.Context(), &orchestrator.SandboxDeleteRequest{SandboxId: "missing"})
-	require.Equal(t, codes.NotFound, status.Code(err))
+	require.NoError(t, err)
 	require.Zero(t, s.info.OutstandingWork())
 }

@@ -685,9 +685,13 @@ func (s *Server) Delete(ctxConn context.Context, in *orchestrator.SandboxDeleteR
 
 	sbx, ok := s.sandboxFactory.Sandboxes.Get(in.GetSandboxId())
 	if !ok {
-		telemetry.ReportCriticalError(ctx, "sandbox not found", nil, telemetry.WithSandboxID(in.GetSandboxId()))
+		// Idempotent delete, as in KASandbox: a sandbox that is not here (already
+		// paused, expired or cleaned up) is already in the end state. CRI may stop
+		// and remove a pod sandbox more than once; the api treats NotFound and
+		// success alike.
+		logger.L().Info(ctx, "sandbox not found during delete, treating it as already deleted", logger.WithSandboxID(in.GetSandboxId()))
 
-		return nil, status.Errorf(codes.NotFound, "sandbox '%s' not found", in.GetSandboxId())
+		return &emptypb.Empty{}, nil
 	}
 
 	childSpan.SetAttributes(
