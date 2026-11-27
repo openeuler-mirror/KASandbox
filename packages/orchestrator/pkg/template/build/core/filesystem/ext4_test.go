@@ -175,3 +175,45 @@ func TestParseReservedBlocks(t *testing.T) {
 		})
 	}
 }
+
+// TestLegacyOverlayMountOptions pins the checks of the mount(2) fallback: the kernel keeps one page of mount
+// data (the terminating NUL included) and reads ':' and ',' as separators.
+func TestLegacyOverlayMountOptions(t *testing.T) {
+	t.Parallel()
+
+	page := os.Getpagesize()
+	fits := "/" + strings.Repeat("a", page-len("lowerdir=")-2)
+
+	tests := []struct {
+		name    string
+		layers  []string
+		want    string
+		wantErr string
+	}{
+		{name: "layers in order", layers: []string{"/l/top", "/l/base"}, want: "lowerdir=/l/top:/l/base"},
+		{name: "exactly one page", layers: []string{fits}, want: "lowerdir=" + fits},
+		{name: "one byte over a page", layers: []string{fits + "a"}, wantErr: "exceed page size"},
+		{name: "many layers over a page", layers: slices.Repeat([]string{"/l/" + strings.Repeat("x", 60)}, page/60), wantErr: "exceed page size"},
+		{name: "no layers", layers: nil, wantErr: "at least one lower layer"},
+		{name: "empty layer", layers: []string{"/l/top", ""}, wantErr: "cannot be empty"},
+		{name: "colon in a layer", layers: []string{"/l/a:b"}, wantErr: "separator"},
+		{name: "comma in a layer", layers: []string{"/l/a,b"}, wantErr: "separator"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := legacyOverlayMountOptions(tc.layers)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				assert.Empty(t, got)
+
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+			assert.LessOrEqual(t, len(got)+1, page)
+		})
+	}
+}

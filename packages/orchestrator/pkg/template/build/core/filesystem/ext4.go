@@ -384,11 +384,41 @@ func mountOverlayFSModern(layers []string, mountPoint string) error {
 	return nil
 }
 
-func mountOverlayFSLegacy(layers []string, mountPoint string) error {
+// legacyOverlayMountOptions builds the mount(2) data for the lower layers. The kernel copies at most one page
+// of mount data and cuts the rest off without an error, and splits lowerdir at ':' (',' ends the option), so
+// a list that does not fit, or a path with either separator, would mount other directories than the layers.
+func legacyOverlayMountOptions(layers []string) (string, error) {
 	if len(layers) == 0 {
-		return fmt.Errorf("overlay mount requires at least one lower layer")
+		return "", errors.New("overlay mount requires at least one lower layer")
 	}
-	opts := "lowerdir=" + strings.Join(layers, ":")
+
+	for _, layer := range layers {
+		if layer == "" {
+			return "", errors.New("overlay lower layer path cannot be empty")
+		}
+		if strings.ContainsAny(layer, ",:") {
+			return "", fmt.Errorf("overlay lower layer path contains a legacy mount separator: %q", layer)
+		}
+	}
+
+	options := "lowerdir=" + strings.Join(layers, ":")
+	if len(options)+1 > os.Getpagesize() {
+		return "", fmt.Errorf(
+			"legacy overlay mount options exceed page size: size=%d limit=%d layers=%d",
+			len(options)+1,
+			os.Getpagesize(),
+			len(layers),
+		)
+	}
+
+	return options, nil
+}
+
+func mountOverlayFSLegacy(layers []string, mountPoint string) error {
+	opts, err := legacyOverlayMountOptions(layers)
+	if err != nil {
+		return err
+	}
 	if err := unix.Mount("overlay", mountPoint, "overlay", 0, opts); err != nil {
 		return fmt.Errorf("mount(2) overlay failed: %w", err)
 	}
