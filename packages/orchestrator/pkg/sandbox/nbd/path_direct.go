@@ -535,7 +535,14 @@ func (d *DirectPathMount) Close(ctx context.Context) error {
 	if idx != math.MaxUint32 {
 		err := disconnectNBDWithTimeout(ctx, idx, disconnectTimeout)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("error disconnecting NBD: %w", err))
+			if ferr := ForceDisconnect(ctx, idx); ferr != nil {
+				errs = append(errs, fmt.Errorf("error disconnecting NBD: %w", errors.Join(err, ferr)))
+			} else {
+				logger.L().Warn(ctx, "NBD disconnect failed, force disconnect succeeded",
+					zap.Uint32("device_index", idx),
+					zap.Error(err),
+				)
+			}
 		}
 	}
 
@@ -553,7 +560,11 @@ func (d *DirectPathMount) Close(ctx context.Context) error {
 	// Release the device back to the pool, retry if it is in use
 	if idx != math.MaxUint32 {
 		telemetry.ReportEvent(ctx, "releasing device to the pool")
-		err := d.devicePool.ReleaseDevice(ctx, idx, WithInfiniteRetry())
+		err := d.devicePool.ReleaseDevice(ctx, idx,
+			WithInfiniteRetry(),
+			WithTimeout(mountReleaseTimeout),
+			WithForceDisconnect(),
+		)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("error releasing overlay device: %w", err))
 		}

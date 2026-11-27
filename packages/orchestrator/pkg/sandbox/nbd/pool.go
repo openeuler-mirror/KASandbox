@@ -28,7 +28,9 @@ const (
 	sysBlockDir                   = "/sys/block"
 	// releaseRetryDelay is how long ReleaseDevice waits before retrying a device
 	// that is still in use.
-	releaseRetryDelay = 500 * time.Millisecond
+	releaseRetryDelay            = 500 * time.Millisecond
+	forceDisconnectEveryAttempts = 5
+	mountReleaseTimeout          = 2 * time.Minute
 )
 
 var (
@@ -215,30 +217,7 @@ func (d *DevicePool) Populate(ctx context.Context) {
 // https://superuser.com/questions/919895/how-to-get-a-list-of-connected-nbd-devices-on-ubuntu
 // https://github.com/NetworkBlockDevice/nbd/blob/17043b068f4323078637314258158aebbfff0a6c/nbd-client.c#L254
 func (d *DevicePool) isDeviceFree(slot DeviceSlot) (bool, error) {
-	connected, err := isDeviceConnectedIn(sysBlockDir, slot)
-	if err != nil {
-		return false, err
-	}
-	if connected {
-		// File is present, therefore the device is in use.
-		return false, nil
-	}
-
-	sizeFile := fmt.Sprintf("/sys/block/nbd%d/size", slot)
-
-	data, err := os.ReadFile(sizeFile)
-	if err != nil {
-		return false, fmt.Errorf("failed to read size file: %w", err)
-	}
-
-	sizeStr := strings.TrimSpace(string(data))
-
-	size, err := strconv.ParseUint(sizeStr, 10, 64)
-	if err != nil {
-		return false, fmt.Errorf("failed to parse size: %w", err)
-	}
-
-	return size == 0, nil
+	return IsDeviceFree(slot)
 }
 
 func (d *DevicePool) getMaybeEmptySlot(start DeviceSlot) (DeviceSlot, func(), bool) {
@@ -361,6 +340,10 @@ func (d *DevicePool) ReleaseDevice(ctx context.Context, idx DeviceSlot, opts ...
 			return err
 		}
 
+		if opt.forceDisconnect && attempt%forceDisconnectEveryAttempts == 1 {
+			_ = ForceDisconnect(ctx, idx)
+		}
+
 		if attempt%100 == 0 {
 			logger.L().Error(ctx, "error releasing device", zap.Int("attempt", attempt), zap.Error(err))
 		}
@@ -411,8 +394,9 @@ func (d *DevicePool) Close(ctx context.Context) error {
 }
 
 type releaseOptions struct {
-	timeout       time.Duration
-	infiniteRetry bool
+	timeout         time.Duration
+	infiniteRetry   bool
+	forceDisconnect bool
 }
 
 type ReleaseOption func(*releaseOptions)
@@ -426,5 +410,11 @@ func WithTimeout(timeout time.Duration) ReleaseOption {
 func WithInfiniteRetry() ReleaseOption {
 	return func(opts *releaseOptions) {
 		opts.infiniteRetry = true
+	}
+}
+
+func WithForceDisconnect() ReleaseOption {
+	return func(opts *releaseOptions) {
+		opts.forceDisconnect = true
 	}
 }
