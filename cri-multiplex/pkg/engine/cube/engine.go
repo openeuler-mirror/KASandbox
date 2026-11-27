@@ -75,8 +75,9 @@ type Engine struct {
 	// envdHTTP dials the guest envd directly (SandboxIP:49983). Tests may replace it.
 	envdHTTP *http.Client
 
-	// Background persist coalesces whole-map snapshots so Create only does a
-	// short in-memory map insert (e2b tracker style). Pause/Destroy/Close wait.
+	// Background persist coalesces whole-map snapshots. Create/Resume wait for
+	// durability (KASandbox #71); Pause/Destroy/Close also wait. Other updates
+	// may schedule without waiting.
 	persistMu    sync.Mutex
 	persistCond  *sync.Cond
 	persistDirty bool
@@ -86,6 +87,11 @@ type Engine struct {
 	persistCh    chan struct{}
 	persistStop  chan struct{}
 	persistDone  chan struct{}
+
+	// orphanSeen tracks Cubelet sandbox IDs first observed without a local
+	// record, so Reconcile can honor GracePeriod before destroying them.
+	orphanMu   sync.Mutex
+	orphanSeen map[string]time.Time
 }
 
 var _ engine.RuntimeEngine = (*Engine)(nil)
@@ -128,6 +134,7 @@ func newEngine(cfg Config, client cubeClient) *Engine {
 		persistCh:   make(chan struct{}, 1),
 		persistStop: make(chan struct{}),
 		persistDone: make(chan struct{}),
+		orphanSeen:  map[string]time.Time{},
 	}
 	e.persistCond = sync.NewCond(&e.persistMu)
 	go e.persistLoop()
@@ -194,9 +201,17 @@ func (e *Engine) RestoreState(ctx context.Context) error {
 		return nil
 	}
 	paused := make(map[string]bool, len(listed))
+	known := e.knownCubeletIDs()
+	var orphans []string
 	for _, item := range listed {
+		if item.ID == "" {
+			continue
+		}
 		if item.Paused {
 			paused[item.ID] = true
+		}
+		if !known[item.ID] {
+			orphans = append(orphans, item.ID)
 		}
 	}
 	e.mu.Lock()
@@ -211,6 +226,14 @@ func (e *Engine) RestoreState(ctx context.Context) error {
 	for _, pod := range changed {
 		if err := e.persist(pod); err != nil {
 			return err
+		}
+	}
+	// Startup: Cubelet sandboxes with no local record are unreclaimable via CRI
+	// — destroy them immediately (KASandbox #71). Periodic Reconcile uses grace.
+	for _, id := range orphans {
+		log.Printf("[CubeEngine] restore reclaiming orphan cubelet sandbox=%s", id)
+		if err := e.destroyCubeletSandbox(ctx, id, "restore-orphan"); err != nil {
+			log.Printf("[CubeEngine] WARNING: restore orphan destroy sandbox=%s: %v", id, err)
 		}
 	}
 	return nil
@@ -287,8 +310,10 @@ func (e *Engine) coldCreate(ctx context.Context, req *runtime.RunPodSandboxReque
 	}
 	buildMs := time.Since(buildStart).Milliseconds()
 	commitStart := time.Now()
-	if err := e.commit(pod); err != nil {
-		return nil, err
+	if err := e.commitSync(pod); err != nil {
+		_ = e.client.Destroy(ctx, result.SandboxID, destroyAnnotations(podRunning))
+		_ = e.forget(id)
+		return nil, status.Errorf(codes.Internal, "persist cube sandbox state: %v", err)
 	}
 	commitMs := time.Since(commitStart).Milliseconds()
 	totalMs := time.Since(totalStart).Milliseconds()
@@ -325,8 +350,9 @@ func (e *Engine) resume(ctx context.Context, pod *CubePodState) (*runtime.RunPod
 	if result.SandboxUUID != "" {
 		pod.SandboxUUID = result.SandboxUUID
 	}
-	if err := e.commit(*pod); err != nil {
-		return nil, err
+	if err := e.commitSync(*pod); err != nil {
+		_ = e.client.Destroy(ctx, result.SandboxID, destroyAnnotations(podRunning))
+		return nil, status.Errorf(codes.Internal, "persist cube sandbox state: %v", err)
 	}
 	log.Printf("[CubeEngine] resumed cri=%s sandbox=%s ip=%s", pod.CRISandboxID, pod.SandboxID, result.SandboxIP)
 	return &runtime.RunPodSandboxResponse{PodSandboxId: pod.CRISandboxID}, nil
@@ -410,16 +436,10 @@ func (e *Engine) destroy(ctx context.Context, id string) error {
 	if pod == nil || pod.SandboxID == "" {
 		return e.forget(id)
 	}
-	annotations := map[string]string{
-		annInstanceType:                    instanceTypeCubebox,
-		"cube.master.instance.kill_reason": "request",
-	}
-	if pod.State == podPaused {
-		annotations[annDeleteTombstone] = "true"
-	}
-	if err := e.client.Destroy(ctx, pod.SandboxID, annotations); err != nil {
+	if err := e.client.Destroy(ctx, pod.SandboxID, destroyAnnotations(pod.State)); err != nil {
 		return err
 	}
+	e.clearOrphanSeen(pod.SandboxID)
 	return e.forget(id)
 }
 
@@ -577,7 +597,7 @@ func (e *Engine) podByContainer(id string) (CubePodState, bool) {
 }
 
 // commit updates the in-memory map under a short lock and schedules a
-// background persist. Create/Resume never wait on disk (e2b-style).
+// background persist without waiting.
 func (e *Engine) commit(pod CubePodState) error {
 	cp := clonePod(pod)
 	e.mu.Lock()
@@ -587,8 +607,8 @@ func (e *Engine) commit(pod CubePodState) error {
 	return nil
 }
 
-// commitSync is commit + wait for the coalesced persist worker. Use when the
-// new state must survive a crash before the RPC returns (Pause snap id).
+// commitSync is commit + wait for the coalesced persist worker. Create/Resume
+// and Pause use this so a successful RPC implies durable local state (#71).
 func (e *Engine) commitSync(pod CubePodState) error {
 	cp := clonePod(pod)
 	e.mu.Lock()
@@ -708,11 +728,73 @@ func (e *Engine) ensureEnabled() error {
 	return nil
 }
 
+func destroyAnnotations(state string) map[string]string {
+	annotations := map[string]string{
+		annInstanceType:                    instanceTypeCubebox,
+		"cube.master.instance.kill_reason": "request",
+	}
+	if state == podPaused {
+		annotations[annDeleteTombstone] = "true"
+	}
+	return annotations
+}
+
+func (e *Engine) knownCubeletIDs() map[string]bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make(map[string]bool, len(e.pods))
+	for _, pod := range e.pods {
+		if pod != nil && pod.SandboxID != "" {
+			out[pod.SandboxID] = true
+		}
+	}
+	return out
+}
+
+func (e *Engine) clearOrphanSeen(sandboxID string) {
+	if e == nil || sandboxID == "" {
+		return
+	}
+	e.orphanMu.Lock()
+	delete(e.orphanSeen, sandboxID)
+	e.orphanMu.Unlock()
+}
+
+// destroyCubeletSandbox destroys by Cubelet ID without requiring a local CRI record.
+func (e *Engine) destroyCubeletSandbox(ctx context.Context, sandboxID, reason string) error {
+	if e == nil || e.client == nil || sandboxID == "" {
+		return nil
+	}
+	log.Printf("[CubeEngine] destroy cubelet sandbox=%s reason=%s", sandboxID, reason)
+	if err := e.client.Destroy(ctx, sandboxID, destroyAnnotations(podRunning)); err != nil {
+		return err
+	}
+	e.clearOrphanSeen(sandboxID)
+	return nil
+}
+
 func (e *Engine) CleanupSandbox(ctx context.Context, sandboxID, reason string) error {
 	if e == nil || !e.cfg.Enabled || sandboxID == "" {
 		return nil
 	}
-	return e.destroy(ctx, sandboxID)
+	// Prefer CRI-id lookup; if missing, treat the id as a Cubelet sandbox id
+	// so Restore/Reconcile orphan cleanup tasks can still succeed.
+	if _, ok := e.get(sandboxID); ok {
+		return e.destroy(ctx, sandboxID)
+	}
+	e.mu.Lock()
+	var cri string
+	for id, pod := range e.pods {
+		if pod != nil && pod.SandboxID == sandboxID {
+			cri = id
+			break
+		}
+	}
+	e.mu.Unlock()
+	if cri != "" {
+		return e.destroy(ctx, cri)
+	}
+	return e.destroyCubeletSandbox(ctx, sandboxID, reason)
 }
 
 func (e *Engine) reconcilePause(pod *CubePodState, snap string) {
