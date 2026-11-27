@@ -82,11 +82,14 @@ message TemplateConfig {
   oneof source {
      string fromImage = 11;
      FromTemplateConfig fromTemplate = 14;
-   }
+}
 
   optional FromImageRegistry fromImageRegistry = 15;
 
   string teamID = 16;
+
+  // Android guest version (14/15/16); implies an Android guest when set.
+  string androidVersion = 18;
 
   // Optional during the rolling upgrade. When absent, the template manager
   // uses diskSizeMB as the post-build free-space target.

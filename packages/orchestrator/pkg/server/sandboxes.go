@@ -442,6 +442,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		// key off the running binary exactly instead of re-resolving the
 		// flag, which drifts from this frozen value whenever the flag moves.
 		ResolvedFirecrackerVersion: resolvedFCVersion,
+		AndroidVersion:             string(sbx.Config.VMM.AndroidVersion),
 	}, nil
 }
 
@@ -672,8 +673,9 @@ func (s *Server) List(ctx context.Context, _ *emptypb.Empty) (*orchestrator.Sand
 			SandboxId:   sbx.Runtime.SandboxID,
 			TeamId:      sbx.Runtime.TeamID,
 			ExecutionId: sbx.Runtime.ExecutionID,
-			Vcpu:        sbx.Config.Vcpu,
-			RamMb:       sbx.Config.RamMB,
+			Vcpu:           sbx.Config.Vcpu,
+			RamMb:          sbx.Config.RamMB,
+			AndroidVersion: string(sbx.Config.VMM.AndroidVersion),
 		})
 	}
 

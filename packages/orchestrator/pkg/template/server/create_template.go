@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/fc"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/builderrors"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/buildlogger"
@@ -137,6 +138,10 @@ func (s *ServerStore) TemplateCreate(ctx context.Context, templateRequest *templ
 		KernelVersion:        kernelVersion,
 		FirecrackerVersion:   firecrackerVersion,
 		CmdlineArgs:          cmdlineArgs,
+	}
+	if v := cfg.GetAndroidVersion(); v != "" {
+		template.OsType = string(vmm.OsAndroid)
+		template.AndroidVersion = v
 	}
 	logs := buildlogger.NewLogEntryLogger()
 	buildInfo, err := s.buildCache.Create(template.TeamID, metadata.BuildID, logs)

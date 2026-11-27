@@ -63,7 +63,8 @@ type TemplateConfig struct {
 
 	// VMMType selects the VMM backend for the build sandbox (empty = firecracker).
 	VMMType string
-	OsType  string
+	OsType         string
+	AndroidVersion string
 
 	// FromTemplate is the base template to use for building the template.
 	FromTemplate *templatemanager.FromTemplateConfig
