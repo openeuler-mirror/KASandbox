@@ -347,10 +347,11 @@ func (s *MuxServer) PodSandboxStatus(ctx context.Context, req *runtime.PodSandbo
 
 func (s *MuxServer) ListPodSandbox(ctx context.Context, req *runtime.ListPodSandboxRequest) (*runtime.ListPodSandboxResponse, error) {
 	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex
-		allItems []*runtime.PodSandbox
-		errs     []error
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		allItems  []*runtime.PodSandbox
+		errs      []error
+		succeeded int
 	)
 
 	for _, mod := range s.reg.Modules() {
@@ -362,6 +363,7 @@ func (s *MuxServer) ListPodSandbox(ctx context.Context, req *runtime.ListPodSand
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s.ListPodSandbox: %w", e.Type(), err))
 			} else {
+				succeeded++
 				allItems = append(allItems, resp.Items...)
 			}
 			mu.Unlock()
@@ -369,7 +371,10 @@ func (s *MuxServer) ListPodSandbox(ctx context.Context, req *runtime.ListPodSand
 	}
 
 	wg.Wait()
-	if len(errs) > 0 && len(allItems) == 0 {
+	// A successful empty list must not be treated as failure: Cube-only nodes
+	// keep e2b registered but unreachable, and kubelet delete/GC filters often
+	// match nothing (KASandbox #55).
+	if succeeded == 0 && len(errs) > 0 {
 		return nil, fmt.Errorf("all engines failed: %w", errors.Join(errs...))
 	}
 	return &runtime.ListPodSandboxResponse{Items: allItems}, nil
@@ -381,6 +386,7 @@ func (s *MuxServer) ListContainers(ctx context.Context, req *runtime.ListContain
 		mu            sync.Mutex
 		allContainers []*runtime.Container
 		errs          []error
+		succeeded     int
 	)
 
 	for _, mod := range s.reg.Modules() {
@@ -392,6 +398,7 @@ func (s *MuxServer) ListContainers(ctx context.Context, req *runtime.ListContain
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s.ListContainers: %w", e.Type(), err))
 			} else {
+				succeeded++
 				allContainers = append(allContainers, resp.Containers...)
 			}
 			mu.Unlock()
@@ -399,7 +406,7 @@ func (s *MuxServer) ListContainers(ctx context.Context, req *runtime.ListContain
 	}
 
 	wg.Wait()
-	if len(errs) > 0 && len(allContainers) == 0 {
+	if succeeded == 0 && len(errs) > 0 {
 		return nil, fmt.Errorf("all engines failed: %w", errors.Join(errs...))
 	}
 	return &runtime.ListContainersResponse{Containers: allContainers}, nil
@@ -415,10 +422,11 @@ func (s *MuxServer) ContainerStats(ctx context.Context, req *runtime.ContainerSt
 
 func (s *MuxServer) ListContainerStats(ctx context.Context, req *runtime.ListContainerStatsRequest) (*runtime.ListContainerStatsResponse, error) {
 	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex
-		allStats []*runtime.ContainerStats
-		errs     []error
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		allStats  []*runtime.ContainerStats
+		errs      []error
+		succeeded int
 	)
 
 	for _, mod := range s.reg.Modules() {
@@ -430,6 +438,7 @@ func (s *MuxServer) ListContainerStats(ctx context.Context, req *runtime.ListCon
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s.ListContainerStats: %w", e.Type(), err))
 			} else {
+				succeeded++
 				allStats = append(allStats, resp.Stats...)
 			}
 			mu.Unlock()
@@ -437,7 +446,7 @@ func (s *MuxServer) ListContainerStats(ctx context.Context, req *runtime.ListCon
 	}
 
 	wg.Wait()
-	if len(errs) > 0 && len(allStats) == 0 {
+	if succeeded == 0 && len(errs) > 0 {
 		return nil, fmt.Errorf("all engines failed: %w", errors.Join(errs...))
 	}
 	return &runtime.ListContainerStatsResponse{Stats: allStats}, nil
@@ -544,6 +553,7 @@ func (s *MuxServer) ListImages(ctx context.Context, req *runtime.ListImagesReque
 		mu        sync.Mutex
 		allImages []*runtime.Image
 		errs      []error
+		succeeded int
 	)
 
 	for _, mod := range s.reg.Modules() {
@@ -555,6 +565,7 @@ func (s *MuxServer) ListImages(ctx context.Context, req *runtime.ListImagesReque
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s.ListImages: %w", e.Type(), err))
 			} else {
+				succeeded++
 				allImages = append(allImages, resp.Images...)
 			}
 			mu.Unlock()
@@ -562,7 +573,7 @@ func (s *MuxServer) ListImages(ctx context.Context, req *runtime.ListImagesReque
 	}
 
 	wg.Wait()
-	if len(errs) > 0 && len(allImages) == 0 {
+	if succeeded == 0 && len(errs) > 0 {
 		return nil, fmt.Errorf("all engines failed: %w", errors.Join(errs...))
 	}
 	return &runtime.ListImagesResponse{Images: allImages}, nil

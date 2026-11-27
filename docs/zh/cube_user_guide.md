@@ -2,7 +2,7 @@
 
 > Cube 是基于 **RustVMM / KVM（Cloud Hypervisor 定制树 `cube-hypervisor`）** 的沙箱执行后端。在 KASandbox 体系中，它与 Firecracker（E2B）/ Android（StratoVirt）并列：通过 **cri-multiplex** 的 `RuntimeHandler=cube` 接入 CRI，由本机 **Cubelet** 创建 MicroVM 沙箱。  
 > 本文档覆盖环境准备、CubeSandbox 部署、模板制作、本机验证、K8S / SandboxSched 接入、运维与排障。  
-> Firecracker 路径请见 [E2B 使用文档](./e2b_user_guide.md)；Android 路径请见 [Android 沙箱用户指南](./e2b_android_user_guide.md)。
+> E2B 编排栈（api / orchestrator / envd / Harbor 部署等）已拆到独立仓 [src-openeuler/e2b-infra](https://atomgit.com/src-openeuler/e2b-infra)；KASandbox 只保留 cri-multiplex、e2b-webhook 与节点部署脚本。Android 路径请见 [Android 沙箱用户指南](./e2b_android_user_guide.md)。
 
 ## 目录
 
@@ -73,8 +73,8 @@
 
 - Cube CRI **不依赖** E2B orchestrator；直连本机 Cubelet `:9999`。
 - 模板主路径与 E2B 对齐：自构建 OCI → Harbor → `tpl create-from-image`；无 Harbor 时可走官方预置镜像（§6.5）。
-- 仅跑 Cube 时，**不必**装完整 `e2b-infra` 控制面；至少要：`cubesandbox` + 带 cri-multiplex 的 `KASandbox`（或源码 `./build.sh -c`）。
-- 同一套 cri-multiplex 可同时承载 `e2b` / `android` / `cube` 三个 RuntimeClass。
+- 仅跑 Cube 时，**不必**装 [e2b-infra](https://atomgit.com/src-openeuler/e2b-infra) 编排栈；至少要：`cubesandbox` + 带 Cube 能力的 `KASandbox` cri-multiplex（源码 `./build.sh -c`，或确认二进制有 `-cube-enabled`）。
+- 同一套 cri-multiplex 可同时注册 `e2b` / `android` / `cube` 等后端；Cube-only 节点也可以只开 `-cube-enabled`（不必起 e2b orchestrator）。
 
 ---
 
@@ -90,7 +90,7 @@
 
 ### 2.2 本机验证快速上手
 
-主路径与 [E2B §7](./e2b_user_guide.md#7-模板管理) 对齐：**自构建 OCI → 推 Harbor → `tpl create-from-image`**（详见第 6 章）。
+主路径与 E2B 模板流程对齐（Harbor 等见 [e2b-infra](https://atomgit.com/src-openeuler/e2b-infra)）：**自构建 OCI → 推 Harbor → `tpl create-from-image`**（详见第 6 章）。
 
 ```bash
 # 0. 先做第 4 章前提：/dev/kvm、/data/cubelet=XFS、Docker ≥ 25
@@ -103,7 +103,7 @@ ss -lntp | grep -E '9999|3000|3010'
 curl -sS http://127.0.0.1:3000/health
 cubeopscli node list --json   # 至少 1 个 Healthy=true
 
-# 3. 自构建并推 Harbor（Harbor 已按 E2B 文档部署；SERVER_IP / 密码自行替换）
+# 3. 自构建并推 Harbor（Harbor 已按 e2b-infra 文档部署；SERVER_IP / 密码自行替换）
 SERVER_IP=<SERVER_IP>
 HARBOR_PASSWORD=<HARBOR_PASSWORD>
 mkdir -p /tmp/cube-selfbuild-img && cat > /tmp/cube-selfbuild-img/Dockerfile <<'EOF'
@@ -138,13 +138,15 @@ cd /path/to/KASandbox/cri-multiplex/cube-verify
 ```bash
 # 节点已装 CubeSandbox（控制面或 install-compute.sh）且模板 READY 后：
 
-# 1. 安装 KASandbox RPM（含 cri-multiplex）
+# 1. 安装 KASandbox RPM（含 cri-multiplex / k8s-deploy.sh；落盘前缀仍为 /opt/e2b-infra）
 rpm -ivh KASandbox-*.rpm
-cd /opt/e2b-infra
+cd /opt/e2b-infra/standard
 
 # 2. 部署 cri-multiplex 并切换 kubelet endpoint、创建 RuntimeClass cube
+#    二进制须支持 -cube-enabled（可用 --help | grep cube-enabled 确认）
 export CRI_MULTIPLEX_CUBE_ENABLED=true
 export CRI_MULTIPLEX_CUBELET=127.0.0.1:9999
+# 可选：export CRI_MULTIPLEX_BIN=/opt/e2b-infra/bin/cri-multiplex
 sudo -E ./k8s-deploy.sh cri-multiplex
 
 # 3. Pod 使用 runtimeClassName: cube，并带齐 cube.dev/* 注解（或 webhook resolve）
@@ -198,9 +200,11 @@ kubectl get runtimeclass cube
 
 | RPM / 源仓 | 装什么 | 装到哪 | 是否含 Cubelet |
 |------------|--------|--------|----------------|
-| **`cubesandbox`** | Cubelet / CubeMaster / CubeAPI / shim / guest 等 | `/usr/local/services/cubetoolbox` | **是** |
-| **`KASandbox`** | cri-multiplex、e2b-webhook、`k8s-deploy.sh` 等 | `/opt/e2b-infra` | **否** |
-| **`e2b-infra`** | E2B 运行时（orchestrator/api/…） | `/opt/e2b-infra` | **否**（Cube CRI 不依赖） |
+| **`cubesandbox`**（[src-openeuler/CubeSandbox](https://atomgit.com/src-openeuler/CubeSandbox)） | Cubelet / CubeMaster / CubeAPI / shim / guest 等 | `/usr/local/services/cubetoolbox` | **是** |
+| **`KASandbox`**（[src-openeuler/KASandbox](https://atomgit.com/src-openeuler/KASandbox)） | cri-multiplex、e2b-webhook、`k8s-deploy.sh` 等 | `/opt/e2b-infra`（脚本多在 `standard/`） | **否** |
+| **`e2b-infra`**（[src-openeuler/e2b-infra](https://atomgit.com/src-openeuler/e2b-infra)） | E2B 编排栈（api / orchestrator / envd / …） | `/opt/e2b-infra` | **否**（Cube CRI **不依赖**） |
+
+说明：历史安装前缀仍叫 `/opt/e2b-infra`，但 **E2B 编排已不在 KASandbox 仓内**；只要 Cube 时不必装 `e2b-infra` RPM。`k8s-deploy.sh` / `build.sh` 等节点脚本在 KASandbox 包内通常位于 **`/opt/e2b-infra/standard/`**。
 
 运行时产品是上游 [TencentCloud/CubeSandbox](https://github.com/TencentCloud/CubeSandbox) **v0.7.2**。`cubesandbox` RPM 来自 [src-openeuler/CubeSandbox](https://atomgit.com/src-openeuler/CubeSandbox)（本地目录 `CubeSandbox/`），在这份上游上加了 webhook resolve、CRI 归属护栏和 `/internal` 门面。第 5.1 节的官方 one-click 没有这三项。
 
@@ -283,16 +287,18 @@ docker compose version  # 或 docker-compose version
 | snap Docker | 读不到 `/usr/local/services`；若已装：`sudo snap remove docker` |
 | openEuler / 发行版自带过旧 Docker | 版本往往 &lt; 25，one-click 依赖会失败 |
 
-**方式 A（已装 KASandbox RPM，推荐与 E2B 同机时）**：
+**方式 A（与 E2B 同机、已装 e2b-infra / 带 deploy 脚本的包时）**：
 
 ```bash
-cd /opt/e2b-infra
+cd /opt/e2b-infra/standard   # 若目录不存在，再试 /opt/e2b-infra
 ./build.sh --download          # 拉 docker-25.0.5.tgz 与 compose
 sudo ./build.sh --deploy docker
 docker version && docker compose version
 ```
 
-**方式 B（静态包，仅装 Docker）**：
+仅跑 Cube、未装 e2b-infra 时请用方式 B，不必为装 Docker 去拉 E2B 编排包。
+
+**方式 B（静态包，仅装 Docker；Cube-only 推荐）**：
 
 ```bash
 # 架构二选一
@@ -466,7 +472,7 @@ export CUBE_ADMIN_TOKEN=...    # 与 env 文件一致
 
 ## 6. 模板管理
 
-推荐流程与 [E2B §7](./e2b_user_guide.md#7-模板管理) 一致：
+推荐流程与 E2B 侧模板习惯一致（编排/Harbor 细节见 [e2b-infra](https://atomgit.com/src-openeuler/e2b-infra)）：
 
 1. **自构建** OCI 镜像（`docker build`）
 2. **推送到 Harbor**（`e2b-orchestration` 或其他项目）
@@ -477,11 +483,11 @@ CubeAPI **不接受** `from_dockerfile` 式 Template.build；须先有可拉的 
 
 ### 6.1 与 E2B 镜像流程的差异
 
-| 步骤 | E2B | Cube |
+| 步骤 | E2B（[e2b-infra](https://atomgit.com/src-openeuler/e2b-infra)） | Cube |
 |------|-----|------|
-| 制作镜像 | `./build.sh --make` / 手改 Dockerfile | `docker build`（可基于 `sandbox-code` / `cubesandbox-base`） |
+| 制作镜像 | e2b-infra 的 `./build.sh --make` / 手改 Dockerfile | `docker build`（可基于 `sandbox-code` / `cubesandbox-base`） |
 | 上传 | 推 Harbor `e2b-orchestration` | **同样推荐**推同一 Harbor |
-| 建模板 | `create_template.py` | `cubemastercli tpl create-from-image` |
+| 建模板 | `create_template.py` 等 | `cubemastercli tpl create-from-image` |
 | 就绪 | provision + envd / `wait_for_port` | MicroVM 内 HTTP probe **2xx** 后打快照 |
 
 前置：CubeOps 中至少有一个 **Healthy** 计算节点（`cubeopscli node list`），否则会卡在 `DISTRIBUTING`（`no healthy nodes` / `context deadline exceeded`）。
@@ -513,7 +519,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 \
 
 ### 6.3 推送到 Harbor
 
-Harbor 按 [E2B 文档](./e2b_user_guide.md) 部署（K8S 模式 HTTPS `:30443`）。推送与 E2B 相同：
+Harbor 按 [e2b-infra](https://atomgit.com/src-openeuler/e2b-infra) 文档部署（K8S 模式常见 HTTPS `:30443`）。推送命令与 E2B 相同；仅跑 Cube 时也可自建任意可拉的 OCI 仓库，不必装完整 e2b-infra：
 
 ```bash
 SERVER_IP=<SERVER_IP>
@@ -627,9 +633,9 @@ cd /path/to/KASandbox/cri-multiplex/cube-verify
 
 | 动作 | 协议 |
 |------|------|
-| Create / Resume | CRI `RunPodSandbox`（同 uid 且本地 paused → Resume） |
+| Create / Resume | CRI `RunPodSandbox`（同 uid 且本地 paused/parked → Resume，用引擎自己的 `snap-<24 hex>`，不用目录号 `csnap-`） |
 | Pause / Checkpoint / GetRuntime | Admin v2 |
-| Remove | CRI `RemovePodSandbox` → Cubelet Destroy |
+| Remove | 运行中：Cubelet Destroy，列表里留 NOTREADY。刚暂停：只把快照留在本机，供同 uid Resume；过几秒再 Remove 才 Destroy |
 
 ### 7.3 压测脚本
 
@@ -675,29 +681,46 @@ ROUNDS=5 CUBE_PROXY_NODE_IP=<节点IP> \
 
 ### 8.1 前置条件
 
-- 节点已有 containerd + kubelet
+- 节点已有 containerd + kubelet（集群可用 KubeKey 等自建；**不必**为此安装 e2b-infra 编排栈）
 - 本机或同机可达 Cubelet `:9999`；控制面 CubeAPI 可达（webhook resolve 时需要）
 - 每台跑 Cube 沙箱的节点：已装 cubesandbox 并 `install.sh` 或 `install-compute.sh`
+- 已装带 Cube 能力的 KASandbox cri-multiplex（`cri-multiplex --help | grep cube-enabled`）
 - 至少有一个 READY 模板（可在控制面构建后分发）
+
+> 注意：部分 KubeKey 流程会替换宿主 `/usr/bin/containerd`；若节点原先用 Docker 静态包的 containerd，部署 K8S 前后请核对 `containerd --version` 与 docker/containerd 是否仍可用。
 
 ### 8.2 部署 cri-multiplex（开 Cube）
 
 ```bash
-cd /opt/e2b-infra
+cd /opt/e2b-infra/standard
 
 export CRI_MULTIPLEX_CUBE_ENABLED=true
 export CRI_MULTIPLEX_CUBELET=127.0.0.1:9999
-# 可选：export CRI_MULTIPLEX_BIN=/opt/e2b-infra/bin/cri-multiplex
+# 可选：指定带 -cube-enabled 的二进制
+# export CRI_MULTIPLEX_BIN=/opt/e2b-infra/bin/cri-multiplex
 
 sudo -E ./k8s-deploy.sh cri-multiplex
 ```
 
-脚本会：
+脚本会（需使用已接上 Cube 接线的 `k8s-deploy.sh`）：
 
-1. 写入 `/etc/systemd/system/cri-multiplex.service`（含 `-cube-enabled` / `-cubelet-address`）
+1. 写入 `/etc/systemd/system/cri-multiplex.service`（含 `-cube-enabled` / `-cubelet-address`，以及 `-hide-sandbox-label flux-sandbox.io/direct=true`）
 2. `systemctl enable --now cri-multiplex`，等待 `/run/cri-multiplex.sock`
 3. 将 kubelet runtime endpoint 切到该 socket 并重启 kubelet
 4. 创建 RuntimeClass：`android` / `e2b` / **`cube`**
+
+部署后自检：
+
+```bash
+systemctl cat cri-multiplex | grep -E 'cube-enabled|cubelet-address'
+kubectl get runtimeclass cube
+# 期望日志含 cube-enabled: true
+journalctl -u cri-multiplex -n 20 --no-pager | grep cube-enabled
+```
+
+> OpenFuyao agent 直连创建的 Cube 沙箱没有对应 K8s Pod。必须带上 `-hide-sandbox-label`，Cube 引擎才会把带 `flux-sandbox.io/direct=true` 的沙箱从 CRI List 里藏掉，否则 kubelet 会在约 1 秒内当孤儿清掉。
+
+> **Cube-only**：不必起 e2b orchestrator（`:5008`）。cri-multiplex 仍可能注册 e2b 引擎；较新版本在「其他引擎成功返回空列表、仅 e2b 不可达」时不会把 `ListPodSandbox` 判成整体失败，否则删除 cube Pod 可能卡在 Terminating。
 
 ### 8.3 RuntimeClass 与 Pod 注解
 
@@ -727,6 +750,7 @@ e2b-webhook 随 KASandbox 提供。CubeProvider 行为：
 
 - Pod 指定 `runtimeClassName: cube`（或策略选中 cube）时只注入 `cube.dev/*`（与 engine 一致，不双写 `sandbox.cri/*`）
 - 若缺少 `template-id` / `vcpu` / `ram-mb`，且配置了 `CUBE_API_URL`，则请求 CubeAPI `POST /templates/resolve` 补全
+- 若缺少 `disk-mb`，再 `GET /templates/{id}` 从 `writable_layer_size`（或 volume size_limit）补齐；须与模板可写层一致，否则冷启动会对快照 rootfs resize 失败
 
 按集群需要用 Helm / 部署脚本拉起 webhook，并保证其能访问 CubeAPI。
 
@@ -802,7 +826,7 @@ systemctl status cube-sandbox-cube-api
 ### 10.2 卸载 cri-multiplex
 
 ```bash
-cd /opt/e2b-infra
+cd /opt/e2b-infra/standard
 sudo ./k8s-deploy.sh cri-multiplex-uninstall
 ```
 
@@ -844,11 +868,13 @@ sudo systemctl restart cube-sandbox-cube-api
 | 模板一直非 READY | `tpl watch`；检查镜像拉取、probe 端口是否监听并返回 2xx、CubeOps 是否有 Healthy 节点 |
 | `DISTRIBUTING` / `no healthy nodes` | `cubeopscli node list`；确认 Cubelet 已向 CubeOps `:3010` 注册且 Ready |
 | Harbor HTTPS x509 / 拉镜像失败 | 给 CubeMaster/TemplateCenter 配置 `SSL_CERT_FILE`（含 Harbor CA）并重启 |
-| cri-multiplex 无 cube | 确认 `-cube-enabled=true` 且能连 `CUBELET_ADDR` |
-| Create 缺字段失败 | 补齐 `cube.dev/*` 与 rootfs 相关注解，或配置 webhook + `CUBE_API_URL` |
+| cri-multiplex 无 cube | `systemctl cat cri-multiplex` 须有 `-cube-enabled=true`；二进制 `--help` 须支持该 flag；并能连 `CUBELET_ADDR` |
+| `k8s-deploy.sh: No such file` / `rc=127` | 脚本在 `/opt/e2b-infra/standard/`，不要只 `cd /opt/e2b-infra` |
+| Create 缺字段失败 / Pod 一直 ContainerCreating | 补齐 `cube.dev/*` 与 rootfs 相关注解（附录 C），或配置 webhook + `CUBE_API_URL`；节点 Ready ≠ 注解已齐 |
+| cube Pod 删不掉 / `all engines failed`（e2b dial :5008） | Cube-only 下 e2b 不可达时的 List 聚合问题；升级含修复的 cri-multiplex，或保证过滤 List 时至少有一个引擎成功返回（可为空） |
 | Resume 失败 | CRI Resume 仅本机 origin；跨节点恢复不在当前 CRI 范围 |
-| Harbor 推了镜像但建模板失败 | 不用 `create_template.py`；用 `tpl create-from-image`；HTTP 仓加 `http://` 前缀 |
-| 只要 Cube、不要 E2B 全家桶 | 可不装 `e2b-infra`；`KASandbox` + `cubesandbox` 即可（无 Harbor 时走 §6.5 预置镜像） |
+| Harbor 推了镜像但建模板失败 | 不用 E2B 的 `create_template.py`；用 `tpl create-from-image`；HTTP 仓加 `http://` 前缀 |
+| 只要 Cube、不要 E2B 全家桶 | **不必**装 [e2b-infra](https://atomgit.com/src-openeuler/e2b-infra)；`KASandbox` + `cubesandbox` 即可（无 Harbor 时走 §6.5 预置镜像） |
 | Docker 过旧 / snap | 见 [4.2.3](#423-docker--25--compose-v2)：卸 snap，装 ≥ 25 |
 | `/internal` 返回 401 | env 里要有 `CUBE_ADMIN_TOKEN`，请求头 `X-Admin-Token` 与之一致，并已重启 cube-api |
 | `last-snapshot` 404 | 先 `pause-snapshot`，再 `POST /internal/builds/{build_id}/status` 且 `status=success` |
@@ -891,12 +917,12 @@ ROUNDS=5 CUBE_PROXY_NODE_IP=<节点IP> \
   BENCH_DIR=/path/to/TencentCloud/CubeSandbox \
   bash run_stability.sh
 
-# —— K8S ——
+# —— K8S（KASandbox 包；脚本在 standard/）——
 export CRI_MULTIPLEX_CUBE_ENABLED=true
 export CRI_MULTIPLEX_CUBELET=127.0.0.1:9999
-sudo -E /opt/e2b-infra/k8s-deploy.sh cri-multiplex
+sudo -E /opt/e2b-infra/standard/k8s-deploy.sh cri-multiplex
 kubectl get runtimeclass cube
-sudo /opt/e2b-infra/k8s-deploy.sh cri-multiplex-uninstall
+sudo /opt/e2b-infra/standard/k8s-deploy.sh cri-multiplex-uninstall
 
 # —— SandboxSched ——
 bash CubeSandbox/docs/sandboxsched-cube-smoke.sh
@@ -940,8 +966,8 @@ sudo /usr/local/services/cubetoolbox/scripts/uninstall-internal-meta.sh --purge-
 | `/usr/local/services/cubetoolbox/scripts/uninstall-internal-meta.sh` | 清除 env；`--purge-db` 删 catalog |
 | `/etc/cube/cube-api.env` | `CUBE_ADMIN_TOKEN` / `CUBE_INTERNAL_META_DB` |
 | `/data/cubelet` | Cubelet 数据（须 XFS） |
-| `/opt/e2b-infra/bin/cri-multiplex` | KASandbox 包内 CRI |
-| `/opt/e2b-infra/k8s-deploy.sh` | K8S 节点侧部署 |
+| `/opt/e2b-infra/bin/cri-multiplex` | KASandbox 包内 CRI（须支持 `-cube-enabled`） |
+| `/opt/e2b-infra/standard/k8s-deploy.sh` | K8S 节点侧部署（KASandbox 包；历史前缀仍为 e2b-infra） |
 | `KASandbox/cri-multiplex/cube-verify/` | 本机验证脚本 |
 | `KASandbox/cri-multiplex/pkg/engine/cube/README.md` | Cube 后端行为说明 |
 | `CubeSandbox/docs/cri-cube-deploy.md` | CRI+Cube 部署备忘 |
