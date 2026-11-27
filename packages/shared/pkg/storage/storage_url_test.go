@@ -62,6 +62,16 @@ func TestParseStorageURL(t *testing.T) {
 			want: Spec{Provider: AzureStorageProvider, Bucket: "my-container"},
 		},
 		{
+			name: "mooncake bucket",
+			url:  "mooncake://kasmc-templates",
+			want: Spec{Provider: MooncakeStorageProvider, Bucket: "kasmc-templates"},
+		},
+		{
+			name:    "mooncake rejects query parameters",
+			url:     "mooncake://kasmc-templates?endpoint=http://master:50051",
+			wantErr: "mooncake:// does not accept query parameters",
+		},
+		{
 			name:    "azblob rejects query parameters",
 			url:     "azblob://my-container?endpoint=http://azurite:10000",
 			wantErr: "azblob:// does not accept query parameters",

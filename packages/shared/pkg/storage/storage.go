@@ -139,6 +139,12 @@ type MetadataReader interface {
 	Metadata(ctx context.Context) (ObjectMetadata, error)
 }
 
+// StreamStorer is an optional Blob capability: store an object of unknown
+// size from a reader without holding it all in memory.
+type StreamStorer interface {
+	StoreReader(ctx context.Context, r io.Reader, opts ...PutOption) error
+}
+
 // BlobCustomMetadata returns the blob's custom metadata, or ErrMetadataUnsupported
 // when the backend can't read it — so callers can distinguish "no tombstone"
 // from "couldn't check" and fail closed under enforcement.

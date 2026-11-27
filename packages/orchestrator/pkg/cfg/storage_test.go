@@ -74,6 +74,12 @@ func TestTemplateStorage_Legacy(t *testing.T) {
 			want:     storage.Spec{Provider: storage.AzureStorageProvider, Bucket: "fc-templates"},
 		},
 		{
+			name:     "mooncake bucket",
+			provider: "MooncakeBucket",
+			bucket:   "kasmc-templates",
+			want:     storage.Spec{Provider: storage.MooncakeStorageProvider, Bucket: "kasmc-templates"},
+		},
+		{
 			name:     "local absolute path",
 			provider: "Local",
 			basePath: "/tmp/some-cache",

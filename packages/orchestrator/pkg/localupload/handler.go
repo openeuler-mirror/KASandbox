@@ -1,6 +1,7 @@
 package localupload
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -10,12 +11,15 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 )
 
-// Handler serves local file uploads for filesystem-backed storage.
+// Handler serves uploads for build cache storage that cannot presign URLs:
+// the local filesystem, or Mooncake through its storage provider.
 // It validates HMAC-signed tokens before accepting PUT requests.
-// This handler is only registered when STORAGE_PROVIDER=Local.
 type Handler struct {
 	basePath string
+	provider storage.StorageProvider
 	hmacKey  []byte
+	// maxBytes caps one upload to the provider; 0 means no cap.
+	maxBytes int64
 }
 
 // NewHandler creates a new local upload handler.
@@ -25,6 +29,16 @@ func NewHandler(basePath string, hmacKey []byte) *Handler {
 	return &Handler{
 		basePath: basePath,
 		hmacKey:  hmacKey,
+	}
+}
+
+// NewProviderHandler creates an upload handler that stores into provider.
+// A body larger than maxBytes (0: no cap) is refused with 413.
+func NewProviderHandler(provider storage.StorageProvider, hmacKey []byte, maxBytes int64) *Handler {
+	return &Handler{
+		provider: provider,
+		hmacKey:  hmacKey,
+		maxBytes: maxBytes,
 	}
 }
 
@@ -62,6 +76,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Prevent path traversal
 	if !filepath.IsLocal(path) {
 		http.Error(w, "invalid path", http.StatusBadRequest)
+
+		return
+	}
+
+	if h.provider != nil {
+		h.storeToProvider(w, r, path)
 
 		return
 	}
@@ -119,6 +139,42 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stored = true
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) storeToProvider(w http.ResponseWriter, r *http.Request, path string) {
+	blob, err := h.provider.OpenBlob(r.Context(), path)
+	if err != nil {
+		http.Error(w, "failed to open object", http.StatusInternalServerError)
+
+		return
+	}
+
+	body := r.Body
+	if h.maxBytes > 0 {
+		body = http.MaxBytesReader(w, r.Body, h.maxBytes)
+	}
+
+	if s, ok := blob.(storage.StreamStorer); ok {
+		err = s.StoreReader(r.Context(), body)
+	} else {
+		var data []byte
+		if data, err = io.ReadAll(body); err == nil {
+			err = blob.Put(r.Context(), data)
+		}
+	}
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "upload too large", http.StatusRequestEntityTooLarge)
+
+			return
+		}
+		http.Error(w, "failed to store file", http.StatusInternalServerError)
+
+		return
+	}
 
 	w.WriteHeader(http.StatusOK)
 }

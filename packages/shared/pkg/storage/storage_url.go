@@ -17,11 +17,12 @@ import (
 type Provider string
 
 const (
-	GCPStorageProvider   Provider = "GCPBucket"
-	AWSStorageProvider   Provider = "AWSBucket"
-	AzureStorageProvider Provider = "AzureBucket"
-	MinioStorageProvider Provider = "MinioBucket"
-	LocalStorageProvider Provider = "Local"
+	GCPStorageProvider      Provider = "GCPBucket"
+	AWSStorageProvider      Provider = "AWSBucket"
+	AzureStorageProvider    Provider = "AzureBucket"
+	MinioStorageProvider    Provider = "MinioBucket"
+	MooncakeStorageProvider Provider = "MooncakeBucket"
+	LocalStorageProvider    Provider = "Local"
 
 	DefaultStorageProvider Provider = GCPStorageProvider
 )
@@ -51,6 +52,7 @@ type Spec struct {
 //	s3://bucket?endpoint=http://host:port/s3&s3ForcePathStyle=true S3 / S3-compatible
 //	s3://bucket?region=us-east-1                                   plain AWS S3
 //	azblob://container                                             Azure Blob Storage
+//	mooncake://bucket                                              Mooncake (bucket is a key prefix)
 //	file:///var/lib/storage                                        local filesystem
 //	file:relative/path                                             local filesystem (relative)
 //
@@ -78,10 +80,12 @@ func ParseStorageURL(raw string) (Spec, error) {
 		return parseBucketURL(u, AWSStorageProvider)
 	case "azblob":
 		return parseBucketURL(u, AzureStorageProvider)
+	case "mooncake":
+		return parseBucketURL(u, MooncakeStorageProvider)
 	case "file":
 		return parseFileURL(u)
 	default:
-		return Spec{}, fmt.Errorf("storage URL %q: unsupported scheme %q (want gs, s3, azblob, or file)", redactedURL(u), u.Scheme)
+		return Spec{}, fmt.Errorf("storage URL %q: unsupported scheme %q (want gs, s3, azblob, mooncake, or file)", redactedURL(u), u.Scheme)
 	}
 }
 
@@ -111,7 +115,7 @@ func redactedURL(u *url.URL) string {
 	return c.String()
 }
 
-// parseBucketURL handles the bucket-addressed schemes (gs://, s3://). Only
+// parseBucketURL handles the bucket-addressed schemes (gs://, s3://, azblob://, mooncake://). Only
 // s3:// accepts connection query parameters.
 func parseBucketURL(u *url.URL, provider Provider) (Spec, error) {
 	if err := validateBucketURL(u); err != nil {

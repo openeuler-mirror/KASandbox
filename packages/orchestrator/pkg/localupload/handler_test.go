@@ -286,3 +286,30 @@ func TestHandler_TokenForDifferentPath(t *testing.T) {
 
 	assert.Equal(t, http.StatusForbidden, rr.Code)
 }
+
+// The provider handler refuses a body larger than its cap with 413 and stores
+// nothing; a body within the cap is stored.
+func TestProviderHandler_RejectsUploadOverMaxBytes(t *testing.T) {
+	t.Parallel()
+
+	basePath := t.TempDir()
+	provider, err := storage.NewProvider(t.Context(), storage.Spec{Provider: storage.LocalStorageProvider, BasePath: basePath})
+	require.NoError(t, err)
+	hmacKey := []byte("test-hmac-secret-key-0123456789ab")
+	h := NewProviderHandler(provider, hmacKey, 8)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, signedURL(t, hmacKey, "dir/big", 5*time.Minute), strings.NewReader("more than eight bytes"))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
+	_, err = os.Stat(filepath.Join(basePath, "dir", "big"))
+	assert.True(t, os.IsNotExist(err), "oversized upload was stored")
+
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodPut, signedURL(t, hmacKey, "dir/small", 5*time.Minute), strings.NewReader("8 bytes!"))
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	data, err := os.ReadFile(filepath.Join(basePath, "dir", "small"))
+	require.NoError(t, err)
+	assert.Equal(t, "8 bytes!", string(data))
+}

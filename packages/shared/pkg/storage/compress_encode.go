@@ -47,6 +47,20 @@ func (z *zstdCompressor) compress(src []byte) ([]byte, error) { //nolint:unparam
 	return z.enc.EncodeAll(src, make([]byte, 0, len(src))), nil
 }
 
+// zstdEncoderConcurrency returns how many internal encoders each pooled zstd
+// encoder gets. A pooled encoder compresses one frame at a time, so one is
+// enough. Left unset, klauspost/compress uses GOMAXPROCS, and EncodeAll takes
+// them in turn, so every encoder in use ends up holding all of them: about
+// 2.6 GiB per encoder at 256 cores with 2 MiB frames, against about 9 MiB with
+// one. The output is the same either way.
+func zstdEncoderConcurrency(cfg CompressConfig) int {
+	if cfg.EncoderConcurrency > 0 {
+		return cfg.EncoderConcurrency
+	}
+
+	return 1
+}
+
 // newCompressorPool returns a pool of compressors for the given config.
 // Both LZ4 and zstd encoders are pooled and reused via Reset/EncodeAll.
 // The config is validated eagerly — if zstd options are invalid, an error
@@ -63,9 +77,7 @@ func newCompressorPool(cfg CompressConfig) (*sync.Pool, error) {
 		if cfg.FrameSize() > 0 {
 			zstdOpts = append(zstdOpts, zstd.WithWindowSize(cfg.FrameSize()))
 		}
-		if cfg.EncoderConcurrency > 0 {
-			zstdOpts = append(zstdOpts, zstd.WithEncoderConcurrency(cfg.EncoderConcurrency))
-		}
+		zstdOpts = append(zstdOpts, zstd.WithEncoderConcurrency(zstdEncoderConcurrency(cfg)))
 
 		// Validate options by creating one encoder upfront.
 		first, err := zstd.NewWriter(nil, zstdOpts...)

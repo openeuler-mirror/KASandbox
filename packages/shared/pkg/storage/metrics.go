@@ -54,6 +54,7 @@ const (
 	SourceFS
 	SourcePeer
 	SourceNFS
+	SourceMooncake
 	SourceGCS
 	SourceAWS
 	SourceAzure
@@ -63,14 +64,15 @@ const (
 func (s Source) String() string { return sourceStrings[s] }
 
 var sourceStrings = [numSources]string{
-	UnknownSource: "unknown",
-	SourceMmap:    "mmap",
-	SourceFS:      "fs",
-	SourcePeer:    "peer",
-	SourceNFS:     "nfs",
-	SourceGCS:     "gcs",
-	SourceAWS:     "aws",
-	SourceAzure:   "azure",
+	UnknownSource:  "unknown",
+	SourceMmap:     "mmap",
+	SourceFS:       "fs",
+	SourcePeer:     "peer",
+	SourceNFS:      "nfs",
+	SourceMooncake: "mooncake",
+	SourceGCS:      "gcs",
+	SourceAWS:      "aws",
+	SourceAzure:    "azure",
 }
 
 // Outcome maps a read-path error to the outcome enum. PeerTransitionedError is a

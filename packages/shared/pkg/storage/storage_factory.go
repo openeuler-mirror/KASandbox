@@ -21,7 +21,8 @@ func WithLimiter(limiter *limit.Limiter) Option {
 	return func(o *providerOptions) { o.limiter = limiter }
 }
 
-// WithLocalUpload configures the filesystem provider to sign upload URLs.
+// WithLocalUpload configures the filesystem and Mooncake providers to sign
+// upload URLs served by the orchestrator's /upload endpoint.
 func WithLocalUpload(uploadBaseURL string, hmacKey []byte) Option {
 	return func(o *providerOptions) {
 		o.uploadBaseURL = uploadBaseURL
@@ -45,6 +46,8 @@ func NewProvider(ctx context.Context, spec Spec, opts ...Option) (StorageProvide
 		return NewGCP(ctx, spec.Bucket, o.limiter)
 	case AzureStorageProvider:
 		return newAzureStorage(ctx, spec.Bucket, o.limiter)
+	case MooncakeStorageProvider:
+		return newMooncakeStorage(spec.Bucket, o.uploadBaseURL, o.hmacKey, o.limiter)
 	}
 
 	return nil, fmt.Errorf("unknown storage provider: %s", spec.Provider)

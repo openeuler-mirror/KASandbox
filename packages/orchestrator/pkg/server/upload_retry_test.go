@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,6 +30,10 @@ func TestIsRetryableUploadErr(t *testing.T) {
 		{"parent cancelled", context.Canceled, false},
 		{"deferred seal failed", build.ErrDeferredSealFailed, false},
 		{"deferred seal failed wrapped", fmt.Errorf("rootfs diff path: %w", build.ErrDeferredSealFailed), false},
+		{"local file removed", fmt.Errorf("rootfs.ext4 upload: %w", fmt.Errorf("failed to open local file /orchestrator/build/x: %w",
+			&fs.PathError{Op: "open", Path: "/orchestrator/build/x", Err: syscall.ENOENT})), false},
+		{"local file permission denied", fmt.Errorf("memfile upload: %w",
+			&fs.PathError{Op: "open", Path: "/orchestrator/build/x", Err: syscall.EACCES}), true},
 		{"per-attempt deadline", context.DeadlineExceeded, true},
 		{"gcs 503", errors.New("server error (503)"), true},
 		{"unknown", errors.New("boom"), true},

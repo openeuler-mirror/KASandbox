@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"errors"
+	"io/fs"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/build"
 	"github.com/e2b-dev/infra/packages/shared/pkg/retry"
@@ -34,6 +35,13 @@ func isRetryableUploadErr(err error) bool {
 		return false // nothing to upload
 	case errors.Is(err, storage.ErrObjectNotExist):
 		return false // source vanished; retry cannot recover it
+	case errors.Is(err, fs.ErrNotExist):
+		// The local diff, snapfile or metadata file is gone: the sandbox was
+		// resumed and destroyed while this upload waited its turn, and its
+		// files were cleaned up. Sealed diffs exist before the upload opens
+		// them, so the file never comes back; retrying only holds a graceful
+		// shutdown until the total budget runs out.
+		return false
 	case errors.Is(err, context.Canceled):
 		return false // parent cancelled (shutdown)
 	case errors.Is(err, build.ErrDeferredSealFailed):

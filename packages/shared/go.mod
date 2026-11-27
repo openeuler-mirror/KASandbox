@@ -37,6 +37,7 @@ require (
 	github.com/hashicorp/nomad/api v0.0.0-20260324203407-b27b0c2e019a
 	github.com/jellydator/ttlcache/v3 v3.4.0
 	github.com/klauspost/compress v1.18.7
+	github.com/kvcache-ai/Mooncake/mooncake-store/go v0.0.0-20260811062422-b82b9f86ceb6
 	github.com/launchdarkly/go-sdk-common/v3 v3.3.0
 	github.com/launchdarkly/go-server-sdk/v7 v7.13.0
 	github.com/miekg/dns v1.1.72

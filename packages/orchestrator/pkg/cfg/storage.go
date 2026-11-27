@@ -94,7 +94,8 @@ func legacyStorageURL(e storageEnv, bucket, basePath, name, bucketEnv, defaultBa
 		// The hierarchical file:// form cannot express a relative base
 		// path; use the opaque form.
 		return (&url.URL{Scheme: "file", Opaque: basePath}).String(), nil
-	case storage.GCPStorageProvider, storage.AWSStorageProvider, storage.AzureStorageProvider, storage.MinioStorageProvider:
+	case storage.GCPStorageProvider, storage.AWSStorageProvider, storage.AzureStorageProvider, storage.MinioStorageProvider,
+		storage.MooncakeStorageProvider:
 		if bucket == "" {
 			return "", fmt.Errorf("%s storage bucket not configured: set %s", name, bucketEnv)
 		}
@@ -120,6 +121,9 @@ func legacyStorageURL(e storageEnv, bucket, basePath, name, bucketEnv, defaultBa
 			u.RawQuery = q.Encode()
 		case storage.AzureStorageProvider:
 			u.Scheme = "azblob"
+		case storage.MooncakeStorageProvider:
+			// Connection settings stay in the MOONCAKE_* environment.
+			u.Scheme = "mooncake"
 		}
 
 		return u.String(), nil

@@ -1184,6 +1184,9 @@ func startNFSProxy(
 	return closers, nil
 }
 
+// defaultMooncakeUploadMaxBytes is KASandbox's cap on one signed upload.
+const defaultMooncakeUploadMaxBytes = 10 << 30
+
 func setupBuildStorage(ctx context.Context, limiter *limit.Limiter, orchConfig cfg.Config) (storage.StorageProvider, *localupload.Handler, error) {
 	spec, err := cfg.BuildCacheStorage()
 	if err != nil {
@@ -1192,23 +1195,42 @@ func setupBuildStorage(ctx context.Context, limiter *limit.Limiter, orchConfig c
 
 	opts := []storage.Option{storage.WithLimiter(limiter)}
 
-	var uploadHandler *localupload.Handler
+	// Neither the filesystem nor Mooncake can presign URLs: the orchestrator
+	// serves the uploads itself.
+	localUpload := spec.Provider == storage.LocalStorageProvider || spec.Provider == storage.MooncakeStorageProvider
 
-	if spec.Provider == storage.LocalStorageProvider {
-		hmacKey := make([]byte, 32)
-		if _, err := rand.Read(hmacKey); err != nil {
-			return nil, nil, fmt.Errorf("generate HMAC key: %w", err)
+	var hmacKey []byte
+	if localUpload {
+		// KASandbox's MOONCAKE_UPLOAD_SIGNING_SECRET: nodes behind one upload
+		// endpoint have to share the key. Without it each process signs with a
+		// random key, which is enough when the node that signs also serves.
+		if secret := env.GetEnv("MOONCAKE_UPLOAD_SIGNING_SECRET", ""); secret != "" && spec.Provider == storage.MooncakeStorageProvider {
+			hmacKey = []byte(secret)
+		} else {
+			hmacKey = make([]byte, 32)
+			if _, err := rand.Read(hmacKey); err != nil {
+				return nil, nil, fmt.Errorf("generate HMAC key: %w", err)
+			}
 		}
 
 		uploadBaseURL := orchConfig.LocalUploadBaseURL
 		if uploadBaseURL == "" {
-			uploadBaseURL = fmt.Sprintf("http://localhost:%d", orchConfig.GRPCPort)
+			host := "localhost"
+			if spec.Provider == storage.MooncakeStorageProvider {
+				// Clients upload from outside the node. KASandbox charts set
+				// only the address Mooncake is set up with.
+				host = orchConfig.NodeIP
+				if host == "localhost" {
+					host = env.GetEnv("MOONCAKE_LOCAL_HOSTNAME", host)
+				}
+			}
+			uploadBaseURL = fmt.Sprintf("http://%s:%d", host, orchConfig.GRPCPort)
 		}
 
 		opts = append(opts, storage.WithLocalUpload(uploadBaseURL, hmacKey))
-		uploadHandler = localupload.NewHandler(spec.BasePath, hmacKey)
 
-		logger.L().Info(ctx, "Local upload endpoint enabled for filesystem storage",
+		logger.L().Info(ctx, "Local upload endpoint enabled for build cache storage",
+			zap.String("provider", string(spec.Provider)),
 			zap.String("upload_base_url", uploadBaseURL),
 			zap.String("base_path", spec.BasePath))
 	}
@@ -1216,6 +1238,23 @@ func setupBuildStorage(ctx context.Context, limiter *limit.Limiter, orchConfig c
 	provider, err := storage.NewProvider(ctx, spec, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create build cache storage provider: %w", err)
+	}
+
+	var uploadHandler *localupload.Handler
+	switch {
+	case !localUpload:
+	case spec.Provider == storage.LocalStorageProvider:
+		uploadHandler = localupload.NewHandler(spec.BasePath, hmacKey)
+	default:
+		// KASandbox's MOONCAKE_UPLOAD_MAX_BYTES (default 10 GiB): Mooncake keeps
+		// everything in memory and evicts by key when full, so one oversized
+		// upload would push templates and paused snapshots out.
+		maxBytes, err := env.GetEnvAsInt("MOONCAKE_UPLOAD_MAX_BYTES", defaultMooncakeUploadMaxBytes)
+		if err != nil || maxBytes <= 0 {
+			logger.L().Warn(ctx, "invalid MOONCAKE_UPLOAD_MAX_BYTES, using the default", zap.Error(err), zap.Int("default", defaultMooncakeUploadMaxBytes))
+			maxBytes = defaultMooncakeUploadMaxBytes
+		}
+		uploadHandler = localupload.NewProviderHandler(provider, hmacKey, int64(maxBytes))
 	}
 
 	return provider, uploadHandler, nil
