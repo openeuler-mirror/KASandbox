@@ -1,0 +1,261 @@
+name: ARM64 tests on PRs
+
+on:
+  workflow_call:
+    inputs:
+      run-tests:
+        type: boolean
+        description: "Whether to run ARM64 checks and tests"
+        required: false
+        default: true
+    secrets:
+      CODECOV_TOKEN: { required: false }
+
+permissions:
+  contents: read
+
+jobs:
+  cross-compile:
+    name: Cross-compile all packages for ARM64
+    if: ${{ inputs.run-tests == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Don't use go-setup-cache here: its key has no arch component, so this
+      # job would share it with amd64 jobs and restore a multi-GB cache of
+      # useless amd64 objects, then rebuild everything for arm64 on top —
+      # which can fill the runner disk (and the arm64 objects never get
+      # saved). Keep a dedicated arm64-keyed cache instead.
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - name: Restore ARM64 Go cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-arm64-cross-${{ hashFiles('go.work', 'packages/*/go.mod', 'packages/*/go.sum') }}
+          restore-keys: go-arm64-cross-
+
+      - name: Install ARM64 cross-compiler
+        # packages.microsoft.com (preinstalled on runner images) intermittently
+        # serves invalid clearsigned InRelease files, failing apt-get update.
+        # It's not needed here — gcc comes from the Ubuntu archive — so drop
+        # those sources instead of letting a bad MS mirror fail the job.
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.* /etc/apt/sources.list.d/azure-cli.*
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build and vet packages (pure Go)
+        run: |
+          for pkg in api client-proxy envd shared db; do
+            echo "::group::packages/$pkg"
+            pushd "packages/$pkg" > /dev/null
+            GOARCH=arm64 go build ./...
+            GOARCH=arm64 go vet ./...
+            popd > /dev/null
+            echo "::endgroup::"
+          done
+
+      - name: Build and vet orchestrator (CGO)
+        run: |
+          CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc GOARCH=arm64 go build ./...
+          CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc GOARCH=arm64 go vet ./...
+        working-directory: packages/orchestrator
+
+  arm64-unit-tests:
+    name: Run ARM64 test shards
+    if: ${{ inputs.run-tests == true }}
+    # Shards that only need Docker run on Blacksmith arm64. The orchestrator
+    # shard stays on infra-runner-arm: it needs modprobe nbd.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      GIN_MODE: test
+      # Parallel `go test ./...` binaries derive the same Ryuk session id
+      # and race on `reaper_<hash>` creation. Disable Ryuk; t.Cleanup
+      # handles normal exit, the prune step below handles abnormal exit.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+      # Surfaced as env so upload steps can gate on presence (skipped on fork PRs).
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    strategy:
+      matrix:
+        include:
+          - package: packages/api
+            flag: arm64-api
+            test_path: ./...
+            sudo: false
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+          - package: packages/client-proxy
+            flag: arm64-client-proxy
+            test_path: ./...
+            sudo: false
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+          - package: packages/db
+            flag: arm64-db
+            test_path: ./...
+            sudo: false
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+          # envd mounts via bindfs (FUSE, no modprobe); this shard doubles as
+          # the FUSE-on-Blacksmith canary — if it fails, pin it back to
+          # infra-runner-arm.
+          - package: packages/envd
+            flag: arm64-envd
+            test_path: ./...
+            sudo: true
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+          - package: packages/orchestrator
+            flag: arm64-orchestrator
+            test_path: ./...
+            sudo: true
+            runner: infra-runner-arm
+          - package: packages/shared
+            flag: arm64-shared
+            test_path: ./pkg/...
+            sudo: false
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+      fail-fast: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: ./.github/actions/go-setup-cache
+        with:
+          cache-dependency-paths: |
+            go.work
+            ${{ matrix.package }}/go.mod
+            ${{ matrix.package }}/go.sum
+
+      - name: Reap orphaned Testcontainers from previous runs
+        # Persistent runner + Ryuk disabled: prune leftover containers
+        # from SIGKILL/timeout/OOM in prior jobs.
+        # Two `docker ps` calls because different filter keys AND inside
+        # one call. Don't anchor `name=^reaper_` — Docker silently drops
+        # anchored patterns (docker/cli#1201).
+        run: |
+          set -euo pipefail
+          ids=$(
+            {
+              docker ps -aq --filter "label=org.testcontainers=true"
+              docker ps -aq --filter "name=reaper_"
+            } | sort -u
+          )
+          if [ -n "${ids}" ]; then
+            # shellcheck disable=SC2086
+            docker rm -f ${ids}
+          fi
+
+      - name: Setup envd tests
+        run: |
+          sudo apt-get update && sudo apt-get install -y bindfs
+        if: matrix.package == 'packages/envd'
+
+      - name: Setup orchestrator tests
+        run: |
+          make -C packages/orchestrator fetch-busybox BUILD_ARCH=arm64
+          echo "HOST_BUSYBOX_DIR=$(pwd)/packages/orchestrator/.busybox" >> "$GITHUB_ENV"
+
+          # Enable unprivileged uffd (Ubuntu defaults to 0)
+          echo 1 | sudo tee /proc/sys/vm/unprivileged_userfaultfd
+
+          # Enable hugepages (256 × 2MB = 512MB).
+          # Tests that need more hugepages than available will skip gracefully.
+          sudo mkdir -p /mnt/hugepages
+          sudo mount -t hugetlbfs none /mnt/hugepages
+          echo 256 | sudo tee /proc/sys/vm/nr_hugepages
+
+          # Install extra kernel modules (nbd is not in base modules on GitHub-hosted runners)
+          sudo apt-get update
+          sudo apt-get install -y linux-modules-extra-$(uname -r)
+          sudo modprobe nbd nbds_max=256
+
+          # Disable inotify watching of change events for NBD devices
+          echo 'ACTION=="add|change", KERNEL=="nbd*", OPTIONS:="nowatch"' | sudo tee /etc/udev/rules.d/97-nbd-device.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger
+        if: matrix.package == 'packages/orchestrator'
+
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@v1.13.0
+
+      - name: Compile test binaries
+        working-directory: ${{ matrix.package }}
+        run: sudo -E `which go` test -run '^$' ${{ matrix.test_path }}
+        if: matrix.sudo == true
+
+      # sudo strips PATH; pass it through so gotestsum/go resolve to the runner's
+      # toolchain (1.26.6) instead of /usr/bin/go. Trap chowns reports back to
+      # the runner so uploads can read them even when tests fail.
+      - name: Run tests that require sudo
+        working-directory: ${{ matrix.package }}
+        run: |
+          trap 'sudo chown "$(id -u):$(id -g)" coverage.txt junit.xml 2>/dev/null || true' EXIT
+          sudo -E env "PATH=$PATH" gotestsum --junitfile=junit.xml --format=standard-verbose \
+            -- -timeout 20m -coverprofile=coverage.txt -covermode=atomic ${{ matrix.test_path }}
+        if: matrix.sudo == true
+
+      - name: Compile test binaries
+        working-directory: ${{ matrix.package }}
+        run: go test -run '^$' ${{ matrix.test_path }}
+        if: matrix.sudo == false
+
+      - name: Run tests
+        working-directory: ${{ matrix.package }}
+        run: |
+          gotestsum --junitfile=junit.xml --format=standard-verbose \
+            -- -timeout 20m -coverprofile=coverage.txt -covermode=atomic ${{ matrix.test_path }}
+        if: matrix.sudo == false
+
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() && env.CODECOV_TOKEN != '' && hashFiles(format('{0}/coverage.txt', matrix.package)) != '' }}
+        uses: codecov/codecov-action@v6
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ${{ matrix.package }}/coverage.txt
+          flags: ${{ matrix.flag }},unit
+          disable_search: true
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() && env.CODECOV_TOKEN != '' && hashFiles(format('{0}/junit.xml', matrix.package)) != '' }}
+        uses: codecov/codecov-action@v6
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ${{ matrix.package }}/junit.xml
+          flags: ${{ matrix.flag }},unit
+          disable_search: true
+          report_type: test_results
+
+  arm64_tests:
+    needs:
+      - cross-compile
+      - arm64-unit-tests
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate ARM64 test result
+        run: |
+          if [[ "${{ inputs.run-tests }}" != "true" ]]; then
+            echo "ARM64 tests skipped because test inputs did not change"
+            exit 0
+          fi
+
+          if [[ "${{ needs.cross-compile.result }}" != "success" ]]; then
+            echo "cross-compile result: ${{ needs.cross-compile.result }}"
+            exit 1
+          fi
+
+          if [[ "${{ needs.arm64-unit-tests.result }}" != "success" ]]; then
+            echo "ARM64 unit tests result: ${{ needs.arm64-unit-tests.result }}"
+            exit 1
+          fi
+
+          echo "all ARM64 checks succeeded"

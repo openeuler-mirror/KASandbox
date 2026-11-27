@@ -1,0 +1,136 @@
+# Runs the unit test shards on PRs.
+#
+# The test logic lives in the composite action .github/actions/unit-tests;
+# only the matrix and the Codecov uploads live here.
+
+name: Run tests on PRs
+
+on:
+  workflow_call:
+    inputs:
+      run-tests:
+        type: boolean
+        description: "Whether to run unit tests"
+        required: false
+        default: true
+    secrets:
+      CODECOV_TOKEN: { required: false }
+
+permissions:
+  contents: read
+
+jobs:
+  run-tests:
+    name: Run unit test shards
+    if: ${{ inputs.run-tests == true }}
+    # Shards that only need Docker run on Blacksmith. The orchestrator shard
+    # stays on infra-tests: it needs modprobe nbd and /dev/kvm (smoketest).
+    runs-on: ${{ matrix.runner }}
+    env:
+      GIN_MODE: test
+      # Parallel `go test ./...` binaries derive the same Ryuk session id
+      # and race on `reaper_<hash>` creation. Disable Ryuk; t.Cleanup
+      # handles normal exit, the reap step in the unit-tests action handles
+      # abnormal exit.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+      # Surfaced as env so upload steps can gate on presence (skipped on fork PRs).
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    strategy:
+      matrix:
+        include:
+          - package: packages/api
+            flag: unit-api
+            test_path: ./...
+            sudo: false
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - package: packages/client-proxy
+            flag: unit-client-proxy
+            test_path: ./...
+            sudo: false
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - package: packages/db
+            flag: unit-db
+            test_path: ./...
+            sudo: false
+            runner: blacksmith-4vcpu-ubuntu-2404
+          # envd mounts via bindfs (FUSE, no modprobe); this shard doubles as
+          # the FUSE-on-Blacksmith canary — if it fails, pin it back to
+          # infra-tests.
+          - package: packages/envd
+            flag: unit-envd
+            test_path: ./...
+            sudo: true
+            runner: blacksmith-4vcpu-ubuntu-2404
+          # The database seed: the key-resolution table and one Postgres-backed
+          # run through testcontainers.
+          - package: packages/local-dev
+            flag: unit-local-dev
+            test_path: ./...
+            sudo: false
+            runner: blacksmith-4vcpu-ubuntu-2404
+          # The one shard whose code carries cross-goroutine ownership
+          # invariants (network slot pool, netns state) — race-checked.
+          - package: packages/orchestrator
+            flag: unit-orchestrator
+            test_path: ./...
+            sudo: true
+            race: true
+            runner: infra-tests
+          - package: packages/shared
+            flag: unit-shared
+            test_path: ./pkg/...
+            sudo: false
+            runner: blacksmith-4vcpu-ubuntu-2404
+      fail-fast: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run unit tests
+        uses: ./.github/actions/unit-tests
+        with:
+          package: ${{ matrix.package }}
+          test-path: ${{ matrix.test_path }}
+          sudo: ${{ matrix.sudo }}
+          race: ${{ matrix.race || false }}
+
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() && env.CODECOV_TOKEN != '' &&
+          hashFiles(format('{0}/coverage.txt', matrix.package)) != '' }}
+        uses: codecov/codecov-action@v6
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ${{ matrix.package }}/coverage.txt
+          flags: ${{ matrix.flag }},unit
+          disable_search: true
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() && env.CODECOV_TOKEN != '' &&
+          hashFiles(format('{0}/junit.xml', matrix.package)) != '' }}
+        uses: codecov/codecov-action@v6
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ${{ matrix.package }}/junit.xml
+          flags: ${{ matrix.flag }},unit
+          disable_search: true
+          report_type: test_results
+
+  unit_tests:
+    needs: run-tests
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate unit test result
+        run: |
+          if [[ "${{ inputs.run-tests }}" != "true" ]]; then
+            echo "unit tests skipped because test inputs did not change"
+            exit 0
+          fi
+
+          if [[ "${{ needs.run-tests.result }}" != "success" ]]; then
+            echo "unit tests result: ${{ needs.run-tests.result }}"
+            exit 1
+          fi
+
+          echo "all unit test shards succeeded"
