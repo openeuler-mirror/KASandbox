@@ -34,6 +34,24 @@ func (e AWSRegistryType) Valid() bool {
 	}
 }
 
+// Defines values for BuildStatusRequestStatus.
+const (
+	Failed  BuildStatusRequestStatus = "failed"
+	Success BuildStatusRequestStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the BuildStatusRequestStatus enum.
+func (e BuildStatusRequestStatus) Valid() bool {
+	switch e {
+	case Failed:
+		return true
+	case Success:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GCPRegistryType.
 const (
 	Gcp GCPRegistryType = "gcp"
@@ -335,6 +353,21 @@ type BuildStatusReason struct {
 	// Step Step that failed
 	Step *string `json:"step,omitempty"`
 }
+
+// BuildStatusRequest defines model for BuildStatusRequest.
+type BuildStatusRequest struct {
+	// Error Failure reason
+	Error *string `json:"error,omitempty"`
+
+	// OperationId Idempotency key of the operation
+	OperationId string `json:"operation_id"`
+
+	// Status Terminal build status
+	Status BuildStatusRequestStatus `json:"status"`
+}
+
+// BuildStatusRequestStatus Terminal build status
+type BuildStatusRequestStatus string
 
 // CPUCount CPU cores for the sandbox
 type CPUCount = int32
@@ -750,6 +783,49 @@ type NodeStatusChange struct {
 // OrderDirection Sort direction
 type OrderDirection string
 
+// PauseSnapshotResponse defines model for PauseSnapshotResponse.
+type PauseSnapshotResponse struct {
+	// BuildId New build ID with status=snapshotting
+	BuildId openapi_types.UUID `json:"build_id"`
+
+	// TemplateId Internal snapshot template ID (envs.id, source='snapshot')
+	TemplateId string `json:"template_id"`
+}
+
+// ResumeMetadata defines model for ResumeMetadata.
+type ResumeMetadata struct {
+	// Aliases Aliases of the base env (empty for checkpoint templates)
+	Aliases    *[]string               `json:"aliases,omitempty"`
+	AutoPause  bool                    `json:"auto_pause"`
+	AutoResume *map[string]interface{} `json:"auto_resume,omitempty"`
+
+	// BaseTemplateId Original product template ID (empty for checkpoint templates)
+	BaseTemplateId *string `json:"base_template_id,omitempty"`
+
+	// BuildId Last ready build ID
+	BuildId            openapi_types.UUID `json:"build_id"`
+	EnvSecure          bool               `json:"env_secure"`
+	EnvdVersion        *string            `json:"envd_version,omitempty"`
+	FirecrackerVersion string             `json:"firecracker_version"`
+	KernelVersion      string             `json:"kernel_version"`
+
+	// MachineInfo CPU info of the node the snapshot was taken on
+	MachineInfo *map[string]interface{} `json:"machine_info,omitempty"`
+	Metadata    *map[string]string      `json:"metadata,omitempty"`
+	Network     *map[string]interface{} `json:"network,omitempty"`
+
+	// OriginNode Node the snapshot was taken on
+	OriginNode       string    `json:"origin_node"`
+	RamMb            int64     `json:"ram_mb"`
+	SandboxStartedAt time.Time `json:"sandbox_started_at"`
+
+	// TemplateId Snapshot template env ID used to resume
+	TemplateId      string                    `json:"template_id"`
+	TotalDiskSizeMb *int64                    `json:"total_disk_size_mb,omitempty"`
+	Vcpu            int64                     `json:"vcpu"`
+	VolumeMounts    *[]map[string]interface{} `json:"volume_mounts,omitempty"`
+}
+
 // ResumedSandbox defines model for ResumedSandbox.
 type ResumedSandbox struct {
 	// AutoPause Automatically pauses the sandbox after the timeout
@@ -824,6 +900,54 @@ type RigInstance struct {
 
 	// Transitioning The provider is creating, deleting, recreating or otherwise mutating the instance
 	Transitioning bool `json:"transitioning"`
+}
+
+// RuntimeSnapshotMetadata Runtime metadata collected by the in-cluster webhook service for a Pause/Checkpoint operation
+type RuntimeSnapshotMetadata struct {
+	AllowInternetAccess *bool `json:"allow_internet_access,omitempty"`
+	AutoPause           *bool `json:"auto_pause,omitempty"`
+
+	// AutoResume Auto-resume policy (PausedSandboxConfig.autoResume)
+	AutoResume *map[string]interface{} `json:"auto_resume,omitempty"`
+
+	// BaseTemplateId Original product template ID
+	BaseTemplateId     string `json:"base_template_id"`
+	EnvdVersion        string `json:"envd_version"`
+	FirecrackerVersion string `json:"firecracker_version"`
+	KernelVersion      string `json:"kernel_version"`
+
+	// Metadata User-provided sandbox metadata
+	Metadata *map[string]string `json:"metadata,omitempty"`
+
+	// Network Network configuration (PausedSandboxConfig.network)
+	Network *map[string]interface{} `json:"network,omitempty"`
+
+	// OperationId Idempotency key of the operation (logged; idempotency is provided by the underlying SQL)
+	OperationId string `json:"operation_id"`
+	RamMb       int64  `json:"ram_mb"`
+
+	// SandboxStartedAt Start time of the current sandbox run
+	SandboxStartedAt time.Time `json:"sandbox_started_at"`
+
+	// Secure Whether envd requires an access token
+	Secure bool `json:"secure"`
+
+	// SourceMachineInfo CPU info of the source node (cpu_architecture/cpu_family/cpu_model/cpu_model_name/cpu_flags)
+	SourceMachineInfo *map[string]interface{} `json:"source_machine_info,omitempty"`
+
+	// SourceNodeName Name of the node the sandbox ran on (stored as origin_node_id)
+	SourceNodeName string `json:"source_node_name"`
+
+	// SourcePodUid UID of the source Pod
+	SourcePodUid string `json:"source_pod_uid"`
+
+	// TeamId Team that owns the sandbox
+	TeamId          openapi_types.UUID `json:"team_id"`
+	TotalDiskSizeMb int64              `json:"total_disk_size_mb"`
+	Vcpu            int64              `json:"vcpu"`
+
+	// VolumeMounts Volume mounts (PausedSandboxConfig.volumeMounts)
+	VolumeMounts *[]map[string]interface{} `json:"volume_mounts,omitempty"`
 }
 
 // Sandbox defines model for Sandbox.
@@ -1259,6 +1383,27 @@ type SnapshotInfo struct {
 
 	// SnapshotID Identifier of the snapshot template including the tag. Uses namespace/alias when a name was provided (e.g. team-slug/my-snapshot:default), otherwise falls back to the raw template ID (e.g. abc123:default).
 	SnapshotID string `json:"snapshotID"`
+}
+
+// SnapshotStateResponse defines model for SnapshotStateResponse.
+type SnapshotStateResponse struct {
+	BuildId *openapi_types.UUID `json:"build_id,omitempty"`
+
+	// Paused Whether the sandbox has a live paused snapshot
+	Paused     bool    `json:"paused"`
+	TemplateId *string `json:"template_id,omitempty"`
+}
+
+// SnapshotTemplateResponse defines model for SnapshotTemplateResponse.
+type SnapshotTemplateResponse struct {
+	// BuildId New build ID with status=snapshotting
+	BuildId openapi_types.UUID `json:"build_id"`
+
+	// SnapshotId User-visible snapshot reference (template_id:default)
+	SnapshotId string `json:"snapshot_id"`
+
+	// TemplateId Snapshot template env ID
+	TemplateId string `json:"template_id"`
 }
 
 // Team defines model for Team.
@@ -1728,6 +1873,9 @@ type SandboxID = string
 // SecretID Identifier of the secret (sec_ prefixed), or its canonical lower-case name
 type SecretID = string
 
+// SnapshotID Identifier of the snapshot (template ID)
+type SnapshotID = string
+
 // TeamID defines model for teamID.
 type TeamID = string
 
@@ -1751,6 +1899,9 @@ type N404 = Error
 
 // N409 defines model for 409.
 type N409 = Error
+
+// N422 defines model for 422.
+type N422 = Error
 
 // N429 defines model for 429.
 type N429 = Error
@@ -1780,6 +1931,24 @@ type DeleteClustersClusterIDRigsInstancesInstanceIDParams struct {
 type GetClustersClusterIDRigsRigIDErrorsParams struct {
 	// Limit Maximum number of errors to return
 	Limit *int32 `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// DeleteInternalSnapshotTemplatesSnapshotIDParams defines parameters for DeleteInternalSnapshotTemplatesSnapshotID.
+type DeleteInternalSnapshotTemplatesSnapshotIDParams struct {
+	// TeamId Team ID used for alias namespace resolution and ownership check
+	TeamId openapi_types.UUID `form:"team_id" json:"team_id"`
+}
+
+// GetInternalSnapshotsSnapshotIDResolveParams defines parameters for GetInternalSnapshotsSnapshotIDResolve.
+type GetInternalSnapshotsSnapshotIDResolveParams struct {
+	// TeamId Team ID used for alias namespace resolution and ownership check
+	TeamId openapi_types.UUID `form:"team_id" json:"team_id"`
+}
+
+// DeleteInternalTemplatesTemplateIDParams defines parameters for DeleteInternalTemplatesTemplateID.
+type DeleteInternalTemplatesTemplateIDParams struct {
+	// TeamId Team ID used for alias namespace resolution and ownership check
+	TeamId openapi_types.UUID `form:"team_id" json:"team_id"`
 }
 
 // GetNodesParams defines parameters for GetNodes.
@@ -1967,6 +2136,15 @@ type PatchApiKeysApiKeyIDJSONRequestBody = UpdateTeamAPIKey
 
 // PutClustersClusterIDRigsRigIDCapacityJSONRequestBody defines body for PutClustersClusterIDRigsRigIDCapacity for application/json ContentType.
 type PutClustersClusterIDRigsRigIDCapacityJSONRequestBody = RigCapacityChange
+
+// PostInternalBuildsBuildIDStatusJSONRequestBody defines body for PostInternalBuildsBuildIDStatus for application/json ContentType.
+type PostInternalBuildsBuildIDStatusJSONRequestBody = BuildStatusRequest
+
+// PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody defines body for PostInternalSandboxesSandboxIDPauseSnapshot for application/json ContentType.
+type PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody = RuntimeSnapshotMetadata
+
+// PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody defines body for PostInternalSandboxesSandboxIDSnapshotTemplates for application/json ContentType.
+type PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody = RuntimeSnapshotMetadata
 
 // PostNodesNodeIDJSONRequestBody defines body for PostNodesNodeID for application/json ContentType.
 type PostNodesNodeIDJSONRequestBody = NodeStatusChange
@@ -2405,6 +2583,102 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /health (the `GetHealth` operationId).
 	GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostInternalBuildsBuildIDStatusWithBody Write back the terminal status of a snapshot build
+	//
+	// Marks a snapshot build as success or failed. Internal endpoint for the in-cluster webhook service.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /internal/builds/{buildID}/status (the `PostInternalBuildsBuildIDStatus` operationId).
+	PostInternalBuildsBuildIDStatusWithBody(ctx context.Context, buildID BuildID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostInternalBuildsBuildIDStatus Write back the terminal status of a snapshot build
+	//
+	// Marks a snapshot build as success or failed. Internal endpoint for the in-cluster webhook service.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /internal/builds/{buildID}/status (the `PostInternalBuildsBuildIDStatus` operationId).
+	PostInternalBuildsBuildIDStatus(ctx context.Context, buildID BuildID, body PostInternalBuildsBuildIDStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetInternalSandboxesSandboxIDLastSnapshot Resume metadata of the last paused snapshot
+	//
+	// Returns the resume metadata of the sandbox's last paused snapshot. Internal endpoint for the in-cluster webhook service.
+	//
+	// Corresponds with GET /internal/sandboxes/{sandboxID}/last-snapshot (the `GetInternalSandboxesSandboxIDLastSnapshot` operationId).
+	GetInternalSandboxesSandboxIDLastSnapshot(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostInternalSandboxesSandboxIDPauseSnapshotWithBody Write pause snapshot metadata
+	//
+	// Allocates an internal snapshot template and build for a Pause operation. Internal endpoint for the in-cluster webhook service.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /internal/sandboxes/{sandboxID}/pause-snapshot (the `PostInternalSandboxesSandboxIDPauseSnapshot` operationId).
+	PostInternalSandboxesSandboxIDPauseSnapshotWithBody(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostInternalSandboxesSandboxIDPauseSnapshot Write pause snapshot metadata
+	//
+	// Allocates an internal snapshot template and build for a Pause operation. Internal endpoint for the in-cluster webhook service.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /internal/sandboxes/{sandboxID}/pause-snapshot (the `PostInternalSandboxesSandboxIDPauseSnapshot` operationId).
+	PostInternalSandboxesSandboxIDPauseSnapshot(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteInternalSandboxesSandboxIDSnapshot Delete paused snapshot metadata
+	//
+	// Soft-deletes the sandbox's paused snapshot and its internal restore template. Internal endpoint for the in-cluster webhook service.
+	//
+	// Corresponds with DELETE /internal/sandboxes/{sandboxID}/snapshot (the `DeleteInternalSandboxesSandboxIDSnapshot` operationId).
+	DeleteInternalSandboxesSandboxIDSnapshot(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetInternalSandboxesSandboxIDSnapshotState Pause state of a sandbox
+	//
+	// Returns whether the sandbox has a live paused snapshot. Internal endpoint for the in-cluster webhook service.
+	//
+	// Corresponds with GET /internal/sandboxes/{sandboxID}/snapshot-state (the `GetInternalSandboxesSandboxIDSnapshotState` operationId).
+	GetInternalSandboxesSandboxIDSnapshotState(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostInternalSandboxesSandboxIDSnapshotTemplatesWithBody Write checkpoint snapshot template metadata
+	//
+	// Creates a persistent snapshot template and build for a user Checkpoint operation. Internal endpoint for the in-cluster webhook service.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /internal/sandboxes/{sandboxID}/snapshot-templates (the `PostInternalSandboxesSandboxIDSnapshotTemplates` operationId).
+	PostInternalSandboxesSandboxIDSnapshotTemplatesWithBody(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostInternalSandboxesSandboxIDSnapshotTemplates Write checkpoint snapshot template metadata
+	//
+	// Creates a persistent snapshot template and build for a user Checkpoint operation. Internal endpoint for the in-cluster webhook service.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /internal/sandboxes/{sandboxID}/snapshot-templates (the `PostInternalSandboxesSandboxIDSnapshotTemplates` operationId).
+	PostInternalSandboxesSandboxIDSnapshotTemplates(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteInternalSnapshotTemplatesSnapshotID Delete checkpoint snapshot template metadata
+	//
+	// Resolves a user snapshot reference and soft-deletes the checkpoint snapshot template. Internal endpoint for the in-cluster webhook service.
+	//
+	// Corresponds with DELETE /internal/snapshot-templates/{snapshotID} (the `DeleteInternalSnapshotTemplatesSnapshotID` operationId).
+	DeleteInternalSnapshotTemplatesSnapshotID(ctx context.Context, snapshotID SnapshotID, params *DeleteInternalSnapshotTemplatesSnapshotIDParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetInternalSnapshotsSnapshotIDResolve Resolve a user snapshot reference
+	//
+	// Resolves a snapshot reference to its template and ready build and returns the resume metadata. Internal endpoint for the in-cluster webhook service.
+	//
+	// Corresponds with GET /internal/snapshots/{snapshotID}/resolve (the `GetInternalSnapshotsSnapshotIDResolve` operationId).
+	GetInternalSnapshotsSnapshotIDResolve(ctx context.Context, snapshotID SnapshotID, params *GetInternalSnapshotsSnapshotIDResolveParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteInternalTemplatesTemplateID Delete base template metadata
+	//
+	// Soft-deletes a base template without checking running sandboxes (handled by the webhook beforehand). Internal endpoint for the in-cluster webhook service.
+	//
+	// Corresponds with DELETE /internal/templates/{templateID} (the `DeleteInternalTemplatesTemplateID` operationId).
+	DeleteInternalTemplatesTemplateID(ctx context.Context, templateID TemplateID, params *DeleteInternalTemplatesTemplateIDParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetNodes List nodes
 	//
@@ -3383,6 +3657,222 @@ func (c *Client) GetClustersClusterIDRigsRigIDInstances(ctx context.Context, clu
 // Corresponds with GET /health (the `GetHealth` operationId).
 func (c *Client) GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetHealthRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostInternalBuildsBuildIDStatusWithBody Write back the terminal status of a snapshot build
+//
+// Marks a snapshot build as success or failed. Internal endpoint for the in-cluster webhook service.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /internal/builds/{buildID}/status (the `PostInternalBuildsBuildIDStatus` operationId).
+func (c *Client) PostInternalBuildsBuildIDStatusWithBody(ctx context.Context, buildID BuildID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostInternalBuildsBuildIDStatusRequestWithBody(c.Server, buildID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostInternalBuildsBuildIDStatus Write back the terminal status of a snapshot build
+//
+// Marks a snapshot build as success or failed. Internal endpoint for the in-cluster webhook service.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /internal/builds/{buildID}/status (the `PostInternalBuildsBuildIDStatus` operationId).
+func (c *Client) PostInternalBuildsBuildIDStatus(ctx context.Context, buildID BuildID, body PostInternalBuildsBuildIDStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostInternalBuildsBuildIDStatusRequest(c.Server, buildID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetInternalSandboxesSandboxIDLastSnapshot Resume metadata of the last paused snapshot
+//
+// Returns the resume metadata of the sandbox's last paused snapshot. Internal endpoint for the in-cluster webhook service.
+//
+// Corresponds with GET /internal/sandboxes/{sandboxID}/last-snapshot (the `GetInternalSandboxesSandboxIDLastSnapshot` operationId).
+func (c *Client) GetInternalSandboxesSandboxIDLastSnapshot(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetInternalSandboxesSandboxIDLastSnapshotRequest(c.Server, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostInternalSandboxesSandboxIDPauseSnapshotWithBody Write pause snapshot metadata
+//
+// Allocates an internal snapshot template and build for a Pause operation. Internal endpoint for the in-cluster webhook service.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /internal/sandboxes/{sandboxID}/pause-snapshot (the `PostInternalSandboxesSandboxIDPauseSnapshot` operationId).
+func (c *Client) PostInternalSandboxesSandboxIDPauseSnapshotWithBody(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostInternalSandboxesSandboxIDPauseSnapshotRequestWithBody(c.Server, sandboxID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostInternalSandboxesSandboxIDPauseSnapshot Write pause snapshot metadata
+//
+// Allocates an internal snapshot template and build for a Pause operation. Internal endpoint for the in-cluster webhook service.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /internal/sandboxes/{sandboxID}/pause-snapshot (the `PostInternalSandboxesSandboxIDPauseSnapshot` operationId).
+func (c *Client) PostInternalSandboxesSandboxIDPauseSnapshot(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostInternalSandboxesSandboxIDPauseSnapshotRequest(c.Server, sandboxID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteInternalSandboxesSandboxIDSnapshot Delete paused snapshot metadata
+//
+// Soft-deletes the sandbox's paused snapshot and its internal restore template. Internal endpoint for the in-cluster webhook service.
+//
+// Corresponds with DELETE /internal/sandboxes/{sandboxID}/snapshot (the `DeleteInternalSandboxesSandboxIDSnapshot` operationId).
+func (c *Client) DeleteInternalSandboxesSandboxIDSnapshot(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteInternalSandboxesSandboxIDSnapshotRequest(c.Server, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetInternalSandboxesSandboxIDSnapshotState Pause state of a sandbox
+//
+// Returns whether the sandbox has a live paused snapshot. Internal endpoint for the in-cluster webhook service.
+//
+// Corresponds with GET /internal/sandboxes/{sandboxID}/snapshot-state (the `GetInternalSandboxesSandboxIDSnapshotState` operationId).
+func (c *Client) GetInternalSandboxesSandboxIDSnapshotState(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetInternalSandboxesSandboxIDSnapshotStateRequest(c.Server, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostInternalSandboxesSandboxIDSnapshotTemplatesWithBody Write checkpoint snapshot template metadata
+//
+// Creates a persistent snapshot template and build for a user Checkpoint operation. Internal endpoint for the in-cluster webhook service.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /internal/sandboxes/{sandboxID}/snapshot-templates (the `PostInternalSandboxesSandboxIDSnapshotTemplates` operationId).
+func (c *Client) PostInternalSandboxesSandboxIDSnapshotTemplatesWithBody(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequestWithBody(c.Server, sandboxID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostInternalSandboxesSandboxIDSnapshotTemplates Write checkpoint snapshot template metadata
+//
+// Creates a persistent snapshot template and build for a user Checkpoint operation. Internal endpoint for the in-cluster webhook service.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /internal/sandboxes/{sandboxID}/snapshot-templates (the `PostInternalSandboxesSandboxIDSnapshotTemplates` operationId).
+func (c *Client) PostInternalSandboxesSandboxIDSnapshotTemplates(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequest(c.Server, sandboxID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteInternalSnapshotTemplatesSnapshotID Delete checkpoint snapshot template metadata
+//
+// Resolves a user snapshot reference and soft-deletes the checkpoint snapshot template. Internal endpoint for the in-cluster webhook service.
+//
+// Corresponds with DELETE /internal/snapshot-templates/{snapshotID} (the `DeleteInternalSnapshotTemplatesSnapshotID` operationId).
+func (c *Client) DeleteInternalSnapshotTemplatesSnapshotID(ctx context.Context, snapshotID SnapshotID, params *DeleteInternalSnapshotTemplatesSnapshotIDParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteInternalSnapshotTemplatesSnapshotIDRequest(c.Server, snapshotID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetInternalSnapshotsSnapshotIDResolve Resolve a user snapshot reference
+//
+// Resolves a snapshot reference to its template and ready build and returns the resume metadata. Internal endpoint for the in-cluster webhook service.
+//
+// Corresponds with GET /internal/snapshots/{snapshotID}/resolve (the `GetInternalSnapshotsSnapshotIDResolve` operationId).
+func (c *Client) GetInternalSnapshotsSnapshotIDResolve(ctx context.Context, snapshotID SnapshotID, params *GetInternalSnapshotsSnapshotIDResolveParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetInternalSnapshotsSnapshotIDResolveRequest(c.Server, snapshotID, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteInternalTemplatesTemplateID Delete base template metadata
+//
+// Soft-deletes a base template without checking running sandboxes (handled by the webhook beforehand). Internal endpoint for the in-cluster webhook service.
+//
+// Corresponds with DELETE /internal/templates/{templateID} (the `DeleteInternalTemplatesTemplateID` operationId).
+func (c *Client) DeleteInternalTemplatesTemplateID(ctx context.Context, templateID TemplateID, params *DeleteInternalTemplatesTemplateIDParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteInternalTemplatesTemplateIDRequest(c.Server, templateID, params)
 	if err != nil {
 		return nil, err
 	}
@@ -5399,6 +5889,420 @@ func NewGetHealthRequest(server string) (*http.Request, error) {
 	}
 
 	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPostInternalBuildsBuildIDStatusRequest calls the generic PostInternalBuildsBuildIDStatus builder with application/json body
+func NewPostInternalBuildsBuildIDStatusRequest(server string, buildID BuildID, body PostInternalBuildsBuildIDStatusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostInternalBuildsBuildIDStatusRequestWithBody(server, buildID, "application/json", bodyReader)
+}
+
+// NewPostInternalBuildsBuildIDStatusRequestWithBody constructs an http.Request for the PostInternalBuildsBuildIDStatus method, with any body, and a specified content type
+func NewPostInternalBuildsBuildIDStatusRequestWithBody(server string, buildID BuildID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "buildID", buildID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/builds/%s/status", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetInternalSandboxesSandboxIDLastSnapshotRequest constructs an http.Request for the GetInternalSandboxesSandboxIDLastSnapshot method
+func NewGetInternalSandboxesSandboxIDLastSnapshotRequest(server string, sandboxID SandboxID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "sandboxID", sandboxID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/sandboxes/%s/last-snapshot", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPostInternalSandboxesSandboxIDPauseSnapshotRequest calls the generic PostInternalSandboxesSandboxIDPauseSnapshot builder with application/json body
+func NewPostInternalSandboxesSandboxIDPauseSnapshotRequest(server string, sandboxID SandboxID, body PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostInternalSandboxesSandboxIDPauseSnapshotRequestWithBody(server, sandboxID, "application/json", bodyReader)
+}
+
+// NewPostInternalSandboxesSandboxIDPauseSnapshotRequestWithBody constructs an http.Request for the PostInternalSandboxesSandboxIDPauseSnapshot method, with any body, and a specified content type
+func NewPostInternalSandboxesSandboxIDPauseSnapshotRequestWithBody(server string, sandboxID SandboxID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "sandboxID", sandboxID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/sandboxes/%s/pause-snapshot", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewDeleteInternalSandboxesSandboxIDSnapshotRequest constructs an http.Request for the DeleteInternalSandboxesSandboxIDSnapshot method
+func NewDeleteInternalSandboxesSandboxIDSnapshotRequest(server string, sandboxID SandboxID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "sandboxID", sandboxID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/sandboxes/%s/snapshot", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetInternalSandboxesSandboxIDSnapshotStateRequest constructs an http.Request for the GetInternalSandboxesSandboxIDSnapshotState method
+func NewGetInternalSandboxesSandboxIDSnapshotStateRequest(server string, sandboxID SandboxID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "sandboxID", sandboxID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/sandboxes/%s/snapshot-state", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequest calls the generic PostInternalSandboxesSandboxIDSnapshotTemplates builder with application/json body
+func NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequest(server string, sandboxID SandboxID, body PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequestWithBody(server, sandboxID, "application/json", bodyReader)
+}
+
+// NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequestWithBody constructs an http.Request for the PostInternalSandboxesSandboxIDSnapshotTemplates method, with any body, and a specified content type
+func NewPostInternalSandboxesSandboxIDSnapshotTemplatesRequestWithBody(server string, sandboxID SandboxID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "sandboxID", sandboxID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/sandboxes/%s/snapshot-templates", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewDeleteInternalSnapshotTemplatesSnapshotIDRequest constructs an http.Request for the DeleteInternalSnapshotTemplatesSnapshotID method
+func NewDeleteInternalSnapshotTemplatesSnapshotIDRequest(server string, snapshotID SnapshotID, params *DeleteInternalSnapshotTemplatesSnapshotIDParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "snapshotID", snapshotID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/snapshot-templates/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "team_id", params.TeamId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: "uuid"}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetInternalSnapshotsSnapshotIDResolveRequest constructs an http.Request for the GetInternalSnapshotsSnapshotIDResolve method
+func NewGetInternalSnapshotsSnapshotIDResolveRequest(server string, snapshotID SnapshotID, params *GetInternalSnapshotsSnapshotIDResolveParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "snapshotID", snapshotID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/snapshots/%s/resolve", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "team_id", params.TeamId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: "uuid"}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewDeleteInternalTemplatesTemplateIDRequest constructs an http.Request for the DeleteInternalTemplatesTemplateID method
+func NewDeleteInternalTemplatesTemplateIDRequest(server string, templateID TemplateID, params *DeleteInternalTemplatesTemplateIDParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "templateID", templateID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/internal/templates/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "team_id", params.TeamId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: "uuid"}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -8414,6 +9318,114 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /health (the `GetHealth` operationId).
 	GetHealthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHealthResponse, error)
 
+	// PostInternalBuildsBuildIDStatusWithBodyWithResponse Write back the terminal status of a snapshot build
+	//
+	// Marks a snapshot build as success or failed. Internal endpoint for the in-cluster webhook service.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /internal/builds/{buildID}/status (the `PostInternalBuildsBuildIDStatus` operationId).
+	PostInternalBuildsBuildIDStatusWithBodyWithResponse(ctx context.Context, buildID BuildID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostInternalBuildsBuildIDStatusResponse, error)
+
+	// PostInternalBuildsBuildIDStatusWithResponse Write back the terminal status of a snapshot build
+	//
+	// Marks a snapshot build as success or failed. Internal endpoint for the in-cluster webhook service.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /internal/builds/{buildID}/status (the `PostInternalBuildsBuildIDStatus` operationId).
+	PostInternalBuildsBuildIDStatusWithResponse(ctx context.Context, buildID BuildID, body PostInternalBuildsBuildIDStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*PostInternalBuildsBuildIDStatusResponse, error)
+
+	// GetInternalSandboxesSandboxIDLastSnapshotWithResponse Resume metadata of the last paused snapshot
+	//
+	// Returns the resume metadata of the sandbox's last paused snapshot. Internal endpoint for the in-cluster webhook service.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /internal/sandboxes/{sandboxID}/last-snapshot (the `GetInternalSandboxesSandboxIDLastSnapshot` operationId).
+	GetInternalSandboxesSandboxIDLastSnapshotWithResponse(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*GetInternalSandboxesSandboxIDLastSnapshotResponse, error)
+
+	// PostInternalSandboxesSandboxIDPauseSnapshotWithBodyWithResponse Write pause snapshot metadata
+	//
+	// Allocates an internal snapshot template and build for a Pause operation. Internal endpoint for the in-cluster webhook service.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /internal/sandboxes/{sandboxID}/pause-snapshot (the `PostInternalSandboxesSandboxIDPauseSnapshot` operationId).
+	PostInternalSandboxesSandboxIDPauseSnapshotWithBodyWithResponse(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDPauseSnapshotResponse, error)
+
+	// PostInternalSandboxesSandboxIDPauseSnapshotWithResponse Write pause snapshot metadata
+	//
+	// Allocates an internal snapshot template and build for a Pause operation. Internal endpoint for the in-cluster webhook service.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /internal/sandboxes/{sandboxID}/pause-snapshot (the `PostInternalSandboxesSandboxIDPauseSnapshot` operationId).
+	PostInternalSandboxesSandboxIDPauseSnapshotWithResponse(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDPauseSnapshotResponse, error)
+
+	// DeleteInternalSandboxesSandboxIDSnapshotWithResponse Delete paused snapshot metadata
+	//
+	// Soft-deletes the sandbox's paused snapshot and its internal restore template. Internal endpoint for the in-cluster webhook service.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /internal/sandboxes/{sandboxID}/snapshot (the `DeleteInternalSandboxesSandboxIDSnapshot` operationId).
+	DeleteInternalSandboxesSandboxIDSnapshotWithResponse(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*DeleteInternalSandboxesSandboxIDSnapshotResponse, error)
+
+	// GetInternalSandboxesSandboxIDSnapshotStateWithResponse Pause state of a sandbox
+	//
+	// Returns whether the sandbox has a live paused snapshot. Internal endpoint for the in-cluster webhook service.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /internal/sandboxes/{sandboxID}/snapshot-state (the `GetInternalSandboxesSandboxIDSnapshotState` operationId).
+	GetInternalSandboxesSandboxIDSnapshotStateWithResponse(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*GetInternalSandboxesSandboxIDSnapshotStateResponse, error)
+
+	// PostInternalSandboxesSandboxIDSnapshotTemplatesWithBodyWithResponse Write checkpoint snapshot template metadata
+	//
+	// Creates a persistent snapshot template and build for a user Checkpoint operation. Internal endpoint for the in-cluster webhook service.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /internal/sandboxes/{sandboxID}/snapshot-templates (the `PostInternalSandboxesSandboxIDSnapshotTemplates` operationId).
+	PostInternalSandboxesSandboxIDSnapshotTemplatesWithBodyWithResponse(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDSnapshotTemplatesResponse, error)
+
+	// PostInternalSandboxesSandboxIDSnapshotTemplatesWithResponse Write checkpoint snapshot template metadata
+	//
+	// Creates a persistent snapshot template and build for a user Checkpoint operation. Internal endpoint for the in-cluster webhook service.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /internal/sandboxes/{sandboxID}/snapshot-templates (the `PostInternalSandboxesSandboxIDSnapshotTemplates` operationId).
+	PostInternalSandboxesSandboxIDSnapshotTemplatesWithResponse(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDSnapshotTemplatesResponse, error)
+
+	// DeleteInternalSnapshotTemplatesSnapshotIDWithResponse Delete checkpoint snapshot template metadata
+	//
+	// Resolves a user snapshot reference and soft-deletes the checkpoint snapshot template. Internal endpoint for the in-cluster webhook service.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /internal/snapshot-templates/{snapshotID} (the `DeleteInternalSnapshotTemplatesSnapshotID` operationId).
+	DeleteInternalSnapshotTemplatesSnapshotIDWithResponse(ctx context.Context, snapshotID SnapshotID, params *DeleteInternalSnapshotTemplatesSnapshotIDParams, reqEditors ...RequestEditorFn) (*DeleteInternalSnapshotTemplatesSnapshotIDResponse, error)
+
+	// GetInternalSnapshotsSnapshotIDResolveWithResponse Resolve a user snapshot reference
+	//
+	// Resolves a snapshot reference to its template and ready build and returns the resume metadata. Internal endpoint for the in-cluster webhook service.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /internal/snapshots/{snapshotID}/resolve (the `GetInternalSnapshotsSnapshotIDResolve` operationId).
+	GetInternalSnapshotsSnapshotIDResolveWithResponse(ctx context.Context, snapshotID SnapshotID, params *GetInternalSnapshotsSnapshotIDResolveParams, reqEditors ...RequestEditorFn) (*GetInternalSnapshotsSnapshotIDResolveResponse, error)
+
+	// DeleteInternalTemplatesTemplateIDWithResponse Delete base template metadata
+	//
+	// Soft-deletes a base template without checking running sandboxes (handled by the webhook beforehand). Internal endpoint for the in-cluster webhook service.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /internal/templates/{templateID} (the `DeleteInternalTemplatesTemplateID` operationId).
+	DeleteInternalTemplatesTemplateIDWithResponse(ctx context.Context, templateID TemplateID, params *DeleteInternalTemplatesTemplateIDParams, reqEditors ...RequestEditorFn) (*DeleteInternalTemplatesTemplateIDResponse, error)
+
 	// GetNodesWithResponse List nodes
 	//
 	// List all nodes.
@@ -10068,6 +11080,648 @@ func (r GetHealthResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r GetHealthResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PostInternalBuildsBuildIDStatusResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *N400
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *N401
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *N404
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *N409
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *N500
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostInternalBuildsBuildIDStatusResponse) GetJSON400() *N400 {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostInternalBuildsBuildIDStatusResponse) GetJSON401() *N401 {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PostInternalBuildsBuildIDStatusResponse) GetJSON404() *N404 {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostInternalBuildsBuildIDStatusResponse) GetJSON409() *N409 {
+	return r.JSON409
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostInternalBuildsBuildIDStatusResponse) GetJSON500() *N500 {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PostInternalBuildsBuildIDStatusResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostInternalBuildsBuildIDStatusResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostInternalBuildsBuildIDStatusResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostInternalBuildsBuildIDStatusResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetInternalSandboxesSandboxIDLastSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ResumeMetadata
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *N401
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *N404
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *N500
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetInternalSandboxesSandboxIDLastSnapshotResponse) GetJSON200() *ResumeMetadata {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetInternalSandboxesSandboxIDLastSnapshotResponse) GetJSON401() *N401 {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetInternalSandboxesSandboxIDLastSnapshotResponse) GetJSON404() *N404 {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetInternalSandboxesSandboxIDLastSnapshotResponse) GetJSON500() *N500 {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetInternalSandboxesSandboxIDLastSnapshotResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetInternalSandboxesSandboxIDLastSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetInternalSandboxesSandboxIDLastSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetInternalSandboxesSandboxIDLastSnapshotResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PostInternalSandboxesSandboxIDPauseSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *PauseSnapshotResponse
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *N400
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *N401
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *N404
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *N409
+	// JSON422 the response for an HTTP 422 `application/json` response
+	JSON422 *N422
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *N500
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) GetJSON200() *PauseSnapshotResponse {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) GetJSON400() *N400 {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) GetJSON401() *N401 {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) GetJSON404() *N404 {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) GetJSON409() *N409 {
+	return r.JSON409
+}
+
+// GetJSON422 returns the response for an HTTP 422 `application/json` response
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) GetJSON422() *N422 {
+	return r.JSON422
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) GetJSON500() *N500 {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostInternalSandboxesSandboxIDPauseSnapshotResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteInternalSandboxesSandboxIDSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *N401
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *N404
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *N409
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *N500
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r DeleteInternalSandboxesSandboxIDSnapshotResponse) GetJSON401() *N401 {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r DeleteInternalSandboxesSandboxIDSnapshotResponse) GetJSON404() *N404 {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r DeleteInternalSandboxesSandboxIDSnapshotResponse) GetJSON409() *N409 {
+	return r.JSON409
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r DeleteInternalSandboxesSandboxIDSnapshotResponse) GetJSON500() *N500 {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteInternalSandboxesSandboxIDSnapshotResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteInternalSandboxesSandboxIDSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteInternalSandboxesSandboxIDSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteInternalSandboxesSandboxIDSnapshotResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetInternalSandboxesSandboxIDSnapshotStateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *SnapshotStateResponse
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *N401
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *N500
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetInternalSandboxesSandboxIDSnapshotStateResponse) GetJSON200() *SnapshotStateResponse {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetInternalSandboxesSandboxIDSnapshotStateResponse) GetJSON401() *N401 {
+	return r.JSON401
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetInternalSandboxesSandboxIDSnapshotStateResponse) GetJSON500() *N500 {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetInternalSandboxesSandboxIDSnapshotStateResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetInternalSandboxesSandboxIDSnapshotStateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetInternalSandboxesSandboxIDSnapshotStateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetInternalSandboxesSandboxIDSnapshotStateResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PostInternalSandboxesSandboxIDSnapshotTemplatesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *SnapshotTemplateResponse
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *N400
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *N401
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *N404
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *N409
+	// JSON422 the response for an HTTP 422 `application/json` response
+	JSON422 *N422
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *N500
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) GetJSON200() *SnapshotTemplateResponse {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) GetJSON400() *N400 {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) GetJSON401() *N401 {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) GetJSON404() *N404 {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) GetJSON409() *N409 {
+	return r.JSON409
+}
+
+// GetJSON422 returns the response for an HTTP 422 `application/json` response
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) GetJSON422() *N422 {
+	return r.JSON422
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) GetJSON500() *N500 {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostInternalSandboxesSandboxIDSnapshotTemplatesResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteInternalSnapshotTemplatesSnapshotIDResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *N400
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *N401
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *N404
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *N409
+	// JSON422 the response for an HTTP 422 `application/json` response
+	JSON422 *N422
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *N500
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r DeleteInternalSnapshotTemplatesSnapshotIDResponse) GetJSON400() *N400 {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r DeleteInternalSnapshotTemplatesSnapshotIDResponse) GetJSON401() *N401 {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r DeleteInternalSnapshotTemplatesSnapshotIDResponse) GetJSON404() *N404 {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r DeleteInternalSnapshotTemplatesSnapshotIDResponse) GetJSON409() *N409 {
+	return r.JSON409
+}
+
+// GetJSON422 returns the response for an HTTP 422 `application/json` response
+func (r DeleteInternalSnapshotTemplatesSnapshotIDResponse) GetJSON422() *N422 {
+	return r.JSON422
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r DeleteInternalSnapshotTemplatesSnapshotIDResponse) GetJSON500() *N500 {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteInternalSnapshotTemplatesSnapshotIDResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteInternalSnapshotTemplatesSnapshotIDResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteInternalSnapshotTemplatesSnapshotIDResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteInternalSnapshotTemplatesSnapshotIDResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetInternalSnapshotsSnapshotIDResolveResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *ResumeMetadata
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *N400
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *N401
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *N404
+	// JSON422 the response for an HTTP 422 `application/json` response
+	JSON422 *N422
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *N500
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetInternalSnapshotsSnapshotIDResolveResponse) GetJSON200() *ResumeMetadata {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetInternalSnapshotsSnapshotIDResolveResponse) GetJSON400() *N400 {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetInternalSnapshotsSnapshotIDResolveResponse) GetJSON401() *N401 {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetInternalSnapshotsSnapshotIDResolveResponse) GetJSON404() *N404 {
+	return r.JSON404
+}
+
+// GetJSON422 returns the response for an HTTP 422 `application/json` response
+func (r GetInternalSnapshotsSnapshotIDResolveResponse) GetJSON422() *N422 {
+	return r.JSON422
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetInternalSnapshotsSnapshotIDResolveResponse) GetJSON500() *N500 {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetInternalSnapshotsSnapshotIDResolveResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetInternalSnapshotsSnapshotIDResolveResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetInternalSnapshotsSnapshotIDResolveResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetInternalSnapshotsSnapshotIDResolveResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteInternalTemplatesTemplateIDResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *N400
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *N401
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *N404
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *N409
+	// JSON422 the response for an HTTP 422 `application/json` response
+	JSON422 *N422
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *N500
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r DeleteInternalTemplatesTemplateIDResponse) GetJSON400() *N400 {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r DeleteInternalTemplatesTemplateIDResponse) GetJSON401() *N401 {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r DeleteInternalTemplatesTemplateIDResponse) GetJSON404() *N404 {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r DeleteInternalTemplatesTemplateIDResponse) GetJSON409() *N409 {
+	return r.JSON409
+}
+
+// GetJSON422 returns the response for an HTTP 422 `application/json` response
+func (r DeleteInternalTemplatesTemplateIDResponse) GetJSON422() *N422 {
+	return r.JSON422
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r DeleteInternalTemplatesTemplateIDResponse) GetJSON500() *N500 {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteInternalTemplatesTemplateIDResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteInternalTemplatesTemplateIDResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteInternalTemplatesTemplateIDResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteInternalTemplatesTemplateIDResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -13946,6 +15600,186 @@ func (c *ClientWithResponses) GetHealthWithResponse(ctx context.Context, reqEdit
 	return ParseGetHealthResponse(rsp)
 }
 
+// PostInternalBuildsBuildIDStatusWithBodyWithResponse Write back the terminal status of a snapshot build
+//
+// Marks a snapshot build as success or failed. Internal endpoint for the in-cluster webhook service.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /internal/builds/{buildID}/status (the `PostInternalBuildsBuildIDStatus` operationId).
+func (c *ClientWithResponses) PostInternalBuildsBuildIDStatusWithBodyWithResponse(ctx context.Context, buildID BuildID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostInternalBuildsBuildIDStatusResponse, error) {
+	rsp, err := c.PostInternalBuildsBuildIDStatusWithBody(ctx, buildID, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostInternalBuildsBuildIDStatusResponse(rsp)
+}
+
+// PostInternalBuildsBuildIDStatusWithResponse Write back the terminal status of a snapshot build
+//
+// Marks a snapshot build as success or failed. Internal endpoint for the in-cluster webhook service.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /internal/builds/{buildID}/status (the `PostInternalBuildsBuildIDStatus` operationId).
+func (c *ClientWithResponses) PostInternalBuildsBuildIDStatusWithResponse(ctx context.Context, buildID BuildID, body PostInternalBuildsBuildIDStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*PostInternalBuildsBuildIDStatusResponse, error) {
+	rsp, err := c.PostInternalBuildsBuildIDStatus(ctx, buildID, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostInternalBuildsBuildIDStatusResponse(rsp)
+}
+
+// GetInternalSandboxesSandboxIDLastSnapshotWithResponse Resume metadata of the last paused snapshot
+//
+// Returns the resume metadata of the sandbox's last paused snapshot. Internal endpoint for the in-cluster webhook service.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /internal/sandboxes/{sandboxID}/last-snapshot (the `GetInternalSandboxesSandboxIDLastSnapshot` operationId).
+func (c *ClientWithResponses) GetInternalSandboxesSandboxIDLastSnapshotWithResponse(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*GetInternalSandboxesSandboxIDLastSnapshotResponse, error) {
+	rsp, err := c.GetInternalSandboxesSandboxIDLastSnapshot(ctx, sandboxID, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetInternalSandboxesSandboxIDLastSnapshotResponse(rsp)
+}
+
+// PostInternalSandboxesSandboxIDPauseSnapshotWithBodyWithResponse Write pause snapshot metadata
+//
+// Allocates an internal snapshot template and build for a Pause operation. Internal endpoint for the in-cluster webhook service.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /internal/sandboxes/{sandboxID}/pause-snapshot (the `PostInternalSandboxesSandboxIDPauseSnapshot` operationId).
+func (c *ClientWithResponses) PostInternalSandboxesSandboxIDPauseSnapshotWithBodyWithResponse(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDPauseSnapshotResponse, error) {
+	rsp, err := c.PostInternalSandboxesSandboxIDPauseSnapshotWithBody(ctx, sandboxID, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostInternalSandboxesSandboxIDPauseSnapshotResponse(rsp)
+}
+
+// PostInternalSandboxesSandboxIDPauseSnapshotWithResponse Write pause snapshot metadata
+//
+// Allocates an internal snapshot template and build for a Pause operation. Internal endpoint for the in-cluster webhook service.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /internal/sandboxes/{sandboxID}/pause-snapshot (the `PostInternalSandboxesSandboxIDPauseSnapshot` operationId).
+func (c *ClientWithResponses) PostInternalSandboxesSandboxIDPauseSnapshotWithResponse(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDPauseSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDPauseSnapshotResponse, error) {
+	rsp, err := c.PostInternalSandboxesSandboxIDPauseSnapshot(ctx, sandboxID, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostInternalSandboxesSandboxIDPauseSnapshotResponse(rsp)
+}
+
+// DeleteInternalSandboxesSandboxIDSnapshotWithResponse Delete paused snapshot metadata
+//
+// Soft-deletes the sandbox's paused snapshot and its internal restore template. Internal endpoint for the in-cluster webhook service.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /internal/sandboxes/{sandboxID}/snapshot (the `DeleteInternalSandboxesSandboxIDSnapshot` operationId).
+func (c *ClientWithResponses) DeleteInternalSandboxesSandboxIDSnapshotWithResponse(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*DeleteInternalSandboxesSandboxIDSnapshotResponse, error) {
+	rsp, err := c.DeleteInternalSandboxesSandboxIDSnapshot(ctx, sandboxID, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteInternalSandboxesSandboxIDSnapshotResponse(rsp)
+}
+
+// GetInternalSandboxesSandboxIDSnapshotStateWithResponse Pause state of a sandbox
+//
+// Returns whether the sandbox has a live paused snapshot. Internal endpoint for the in-cluster webhook service.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /internal/sandboxes/{sandboxID}/snapshot-state (the `GetInternalSandboxesSandboxIDSnapshotState` operationId).
+func (c *ClientWithResponses) GetInternalSandboxesSandboxIDSnapshotStateWithResponse(ctx context.Context, sandboxID SandboxID, reqEditors ...RequestEditorFn) (*GetInternalSandboxesSandboxIDSnapshotStateResponse, error) {
+	rsp, err := c.GetInternalSandboxesSandboxIDSnapshotState(ctx, sandboxID, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetInternalSandboxesSandboxIDSnapshotStateResponse(rsp)
+}
+
+// PostInternalSandboxesSandboxIDSnapshotTemplatesWithBodyWithResponse Write checkpoint snapshot template metadata
+//
+// Creates a persistent snapshot template and build for a user Checkpoint operation. Internal endpoint for the in-cluster webhook service.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /internal/sandboxes/{sandboxID}/snapshot-templates (the `PostInternalSandboxesSandboxIDSnapshotTemplates` operationId).
+func (c *ClientWithResponses) PostInternalSandboxesSandboxIDSnapshotTemplatesWithBodyWithResponse(ctx context.Context, sandboxID SandboxID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDSnapshotTemplatesResponse, error) {
+	rsp, err := c.PostInternalSandboxesSandboxIDSnapshotTemplatesWithBody(ctx, sandboxID, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostInternalSandboxesSandboxIDSnapshotTemplatesResponse(rsp)
+}
+
+// PostInternalSandboxesSandboxIDSnapshotTemplatesWithResponse Write checkpoint snapshot template metadata
+//
+// Creates a persistent snapshot template and build for a user Checkpoint operation. Internal endpoint for the in-cluster webhook service.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /internal/sandboxes/{sandboxID}/snapshot-templates (the `PostInternalSandboxesSandboxIDSnapshotTemplates` operationId).
+func (c *ClientWithResponses) PostInternalSandboxesSandboxIDSnapshotTemplatesWithResponse(ctx context.Context, sandboxID SandboxID, body PostInternalSandboxesSandboxIDSnapshotTemplatesJSONRequestBody, reqEditors ...RequestEditorFn) (*PostInternalSandboxesSandboxIDSnapshotTemplatesResponse, error) {
+	rsp, err := c.PostInternalSandboxesSandboxIDSnapshotTemplates(ctx, sandboxID, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostInternalSandboxesSandboxIDSnapshotTemplatesResponse(rsp)
+}
+
+// DeleteInternalSnapshotTemplatesSnapshotIDWithResponse Delete checkpoint snapshot template metadata
+//
+// Resolves a user snapshot reference and soft-deletes the checkpoint snapshot template. Internal endpoint for the in-cluster webhook service.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /internal/snapshot-templates/{snapshotID} (the `DeleteInternalSnapshotTemplatesSnapshotID` operationId).
+func (c *ClientWithResponses) DeleteInternalSnapshotTemplatesSnapshotIDWithResponse(ctx context.Context, snapshotID SnapshotID, params *DeleteInternalSnapshotTemplatesSnapshotIDParams, reqEditors ...RequestEditorFn) (*DeleteInternalSnapshotTemplatesSnapshotIDResponse, error) {
+	rsp, err := c.DeleteInternalSnapshotTemplatesSnapshotID(ctx, snapshotID, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteInternalSnapshotTemplatesSnapshotIDResponse(rsp)
+}
+
+// GetInternalSnapshotsSnapshotIDResolveWithResponse Resolve a user snapshot reference
+//
+// Resolves a snapshot reference to its template and ready build and returns the resume metadata. Internal endpoint for the in-cluster webhook service.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /internal/snapshots/{snapshotID}/resolve (the `GetInternalSnapshotsSnapshotIDResolve` operationId).
+func (c *ClientWithResponses) GetInternalSnapshotsSnapshotIDResolveWithResponse(ctx context.Context, snapshotID SnapshotID, params *GetInternalSnapshotsSnapshotIDResolveParams, reqEditors ...RequestEditorFn) (*GetInternalSnapshotsSnapshotIDResolveResponse, error) {
+	rsp, err := c.GetInternalSnapshotsSnapshotIDResolve(ctx, snapshotID, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetInternalSnapshotsSnapshotIDResolveResponse(rsp)
+}
+
+// DeleteInternalTemplatesTemplateIDWithResponse Delete base template metadata
+//
+// Soft-deletes a base template without checking running sandboxes (handled by the webhook beforehand). Internal endpoint for the in-cluster webhook service.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /internal/templates/{templateID} (the `DeleteInternalTemplatesTemplateID` operationId).
+func (c *ClientWithResponses) DeleteInternalTemplatesTemplateIDWithResponse(ctx context.Context, templateID TemplateID, params *DeleteInternalTemplatesTemplateIDParams, reqEditors ...RequestEditorFn) (*DeleteInternalTemplatesTemplateIDResponse, error) {
+	rsp, err := c.DeleteInternalTemplatesTemplateID(ctx, templateID, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteInternalTemplatesTemplateIDResponse(rsp)
+}
+
 // GetNodesWithResponse List nodes
 //
 // List all nodes.
@@ -15843,6 +17677,525 @@ func ParseGetHealthResponse(rsp *http.Response) (*GetHealthResponse, error) {
 			return nil, err
 		}
 		response.JSON401 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostInternalBuildsBuildIDStatusResponse parses an HTTP response from a PostInternalBuildsBuildIDStatusWithResponse call
+func ParsePostInternalBuildsBuildIDStatusResponse(rsp *http.Response) (*PostInternalBuildsBuildIDStatusResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostInternalBuildsBuildIDStatusResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 200:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest N409
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetInternalSandboxesSandboxIDLastSnapshotResponse parses an HTTP response from a GetInternalSandboxesSandboxIDLastSnapshotWithResponse call
+func ParseGetInternalSandboxesSandboxIDLastSnapshotResponse(rsp *http.Response) (*GetInternalSandboxesSandboxIDLastSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetInternalSandboxesSandboxIDLastSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ResumeMetadata
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostInternalSandboxesSandboxIDPauseSnapshotResponse parses an HTTP response from a PostInternalSandboxesSandboxIDPauseSnapshotWithResponse call
+func ParsePostInternalSandboxesSandboxIDPauseSnapshotResponse(rsp *http.Response) (*PostInternalSandboxesSandboxIDPauseSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostInternalSandboxesSandboxIDPauseSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PauseSnapshotResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest N409
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest N422
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteInternalSandboxesSandboxIDSnapshotResponse parses an HTTP response from a DeleteInternalSandboxesSandboxIDSnapshotWithResponse call
+func ParseDeleteInternalSandboxesSandboxIDSnapshotResponse(rsp *http.Response) (*DeleteInternalSandboxesSandboxIDSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteInternalSandboxesSandboxIDSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest N409
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetInternalSandboxesSandboxIDSnapshotStateResponse parses an HTTP response from a GetInternalSandboxesSandboxIDSnapshotStateWithResponse call
+func ParseGetInternalSandboxesSandboxIDSnapshotStateResponse(rsp *http.Response) (*GetInternalSandboxesSandboxIDSnapshotStateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetInternalSandboxesSandboxIDSnapshotStateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SnapshotStateResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostInternalSandboxesSandboxIDSnapshotTemplatesResponse parses an HTTP response from a PostInternalSandboxesSandboxIDSnapshotTemplatesWithResponse call
+func ParsePostInternalSandboxesSandboxIDSnapshotTemplatesResponse(rsp *http.Response) (*PostInternalSandboxesSandboxIDSnapshotTemplatesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostInternalSandboxesSandboxIDSnapshotTemplatesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SnapshotTemplateResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest N409
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest N422
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteInternalSnapshotTemplatesSnapshotIDResponse parses an HTTP response from a DeleteInternalSnapshotTemplatesSnapshotIDWithResponse call
+func ParseDeleteInternalSnapshotTemplatesSnapshotIDResponse(rsp *http.Response) (*DeleteInternalSnapshotTemplatesSnapshotIDResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteInternalSnapshotTemplatesSnapshotIDResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest N409
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest N422
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetInternalSnapshotsSnapshotIDResolveResponse parses an HTTP response from a GetInternalSnapshotsSnapshotIDResolveWithResponse call
+func ParseGetInternalSnapshotsSnapshotIDResolveResponse(rsp *http.Response) (*GetInternalSnapshotsSnapshotIDResolveResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetInternalSnapshotsSnapshotIDResolveResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ResumeMetadata
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest N422
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteInternalTemplatesTemplateIDResponse parses an HTTP response from a DeleteInternalTemplatesTemplateIDWithResponse call
+func ParseDeleteInternalTemplatesTemplateIDResponse(rsp *http.Response) (*DeleteInternalTemplatesTemplateIDResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteInternalTemplatesTemplateIDResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case rsp.StatusCode == 204:
+		break // No content-type
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest N400
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest N401
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest N404
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest N409
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest N422
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest N500
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
 
 	}
 
