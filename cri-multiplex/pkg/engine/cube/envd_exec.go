@@ -24,9 +24,16 @@ const (
 	envdConnectEndStream   = byte(0x02)
 	envdConnectCompressed  = byte(0x01)
 	envdMaxEnvelopeSize    = 64 * 1024 * 1024
-	envdDefaultUser        = "root"
-	envdDefaultTimeout     = 60 * time.Second
+	// Default cap for combined stdout+stderr retained in memory for ExecSync.
+	// Matches the default gRPC max message size so a runaway guest command
+	// cannot OOM cri-multiplex (KASandbox #67).
+	envdMaxExecOutputBytesDefault = 16 * 1024 * 1024
+	envdDefaultUser               = "root"
+	envdDefaultTimeout            = 60 * time.Second
 )
+
+// Overridable in tests.
+var envdMaxExecOutputBytes = envdMaxExecOutputBytesDefault
 
 type envdStartRequest struct {
 	Process envdProcessConfig `json:"process"`
@@ -140,6 +147,27 @@ func parseEnvdProcessStream(r io.Reader) (*envdExecResult, error) {
 	var stdout, stderr strings.Builder
 	var exitCode int32 = -1
 	sawEnd := false
+	truncated := false
+	retained := 0
+
+	appendCapped := func(dst *strings.Builder, text string) {
+		if text == "" || truncated {
+			return
+		}
+		remain := envdMaxExecOutputBytes - retained
+		if remain <= 0 {
+			truncated = true
+			return
+		}
+		if len(text) > remain {
+			dst.WriteString(text[:remain])
+			retained += remain
+			truncated = true
+			return
+		}
+		dst.WriteString(text)
+		retained += len(text)
+	}
 
 	for {
 		flags, payload, err := readConnectEnvelope(r)
@@ -167,19 +195,23 @@ func parseEnvdProcessStream(r io.Reader) (*envdExecResult, error) {
 			continue
 		}
 		if msg.Event.Data != nil {
-			if msg.Event.Data.Stdout != "" {
-				text, err := decodeEnvdBytes(msg.Event.Data.Stdout)
-				if err != nil {
-					return nil, status.Errorf(codes.Internal, "decode stdout: %v", err)
+			// Once capped, skip decoding further data chunks to avoid
+			// allocating huge temporary strings while draining to End.
+			if !truncated {
+				if msg.Event.Data.Stdout != "" {
+					text, err := decodeEnvdBytes(msg.Event.Data.Stdout)
+					if err != nil {
+						return nil, status.Errorf(codes.Internal, "decode stdout: %v", err)
+					}
+					appendCapped(&stdout, text)
 				}
-				stdout.WriteString(text)
-			}
-			if msg.Event.Data.Stderr != "" {
-				text, err := decodeEnvdBytes(msg.Event.Data.Stderr)
-				if err != nil {
-					return nil, status.Errorf(codes.Internal, "decode stderr: %v", err)
+				if msg.Event.Data.Stderr != "" {
+					text, err := decodeEnvdBytes(msg.Event.Data.Stderr)
+					if err != nil {
+						return nil, status.Errorf(codes.Internal, "decode stderr: %v", err)
+					}
+					appendCapped(&stderr, text)
 				}
-				stderr.WriteString(text)
 			}
 		}
 		if msg.Event.End != nil {
