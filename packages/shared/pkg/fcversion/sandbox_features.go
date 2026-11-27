@@ -1,6 +1,12 @@
 package fcversion
 
-import "github.com/Masterminds/semver/v3"
+import (
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/Masterminds/semver/v3"
+)
 
 // Per-feature release floors. The gates are release-based on purpose: legacy
 // (_hash) and bare dev builds never qualify even when a particular binary
@@ -39,7 +45,19 @@ func (v *Info) HasFilesystemSnapshots() bool {
 	return v.atLeastE2B(filesystemSnapshotsMinE2B)
 }
 
+// UseHugePagesEnv overrides the huge-pages decision when it holds a boolean
+// (strconv.ParseBool). Empty or unparsable values keep the release check.
+// The API reads it for sandbox creates and the template manager for template
+// builds (which fixes the memfile page size), so set it on both.
+const UseHugePagesEnv = "E2B_USE_HUGE_PAGES"
+
 func (v *Info) HasHugePages() bool {
+	if value := strings.TrimSpace(os.Getenv(UseHugePagesEnv)); value != "" {
+		if useHugePages, err := strconv.ParseBool(value); err == nil {
+			return useHugePages
+		}
+	}
+
 	if v.lastReleaseVersion.Major() > 1 || (v.lastReleaseVersion.Major() == 1 && v.lastReleaseVersion.Minor() >= 7) {
 		return true
 	}

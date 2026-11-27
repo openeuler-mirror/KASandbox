@@ -227,3 +227,35 @@ func TestHasHugePages(t *testing.T) {
 		})
 	}
 }
+
+// TestHasHugePages_EnvOverride: a boolean E2B_USE_HUGE_PAGES wins over the
+// release check in both directions; empty or garbage values fall back to it.
+// Not parallel: it sets the process environment.
+func TestHasHugePages_EnvOverride(t *testing.T) {
+	cases := []struct {
+		env     string
+		version string
+		want    bool
+	}{
+		{"false", "v1.14.1_458ca91", false},
+		{"0", "v1.14-0.2.0", false},
+		{" FALSE ", "v1.12.1_210cbac", false},
+		{"true", "v1.6.9_abc1234", true},
+		{"1", "v1.5.0_abc1234", true},
+		{"", "v1.14.1_458ca91", true},
+		{"", "v1.6.9_abc1234", false},
+		{"no", "v1.14.1_458ca91", true},
+		{"off", "v1.6.9_abc1234", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.env+"/"+tc.version, func(t *testing.T) {
+			t.Setenv(UseHugePagesEnv, tc.env)
+
+			info, err := New(tc.version)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.want, info.HasHugePages())
+		})
+	}
+}
