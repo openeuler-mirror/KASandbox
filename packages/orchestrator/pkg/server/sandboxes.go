@@ -135,6 +135,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 
 	// set up tracing
 	ctx, childSpan := tracer.Start(ctx, "sandbox-create")
+	traceID := childSpan.SpanContext().TraceID().String()
 	defer childSpan.End()
 
 	isResume := req.GetSandbox().GetSnapshot()
@@ -219,6 +220,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	}
 
 	// Check if we've reached the max number of starting instances on this node
+	tAcquire := time.Now()
 	if req.GetSandbox().GetSnapshot() {
 		err := s.waitForAcquire(ctx)
 		if err != nil {
@@ -234,8 +236,10 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 			return nil, status.Errorf(codes.ResourceExhausted, "too many sandboxes starting on this node, please retry")
 		}
 	}
+	zap.L().Sugar().Infof("[ResumeSandbox] acquire starting slot cost: %.3f ms, traceID=%s", time.Since(tAcquire).Seconds()*1000, traceID)
 	defer s.startingSandboxes.Release(1)
 
+	tGetTemplate := time.Now()
 	template, err := s.templateCache.GetTemplate(
 		ctx,
 		req.GetSandbox().GetBuildId(),
@@ -247,6 +251,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		return nil, fmt.Errorf("failed to get template snapshot data: %w", err)
 	}
 
+	zap.L().Sugar().Infof("[ResumeSandbox] templateCache.GetTemplate cost: %.3f ms, traceID=%s", time.Since(tGetTemplate).Seconds()*1000, traceID)
 	// Clone the network config to avoid modifying the original request
 	network := withAllowInternetAccess(proto.CloneOf(req.GetSandbox().GetNetwork()), req.GetSandbox().AllowInternetAccess)
 
@@ -355,6 +360,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		return nil, status.Errorf(codes.Internal, "failed to create sandbox: %s", err)
 	}
 
+	tPost := time.Now()
 	s.setupSandboxLifecycle(ctx, sbx)
 
 	// Resume-time envd live-upgrade. The API /resume maps to Create
@@ -418,6 +424,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		},
 	)
 
+	zap.L().Sugar().Infof("[ResumeSandbox] post-resume lifecycle setup cost: %.3f ms, traceID=%s", time.Since(tPost).Seconds()*1000, traceID)
 	return &orchestrator.SandboxCreateResponse{
 		ClientId: s.info.ClientId,
 		// The sandbox's slot IP: the node routes it, so node-local callers

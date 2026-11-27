@@ -1227,6 +1227,7 @@ func (f *Factory) ResumeSandbox(
 	apiConfigToStore *orchestrator.SandboxConfig,
 	opts ...ResumeOption,
 ) (s *Sandbox, e error) {
+	traceID := trace.SpanFromContext(ctx).SpanContext().TraceID().String()
 	ctx, span := tracer.Start(ctx, "resume sandbox")
 	defer span.End()
 	defer handleSpanError(span, &e)
@@ -1252,9 +1253,12 @@ func (f *Factory) ResumeSandbox(
 
 	lifecycleID := uuid.NewString()
 
+	tFiles := time.Now()
+	tEnvd := time.Now()
 	sandboxFiles := t.Files().NewSandboxFiles(runtime.SandboxID)
 	cleanup.Add(ctx, cleanupFiles(f.config, sandboxFiles))
 
+	zap.L().Sugar().Infof("[ResumeSandbox] new sandbox files cost: %.3f ms, traceID=%s", time.Since(tFiles).Seconds()*1000, traceID)
 	telemetry.ReportEvent(ctx, "created sandbox files")
 
 	// Identity shared by everything this resume logs on the sandbox's behalf:
@@ -1264,11 +1268,13 @@ func (f *Factory) ResumeSandbox(
 	// Uffd initialization
 	fcUffdPath := sandboxFiles.SandboxUffdSocketPath()
 	uffdPromise := utils.NewPromise(func() (*uffd.Uffd, error) {
+		tMemfile := time.Now()
 		memfile, err := t.Memfile(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get memfile: %w", err)
 		}
 
+		zap.L().Sugar().Infof("[ResumeSandbox] t.Memfile cost: %.3f ms, traceID=%s", time.Since(tMemfile).Seconds()*1000, traceID)
 		telemetry.ReportEvent(ctx, "got template memfile")
 
 		return uffd.New(memfile, fcUffdPath, sbxLogger), nil
@@ -1399,6 +1405,7 @@ func (f *Factory) ResumeSandbox(
 
 		telemetry.ReportEvent(ctx, "got template rootfs")
 
+		tNBD := time.Now()
 		overlay, err := rootfs.NewNBDProvider(
 			ctx,
 			readonlyRootfs,
@@ -1410,6 +1417,7 @@ func (f *Factory) ResumeSandbox(
 			return nil, fmt.Errorf("failed to create rootfs overlay: %w", err)
 		}
 
+		zap.L().Sugar().Infof("[ResumeSandbox] create NBD providers cost: %.3f ms, traceID=%s", time.Since(tNBD).Seconds()*1000, traceID)
 		cleanup.Add(ctx, overlay.Close)
 
 		telemetry.ReportEvent(ctx, "created rootfs overlay")
@@ -1431,6 +1439,7 @@ func (f *Factory) ResumeSandbox(
 			return struct{}{}, err
 		}
 
+		tServe := time.Now()
 		err = serveMemory(
 			execCtx,
 			cleanup,
@@ -1440,6 +1449,7 @@ func (f *Factory) ResumeSandbox(
 			return struct{}{}, fmt.Errorf("failed to serve memory: %w", err)
 		}
 
+		zap.L().Sugar().Infof("[ResumeSandbox] serveMemory (uffd start) cost: %.3f ms, traceID=%s", time.Since(tServe).Seconds()*1000, traceID)
 		telemetry.ReportEvent(ctx, "started serving memory")
 
 		return struct{}{}, nil
@@ -1752,6 +1762,7 @@ func (f *Factory) ResumeSandbox(
 		f.Sandboxes.MarkRunning(ctx, sbx)
 	}
 
+	zap.L().Sugar().Infof("[ResumeSandbox] wait envd ready cost: %.3f ms, traceID=%s", time.Since(tEnvd).Seconds()*1000, traceID)
 	telemetry.ReportEvent(execCtx, "envd initialized")
 
 	if !ropts.skipLiveRegistration && !ropts.deferMarkRunning {
