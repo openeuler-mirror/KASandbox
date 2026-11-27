@@ -321,3 +321,20 @@ func TestIntegration_ConcurrentAccess(t *testing.T) {
 	assert.Equal(t, burst, allowed, "exactly burst requests should be allowed")
 	assert.Equal(t, total-burst, denied, "remaining requests should be denied")
 }
+
+func TestMiddleware_NoRedisAppliesNoLimit(t *testing.T) {
+	t.Parallel()
+
+	// Without Redis NewLimiter returns nil; a configured route limit must not
+	// reject requests or reach Redis.
+	limiter := NewLimiter(nil)
+	require.Nil(t, limiter)
+
+	ff := newTestFF(t, routeConfig(1, 1))
+	r := newRouterWithTeam(t, limiter, Config{FailOpen: false}, ff, uuid.New())
+
+	for range 5 {
+		w := doRequest(t, r)
+		assert.Equal(t, http.StatusOK, w.Code)
+	}
+}

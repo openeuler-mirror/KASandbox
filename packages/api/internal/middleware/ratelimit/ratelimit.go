@@ -26,8 +26,13 @@ type Config struct {
 	FailOpen bool
 }
 
-// NewLimiter creates a redis_rate.Limiter from a Redis client.
+// NewLimiter creates a redis_rate.Limiter from a Redis client. It returns nil
+// when Redis is not configured, and Middleware then applies no limits.
 func NewLimiter(redisClient redis.UniversalClient) *redis_rate.Limiter {
+	if redisClient == nil {
+		return nil
+	}
+
 	return redis_rate.NewLimiter(redisClient)
 }
 
@@ -75,6 +80,13 @@ func resolveLimit(ctx context.Context, ff *featureflags.Client, route string) (r
 func Middleware(limiter *redis_rate.Limiter, cfg Config, ff *featureflags.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
+
+		// No Redis, no rate limits
+		if limiter == nil {
+			c.Next()
+
+			return
+		}
 
 		// Skip unauthenticated requests
 		team, ok := auth.GetTeamInfo(c)

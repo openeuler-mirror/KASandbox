@@ -396,12 +396,20 @@ func run() int {
 		RedisPassword:    config.RedisPassword,
 		PoolSize:         config.RedisPoolSize,
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, factories.ErrRedisDisabled):
+		// Neither REDIS_URL nor REDIS_CLUSTER_URL is set. Templates are still
+		// served from the database; sandbox operations need Redis and fail.
+		logger.L().Warn(ctx, "Redis is not configured: the api serves templates only and sandbox operations are disabled; "+
+			"use this only with a single api instance and sandboxes scheduled outside the api (Flux / openFuyao through cri-multiplex)")
+		redisClient = nil
+	case err != nil:
 		logger.L().Fatal(ctx, "Initializing Redis client", zap.Error(err))
+	default:
+		cleanupFns = append(cleanupFns, func(_ context.Context) error {
+			return redisClient.Close()
+		})
 	}
-	cleanupFns = append(cleanupFns, func(_ context.Context) error {
-		return redisClient.Close()
-	})
 
 	featureFlags, err := featureflags.NewClient()
 	if err != nil {

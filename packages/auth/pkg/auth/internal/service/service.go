@@ -66,9 +66,8 @@ func NewAuthService(
 	providerConfig token.ProviderConfig,
 	httpClient *http.Client,
 ) (*AuthService, error) {
-	if redisClient == nil {
-		return nil, errors.New("redisClient is required")
-	}
+	// redisClient may be nil when Redis is not configured: the team cache then
+	// reads every API key from the database.
 	if authDB == nil {
 		return nil, errors.New("authDB is required")
 	}

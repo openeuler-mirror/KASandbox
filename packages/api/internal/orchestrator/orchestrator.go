@@ -21,6 +21,7 @@ import (
 	"github.com/e2b-dev/infra/packages/api/internal/orchestrator/placement"
 	"github.com/e2b-dev/infra/packages/api/internal/sandbox"
 	redisreservations "github.com/e2b-dev/infra/packages/api/internal/sandbox/reservations/redis"
+	"github.com/e2b-dev/infra/packages/api/internal/sandbox/storage/disabled"
 	redisbackend "github.com/e2b-dev/infra/packages/api/internal/sandbox/storage/redis"
 	sqlcdb "github.com/e2b-dev/infra/packages/db/client"
 	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
@@ -125,8 +126,6 @@ func New(
 	}
 	analyticsInstance.Init(ctx)
 
-	routingCatalog := e2bcatalog.NewRedisSandboxCatalog(redisClient)
-
 	// We will need to either use Redis or Consul's KV for storing active sandboxes to keep everything in sync,
 	// right now we load them from Orchestrator
 	meter := tel.MeterProvider.Meter("github.com/e2b-dev/infra/packages/api/internal/orchestrator")
@@ -144,11 +143,31 @@ func New(
 
 	bestOfKAlgorithm := placement.NewBestOfK(getBestOfKConfig(ctx, featureFlags)).(*placement.BestOfK)
 
-	redisStorage, err := redisbackend.NewStorage(redisClient, tel.MeterProvider, featureFlags)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create redis sandbox storage: %w", err)
+	// Sandbox state lives only in Redis. Without Redis the api tracks no
+	// sandboxes (see the disabled package) and keeps serving templates.
+	var (
+		routingCatalog     e2bcatalog.SandboxesCatalog
+		sandboxStorage     sandbox.Storage
+		reservationStorage sandbox.ReservationStorage
+		redisStorage       *redisbackend.Storage
+	)
+	if redisClient == nil {
+		logger.L().Info(ctx, "Redis is not configured: the api tracks no sandboxes, sandbox operations through the api fail")
+		routingCatalog = disabled.Catalog{}
+		sandboxStorage = disabled.Storage{}
+		reservationStorage = disabled.Reservations{}
+	} else {
+		routingCatalog = e2bcatalog.NewRedisSandboxCatalog(redisClient)
+
+		redisStorage, err = redisbackend.NewStorage(redisClient, tel.MeterProvider, featureFlags)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create redis sandbox storage: %w", err)
+		}
+		go redisStorage.Start(ctx)
+
+		sandboxStorage = redisStorage
+		reservationStorage = redisreservations.NewReservationStorage(redisClient, redisStorage.Notifier())
 	}
-	go redisStorage.Start(ctx)
 
 	// The local clusters registry is the only source of orchestrator nodes
 	// exactly when the discovery provider is the static local one: there both
@@ -184,8 +203,8 @@ func New(
 	}
 
 	o.sandboxStore = sandbox.NewStore(
-		redisStorage,
-		redisreservations.NewReservationStorage(redisClient, redisStorage.Notifier()),
+		sandboxStorage,
+		reservationStorage,
 		sandbox.Callbacks{
 			AddSandboxToRoutingTable: o.addSandboxToRoutingTableOrLog,
 			AsyncNewlyCreatedSandbox: o.handleNewlyCreatedSandbox,
@@ -311,7 +330,9 @@ func (o *Orchestrator) Close(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 
-	o.redisStorage.Close(ctx)
+	if o.redisStorage != nil {
+		o.redisStorage.Close(ctx)
+	}
 
 	return errors.Join(errs...)
 }

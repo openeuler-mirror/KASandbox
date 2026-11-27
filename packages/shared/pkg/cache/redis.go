@@ -75,7 +75,8 @@ func NewRedisCache[V any](config RedisConfig[V]) *RedisCache[V] {
 	}
 
 	var locker redis_utils.Locker = redis_utils.NoopLocker{}
-	if config.LockTTL != RedisLockOff {
+	// Without a Redis client (Redis not configured) there is nothing to lock.
+	if config.LockTTL != RedisLockOff && config.RedisClient != nil {
 		if config.LockRetryInterval == 0 {
 			config.LockRetryInterval = defaultLockRetryInterval
 		}
@@ -93,10 +94,19 @@ func NewRedisCache[V any](config RedisConfig[V]) *RedisCache[V] {
 	return rc
 }
 
+// hasRedis reports whether the cache has a Redis client. Without one (Redis
+// not configured) every Redis operation is skipped and reads go straight to
+// the data callback.
+func (rc *RedisCache[V]) hasRedis() bool { return rc.config.RedisClient != nil }
+
 // GetOrSet retrieves a value from Redis, falling back to dataCallback on miss.
 // On callback hit, the value is backfilled into Redis.
 // Singleflight deduplicates concurrent misses for the same key.
 func (rc *RedisCache[V]) GetOrSet(ctx context.Context, key string, dataCallback DataCallback[V]) (V, error) {
+	if !rc.hasRedis() {
+		return rc.getFromCallback(ctx, key, dataCallback)
+	}
+
 	// Fast path: try Redis outside singleflight
 	value, remainingTTL, err := rc.getFromRedis(ctx, key)
 	if err == nil {
@@ -157,8 +167,32 @@ func (rc *RedisCache[V]) GetOrSet(ctx context.Context, key string, dataCallback 
 	return res.value, res.err
 }
 
+// getFromCallback serves GetOrSet without Redis: concurrent calls for the same
+// key share one data callback, run with the same timeout as on a cache miss.
+func (rc *RedisCache[V]) getFromCallback(ctx context.Context, key string, dataCallback DataCallback[V]) (V, error) {
+	r, err, _ := rc.fetchGroup.Do(key, func() (any, error) {
+		callbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rc.config.RefreshTimeout)
+		defer cancel()
+
+		return dataCallback(callbackCtx, key)
+	})
+	if err != nil {
+		var zero V
+
+		return zero, err
+	}
+
+	value, _ := r.(V)
+
+	return value, nil
+}
+
 // Set stores a value in Redis.
 func (rc *RedisCache[V]) Set(ctx context.Context, key string, value V) {
+	if !rc.hasRedis() {
+		return
+	}
+
 	rc.setInRedis(ctx, key, value)
 }
 
@@ -182,6 +216,10 @@ func (rc *RedisCache[V]) Set(ctx context.Context, key string, value V) {
 //     callback is capped at RefreshTimeout, which is strictly less than the
 //     lock TTL the wait is derived from.
 func (rc *RedisCache[V]) Delete(ctx context.Context, key string) {
+	if !rc.hasRedis() {
+		return
+	}
+
 	// Wait past a wedged writer's lock auto-expiry (LockTTL) so lock
 	// acquisition can only fail on Redis/lock-service errors or ctx expiry,
 	// not on writer contention.
@@ -212,6 +250,10 @@ func (rc *RedisCache[V]) Delete(ctx context.Context, key string) {
 // the keyspace is not mutated during cursor iteration.
 // Returns the list of deleted cache keys (without the Redis prefix).
 func (rc *RedisCache[V]) DeleteByPrefix(ctx context.Context, prefix string) []string {
+	if !rc.hasRedis() {
+		return nil
+	}
+
 	redisPattern := fmt.Sprintf("%s:%s*", rc.config.RedisPrefix, prefix)
 
 	// Phase 1: collect all matching keys without mutating the keyspace.
