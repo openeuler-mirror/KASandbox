@@ -28,7 +28,16 @@ const (
 	// orchestrator address. Used to develop the API against the darwin dummy
 	// orchestrator on macOS, where neither Nomad nor Kubernetes is available.
 	ServiceDiscoveryProviderLocal = "local"
+	// ServiceDiscoveryProviderStatic lists the orchestrators named in
+	// ORCHESTRATOR_STATIC_NODES. Used by KASandbox deployments that run the
+	// orchestrators as systemd services, where neither Nomad nor Kubernetes
+	// knows about them.
+	ServiceDiscoveryProviderStatic = "static"
 )
+
+// OrchestratorTypeSystemd is the KASandbox ORCHESTRATOR_TYPE of orchestrators
+// run as systemd services on their nodes.
+const OrchestratorTypeSystemd = "systemd"
 
 type Config struct {
 	AdminToken string `env:"ADMIN_TOKEN"`
@@ -61,6 +70,7 @@ type Config struct {
 	//   "nomad"            (default) - query the local Nomad agent's HTTP API.
 	//   "kubernetes"                 - list pods via the K8s API.
 	//   "nomad+kubernetes"           - the deduplicated union of both.
+	//   "static"                     - the list in ORCHESTRATOR_STATIC_NODES.
 	ServiceDiscoveryProvider string `env:"SERVICE_DISCOVERY_PROVIDER"`
 
 	NomadAddress string `env:"NOMAD_ADDRESS" envDefault:"http://localhost:4646"`
@@ -91,6 +101,15 @@ type Config struct {
 	// ServiceDiscoveryProvider=local. Used for local dev against the darwin
 	// dummy orchestrator.
 	LocalOrchestratorAddress string `env:"LOCAL_ORCHESTRATOR_ADDRESS" envDefault:"127.0.0.1:5008"`
+
+	// OrchestratorType and OrchestratorStaticNodes are the KASandbox deployment
+	// settings. OrchestratorStaticNodes lists the orchestrators as
+	// "node1=10.0.0.1,node2=10.0.0.2:5009,node3": an entry without "=address"
+	// dials the node name, and an address without a valid port uses
+	// ORCHESTRATOR_PORT. With OrchestratorType=systemd and a non-empty list,
+	// an unset ServiceDiscoveryProvider resolves to static.
+	OrchestratorType        string `env:"ORCHESTRATOR_TYPE"`
+	OrchestratorStaticNodes string `env:"ORCHESTRATOR_STATIC_NODES"`
 
 	// Used when ServiceDiscoveryProvider is kubernetes or nomad+kubernetes.
 	// Empty K8sAPIEndpoint uses the pod's own ServiceAccount and only works

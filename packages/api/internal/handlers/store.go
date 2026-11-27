@@ -71,6 +71,7 @@ type serviceDiscovery struct {
 //	kubernetes       - both list pods via the K8s API
 //	nomad+kubernetes - both are the deduplicated union of the two above
 //	local            - both point at one statically configured address
+//	static           - both list the KASandbox ORCHESTRATOR_STATIC_NODES
 func newServiceDiscovery(ctx context.Context, config cfg.Config, newKube kubeClientFactory, provider string) (serviceDiscovery, error) {
 	switch provider {
 	case cfg.ServiceDiscoveryProviderKubernetes:
@@ -79,6 +80,8 @@ func newServiceDiscovery(ctx context.Context, config cfg.Config, newKube kubeCli
 		return newComposedServiceDiscovery(ctx, config, newKube)
 	case cfg.ServiceDiscoveryProviderLocal:
 		return newLocalServiceDiscovery(config)
+	case cfg.ServiceDiscoveryProviderStatic:
+		return newStaticServiceDiscovery(config)
 	default: // ServiceDiscoveryProviderNomad
 		return newNomadServiceDiscovery(config)
 	}
@@ -112,6 +115,12 @@ func newComposedServiceDiscovery(ctx context.Context, config cfg.Config, newKube
 func serviceDiscoveryProvider(config cfg.Config, localEnv bool) string {
 	if config.ServiceDiscoveryProvider != "" {
 		return config.ServiceDiscoveryProvider
+	}
+
+	// KASandbox systemd deployments name their orchestrators in
+	// ORCHESTRATOR_STATIC_NODES; no Nomad agent knows about them.
+	if config.OrchestratorType == cfg.OrchestratorTypeSystemd && len(parseStaticNodes(config.OrchestratorStaticNodes, 0)) > 0 {
+		return cfg.ServiceDiscoveryProviderStatic
 	}
 
 	if localEnv {

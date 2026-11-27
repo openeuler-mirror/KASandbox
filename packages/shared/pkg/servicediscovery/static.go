@@ -20,6 +20,12 @@ func NewStatic(results []string, port uint16) Discoverer {
 	return &staticDiscovery{items: items}
 }
 
+// NewStaticInstances builds a Discoverer that always returns items as given,
+// for lists that name each instance with its own port and node.
+func NewStaticInstances(items []Instance) Discoverer {
+	return &staticDiscovery{items: items}
+}
+
 func (s *staticDiscovery) ListInstances(_ context.Context) ([]Instance, error) {
 	return s.items, nil
 }
