@@ -470,7 +470,7 @@ func (s *Slot) removeNetwork(deleteHostRules bool) error {
 		return errors.Join(errs...)
 	}
 
-	err = netns.DeleteNamed(s.NamespaceID())
+	err = deleteNamedNamespace(s.NamespaceID())
 	appendUnlessExpectedAbsentf(&errs, err, isNamespaceNotExist, "error deleting namespace: %w")
 
 	return errors.Join(errs...)

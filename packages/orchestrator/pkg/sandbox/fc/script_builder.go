@@ -190,3 +190,30 @@ func (sb *StartScriptBuilder) getRootfsPath(args startScriptArgs, rootfsPaths Ro
 func (sb *StartScriptBuilder) getKernelPath(args startScriptArgs) string {
 	return filepath.Join(args.SandboxDir, args.SandboxKernelDir, args.SandboxKernelFile)
 }
+
+// PrepareVMArgv builds the full argv of the fc-netns-exec --prepare-vm mode
+// (the helper and the firecracker command), which moves the bash preparation
+// chain of the V2 start script into the helper. Only for the V2 layout; V1 and
+// template build VMs keep the script.
+func (sb *StartScriptBuilder) PrepareVMArgv(
+	versions Config,
+	files *storage.SandboxFiles,
+	rootfsPaths RootfsPaths,
+	namespaceID string,
+) []string {
+	args := sb.buildArgs(versions, files, rootfsPaths, namespaceID)
+
+	helper := strings.TrimSpace(sb.builderConfig.FirecrackerNetnsExecHelper)
+
+	return []string{
+		helper, "--prepare-vm",
+		"-sandbox-dir", args.SandboxDir,
+		"-rootfs-src", args.HostRootfsPath,
+		"-rootfs-name", args.SandboxRootfsFile,
+		"-kernel-src", args.HostKernelPath,
+		"-kernel-dir", args.SandboxKernelDir,
+		"-kernel-name", args.SandboxKernelFile,
+		args.NamespaceID,
+		args.FirecrackerPath, "--api-sock", args.FirecrackerSocket,
+	}
+}

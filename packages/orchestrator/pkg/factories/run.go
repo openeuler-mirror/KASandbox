@@ -48,6 +48,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox"
 	blockmetrics "github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block/metrics"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/cgroup"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/fc"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/nbd"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network"
 	networkv2 "github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network/v2"
@@ -839,6 +840,12 @@ func run(config cfg.Config, opts Options) (success bool) {
 			}
 		}
 		v1Pool := network.NewPool(config.NetworkConfig.NewSlotsPoolSize, config.NetworkConfig.ReusedSlotsPoolSize, slotStorage, config.NetworkConfig)
+		// The pinned minimal mount namespace's holder must start after /run/netns
+		// is isolated (NewPool) and leftover netns are cleaned up (startup
+		// reclaim, NewStorageLocal), and before the pool fills, so its frozen
+		// mount table is minimal and references no netns. A failure only logs,
+		// and sandboxes start with plain unshare -m as before.
+		fc.WarmupPinnedMountNS(ctx, config.BuilderConfig)
 		startService("network pool", func() error {
 			v1Pool.Populate(ctx)
 

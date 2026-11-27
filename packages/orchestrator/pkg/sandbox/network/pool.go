@@ -107,6 +107,19 @@ type Config struct {
 	// NetworkVersion selects v1 (iptables per-sandbox) or v2 (nftables, host sets).
 	NetworkVersion int `env:"NETWORK_VERSION" envDefault:"1"`
 
+	// IsolateNetNSDir controls whether the v1 pool makes /run/netns a private
+	// mount at startup (isolateNetNSDir): auto (default), true or false.
+	//   auto: skipped inside a Kubernetes pod (KUBERNETES_SERVICE_HOST is set),
+	//         done on a bare host;
+	//   true/false: always / never.
+	// A native orchestrator needs it, or netns bind mounts propagate through a
+	// shared /run as stacked copies and leak. CNI / external netns deployments
+	// (an orchestrator in its own mount namespace that receives the named netns
+	// cri-multiplex creates on the host through propagation) must not do it:
+	// making the directory private cuts that propagation and setns fails with
+	// EINVAL.
+	IsolateNetNSDir string `env:"ORCHESTRATOR_ISOLATE_NETNS_DIR" envDefault:"auto"`
+
 	// Slot pool capacities for the v1/v2 network slot pools.
 	// Set NETWORK_POOL_NEW_SLOTS_SIZE=0 to disable pre-warming entirely — this is
 	// recommended for CNI-only deployments where sandboxes bring their own
@@ -234,6 +247,18 @@ type Pool struct {
 var ErrClosed = errors.New("cannot read from a closed pool")
 
 func NewPool(newSlotsPoolSize, reusedSlotsPoolSize int, slotStorage Storage, config Config) *Pool {
+	// A native orchestrator must isolate /run/netns before it creates any netns;
+	// a failure only logs and keeps the previous behavior. CNI / external netns
+	// deployments must skip it, or making it private cuts the named netns
+	// propagated from the host and setns fails with EINVAL.
+	if config.shouldIsolateNetNSDir() {
+		if err := isolateNetNSDir(); err != nil {
+			logger.L().Error(context.Background(), "failed to isolate netns mount dir, named netns mounts may leak via shared propagation", zap.Error(err))
+		}
+	} else {
+		logger.L().Info(context.Background(), "skipping /run/netns isolation; required for CNI/external-netns (k8s) deployments that receive named netns mounts propagated from the host", zap.String("mode", config.IsolateNetNSDir))
+	}
+
 	newSlots := make(chan *Slot, max(newSlotsPoolSize-1, 0))
 	reusedSlots := make(chan *Slot, max(reusedSlotsPoolSize, 0))
 

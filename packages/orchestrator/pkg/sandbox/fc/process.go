@@ -147,6 +147,10 @@ type Process struct {
 
 	cmd *exec.Cmd
 
+	// closeNetnsFD closes the parent's copy of the netns fd passed to the start
+	// chain through ExtraFiles, after the command started; a no-op without one
+	closeNetnsFD func()
+
 	config                cfg.BuilderConfig
 	firecrackerSocketPath string
 	metricsPath           string
@@ -212,19 +216,23 @@ func NewProcess(
 		time.Since(tStatKernel).Seconds()*1000, versions.HostKernelPath(config))
 
 	tCmd := time.Now()
-	cmd := exec.CommandContext(execCtx,
-		"unshare",
-		"-m",
-		"--",
-		"bash",
-		"-c",
-		startScript.Value,
-	)
+	restoredSandbox := rootfsPaths.TemplateID != "" && rootfsPaths.BuildID != ""
+
+	// A restored V2 sandbox may use the fc-netns-exec --prepare-vm chain
+	// (buildStartCommand checks the helper probe and E2B_FC_PREPARE_VM);
+	// otherwise nil keeps the bash script
+	var prepArgv []string
+	if restoredSandbox && rootfsPaths.TemplateVersion >= 2 {
+		prepArgv = startBuilder.PrepareVMArgv(versions, files, rootfsPaths, slot.NamespaceID())
+	}
+
+	cmd, closeNetnsFD := buildStartCommand(ctx, execCtx, config, startScript.Value, slot, restoredSandbox, prepArgv)
 
 	p := &Process{
 		Versions:              versions,
 		Exit:                  utils.NewErrorOnce(),
 		cmd:                   cmd,
+		closeNetnsFD:          closeNetnsFD,
 		firecrackerSocketPath: files.SandboxFirecrackerSocketPath(),
 		metricsPath:           files.SandboxMetricsFifoPath(),
 		config:                config,
@@ -288,6 +296,9 @@ func (p *Process) configure(
 
 	tStart := time.Now()
 	err := p.cmd.Start()
+	// ExtraFiles were duplicated into the child at fork; the parent's copy can
+	// be closed once the start returned
+	p.closeNetnsFD()
 	if err != nil {
 		// cmd.Process is nil when Start fails, so Stop() won't reach the FIFO cleanup.
 		// Remove the FIFO here to avoid leaving it behind.
