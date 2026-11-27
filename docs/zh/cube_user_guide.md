@@ -138,18 +138,19 @@ cd /path/to/KASandbox/cri-multiplex/cube-verify
 ```bash
 # 节点已装 CubeSandbox（控制面或 install-compute.sh）且模板 READY 后：
 
-# 1. 安装 KASandbox RPM（含 cri-multiplex、k8s-deploy.sh）
+# 1. 安装**带 Cube 能力**的 KASandbox（含 cri-multiplex、k8s-deploy.sh）
+#    装完必须能：/opt/e2b-infra/standard/bin/cri-multiplex --help | grep cube-enabled
+#    发行包若无该 flag，改用含 Cube 的包，或从源码/验证分支编译后设 CRI_MULTIPLEX_BIN
 rpm -ivh KASandbox-*.rpm
 cd /opt/e2b-infra/standard
 
 # 2. 部署 cri-multiplex 并切换 kubelet endpoint、创建 RuntimeClass cube
-#    二进制须支持 -cube-enabled（可用 --help | grep cube-enabled 确认）
 export CRI_MULTIPLEX_CUBE_ENABLED=true
 export CRI_MULTIPLEX_CUBELET=127.0.0.1:9999
 # export CRI_MULTIPLEX_BIN=/opt/e2b-infra/standard/bin/cri-multiplex
 sudo -E ./k8s-deploy.sh cri-multiplex
 
-# 3. Pod 使用 runtimeClassName: cube，并带齐 cube.dev/* 注解（或 webhook resolve）
+# 3. Pod：runtimeClassName: cube，并带齐附录 C 冷启动注解（见 §8.3；webhook 不能代替完整注解）
 kubectl get runtimeclass cube
 ```
 
@@ -517,12 +518,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 \
 
 ### 6.3 推送到 Harbor
 
-Harbor 按 [e2b-infra](https://atomgit.com/src-openeuler/e2b-infra) 文档部署（K8S 模式常见 HTTPS `:30443`）。推送命令与 E2B 相同；仅跑 Cube 时也可自建任意可拉的 OCI 仓库，不必装完整 e2b-infra：
+Harbor 按 [e2b-infra](https://atomgit.com/src-openeuler/e2b-infra) 文档部署（常见 HTTPS `:30443`）。推送命令与 E2B 相同；仅跑 Cube 时也可自建任意可拉的 OCI 仓库，不必装完整 e2b-infra。
+
+**同机注意**：若 cube-proxy 已占用宿主 `:80`，Harbor 的 HTTP 映射不要再绑 80（可改为例如 `2900:8080`），HTTPS 仍用 `30443:8443`。compose 网络异常时（nginx/`jobservice` 报 `lookup core … no such host`），对 Harbor 目录执行 `docker compose down && docker compose up -d`，确认 `core` 等容器都在同一 `harbor_*` 网上后再推送。
 
 ```bash
 SERVER_IP=<SERVER_IP>
 HARBOR_PASSWORD=<HARBOR_PASSWORD>
 
+# docker 对自签仓常需 insecure-registries（见 /etc/docker/daemon.json）后再 login
 docker login "${SERVER_IP}:30443" -u admin -p "${HARBOR_PASSWORD}"
 docker tag cube-selfbuild:v1 "${SERVER_IP}:30443/e2b-orchestration/cube-selfbuild:v1"
 docker push "${SERVER_IP}:30443/e2b-orchestration/cube-selfbuild:v1"
@@ -532,21 +536,31 @@ curl -sk -u "admin:${HARBOR_PASSWORD}" \
   "https://${SERVER_IP}:30443/api/v2.0/projects/e2b-orchestration/repositories" | jq .
 ```
 
-**HTTPS 自签 CA**：CubeMaster / TemplateCenter 拉镜像时走系统信任链。把 Harbor CA 并入系统包，或准备 bundle 后给服务设置环境变量并重启：
+**HTTPS 自签（必做，否则 §6.4 拉镜像会 x509）**：`docker push` 成功 ≠ CubeMaster 能拉。CubeMaster / TemplateCenter 走系统信任链，须把 Harbor 证书并入 bundle，再用 `SSL_CERT_FILE` 重启服务：
 
 ```bash
-# 示例：系统 CA + harbor.crt → /etc/cube/ca-bundle-with-harbor.crt
+SERVER_IP=<SERVER_IP>
+sudo mkdir -p /etc/cube
+# 从正在服务的 Harbor 抽出证书（或使用安装目录里的 CA / server.crt）
+echo | openssl s_client -connect "${SERVER_IP}:30443" -servername "${SERVER_IP}" 2>/dev/null \
+  | openssl x509 -out /etc/cube/harbor.crt
+sudo cp -a /etc/pki/tls/certs/ca-bundle.crt /etc/cube/ca-bundle-with-harbor.crt
+echo | sudo tee -a /etc/cube/ca-bundle-with-harbor.crt >/dev/null
+sudo cat /etc/cube/harbor.crt | sudo tee -a /etc/cube/ca-bundle-with-harbor.crt >/dev/null
+
 sudo mkdir -p /etc/systemd/system/cube-sandbox-cubemaster.service.d
+sudo mkdir -p /etc/systemd/system/cube-sandbox-cube-templatecenter.service.d
 sudo tee /etc/systemd/system/cube-sandbox-cubemaster.service.d/harbor-ca.conf <<'EOF'
 [Service]
 Environment=SSL_CERT_FILE=/etc/cube/ca-bundle-with-harbor.crt
 EOF
-# TemplateCenter 同理；然后：
+sudo cp /etc/systemd/system/cube-sandbox-cubemaster.service.d/harbor-ca.conf \
+  /etc/systemd/system/cube-sandbox-cube-templatecenter.service.d/harbor-ca.conf
 sudo systemctl daemon-reload
 sudo systemctl restart cube-sandbox-cubemaster cube-sandbox-cube-templatecenter
 ```
 
-明文 HTTP 仓库须在镜像引用前加 `http://` 前缀，例如 `http://<SERVER_IP>:30443/e2b-orchestration/cube-selfbuild:v1`。
+> **不要依赖**在镜像引用前加 `http://` 前缀绕过自签。现行拉镜像路径仍可能先走 HTTPS，出现 `http: server gave HTTP response to HTTPS client` 或回退到 `:30443` 继续 x509。自签仓请按上面配置 `SSL_CERT_FILE`，§6.4 的 `--image` 使用 `https` 默认形式：`<SERVER_IP>:30443/e2b-orchestration/...`。
 
 ### 6.4 构建与查询模板
 
@@ -618,11 +632,17 @@ cd /path/to/KASandbox/cri-multiplex/cube-verify
 # 可选覆盖：
 # export CUBELET_ADDR=127.0.0.1:9999
 # export CUBE_API_URL=http://127.0.0.1:3000
-# export CUBE_E2E_TEMPLATE=sandbox-code
+
+# 默认模板 alias 是 sandbox-code。机器上没有时 02 会 404，须显式指定任一 READY 模板：
+# curl -sS http://127.0.0.1:3000/templates | jq '[.[] | select(.status=="READY") | {id:.templateID // .template_id, alias:.aliases}]'
+# export CUBE_E2E_TEMPLATE=cube-guide-s6-v1   # 或 tpl-…
 
 ./run_all.sh              # 冒烟：01 启动 + 02 生命周期
 ./run_all.sh --keep       # 结束后保留 multiplex
+./run_all.sh --all        # 01–06（含压测脚本；见 §7.3）
 ```
+
+> `run_all.sh` **不会**像 `run_stability.sh` 那样自动回退到「第一个 READY 模板」。缺 `sandbox-code` 时必须设 `CUBE_E2E_TEMPLATE`。
 
 | 脚本 | 作用 |
 |------|------|
@@ -680,7 +700,7 @@ ROUNDS=5 CUBE_PROXY_NODE_IP=<节点IP> \
 - 节点已有 containerd + kubelet（集群可用 KubeKey 等自建；**不必**为此安装 e2b-infra 编排栈）
 - 本机或同机可达 Cubelet `:9999`；控制面 CubeAPI 可达（webhook resolve 时需要）
 - 每台跑 Cube 沙箱的节点：已装 cubesandbox 并 `install.sh` 或 `install-compute.sh`
-- 已装带 Cube 能力的 KASandbox cri-multiplex（`cri-multiplex --help | grep cube-enabled`）
+- 已装**带 Cube 能力**的 KASandbox cri-multiplex（`cri-multiplex --help | grep cube-enabled`）。部分仅含 E2B/Android 的发行包没有该 flag，此时 `k8s-deploy.sh` 写不出 `-cube-enabled`，须换包或自备二进制并设 `CRI_MULTIPLEX_BIN`
 - 至少有一个 READY 模板（可在控制面构建后分发）
 
 > 注意：部分 KubeKey 流程会替换宿主 `/usr/bin/containerd`；若节点原先用 Docker 静态包的 containerd，部署 K8S 前后请核对 `containerd --version` 与 docker/containerd 是否仍可用。
@@ -689,11 +709,13 @@ ROUNDS=5 CUBE_PROXY_NODE_IP=<节点IP> \
 
 ```bash
 cd /opt/e2b-infra/standard
+# 确认二进制支持 Cube：
+/opt/e2b-infra/standard/bin/cri-multiplex --help | grep cube-enabled
 
 export CRI_MULTIPLEX_CUBE_ENABLED=true
 export CRI_MULTIPLEX_CUBELET=127.0.0.1:9999
 # 二进制默认 /opt/e2b-infra/standard/bin/cri-multiplex
-# export CRI_MULTIPLEX_BIN=/opt/e2b-infra/standard/bin/cri-multiplex
+# export CRI_MULTIPLEX_BIN=/path/to/cri-multiplex-with-cube
 
 sudo -E ./k8s-deploy.sh cri-multiplex
 ```
@@ -720,6 +742,8 @@ journalctl -u cri-multiplex -n 20 --no-pager | grep cube-enabled
 
 ### 8.3 RuntimeClass 与 Pod 注解
 
+> **下面这段 YAML 不能直接冷启动到 Running。** 它只演示 `runtimeClassName` 与规格字段形状。真正创建前须从 `GET /templates/<id>` 的 `createRequest` 填齐附录 C（至少含 `cube.dev/image`、`command`/`args`、`disk-mb`、rootfs 相关键）。webhook **不会**展开整份 `createRequest`。
+
 ```yaml
 apiVersion: v1
 kind: Pod
@@ -729,8 +753,9 @@ metadata:
     cube.dev/template-id: "tpl-xxxxxxxxxxxxxxxxxxxxxxxx"
     cube.dev/vcpu: "2"
     cube.dev/ram-mb: "2048"
-    # 冷启动通常还需 image / command / args / rootfs 等相关注解
-    # （完整集合见附录 C。webhook 只补 id / vcpu / ram / disk 和 team-id，不展开整份 createRequest）
+    cube.dev/disk-mb: "1G"
+    # 还须：cube.dev/image、image-storage-media、container-name、volume-name、
+    # command、args、cube.master.rootfs.*、spec_fingerprint 等（附录 C）
 spec:
   runtimeClassName: cube
   containers:
@@ -738,7 +763,13 @@ spec:
       image: registry.k8s.io/pause:3.9
 ```
 
-> **重要**：冷启动依赖注解中的完整模板规格；Cubelet **不会**只凭 `tpl-` ID 自动展开全部 `createRequest`。webhook 只补 `template-id` / `vcpu` / `ram-mb` / `disk-mb` 和 `e2b.dev/team-id`。image、command、rootfs 等仍须从 `GET /templates/<id>` 的 `createRequest` 手工填入。
+从模板生成注解的实用做法：
+
+```bash
+TID=tpl-xxxxxxxxxxxxxxxxxxxxxxxx
+curl -sS "http://127.0.0.1:3000/templates/${TID}" | jq '.createRequest'
+# 再按附录 C 映射进 Pod metadata.annotations 后 kubectl apply
+```
 
 ### 8.4 e2b-webhook（可选）
 
@@ -749,7 +780,9 @@ e2b-webhook 随 KASandbox 提供。CubeProvider 行为：
 - 若缺少 `disk-mb`，再 `GET /templates/{id}`，从 `createRequest.annotations` 的 `cube.master.rootfs.writable_layer_size` 取值；没有则用 volume 的 `size_limit`。须与模板可写层一致，否则冷启动会对快照 rootfs resize 失败。
 - `e2b.dev/team-id`：请求里已有合法 UUID 优先，其次环境变量 `CUBE_TEAM_ID`（也须是 UUID），否则写零 UUID `00000000-0000-0000-0000-000000000000`。`team-1` 这类非 UUID 不会原样发出。
 
-按集群需要用 Helm / 部署脚本拉起 webhook，并保证其能访问 CubeAPI。
+**部署**：用 Helm / `deploy.sh deploy-webhook`，Deployment 须带 `CUBE_API_URL`（指向本机或集群可达的 CubeAPI）。集群里若只有其它命名空间的临时 MWC（例如 agentenv e2e），**不会**处理 `default` 下的 cube Pod。
+
+**冒烟口径（验注入，不验 Running）**：短 Pod 带 `runtimeClassName: cube` 与容器环境变量 `TEMPLATE_NAME=<alias 或 tpl-*>`，`kubectl apply --dry-run=server -o yaml` 后应出现 `cube.dev/template-id`、`vcpu`、`ram-mb`、`disk-mb`、`e2b.dev/team-id`。仍缺 image/command/rootfs 时 Pod 会停在 ContainerCreating，这是预期。`webhook-verify` 整套以 E2B 为主，不能代替上述 Cube 注入检查。
 
 ### 8.5 验证
 
@@ -757,8 +790,9 @@ e2b-webhook 随 KASandbox 提供。CubeProvider 行为：
 systemctl status cri-multiplex
 ls -l /run/cri-multiplex.sock
 kubectl get runtimeclass cube
-# 提交带 runtimeClassName: cube 的 Pod / 业务工作负载后：
+# 提交**已带齐附录 C 注解**的 cube Pod 后：
 kubectl get pod -o wide
+# 期望 Running；删掉后不应长期 Terminating
 ```
 
 ---
@@ -767,15 +801,24 @@ kubectl get pod -o wide
 
 ### 9.1 CubeSandbox / E2B 兼容 SDK
 
-控制面 CubeAPI `:3000` 提供与 E2B 对齐的 REST 能力（以实际版本为准）。典型流程：
+控制面 CubeAPI `:3000` 提供与 E2B 对齐的 REST 能力（以实际版本为准）。推荐官方 Python SDK：
 
 ```bash
-export CUBE_API_URL=http://<控制面IP>:3000
-export CUBE_TEMPLATE_ID=tpl-xxxxxxxxxxxxxxxxxxxxxxxx
-# 使用 cubesandbox Python/Node SDK 或兼容客户端创建沙箱
+pip install 'cubesandbox>=0.7.3'
+export CUBE_API_URL=http://127.0.0.1:3000
+export CUBE_API_KEY="${CUBE_API_KEY:-e2b_000000}"   # 与本地部署一致
+export CUBE_TEMPLATE_ID=tpl-xxxxxxxxxxxxxxxxxxxxxxxx  # 或 READY alias
+export CUBE_PROXY_NODE_IP=<节点可达 IP>               # 本机可填内网 IP，供 envd/proxy
+
+python3 - <<'PY'
+from cubesandbox import Sandbox
+import os
+with Sandbox.create(os.environ["CUBE_TEMPLATE_ID"], timeout=120) as sb:
+    print(sb.commands.run("uname -a").stdout)
+PY
 ```
 
-模板需 READY，且镜像内 envd（或业务 probe 对应服务）可用。详细 API / SDK 见 CubeSandbox 官方文档与 `sdk/`。
+模板需 READY，且镜像内 envd（或业务 probe 对应服务）可用。也可用 REST：`POST /sandboxes` + `X-API-Key`。详细 API 见 CubeSandbox 官方文档与 `sdk/`。
 
 ### 9.2 K8S Pod（runtimeClassName: cube）
 
@@ -864,14 +907,16 @@ sudo systemctl restart cube-sandbox-cube-api
 | `install.sh` 预检失败（无 KVM / 非 XFS / Docker 过旧） | 按 [4.2](#42-设置前提安装前必做) 补齐后再跑 |
 | 模板一直非 READY | `tpl watch`；检查镜像拉取、probe 端口是否监听并返回 2xx、CubeOps 是否有 Healthy 节点 |
 | `DISTRIBUTING` / `no healthy nodes` | `cubeopscli node list`；确认 Cubelet 已向 CubeOps `:3010` 注册且 Ready |
-| Harbor HTTPS x509 / 拉镜像失败 | 给 CubeMaster/TemplateCenter 配置 `SSL_CERT_FILE`（含 Harbor CA）并重启 |
-| cri-multiplex 无 cube | `systemctl cat cri-multiplex` 须有 `-cube-enabled=true`；二进制 `--help` 须支持该 flag；并能连 `CUBELET_ADDR` |
+| Harbor HTTPS x509 / 拉镜像失败 | docker push 成功不够；给 CubeMaster/TemplateCenter 配 `SSL_CERT_FILE`（含 Harbor 证书）并重启（§6.3）。**勿指望** `http://` 镜像前缀绕过 |
+| Harbor 入口起不来 / `lookup core no such host` | compose 网络丢了 `core` 等别名；`docker compose down && up -d`，确认容器同网；`:80` 被 cube-proxy 占用时改 HTTP 映射（如 2900） |
+| cri-multiplex 无 cube | `systemctl cat cri-multiplex` 须有 `-cube-enabled=true`；二进制 `--help` 须支持该 flag；并能连 `CUBELET_ADDR`。发行包无 Cube 时换包或自备二进制 |
 | `k8s-deploy.sh: No such file` / `rc=127` | 脚本在 `/opt/e2b-infra/standard/`，不要只 `cd /opt/e2b-infra` |
-| Create 缺字段失败 / Pod 一直 ContainerCreating | 补齐 `cube.dev/*` 与 rootfs 相关注解（附录 C），或配置 webhook + `CUBE_API_URL`；节点 Ready ≠ 注解已齐 |
+| Create 缺字段失败 / Pod 一直 ContainerCreating | 补齐附录 C（含 image/command/rootfs）；webhook 只补 id/vcpu/ram/disk/team-id，**不能**单靠 webhook 冷启动；节点 Ready ≠ 注解已齐 |
+| cube-verify 02：`template not found` / sandbox-code 404 | 设 `CUBE_E2E_TEMPLATE` 为任一 READY alias 或 `tpl-…`（`run_all` 不会自动回退） |
 | pause 422，`team_id` 不是 UUID | 不要填 `team-1`。webhook 写 `e2b.dev/team-id`：已有 UUID 优先，否则 `CUBE_TEAM_ID`，否则零 UUID |
 | cube Pod 删不掉 / `all engines failed`（e2b dial :5008） | Cube-only 下 e2b 不可达时的 List 聚合问题；升级含修复的 cri-multiplex，或保证过滤 List 时至少有一个引擎成功返回（可为空） |
 | Resume 失败 | CRI Resume 仅本机 origin；跨节点恢复不在当前 CRI 范围 |
-| Harbor 推了镜像但建模板失败 | 不用 E2B 的 `create_template.py`；用 `tpl create-from-image`；HTTP 仓加 `http://` 前缀 |
+| Harbor 推了镜像但建模板失败 | 不用 E2B 的 `create_template.py`；用 `tpl create-from-image`；自签先配 §6.3 的 `SSL_CERT_FILE` |
 | 只要 Cube、不要 E2B 全家桶 | **不必**装 [e2b-infra](https://atomgit.com/src-openeuler/e2b-infra)；`KASandbox` + `cubesandbox` 即可（无 Harbor 时走 §6.5 预置镜像） |
 | Docker 过旧 / snap | 见 [4.2.3](#423-docker--25--compose-v2)：卸 snap，装 ≥ 25 |
 | `/internal` 返回 401 | env 里要有 `CUBE_ADMIN_TOKEN`，请求头 `X-Admin-Token` 与之一致，并已重启 cube-api |
