@@ -11,8 +11,11 @@ type CubePodState struct {
 	SandboxID    string `json:"sandbox_id"`
 	SandboxUUID  string `json:"sandbox_uuid,omitempty"`
 	SandboxIP    string `json:"sandbox_ip,omitempty"`
-	OriginNode   string `json:"origin_node,omitempty"`
-	TemplateID   string `json:"template_id,omitempty"`
+	// EnvdAccessToken is installed into guest envd via POST /init and sent on
+	// ExecSync as X-Access-Token (KASandbox #69). Never log the raw value.
+	EnvdAccessToken string `json:"envd_access_token,omitempty"`
+	OriginNode      string `json:"origin_node,omitempty"`
+	TemplateID      string `json:"template_id,omitempty"`
 	VCPU         string `json:"vcpu,omitempty"`
 	Memory       string `json:"memory,omitempty"`
 	DiskLimit    string `json:"disk_limit,omitempty"`

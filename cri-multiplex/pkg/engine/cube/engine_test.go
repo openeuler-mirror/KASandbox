@@ -2,6 +2,8 @@ package cube
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -79,8 +81,25 @@ func newTestEngine(t *testing.T, client cubeClient) *Engine {
 		Timeout:     time.Second,
 		StateStore:  store,
 	}, client)
+	attachStubEnvd(t, eng)
 	t.Cleanup(func() { _ = eng.Close() })
 	return eng
+}
+
+func attachStubEnvd(t *testing.T, eng *Engine) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/init" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	eng.envdHTTP = &http.Client{Transport: rewriteHostTransport{
+		base: srv.Client().Transport,
+		host: strings.TrimPrefix(srv.URL, "http://"),
+	}}
 }
 
 func podRequest() *runtime.RunPodSandboxRequest {
@@ -149,6 +168,7 @@ func TestColdCreateNotBlockedByStateFlush(t *testing.T) {
 		Timeout:     time.Second,
 		StateStore:  store,
 	}, fake)
+	attachStubEnvd(t, eng)
 	t.Cleanup(func() { _ = eng.Close() })
 
 	done := make(chan error, 1)
@@ -187,6 +207,7 @@ func TestColdCreatePersistDoesNotFailCreate(t *testing.T) {
 		Timeout:     time.Second,
 		StateStore:  store,
 	}, &fakeClient{})
+	attachStubEnvd(t, eng)
 	t.Cleanup(func() { _ = eng.Close() })
 
 	resp, err := eng.RunPodSandbox(context.Background(), podRequest())
