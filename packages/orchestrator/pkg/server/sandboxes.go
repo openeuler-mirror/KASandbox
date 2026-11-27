@@ -135,6 +135,11 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 
 	// set up tracing
 	ctx, childSpan := tracer.Start(ctx, "sandbox-create")
+
+	if err := fc.CheckHugePages(req.GetSandbox().GetHugePages()); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot create sandbox on this node: %s", err)
+	}
+
 	traceID := childSpan.SpanContext().TraceID().String()
 	defer childSpan.End()
 

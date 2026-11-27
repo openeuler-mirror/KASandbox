@@ -93,6 +93,7 @@ func (u *Userfaultfd) Prefault(ctx context.Context, offset int64, data []byte) (
 		ctx,
 		addr,
 		offset,
+		uffdCopySize(u.pageSize),
 		block.Read,
 		directDataSource{data: data},
 		nil,

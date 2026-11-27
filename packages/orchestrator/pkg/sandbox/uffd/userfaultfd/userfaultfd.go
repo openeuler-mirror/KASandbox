@@ -182,6 +182,23 @@ type Userfaultfd struct {
 	logger logger.Logger
 }
 
+// uffdCopySize returns the destination alignment and length used for a single
+// UFFDIO_COPY.
+//
+// The kernel requires the destination to be aligned to the host page size and
+// the length to be a multiple of it (validate_range/validate_unaligned_range
+// in fs/userfaultfd.c). The snapshot memfile may use a smaller block size
+// (e.g. 4KiB), so the copy must cover at least one full host page. For
+// hugepage-backed regions the region page size is already a multiple of the
+// host page size, in which case the larger value is used.
+func uffdCopySize(regionPageSize uintptr) uintptr {
+	if regionPageSize > uintptr(block.PAGE_SIZE) {
+		return regionPageSize
+	}
+
+	return uintptr(block.PAGE_SIZE)
+}
+
 // NewStateOnly builds a handler around an existing page tracker with NO
 // userfaultfd behind it, for tests and tooling that exercise the state-export
 // surface (ExportPageStates, PageSize, Logger, WPFaultsResolved). Serving,
@@ -529,6 +546,23 @@ func (u *Userfaultfd) Serve(
 				return fmt.Errorf("failed to map: %w", err)
 			}
 
+			// The kernel requires UFFDIO_COPY to operate on a full host page. Page
+			// fault addresses are usually already host-page aligned, but align
+			// defensively (e.g. if UFFD_FEATURE_EXACT_ADDRESS is negotiated) and
+			// recompute the memfile offset for the aligned address.
+			copySize := uffdCopySize(u.pageSize)
+			if aligned := addr &^ (copySize - 1); aligned != addr {
+				alignedOffset, mapErr := u.ma.GetOffset(aligned)
+				if mapErr != nil {
+					u.logger.Error(ctx, "UFFD serve get mapping error", zap.Error(mapErr))
+
+					return fmt.Errorf("failed to map: %w", mapErr)
+				}
+
+				addr = aligned
+				offset = alignedOffset
+			}
+
 			if pf.flags&UFFD_PAGEFAULT_FLAG_WP != 0 {
 				// Synchronous WP fault: the guest wrote a write-protected present
 				// page (the paired sync-WP Firecracker build registers guest RAM
@@ -641,6 +675,7 @@ func (u *Userfaultfd) Serve(
 					ctx,
 					addr,
 					offset,
+					copySize,
 					accessType,
 					source,
 					fdExit.SignalExit,
@@ -933,6 +968,7 @@ func (u *Userfaultfd) faultPage(
 	ctx context.Context,
 	addr uintptr,
 	offset int64,
+	copySize uintptr,
 	accessType block.AccessType,
 	source PageReader,
 	onFailure func() error,
@@ -966,7 +1002,7 @@ func (u *Userfaultfd) faultPage(
 		// Write fault on a hole: plain zero-install, unprotected — the
 		// write that faulted lands immediately and the page is recorded
 		// Dirty.
-		writeErr = u.fd.zero(addr, u.pageSize, 0)
+		writeErr = u.fd.zero(addr, copySize, 0)
 	case source == nil:
 		// Zero-fill via COPY of a zero buffer instead of UFFDIO_ZEROPAGE,
 		// so read faults get install+write-protect in ONE atomic ioctl
@@ -976,15 +1012,15 @@ func (u *Userfaultfd) faultPage(
 		// install and arm raises no UFFD event (the page is present and
 		// unprotected), and an EAGAIN'd arm after a successful install was
 		// never retried because the deferred re-serve hits EEXIST.
-		writeErr = u.fd.copy(addr, u.pageSize, header.EmptyHugePage[:u.pageSize], mode)
+		writeErr = u.fd.copy(addr, copySize, header.EmptyHugePage[:copySize], mode)
 	default:
 		var b []byte
 		if u.pageSize == header.HugepageSize {
 			bufPtr := pagePool.Get().(*[]byte)
 			defer pagePool.Put(bufPtr)
-			b = (*bufPtr)[:u.pageSize]
+			b = (*bufPtr)[:copySize]
 		} else {
-			b = make([]byte, u.pageSize)
+			b = make([]byte, copySize)
 		}
 
 		// ReadAt retry holds settleRequests.RLock for up to ~2s of
@@ -1000,8 +1036,8 @@ func (u *Userfaultfd) faultPage(
 		for attempt = range sliceMaxRetries + 1 {
 			var n int
 			n, dataErr = source.ReadAt(ctx, b, offset)
-			if dataErr == nil && int64(n) != int64(u.pageSize) {
-				dataErr = fmt.Errorf("short read at %d: got %d, want %d", offset, n, u.pageSize)
+			if dataErr == nil && int64(n) != int64(copySize) {
+				dataErr = fmt.Errorf("short read at %d: got %d, want %d", offset, n, copySize)
 			}
 			if dataErr == nil {
 				break
@@ -1049,7 +1085,7 @@ func (u *Userfaultfd) faultPage(
 
 			return faultDiscarded, fmt.Errorf("failed to read from source after %d attempts: %w", attempt+1, joinedErr)
 		}
-		writeErr = u.fd.copy(addr, u.pageSize, b, mode)
+		writeErr = u.fd.copy(addr, copySize, b, mode)
 	}
 
 	// EEXIST: page already mapped. Wake in case the install used DONTWAKE.
