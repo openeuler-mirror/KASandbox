@@ -52,6 +52,9 @@ var (
 	_ Blob     = (*awsObject)(nil)
 )
 
+// defaultS3CompatibleRegion is MinIO's default region.
+const defaultS3CompatibleRegion = "us-east-1"
+
 func newAWSStorage(ctx context.Context, spec Spec, limiter *limit.Limiter) (*awsStorage, error) {
 	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
 		if k := os.Getenv("MINIO_ACCESS_KEY"); k != "" {
@@ -77,6 +80,11 @@ func newAWSStorage(ctx context.Context, spec Spec, limiter *limit.Limiter) (*aws
 		}
 		if spec.Region != "" {
 			o.Region = spec.Region
+		}
+		// S3-compatible backends such as MinIO ignore the region, but the SDK
+		// refuses to sign requests without one; keep a configured AWS_REGION.
+		if o.Region == "" && spec.Endpoint != "" {
+			o.Region = defaultS3CompatibleRegion
 		}
 
 		// Path-style addressing (https://host/bucket/key instead of the SDK's
