@@ -264,7 +264,8 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		TotalDiskSizeMB: req.GetSandbox().GetTotalDiskSizeMb(),
 		HugePages:       req.GetSandbox().GetHugePages(),
 
-		Network: network,
+		Network:        network,
+		RuntimeNetwork: req.GetSandbox().GetRuntimeNetwork(),
 
 		Envd: sandbox.EnvdMetadata{
 			Version:     req.GetSandbox().GetEnvdVersion(),

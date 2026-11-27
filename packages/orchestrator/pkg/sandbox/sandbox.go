@@ -145,6 +145,10 @@ type Config struct {
 	// The Network pointer itself is set once at construction and never replaced.
 	mu      *sync.RWMutex
 	Network *orchestrator.SandboxNetworkConfig
+
+	// RuntimeNetwork is set by the CRI shim when the sandbox must be networked
+	// inside its pod netns instead of a pooled slot.
+	RuntimeNetwork *orchestrator.SandboxRuntimeNetworkConfig
 }
 
 // NewConfig creates a Config, normalizing a nil Network to an empty config
@@ -893,7 +897,7 @@ func (f *Factory) CreateSandbox(
 
 	lifecycleID := uuid.NewString()
 
-	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, f.Sandboxes.NetworkReleased, runtime.SandboxType.EgressClass())
+	ipsPromise := getNetworkSlot(ctx, f.networkPool, f.config.NetworkConfig, cleanup, config.Network, config.RuntimeNetwork, f.Sandboxes.NetworkReleased, runtime.SandboxType.EgressClass())
 
 	sandboxFiles := template.Files().NewSandboxFiles(runtime.SandboxID)
 	cleanup.Add(ctx, cleanupFiles(f.config, sandboxFiles))
@@ -1375,7 +1379,7 @@ func (f *Factory) ResumeSandbox(
 	}()
 
 	// Slot initialization
-	ipsPromise := getNetworkSlot(ctx, f.networkPool, cleanup, config.Network, f.Sandboxes.NetworkReleased, runtime.SandboxType.EgressClass())
+	ipsPromise := getNetworkSlot(ctx, f.networkPool, f.config.NetworkConfig, cleanup, config.Network, config.RuntimeNetwork, f.Sandboxes.NetworkReleased, runtime.SandboxType.EgressClass())
 
 	// Rootfs initialization
 	overlayPromise := utils.NewPromise(func() (rootfs.Provider, error) {
@@ -4045,14 +4049,20 @@ func createCgroup(ctx context.Context, cgroupManager cgroup.Manager, cgroupName 
 func getNetworkSlot(
 	ctx context.Context,
 	networkPool network.PoolInterface,
+	slotConfig network.Config,
 	cleanup *Cleanup,
 	networkConfig *orchestrator.SandboxNetworkConfig,
+	runtimeNetwork *orchestrator.SandboxRuntimeNetworkConfig,
 	networkReleased network.ReleaseNotify,
 	egressClass network.EgressClass,
 ) *utils.Promise[*network.Slot] {
 	return utils.NewPromise(func() (*network.Slot, error) {
 		ctx, span := tracer.Start(ctx, "get network-slot")
 		defer span.End()
+
+		if runtimeNetwork.GetMode() == orchestrator.SandboxRuntimeNetworkConfig_CNI_EXTERNAL_NETNS {
+			return getExternalNetNSSlot(ctx, slotConfig, cleanup, networkConfig, runtimeNetwork, networkReleased)
+		}
 
 		slot, err := networkPool.Get(ctx, networkConfig, egressClass)
 		if err != nil {
@@ -4070,6 +4080,42 @@ func getNetworkSlot(
 
 		return slot, nil
 	})
+}
+
+// getExternalNetNSSlot networks the sandbox inside the pod netns given by the
+// CRI shim. The slot is not pooled: it is torn down with the sandbox.
+func getExternalNetNSSlot(
+	ctx context.Context,
+	slotConfig network.Config,
+	cleanup *Cleanup,
+	networkConfig *orchestrator.SandboxNetworkConfig,
+	runtimeNetwork *orchestrator.SandboxRuntimeNetworkConfig,
+	networkReleased network.ReleaseNotify,
+) (*network.Slot, error) {
+	slot, err := network.NewExternalNetNSSlot(runtimeNetwork.GetNetnsPath(), runtimeNetwork, slotConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create external netns slot: %w", err)
+	}
+	if err = slot.CreateNetwork(ctx); err != nil {
+		return nil, fmt.Errorf("failed to create external netns network: %w", err)
+	}
+	// External netns slots don't go through networkPool.Get, so apply
+	// the user egress config (allow-internet, allow/deny CIDRs) here.
+	if err = slot.ConfigureInternet(ctx, networkConfig); err != nil {
+		return nil, fmt.Errorf("failed to configure external netns internet access: %w", err)
+	}
+	cleanup.Add(ctx, func(ctx context.Context) error {
+		ctx, span := tracer.Start(ctx, "clean network-slot")
+		defer span.End()
+
+		// The pool's return path unregisters the slot IP from the sandbox
+		// map; do it here too, or the pod IP stays mapped to a dead sandbox.
+		defer networkReleased(ctx, slot.HostIPString())
+
+		return slot.RemoveNetwork()
+	})
+
+	return slot, nil
 }
 
 func serveMemory(

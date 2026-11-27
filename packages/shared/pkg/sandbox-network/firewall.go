@@ -20,8 +20,8 @@ const (
 )
 
 var DeniedSandboxCIDRs = []string{
-	// IPv4 private/local ranges
-	"10.0.0.0/8",     // RFC 1918 private.
+	// IPv4 private/local ranges. 10.0.0.0/8 is not denied by default (as in
+	// KASandbox): sandboxes in a pod network reach cluster Services there.
 	"100.64.0.0/10",  // RFC 6598 CGNAT / shared address space; used by some cloud providers for internal services.
 	"127.0.0.0/8",    // RFC 1122 loopback.
 	"169.254.0.0/16", // RFC 3927 link-local (incl. cloud metadata 169.254.169.254).

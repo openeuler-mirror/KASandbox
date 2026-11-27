@@ -65,6 +65,11 @@ message SandboxConfig {
   // Sandbox workload identity configuration requested at create time. Absent on
   // older serialized configs, which decode as no workload identity.
   optional SandboxIam iam = 27;
+
+  // Runtime network facts supplied by the CRI shim.
+  // This is separate from SandboxNetworkConfig, which describes product-level
+  // ingress/egress policy.
+  optional SandboxRuntimeNetworkConfig runtime_network = 28;
 }
 
 // Sandbox workload identity configuration. A non-empty tokens map defines the
@@ -269,6 +274,24 @@ message CachedBuildInfo {
 
 message SandboxListCachedBuildsResponse {
   repeated CachedBuildInfo builds = 1;
+}
+
+// KASandbox: cri-multiplex creates sandboxes inside the pod network namespace
+// prepared by CNI (SandboxConfig.runtime_network). Field names, numbers and
+// types must stay identical to cri-multiplex/proto/orchestrator.proto.
+message SandboxRuntimeNetworkConfig {
+  enum Mode {
+    ORCHESTRATOR_MANAGED = 0;
+    CNI_EXTERNAL_NETNS = 1;
+  }
+
+  Mode mode = 1;
+  string netns_path = 2;
+  string if_name = 3;
+  string pod_ip = 4;
+  string gateway = 5;
+  repeated string dns_servers = 6;
+  uint32 mtu = 7;
 }
 
 service SandboxService {

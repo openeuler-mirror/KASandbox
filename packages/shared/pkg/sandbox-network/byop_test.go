@@ -102,16 +102,15 @@ func TestValidateEgressProxy_RejectsInternalEndpoint(t *testing.T) {
 	}{
 		{"literal_loopback", "127.0.0.1:1080", nil},
 		{"literal_ipv6_loopback", "[::1]:1080", nil},
-		{"literal_private_10", "10.0.0.5:1080", nil},
 		{"literal_private_172", "172.16.5.5:1080", nil},
 		{"literal_private_192_168", "192.168.1.1:1080", nil},
 		{"literal_link_local", "169.254.169.254:1080", nil},
 		{"literal_ipv6_link_local", "[fe80::1]:1080", nil},
-		{"resolves_to_private", "evil.example.com:1080", []net.IP{net.ParseIP("10.0.0.5")}},
+		{"resolves_to_private", "evil.example.com:1080", []net.IP{net.ParseIP("172.16.5.5")}},
 		{
 			"resolves_mixed_one_denied",
 			"mixed.example.com:1080",
-			[]net.IP{net.ParseIP("203.0.113.5"), net.ParseIP("10.0.0.5")},
+			[]net.IP{net.ParseIP("203.0.113.5"), net.ParseIP("172.16.5.5")},
 		},
 	}
 	for _, c := range cases {
@@ -220,7 +219,7 @@ func TestIsIPInDeniedSandboxCIDRs_Exported(t *testing.T) {
 		ip   string
 		want bool
 	}{
-		{"10.0.0.5", true},
+		{"10.0.0.5", false},
 		{"100.64.0.1", true},
 		{"100.127.255.254", true},
 		{"172.16.0.1", true},

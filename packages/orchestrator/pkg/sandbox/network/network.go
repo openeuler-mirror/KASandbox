@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/vishvananda/netlink"
@@ -76,6 +78,10 @@ func appendUnlessExpectedAbsentf(errs *[]error, err error, isExpected func(error
 }
 
 func (s *Slot) CreateNetwork(ctx context.Context) (retErr error) {
+	if s.ExternalNetNS {
+		return s.CreateExternalNetNSNetwork(ctx)
+	}
+
 	// Prevent thread changes so we can safely manipulate with namespaces
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -361,6 +367,10 @@ func (s *Slot) CreateNetwork(ctx context.Context) (retErr error) {
 }
 
 func (s *Slot) RemoveNetwork() error {
+	if s.ExternalNetNS {
+		return s.RemoveExternalNetNSNetwork()
+	}
+
 	return s.removeNetwork(true)
 }
 
@@ -460,6 +470,218 @@ func (s *Slot) removeNetwork(deleteHostRules bool) error {
 
 	err = netns.DeleteNamed(s.NamespaceID())
 	appendUnlessExpectedAbsentf(&errs, err, isNamespaceNotExist, "error deleting namespace: %w")
+
+	return errors.Join(errs...)
+}
+
+// CreateExternalNetNSNetwork wires an external netns slot inside the netns
+// prepared by the CRI shim: the tap device for Firecracker, NAT between the
+// pod IP and the guest, forwarding between the pod interface and the tap, and
+// the slot firewall. The pod netns already has its interface, address and
+// default route from CNI.
+func (s *Slot) CreateExternalNetNSNetwork(ctx context.Context) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	hostNS, err := netns.Get()
+	if err != nil {
+		return fmt.Errorf("cannot get current (host) namespace: %w", err)
+	}
+	defer func() {
+		if setErr := netns.Set(hostNS); setErr != nil {
+			logger.L().Error(ctx, "error resetting network namespace back to the host namespace", zap.Error(setErr))
+		}
+		if closeErr := hostNS.Close(); closeErr != nil {
+			logger.L().Error(ctx, "error closing host network namespace", zap.Error(closeErr))
+		}
+	}()
+
+	targetNS, err := netns.GetFromPath(s.NetNSPath)
+	if err != nil {
+		return fmt.Errorf("cannot open external network namespace %q: %w", s.NetNSPath, err)
+	}
+	defer targetNS.Close()
+
+	if err = netns.Set(targetNS); err != nil {
+		return fmt.Errorf("error setting external network namespace %q: %w", s.NetNSPath, err)
+	}
+
+	if lo, err := netlink.LinkByName(loopbackInterface); err == nil {
+		if err = netlink.LinkSetUp(lo); err != nil {
+			return fmt.Errorf("error setting lo device up: %w", err)
+		}
+	} else {
+		return fmt.Errorf("error finding lo: %w", err)
+	}
+
+	tapAttrs := netlink.NewLinkAttrs()
+	tapAttrs.Name = s.TapName()
+	tap := &netlink.Tuntap{
+		Mode:      netlink.TUNTAP_MODE_TAP,
+		LinkAttrs: tapAttrs,
+	}
+
+	if err = netlink.LinkAdd(tap); err != nil {
+		return fmt.Errorf("error creating external netns tap device: %w", err)
+	}
+
+	tapLink, err := netlink.LinkByName(s.TapName())
+	if err != nil {
+		return fmt.Errorf("error finding external netns tap device: %w", err)
+	}
+
+	if err = netlink.AddrAdd(tapLink, &netlink.Addr{
+		IPNet: &net.IPNet{
+			IP:   s.TapIP(),
+			Mask: s.TapCIDR(),
+		},
+	}); err != nil {
+		return fmt.Errorf("error setting address of external netns tap device: %w", err)
+	}
+
+	if err = netlink.LinkSetUp(tapLink); err != nil {
+		return fmt.Errorf("error setting external netns tap device up: %w", err)
+	}
+
+	if err = os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644); err != nil {
+		return fmt.Errorf("error enabling ip_forward in external netns: %w", err)
+	}
+
+	tables, err := iptablesHandle()
+	if err != nil {
+		return fmt.Errorf("error initializing iptables in external netns: %w", err)
+	}
+
+	// Install all per-slot iptables rules in a single iptables-restore
+	// transaction. Sequential `iptables` execs serialize on the global
+	// xtables.lock across all concurrent sandbox creations on the host,
+	// which dominates slot setup time under bulk load.
+	if err = s.applyExternalNetNSRules(tables); err != nil {
+		return err
+	}
+
+	if err = s.InitializeFirewall(); err != nil {
+		return fmt.Errorf("error initializing external netns slot firewall: %w", err)
+	}
+
+	return nil
+}
+
+// externalNetNSRulesScript is the iptables-restore input for the 4 per-slot
+// rules of the external netns mode.
+func (s *Slot) externalNetNSRulesScript() string {
+	var b strings.Builder
+	b.WriteString("*nat\n")
+	fmt.Fprintf(&b, "-A PREROUTING -d %s -j DNAT --to-destination %s\n", s.HostIPString(), s.NamespaceIP())
+	fmt.Fprintf(&b, "-A POSTROUTING -s %s -j SNAT --to-source %s\n", s.NamespaceIP(), s.HostIPString())
+	b.WriteString("COMMIT\n*filter\n")
+	fmt.Fprintf(&b, "-A FORWARD -i %s -o %s -j ACCEPT\n", s.VpeerName(), s.TapName())
+	fmt.Fprintf(&b, "-A FORWARD -i %s -o %s -j ACCEPT\n", s.TapName(), s.VpeerName())
+	b.WriteString("COMMIT\n")
+
+	return b.String()
+}
+
+// applyExternalNetNSRules installs the 4 per-slot iptables rules of the
+// external netns mode with one `iptables-restore --noflush` call instead of 4
+// separate `iptables` execs. The rules are private to the sandbox netns, so
+// skipping the xtables.lock serialization is safe. Falls back to sequential
+// appends when iptables-restore is not available.
+func (s *Slot) applyExternalNetNSRules(tables *iptables.IPTables) error {
+	cmd := exec.Command("iptables-restore", "--noflush")
+	cmd.Stdin = strings.NewReader(s.externalNetNSRulesScript())
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, exec.ErrNotFound) {
+		return s.appendExternalNetNSRules(tables)
+	}
+
+	return fmt.Errorf("error applying external netns rules via iptables-restore: %w (output: %s)", err, strings.TrimSpace(string(out)))
+}
+
+// appendExternalNetNSRules is the sequential fallback for
+// applyExternalNetNSRules when iptables-restore is missing.
+func (s *Slot) appendExternalNetNSRules(tables *iptables.IPTables) error {
+	if err := tables.Append("nat", "PREROUTING", "-d", s.HostIPString(), "-j", "DNAT", "--to-destination", s.NamespaceIP()); err != nil {
+		return fmt.Errorf("error creating external netns dnat rule: %w", err)
+	}
+	if err := tables.Append("nat", "POSTROUTING", "-s", s.NamespaceIP(), "-j", "SNAT", "--to-source", s.HostIPString()); err != nil {
+		return fmt.Errorf("error creating external netns snat rule: %w", err)
+	}
+	if err := tables.Append("filter", "FORWARD", "-i", s.VpeerName(), "-o", s.TapName(), "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("error creating external netns forward rule to tap: %w", err)
+	}
+	if err := tables.Append("filter", "FORWARD", "-i", s.TapName(), "-o", s.VpeerName(), "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("error creating external netns forward rule from tap: %w", err)
+	}
+
+	return nil
+}
+
+// RemoveExternalNetNSNetwork undoes CreateExternalNetNSNetwork. The netns
+// itself belongs to the CRI shim and is left in place.
+func (s *Slot) RemoveExternalNetNSNetwork() error {
+	var errs []error
+
+	err := s.CloseFirewall()
+	if err != nil {
+		errs = append(errs, fmt.Errorf("error closing external netns firewall: %w", err))
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	hostNS, err := netns.Get()
+	if err != nil {
+		return errors.Join(append(errs, fmt.Errorf("cannot get current (host) namespace: %w", err))...)
+	}
+	defer func() {
+		_ = netns.Set(hostNS)
+		_ = hostNS.Close()
+	}()
+
+	targetNS, err := netns.GetFromPath(s.NetNSPath)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("cannot open external network namespace %q: %w", s.NetNSPath, err))
+
+		return errors.Join(errs...)
+	}
+	defer targetNS.Close()
+
+	if err = netns.Set(targetNS); err != nil {
+		errs = append(errs, fmt.Errorf("error setting external network namespace %q: %w", s.NetNSPath, err))
+
+		return errors.Join(errs...)
+	}
+
+	tables, err := iptablesHandle()
+	if err != nil {
+		errs = append(errs, fmt.Errorf("error initializing iptables in external netns: %w", err))
+	} else {
+		if err = tables.Delete("nat", "PREROUTING", "-d", s.HostIPString(), "-j", "DNAT", "--to-destination", s.NamespaceIP()); err != nil {
+			errs = append(errs, fmt.Errorf("error deleting external netns dnat rule: %w", err))
+		}
+		if err = tables.Delete("nat", "POSTROUTING", "-s", s.NamespaceIP(), "-j", "SNAT", "--to-source", s.HostIPString()); err != nil {
+			errs = append(errs, fmt.Errorf("error deleting external netns snat rule: %w", err))
+		}
+		if err = tables.Delete("filter", "FORWARD", "-i", s.VpeerName(), "-o", s.TapName(), "-j", "ACCEPT"); err != nil {
+			errs = append(errs, fmt.Errorf("error deleting external netns forward rule to tap: %w", err))
+		}
+		if err = tables.Delete("filter", "FORWARD", "-i", s.TapName(), "-o", s.VpeerName(), "-j", "ACCEPT"); err != nil {
+			errs = append(errs, fmt.Errorf("error deleting external netns forward rule from tap: %w", err))
+		}
+	}
+
+	if tap, err := netlink.LinkByName(s.TapName()); err == nil {
+		if err = netlink.LinkDel(tap); err != nil {
+			errs = append(errs, fmt.Errorf("error deleting external netns tap device: %w", err))
+		}
+	} else {
+		errs = append(errs, fmt.Errorf("error finding external netns tap device: %w", err))
+	}
 
 	return errors.Join(errs...)
 }

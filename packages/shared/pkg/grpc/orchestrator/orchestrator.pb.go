@@ -23,6 +23,52 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type SandboxRuntimeNetworkConfig_Mode int32
+
+const (
+	SandboxRuntimeNetworkConfig_ORCHESTRATOR_MANAGED SandboxRuntimeNetworkConfig_Mode = 0
+	SandboxRuntimeNetworkConfig_CNI_EXTERNAL_NETNS   SandboxRuntimeNetworkConfig_Mode = 1
+)
+
+// Enum value maps for SandboxRuntimeNetworkConfig_Mode.
+var (
+	SandboxRuntimeNetworkConfig_Mode_name = map[int32]string{
+		0: "ORCHESTRATOR_MANAGED",
+		1: "CNI_EXTERNAL_NETNS",
+	}
+	SandboxRuntimeNetworkConfig_Mode_value = map[string]int32{
+		"ORCHESTRATOR_MANAGED": 0,
+		"CNI_EXTERNAL_NETNS":   1,
+	}
+)
+
+func (x SandboxRuntimeNetworkConfig_Mode) Enum() *SandboxRuntimeNetworkConfig_Mode {
+	p := new(SandboxRuntimeNetworkConfig_Mode)
+	*p = x
+	return p
+}
+
+func (x SandboxRuntimeNetworkConfig_Mode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SandboxRuntimeNetworkConfig_Mode) Descriptor() protoreflect.EnumDescriptor {
+	return file_orchestrator_proto_enumTypes[0].Descriptor()
+}
+
+func (SandboxRuntimeNetworkConfig_Mode) Type() protoreflect.EnumType {
+	return &file_orchestrator_proto_enumTypes[0]
+}
+
+func (x SandboxRuntimeNetworkConfig_Mode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SandboxRuntimeNetworkConfig_Mode.Descriptor instead.
+func (SandboxRuntimeNetworkConfig_Mode) EnumDescriptor() ([]byte, []int) {
+	return file_orchestrator_proto_rawDescGZIP(), []int{24, 0}
+}
+
 type SandboxConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Data required for creating a new sandbox.
@@ -66,9 +112,13 @@ type SandboxConfig struct {
 	EventsTtlDays int64 `protobuf:"varint,26,opt,name=events_ttl_days,json=eventsTtlDays,proto3" json:"events_ttl_days,omitempty"`
 	// Sandbox workload identity configuration requested at create time. Absent on
 	// older serialized configs, which decode as no workload identity.
-	Iam           *SandboxIam `protobuf:"bytes,27,opt,name=iam,proto3,oneof" json:"iam,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Iam *SandboxIam `protobuf:"bytes,27,opt,name=iam,proto3,oneof" json:"iam,omitempty"`
+	// Runtime network facts supplied by the CRI shim.
+	// This is separate from SandboxNetworkConfig, which describes product-level
+	// ingress/egress policy.
+	RuntimeNetwork *SandboxRuntimeNetworkConfig `protobuf:"bytes,28,opt,name=runtime_network,json=runtimeNetwork,proto3,oneof" json:"runtime_network,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SandboxConfig) Reset() {
@@ -286,6 +336,13 @@ func (x *SandboxConfig) GetEventsTtlDays() int64 {
 func (x *SandboxConfig) GetIam() *SandboxIam {
 	if x != nil {
 		return x.Iam
+	}
+	return nil
+}
+
+func (x *SandboxConfig) GetRuntimeNetwork() *SandboxRuntimeNetworkConfig {
+	if x != nil {
+		return x.RuntimeNetwork
 	}
 	return nil
 }
@@ -1729,12 +1786,106 @@ func (x *SandboxListCachedBuildsResponse) GetBuilds() []*CachedBuildInfo {
 	return nil
 }
 
+// KASandbox: cri-multiplex creates sandboxes inside the pod network namespace
+// prepared by CNI (SandboxConfig.runtime_network). Field names, numbers and
+// types must stay identical to cri-multiplex/proto/orchestrator.proto.
+type SandboxRuntimeNetworkConfig struct {
+	state         protoimpl.MessageState           `protogen:"open.v1"`
+	Mode          SandboxRuntimeNetworkConfig_Mode `protobuf:"varint,1,opt,name=mode,proto3,enum=SandboxRuntimeNetworkConfig_Mode" json:"mode,omitempty"`
+	NetnsPath     string                           `protobuf:"bytes,2,opt,name=netns_path,json=netnsPath,proto3" json:"netns_path,omitempty"`
+	IfName        string                           `protobuf:"bytes,3,opt,name=if_name,json=ifName,proto3" json:"if_name,omitempty"`
+	PodIp         string                           `protobuf:"bytes,4,opt,name=pod_ip,json=podIp,proto3" json:"pod_ip,omitempty"`
+	Gateway       string                           `protobuf:"bytes,5,opt,name=gateway,proto3" json:"gateway,omitempty"`
+	DnsServers    []string                         `protobuf:"bytes,6,rep,name=dns_servers,json=dnsServers,proto3" json:"dns_servers,omitempty"`
+	Mtu           uint32                           `protobuf:"varint,7,opt,name=mtu,proto3" json:"mtu,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SandboxRuntimeNetworkConfig) Reset() {
+	*x = SandboxRuntimeNetworkConfig{}
+	mi := &file_orchestrator_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SandboxRuntimeNetworkConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SandboxRuntimeNetworkConfig) ProtoMessage() {}
+
+func (x *SandboxRuntimeNetworkConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_orchestrator_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SandboxRuntimeNetworkConfig.ProtoReflect.Descriptor instead.
+func (*SandboxRuntimeNetworkConfig) Descriptor() ([]byte, []int) {
+	return file_orchestrator_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *SandboxRuntimeNetworkConfig) GetMode() SandboxRuntimeNetworkConfig_Mode {
+	if x != nil {
+		return x.Mode
+	}
+	return SandboxRuntimeNetworkConfig_ORCHESTRATOR_MANAGED
+}
+
+func (x *SandboxRuntimeNetworkConfig) GetNetnsPath() string {
+	if x != nil {
+		return x.NetnsPath
+	}
+	return ""
+}
+
+func (x *SandboxRuntimeNetworkConfig) GetIfName() string {
+	if x != nil {
+		return x.IfName
+	}
+	return ""
+}
+
+func (x *SandboxRuntimeNetworkConfig) GetPodIp() string {
+	if x != nil {
+		return x.PodIp
+	}
+	return ""
+}
+
+func (x *SandboxRuntimeNetworkConfig) GetGateway() string {
+	if x != nil {
+		return x.Gateway
+	}
+	return ""
+}
+
+func (x *SandboxRuntimeNetworkConfig) GetDnsServers() []string {
+	if x != nil {
+		return x.DnsServers
+	}
+	return nil
+}
+
+func (x *SandboxRuntimeNetworkConfig) GetMtu() uint32 {
+	if x != nil {
+		return x.Mtu
+	}
+	return 0
+}
+
 var File_orchestrator_proto protoreflect.FileDescriptor
 
 const file_orchestrator_proto_rawDesc = "" +
 	"\n" +
-	"\x12orchestrator.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb1\n" +
-	"\n" +
+	"\x12orchestrator.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x91\v\n" +
 	"\rSandboxConfig\x12\x1f\n" +
 	"\vtemplate_id\x18\x01 \x01(\tR\n" +
 	"templateId\x12\x19\n" +
@@ -1768,7 +1919,8 @@ const file_orchestrator_proto_rawDesc = "" +
 	"autoResume\x88\x01\x01\x12;\n" +
 	"\x1aauto_pause_filesystem_only\x18\x19 \x01(\bR\x17autoPauseFilesystemOnly\x12&\n" +
 	"\x0fevents_ttl_days\x18\x1a \x01(\x03R\reventsTtlDays\x12\"\n" +
-	"\x03iam\x18\x1b \x01(\v2\v.SandboxIamH\x05R\x03iam\x88\x01\x01\x1a:\n" +
+	"\x03iam\x18\x1b \x01(\v2\v.SandboxIamH\x05R\x03iam\x88\x01\x01\x12J\n" +
+	"\x0fruntime_network\x18\x1c \x01(\v2\x1c.SandboxRuntimeNetworkConfigH\x06R\x0eruntimeNetwork\x88\x01\x01\x1a:\n" +
 	"\fEnvVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a;\n" +
@@ -1781,7 +1933,8 @@ const file_orchestrator_proto_rawDesc = "" +
 	"\n" +
 	"\b_networkB\x0e\n" +
 	"\f_auto_resumeB\x06\n" +
-	"\x04_iam\"\x8a\x01\n" +
+	"\x04_iamB\x12\n" +
+	"\x10_runtime_network\"\x8a\x01\n" +
 	"\n" +
 	"SandboxIam\x12/\n" +
 	"\x06tokens\x18\x01 \x03(\v2\x17.SandboxIam.TokensEntryR\x06tokens\x1aK\n" +
@@ -1909,7 +2062,20 @@ const file_orchestrator_proto_rawDesc = "" +
 	"\bbuild_id\x18\x01 \x01(\tR\abuildId\x12C\n" +
 	"\x0fexpiration_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x0eexpirationTime\"K\n" +
 	"\x1fSandboxListCachedBuildsResponse\x12(\n" +
-	"\x06builds\x18\x01 \x03(\v2\x10.CachedBuildInfoR\x06builds2\xba\x03\n" +
+	"\x06builds\x18\x01 \x03(\v2\x10.CachedBuildInfoR\x06builds\"\xaa\x02\n" +
+	"\x1bSandboxRuntimeNetworkConfig\x125\n" +
+	"\x04mode\x18\x01 \x01(\x0e2!.SandboxRuntimeNetworkConfig.ModeR\x04mode\x12\x1d\n" +
+	"\n" +
+	"netns_path\x18\x02 \x01(\tR\tnetnsPath\x12\x17\n" +
+	"\aif_name\x18\x03 \x01(\tR\x06ifName\x12\x15\n" +
+	"\x06pod_ip\x18\x04 \x01(\tR\x05podIp\x12\x18\n" +
+	"\agateway\x18\x05 \x01(\tR\agateway\x12\x1f\n" +
+	"\vdns_servers\x18\x06 \x03(\tR\n" +
+	"dnsServers\x12\x10\n" +
+	"\x03mtu\x18\a \x01(\rR\x03mtu\"8\n" +
+	"\x04Mode\x12\x18\n" +
+	"\x14ORCHESTRATOR_MANAGED\x10\x00\x12\x16\n" +
+	"\x12CNI_EXTERNAL_NETNS\x10\x012\xba\x03\n" +
 	"\x0eSandboxService\x127\n" +
 	"\x06Create\x12\x15.SandboxCreateRequest\x1a\x16.SandboxCreateResponse\x127\n" +
 	"\x06Update\x12\x15.SandboxUpdateRequest\x1a\x16.google.protobuf.Empty\x124\n" +
@@ -1932,91 +2098,96 @@ func file_orchestrator_proto_rawDescGZIP() []byte {
 	return file_orchestrator_proto_rawDescData
 }
 
-var file_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
+var file_orchestrator_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_orchestrator_proto_goTypes = []any{
-	(*SandboxConfig)(nil),                   // 0: SandboxConfig
-	(*SandboxIam)(nil),                      // 1: SandboxIam
-	(*SandboxIamToken)(nil),                 // 2: SandboxIamToken
-	(*SandboxAutoResumeConfig)(nil),         // 3: SandboxAutoResumeConfig
-	(*SandboxVolumeMount)(nil),              // 4: SandboxVolumeMount
-	(*SandboxNetworkConfig)(nil),            // 5: SandboxNetworkConfig
-	(*SandboxNetworkTransform)(nil),         // 6: SandboxNetworkTransform
-	(*SandboxNetworkRule)(nil),              // 7: SandboxNetworkRule
-	(*SandboxNetworkDomainRules)(nil),       // 8: SandboxNetworkDomainRules
-	(*SandboxNetworkEgressConfig)(nil),      // 9: SandboxNetworkEgressConfig
-	(*SandboxNetworkIngressConfig)(nil),     // 10: SandboxNetworkIngressConfig
-	(*SandboxCreateRequest)(nil),            // 11: SandboxCreateRequest
-	(*SandboxCreateResponse)(nil),           // 12: SandboxCreateResponse
-	(*SandboxUpdateRequest)(nil),            // 13: SandboxUpdateRequest
-	(*SandboxDeleteRequest)(nil),            // 14: SandboxDeleteRequest
-	(*SandboxPauseRequest)(nil),             // 15: SandboxPauseRequest
-	(*SchedulingMetadata)(nil),              // 16: SchedulingMetadata
-	(*SandboxPauseResponse)(nil),            // 17: SandboxPauseResponse
-	(*SandboxCheckpointRequest)(nil),        // 18: SandboxCheckpointRequest
-	(*SandboxCheckpointResponse)(nil),       // 19: SandboxCheckpointResponse
-	(*RunningSandbox)(nil),                  // 20: RunningSandbox
-	(*SandboxListResponse)(nil),             // 21: SandboxListResponse
-	(*CachedBuildInfo)(nil),                 // 22: CachedBuildInfo
-	(*SandboxListCachedBuildsResponse)(nil), // 23: SandboxListCachedBuildsResponse
-	nil,                                     // 24: SandboxConfig.EnvVarsEntry
-	nil,                                     // 25: SandboxConfig.MetadataEntry
-	nil,                                     // 26: SandboxIam.TokensEntry
-	nil,                                     // 27: SandboxNetworkTransform.HeadersEntry
-	nil,                                     // 28: SandboxNetworkEgressConfig.RulesEntry
-	nil,                                     // 29: SandboxCheckpointRequest.MetadataEntry
-	(*timestamppb.Timestamp)(nil),           // 30: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),                   // 31: google.protobuf.Empty
+	(SandboxRuntimeNetworkConfig_Mode)(0),   // 0: SandboxRuntimeNetworkConfig.Mode
+	(*SandboxConfig)(nil),                   // 1: SandboxConfig
+	(*SandboxIam)(nil),                      // 2: SandboxIam
+	(*SandboxIamToken)(nil),                 // 3: SandboxIamToken
+	(*SandboxAutoResumeConfig)(nil),         // 4: SandboxAutoResumeConfig
+	(*SandboxVolumeMount)(nil),              // 5: SandboxVolumeMount
+	(*SandboxNetworkConfig)(nil),            // 6: SandboxNetworkConfig
+	(*SandboxNetworkTransform)(nil),         // 7: SandboxNetworkTransform
+	(*SandboxNetworkRule)(nil),              // 8: SandboxNetworkRule
+	(*SandboxNetworkDomainRules)(nil),       // 9: SandboxNetworkDomainRules
+	(*SandboxNetworkEgressConfig)(nil),      // 10: SandboxNetworkEgressConfig
+	(*SandboxNetworkIngressConfig)(nil),     // 11: SandboxNetworkIngressConfig
+	(*SandboxCreateRequest)(nil),            // 12: SandboxCreateRequest
+	(*SandboxCreateResponse)(nil),           // 13: SandboxCreateResponse
+	(*SandboxUpdateRequest)(nil),            // 14: SandboxUpdateRequest
+	(*SandboxDeleteRequest)(nil),            // 15: SandboxDeleteRequest
+	(*SandboxPauseRequest)(nil),             // 16: SandboxPauseRequest
+	(*SchedulingMetadata)(nil),              // 17: SchedulingMetadata
+	(*SandboxPauseResponse)(nil),            // 18: SandboxPauseResponse
+	(*SandboxCheckpointRequest)(nil),        // 19: SandboxCheckpointRequest
+	(*SandboxCheckpointResponse)(nil),       // 20: SandboxCheckpointResponse
+	(*RunningSandbox)(nil),                  // 21: RunningSandbox
+	(*SandboxListResponse)(nil),             // 22: SandboxListResponse
+	(*CachedBuildInfo)(nil),                 // 23: CachedBuildInfo
+	(*SandboxListCachedBuildsResponse)(nil), // 24: SandboxListCachedBuildsResponse
+	(*SandboxRuntimeNetworkConfig)(nil),     // 25: SandboxRuntimeNetworkConfig
+	nil,                                     // 26: SandboxConfig.EnvVarsEntry
+	nil,                                     // 27: SandboxConfig.MetadataEntry
+	nil,                                     // 28: SandboxIam.TokensEntry
+	nil,                                     // 29: SandboxNetworkTransform.HeadersEntry
+	nil,                                     // 30: SandboxNetworkEgressConfig.RulesEntry
+	nil,                                     // 31: SandboxCheckpointRequest.MetadataEntry
+	(*timestamppb.Timestamp)(nil),           // 32: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),                   // 33: google.protobuf.Empty
 }
 var file_orchestrator_proto_depIdxs = []int32{
-	24, // 0: SandboxConfig.env_vars:type_name -> SandboxConfig.EnvVarsEntry
-	25, // 1: SandboxConfig.metadata:type_name -> SandboxConfig.MetadataEntry
-	5,  // 2: SandboxConfig.network:type_name -> SandboxNetworkConfig
-	4,  // 3: SandboxConfig.volumeMounts:type_name -> SandboxVolumeMount
-	3,  // 4: SandboxConfig.auto_resume:type_name -> SandboxAutoResumeConfig
-	1,  // 5: SandboxConfig.iam:type_name -> SandboxIam
-	26, // 6: SandboxIam.tokens:type_name -> SandboxIam.TokensEntry
-	9,  // 7: SandboxNetworkConfig.egress:type_name -> SandboxNetworkEgressConfig
-	10, // 8: SandboxNetworkConfig.ingress:type_name -> SandboxNetworkIngressConfig
-	27, // 9: SandboxNetworkTransform.headers:type_name -> SandboxNetworkTransform.HeadersEntry
-	6,  // 10: SandboxNetworkRule.transform:type_name -> SandboxNetworkTransform
-	7,  // 11: SandboxNetworkDomainRules.rules:type_name -> SandboxNetworkRule
-	28, // 12: SandboxNetworkEgressConfig.rules:type_name -> SandboxNetworkEgressConfig.RulesEntry
-	0,  // 13: SandboxCreateRequest.sandbox:type_name -> SandboxConfig
-	30, // 14: SandboxCreateRequest.start_time:type_name -> google.protobuf.Timestamp
-	30, // 15: SandboxCreateRequest.end_time:type_name -> google.protobuf.Timestamp
-	16, // 16: SandboxCreateResponse.scheduling_metadata:type_name -> SchedulingMetadata
-	30, // 17: SandboxUpdateRequest.end_time:type_name -> google.protobuf.Timestamp
-	9,  // 18: SandboxUpdateRequest.egress:type_name -> SandboxNetworkEgressConfig
-	16, // 19: SandboxPauseResponse.scheduling_metadata:type_name -> SchedulingMetadata
-	29, // 20: SandboxCheckpointRequest.metadata:type_name -> SandboxCheckpointRequest.MetadataEntry
-	16, // 21: SandboxCheckpointResponse.scheduling_metadata:type_name -> SchedulingMetadata
-	0,  // 22: RunningSandbox.config:type_name -> SandboxConfig
-	30, // 23: RunningSandbox.start_time:type_name -> google.protobuf.Timestamp
-	30, // 24: RunningSandbox.end_time:type_name -> google.protobuf.Timestamp
-	20, // 25: SandboxListResponse.sandboxes:type_name -> RunningSandbox
-	30, // 26: CachedBuildInfo.expiration_time:type_name -> google.protobuf.Timestamp
-	22, // 27: SandboxListCachedBuildsResponse.builds:type_name -> CachedBuildInfo
-	2,  // 28: SandboxIam.TokensEntry.value:type_name -> SandboxIamToken
-	8,  // 29: SandboxNetworkEgressConfig.RulesEntry.value:type_name -> SandboxNetworkDomainRules
-	11, // 30: SandboxService.Create:input_type -> SandboxCreateRequest
-	13, // 31: SandboxService.Update:input_type -> SandboxUpdateRequest
-	31, // 32: SandboxService.List:input_type -> google.protobuf.Empty
-	14, // 33: SandboxService.Delete:input_type -> SandboxDeleteRequest
-	15, // 34: SandboxService.Pause:input_type -> SandboxPauseRequest
-	18, // 35: SandboxService.Checkpoint:input_type -> SandboxCheckpointRequest
-	31, // 36: SandboxService.ListCachedBuilds:input_type -> google.protobuf.Empty
-	12, // 37: SandboxService.Create:output_type -> SandboxCreateResponse
-	31, // 38: SandboxService.Update:output_type -> google.protobuf.Empty
-	21, // 39: SandboxService.List:output_type -> SandboxListResponse
-	31, // 40: SandboxService.Delete:output_type -> google.protobuf.Empty
-	17, // 41: SandboxService.Pause:output_type -> SandboxPauseResponse
-	19, // 42: SandboxService.Checkpoint:output_type -> SandboxCheckpointResponse
-	23, // 43: SandboxService.ListCachedBuilds:output_type -> SandboxListCachedBuildsResponse
-	37, // [37:44] is the sub-list for method output_type
-	30, // [30:37] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	26, // 0: SandboxConfig.env_vars:type_name -> SandboxConfig.EnvVarsEntry
+	27, // 1: SandboxConfig.metadata:type_name -> SandboxConfig.MetadataEntry
+	6,  // 2: SandboxConfig.network:type_name -> SandboxNetworkConfig
+	5,  // 3: SandboxConfig.volumeMounts:type_name -> SandboxVolumeMount
+	4,  // 4: SandboxConfig.auto_resume:type_name -> SandboxAutoResumeConfig
+	2,  // 5: SandboxConfig.iam:type_name -> SandboxIam
+	25, // 6: SandboxConfig.runtime_network:type_name -> SandboxRuntimeNetworkConfig
+	28, // 7: SandboxIam.tokens:type_name -> SandboxIam.TokensEntry
+	10, // 8: SandboxNetworkConfig.egress:type_name -> SandboxNetworkEgressConfig
+	11, // 9: SandboxNetworkConfig.ingress:type_name -> SandboxNetworkIngressConfig
+	29, // 10: SandboxNetworkTransform.headers:type_name -> SandboxNetworkTransform.HeadersEntry
+	7,  // 11: SandboxNetworkRule.transform:type_name -> SandboxNetworkTransform
+	8,  // 12: SandboxNetworkDomainRules.rules:type_name -> SandboxNetworkRule
+	30, // 13: SandboxNetworkEgressConfig.rules:type_name -> SandboxNetworkEgressConfig.RulesEntry
+	1,  // 14: SandboxCreateRequest.sandbox:type_name -> SandboxConfig
+	32, // 15: SandboxCreateRequest.start_time:type_name -> google.protobuf.Timestamp
+	32, // 16: SandboxCreateRequest.end_time:type_name -> google.protobuf.Timestamp
+	17, // 17: SandboxCreateResponse.scheduling_metadata:type_name -> SchedulingMetadata
+	32, // 18: SandboxUpdateRequest.end_time:type_name -> google.protobuf.Timestamp
+	10, // 19: SandboxUpdateRequest.egress:type_name -> SandboxNetworkEgressConfig
+	17, // 20: SandboxPauseResponse.scheduling_metadata:type_name -> SchedulingMetadata
+	31, // 21: SandboxCheckpointRequest.metadata:type_name -> SandboxCheckpointRequest.MetadataEntry
+	17, // 22: SandboxCheckpointResponse.scheduling_metadata:type_name -> SchedulingMetadata
+	1,  // 23: RunningSandbox.config:type_name -> SandboxConfig
+	32, // 24: RunningSandbox.start_time:type_name -> google.protobuf.Timestamp
+	32, // 25: RunningSandbox.end_time:type_name -> google.protobuf.Timestamp
+	21, // 26: SandboxListResponse.sandboxes:type_name -> RunningSandbox
+	32, // 27: CachedBuildInfo.expiration_time:type_name -> google.protobuf.Timestamp
+	23, // 28: SandboxListCachedBuildsResponse.builds:type_name -> CachedBuildInfo
+	0,  // 29: SandboxRuntimeNetworkConfig.mode:type_name -> SandboxRuntimeNetworkConfig.Mode
+	3,  // 30: SandboxIam.TokensEntry.value:type_name -> SandboxIamToken
+	9,  // 31: SandboxNetworkEgressConfig.RulesEntry.value:type_name -> SandboxNetworkDomainRules
+	12, // 32: SandboxService.Create:input_type -> SandboxCreateRequest
+	14, // 33: SandboxService.Update:input_type -> SandboxUpdateRequest
+	33, // 34: SandboxService.List:input_type -> google.protobuf.Empty
+	15, // 35: SandboxService.Delete:input_type -> SandboxDeleteRequest
+	16, // 36: SandboxService.Pause:input_type -> SandboxPauseRequest
+	19, // 37: SandboxService.Checkpoint:input_type -> SandboxCheckpointRequest
+	33, // 38: SandboxService.ListCachedBuilds:input_type -> google.protobuf.Empty
+	13, // 39: SandboxService.Create:output_type -> SandboxCreateResponse
+	33, // 40: SandboxService.Update:output_type -> google.protobuf.Empty
+	22, // 41: SandboxService.List:output_type -> SandboxListResponse
+	33, // 42: SandboxService.Delete:output_type -> google.protobuf.Empty
+	18, // 43: SandboxService.Pause:output_type -> SandboxPauseResponse
+	20, // 44: SandboxService.Checkpoint:output_type -> SandboxCheckpointResponse
+	24, // 45: SandboxService.ListCachedBuilds:output_type -> SandboxListCachedBuildsResponse
+	39, // [39:46] is the sub-list for method output_type
+	32, // [32:39] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_orchestrator_proto_init() }
@@ -2036,13 +2207,14 @@ func file_orchestrator_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchestrator_proto_rawDesc), len(file_orchestrator_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   30,
+			NumEnums:      1,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_orchestrator_proto_goTypes,
 		DependencyIndexes: file_orchestrator_proto_depIdxs,
+		EnumInfos:         file_orchestrator_proto_enumTypes,
 		MessageInfos:      file_orchestrator_proto_msgTypes,
 	}.Build()
 	File_orchestrator_proto = out.File

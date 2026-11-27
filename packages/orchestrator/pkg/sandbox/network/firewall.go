@@ -44,9 +44,15 @@ type Firewall struct {
 
 	allowedRanges []string
 	deniedRanges  []string
+
+	// userRulesAllProtocols makes the user allow/deny rules (chain rules 4/5)
+	// match all protocols instead of only non-TCP. Used in external-netns
+	// (CNI) mode, where no TCP egress proxy is installed and the nftables
+	// rules are the only enforcement point for user egress policies.
+	userRulesAllProtocols bool
 }
 
-func NewFirewall(tapIf string, orchestratorInternalIP string, extraAllowedCIDRs, extraDeniedCIDRs []string) (_ *Firewall, err error) {
+func NewFirewall(tapIf string, orchestratorInternalIP string, extraAllowedCIDRs, extraDeniedCIDRs []string, userRulesAllProtocols bool) (_ *Firewall, err error) {
 	conn, err := nftables.New(nftables.AsLasting())
 	if err != nil {
 		return nil, fmt.Errorf("new nftables conn: %w", err)
@@ -108,8 +114,9 @@ func NewFirewall(tapIf string, orchestratorInternalIP string, extraAllowedCIDRs,
 			[]string{controlIP},
 			extraAllowedCIDRs...,
 		),
-		deniedRanges: extraDeniedCIDRs,
-		filterChain:  filterChain,
+		deniedRanges:          extraDeniedCIDRs,
+		userRulesAllProtocols: userRulesAllProtocols,
+		filterChain:           filterChain,
 	}
 
 	// Install default rules and initial set data in a single flush.
@@ -298,9 +305,9 @@ func (fw *Firewall) installRules(byop bool) {
 	//   1. ESTABLISHED/RELATED → accept
 	//   2. predefinedAllowSet → accept (all protocols)
 	//   3. predefinedDenySet → DROP (all protocols, or non-TCP only when byop)
-	//   4. Non-TCP: userAllowSet → accept
-	//   5. Non-TCP: userDenySet → DROP
-	//   6. Default: ACCEPT (TCP handled by iptables REDIRECT in host netns)
+	//   4. userAllowSet → accept (non-TCP only, or all protocols in external netns mode)
+	//   5. userDenySet → DROP (non-TCP only, or all protocols in external netns mode)
+	//   6. Default: ACCEPT (native mode: TCP handled by iptables REDIRECT in host netns)
 
 	// Rule 1: Allow ESTABLISHED/RELATED connections - all protocols
 	// This ensures response packets are allowed even if the source is in predefinedDenySet
@@ -316,13 +323,18 @@ func (fw *Firewall) installRules(byop bool) {
 		fw.addSetFilterRule(fw.predefinedDenySet.Set(), true)
 	}
 
-	// Rule 4: Non-TCP + userAllowSet → accept
-	// Only non-TCP traffic is affected; TCP goes to proxy
-	fw.addNonTCPSetFilterRule(fw.userAllowSet.Set(), false)
-
-	// Rule 5: Non-TCP + userDenySet → DROP
-	// Only non-TCP traffic is affected; TCP goes to proxy
-	fw.addNonTCPSetFilterRule(fw.userDenySet.Set(), true)
+	// Rule 4: userAllowSet → accept
+	// Rule 5: userDenySet → DROP
+	// In the default (native) mode these rules only match non-TCP traffic and
+	// TCP is handled by the egress proxy (iptables REDIRECT). In external
+	// netns (CNI) mode no TCP proxy exists, so the rules match all protocols.
+	if fw.userRulesAllProtocols {
+		fw.addSetFilterRule(fw.userAllowSet.Set(), false)
+		fw.addSetFilterRule(fw.userDenySet.Set(), true)
+	} else {
+		fw.addNonTCPSetFilterRule(fw.userAllowSet.Set(), false)
+		fw.addNonTCPSetFilterRule(fw.userDenySet.Set(), true)
+	}
 
 	// Default policy: ACCEPT
 	// - Non-TCP not in user sets: allowed (default policy)

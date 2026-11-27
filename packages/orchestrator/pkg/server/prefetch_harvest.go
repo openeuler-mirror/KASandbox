@@ -451,6 +451,9 @@ func (h *prefetchHarvester) resumeMapping(
 	// the live original's is untouched.
 	harvestConfig := *sbx.Config
 	harvestConfig.VolumeMounts = nil
+	// The original's pod netns (CRI external netns) still holds its tap; the
+	// throwaway takes a pooled slot instead.
+	harvestConfig.RuntimeNetwork = nil
 
 	// The resumer isolates the throwaway from the network and keeps it out of the
 	// live registry: the user workload stays frozen until envd /init completes and

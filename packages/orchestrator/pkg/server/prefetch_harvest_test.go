@@ -15,6 +15,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/block"
 	sbxtemplate "github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/metadata"
+	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
 )
 
@@ -227,6 +228,30 @@ func TestHarvestRun_ThrowawayIdentity(t *testing.T) {
 	require.NotNil(t, p.resumer.gotConfig)
 	require.Nil(t, p.resumer.gotConfig.VolumeMounts,
 		"throwaway must resume with volume mounts suppressed so /init does not attempt the (DenyEgress-blocked) NFS mount")
+}
+
+// TestHarvestRun_ThrowawayTakesPooledSlot: a CRI sandbox lives in its pod
+// netns, whose tap the original still holds, so the throwaway must resume
+// without the runtime network (on a pooled slot) while the original's config
+// is left untouched.
+func TestHarvestRun_ThrowawayTakesPooledSlot(t *testing.T) {
+	t.Parallel()
+
+	p := newHarvestProbe()
+	sbx := testHarvestSandbox()
+	runtimeNetwork := &orchestrator.SandboxRuntimeNetworkConfig{
+		Mode:      orchestrator.SandboxRuntimeNetworkConfig_CNI_EXTERNAL_NETNS,
+		NetnsPath: "/var/run/netns/cni-1234",
+		PodIp:     "10.233.64.5",
+	}
+	sbx.Config.RuntimeNetwork = runtimeNetwork
+
+	_, err := p.h.run(t.Context(), sbx, metadata.Template{}, p.upload, "build-1", storage.ObjectMetadata{}, true, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, p.resumer.gotConfig)
+	require.Nil(t, p.resumer.gotConfig.RuntimeNetwork, "throwaway must not reuse the original's pod netns")
+	require.Same(t, runtimeNetwork, sbx.Config.RuntimeNetwork, "the original's config must be left untouched")
 }
 
 // TestHarvestRun_NoConsumePersistsNothing: with consume off, the harvest still

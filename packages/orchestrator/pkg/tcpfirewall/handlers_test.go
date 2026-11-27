@@ -423,8 +423,8 @@ func TestAlwaysDeniedCIDRs(t *testing.T) {
 		want bool
 	}{
 		// IPs in denied CIDRs (internal/private ranges)
-		{"10.0.0.1 is denied", "10.0.0.1", true},
-		{"10.255.255.255 is denied", "10.255.255.255", true},
+		{"10.0.0.1 is not denied by default", "10.0.0.1", false},
+		{"10.255.255.255 is not denied by default", "10.255.255.255", false},
 		{"192.168.1.1 is denied", "192.168.1.1", true},
 		{"172.16.0.1 is denied", "172.16.0.1", true},
 		{"172.31.255.255 is denied", "172.31.255.255", true},

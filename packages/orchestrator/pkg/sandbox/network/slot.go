@@ -4,6 +4,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -47,6 +48,11 @@ var (
 	tapHostHardwareAddr = getTapHostHardwareAddr()
 )
 
+// errExternalNetNSEgressProxy rejects BYOP on an external netns slot: the pod
+// netns has no TCP redirect to the egress proxy, and BYOP would relax Rule 3
+// to non-TCP only, letting TCP reach the denied ranges directly.
+var errExternalNetNSEgressProxy = errors.New("egress proxy is not supported in an external network namespace")
+
 // Slot network allocation
 //
 // For each slot, we allocate three IP addresses:
@@ -64,6 +70,11 @@ var (
 type Slot struct {
 	Key string
 	Idx int
+
+	ExternalNetNS bool
+	NetNSPath     string
+	PodIP         net.IP
+	IfName        string
 
 	Firewall *Firewall
 
@@ -156,7 +167,65 @@ func NewSlot(key string, idx int, config Config, egressProxy EgressProxy) (*Slot
 	return slot, nil
 }
 
+// NewExternalNetNSSlot describes a slot inside a network namespace prepared by
+// the CRI shim (CNI pod netns) instead of a pooled ns-<idx>. The pod IP takes
+// the place of the host IP. No egress proxy is attached: the pod netns has no
+// TCP redirect to it.
+func NewExternalNetNSSlot(key string, runtimeNet *orchestrator.SandboxRuntimeNetworkConfig, config Config) (*Slot, error) {
+	if runtimeNet == nil {
+		return nil, fmt.Errorf("runtime network config is required for external netns slot")
+	}
+	if runtimeNet.GetNetnsPath() == "" {
+		return nil, fmt.Errorf("runtime network netns_path is required")
+	}
+	podIP := net.ParseIP(runtimeNet.GetPodIp())
+	if podIP == nil {
+		return nil, fmt.Errorf("runtime network pod_ip is invalid: %q", runtimeNet.GetPodIp())
+	}
+	ifName := runtimeNet.GetIfName()
+	if ifName == "" {
+		ifName = "eth0"
+	}
+
+	hostCIDR := fmt.Sprintf("%s/%d", podIP.String(), hostMask)
+	_, hostNet, err := net.ParseCIDR(hostCIDR)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse external netns host CIDR: %w", err)
+	}
+
+	tapCIDR := fmt.Sprintf("%s/%d", tapIp, tapMask)
+	tapIp, tapNet, err := net.ParseCIDR(tapCIDR)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse tap CIDR: %w", err)
+	}
+
+	return &Slot{
+		Key:           key,
+		Idx:           -1,
+		ExternalNetNS: true,
+		NetNSPath:     runtimeNet.GetNetnsPath(),
+		PodIP:         podIP,
+		IfName:        ifName,
+
+		tapIp:   tapIp,
+		tapMask: tapNet.Mask,
+
+		HostIP:   podIP,
+		hostNet:  hostNet,
+		hostCIDR: hostCIDR,
+
+		hyperloopPort: strconv.FormatUint(uint64(config.HyperloopProxyPort), 10),
+
+		config:      config,
+		egressProxy: NewNoopEgressProxy(),
+	}, nil
+}
+
 func (s *Slot) VpeerName() string {
+	if s.ExternalNetNS && s.IfName != "" {
+		return s.IfName
+	}
+
 	return "eth0"
 }
 
@@ -197,7 +266,21 @@ func (s *Slot) NamespaceIP() string {
 }
 
 func (s *Slot) NamespaceID() string {
+	if s.ExternalNetNS && s.NetNSPath != "" {
+		return filepath.Base(s.NetNSPath)
+	}
+
 	return fmt.Sprintf("ns-%d", s.Idx)
+}
+
+// NamespacePath is the slot's netns file: the CRI-provided path for an
+// external netns slot, otherwise the named ns-<idx> under NetNamespacesDir.
+func (s *Slot) NamespacePath() string {
+	if s.ExternalNetNS && s.NetNSPath != "" {
+		return s.NetNSPath
+	}
+
+	return filepath.Join(NetNamespacesDir, s.NamespaceID())
 }
 
 func (s *Slot) TapName() string {
@@ -236,7 +319,15 @@ func (s *Slot) InitializeFirewall() error {
 	}
 
 	extraAllowed := append(append([]string{}, s.config.AllowSandboxInternalCIDRs...), s.config.FirewallAllowedCIDRs...)
-	fw, err := NewFirewall(s.TapName(), s.config.OrchestratorInSandboxIPAddress, extraAllowed, s.config.DeniedPodCIDRs)
+	fw, err := NewFirewall(
+		s.TapName(),
+		s.config.OrchestratorInSandboxIPAddress,
+		extraAllowed,
+		s.config.DeniedPodCIDRs,
+		// In external netns (CNI) mode no TCP egress proxy is installed,
+		// so the user allow/deny rules must cover TCP as well.
+		s.ExternalNetNS,
+	)
 	if err != nil {
 		return fmt.Errorf("error initializing firewall: %w", err)
 	}
@@ -308,7 +399,7 @@ func (s *Slot) applyEgressDSCP(ctx context.Context, dscp uint8) error {
 	))
 	defer span.End()
 
-	n, err := ns.GetNS(filepath.Join(NetNamespacesDir, s.NamespaceID()))
+	n, err := ns.GetNS(s.NamespacePath())
 	if err != nil {
 		return fmt.Errorf("failed to get slot network namespace '%s': %w", s.NamespaceID(), err)
 	}
@@ -369,9 +460,13 @@ func (s *Slot) ConfigureInternet(ctx context.Context, network *orchestrator.Sand
 		return nil
 	}
 
+	if hasBYOP && s.ExternalNetNS {
+		return errExternalNetNSEgressProxy
+	}
+
 	s.firewallCustomRules.Store(true)
 
-	n, err := ns.GetNS(filepath.Join(NetNamespacesDir, s.NamespaceID()))
+	n, err := ns.GetNS(s.NamespacePath())
 	if err != nil {
 		return fmt.Errorf("failed to get slot network namespace '%s': %w", s.NamespaceID(), err)
 	}
@@ -407,7 +502,11 @@ func (s *Slot) UpdateInternet(ctx context.Context, egress *orchestrator.SandboxN
 	deniedCIDRs := egress.GetDeniedCidrs()
 	hasBYOP := egress.GetEgressProxyAddress() != ""
 
-	n, err := ns.GetNS(filepath.Join(NetNamespacesDir, s.NamespaceID()))
+	if hasBYOP && s.ExternalNetNS {
+		return errExternalNetNSEgressProxy
+	}
+
+	n, err := ns.GetNS(s.NamespacePath())
 	if err != nil {
 		return fmt.Errorf("failed to get slot network namespace '%s': %w", s.NamespaceID(), err)
 	}
@@ -442,7 +541,7 @@ func (s *Slot) DenyEgress(ctx context.Context) error {
 		return fmt.Errorf("firewall is not initialized for slot '%s'", s.NamespaceID())
 	}
 
-	n, err := ns.GetNS(filepath.Join(NetNamespacesDir, s.NamespaceID()))
+	n, err := ns.GetNS(s.NamespacePath())
 	if err != nil {
 		return fmt.Errorf("failed to get slot network namespace '%s': %w", s.NamespaceID(), err)
 	}
@@ -471,7 +570,7 @@ func (s *Slot) ResetInternet(ctx context.Context) error {
 		return nil
 	}
 
-	n, err := ns.GetNS(filepath.Join(NetNamespacesDir, s.NamespaceID()))
+	n, err := ns.GetNS(s.NamespacePath())
 	if err != nil {
 		return fmt.Errorf("failed to get slot network namespace '%s': %w", s.NamespaceID(), err)
 	}
