@@ -93,13 +93,16 @@ func NewGRPCServer(tel *telemetry.Client, opts ...ServerOption) *grpc.Server {
 	}
 
 	return grpc.NewServer(
+		grpc.MaxConcurrentStreams(1000),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             5 * time.Second,
 			PermitWithoutStream: true,
 		}),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
-			Time:    15 * time.Second,
-			Timeout: 5 * time.Second,
+			Time:              15 * time.Second,
+			Timeout:           5 * time.Second,
+			MaxConnectionAge:  0, // 0 = do not forcibly close active connections
+			MaxConnectionIdle: 0, // 0 = do not forcibly close idle connections
 		}),
 		grpc.StatsHandler(
 			NewStatsWrapper(

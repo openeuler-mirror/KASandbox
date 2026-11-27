@@ -48,9 +48,9 @@ import (
 var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/pkg/server")
 
 const (
-	requestTimeout = 60 * time.Second
+	requestTimeout = 300 * time.Second
 	// acquireTimeout is the max time to wait for a semaphore for resuming sandboxes snapshot.
-	acquireTimeout = 15 * time.Second
+	acquireTimeout = 300 * time.Second
 
 	// uploadTimeout is the max time allowed for a single upload attempt to
 	// remote storage. The overall retry window is uploadTotalBudget.
@@ -225,8 +225,10 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 			return nil, err
 		}
 	} else {
-		acquired := s.startingSandboxes.TryAcquire(1)
-		if !acquired {
+		acqCtx, acqCancel := context.WithTimeout(ctx, acquireTimeout)
+		defer acqCancel()
+		err := s.startingSandboxes.Acquire(acqCtx, 1)
+		if err != nil {
 			telemetry.ReportEvent(ctx, "too many starting sandboxes on node")
 
 			return nil, status.Errorf(codes.ResourceExhausted, "too many sandboxes starting on this node, please retry")

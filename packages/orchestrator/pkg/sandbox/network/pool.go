@@ -22,9 +22,6 @@ import (
 )
 
 const (
-	NewSlotsPoolSize    = 32
-	ReusedSlotsPoolSize = 100
-
 	// ReturnDelay is how long we wait before returning a slot to the reused pool,
 	// to let inflight requests on the previous sandbox drain and reduce reuse churn.
 	ReturnDelay = 3 * time.Second
@@ -90,6 +87,14 @@ type Config struct {
 
 	// NetworkVersion selects v1 (iptables per-sandbox) or v2 (nftables, host sets).
 	NetworkVersion int `env:"NETWORK_VERSION" envDefault:"1"`
+
+	// Slot pool capacities for the v1/v2 network slot pools.
+	// Set NETWORK_POOL_NEW_SLOTS_SIZE=0 to disable pre-warming entirely — this is
+	// recommended for CNI-only deployments where sandboxes bring their own
+	// external netns and never acquire a slot from this pool; otherwise startup
+	// eagerly creates `size` netns/veth/iptables rule sets that nothing uses.
+	NewSlotsPoolSize    int `env:"NETWORK_POOL_NEW_SLOTS_SIZE"    envDefault:"300"`
+	ReusedSlotsPoolSize int `env:"NETWORK_POOL_REUSED_SLOTS_SIZE" envDefault:"1000"`
 }
 
 // EgressClass selects which configured egress DSCP applies to a sandbox. It
@@ -195,6 +200,8 @@ type Pool struct {
 	closeMu sync.RWMutex
 	closed  bool
 
+	newSlotsSize int
+
 	newSlots    chan *Slot
 	reusedSlots chan *Slot
 
@@ -208,15 +215,16 @@ type Pool struct {
 var ErrClosed = errors.New("cannot read from a closed pool")
 
 func NewPool(newSlotsPoolSize, reusedSlotsPoolSize int, slotStorage Storage, config Config) *Pool {
-	newSlots := make(chan *Slot, newSlotsPoolSize-1)
-	reusedSlots := make(chan *Slot, reusedSlotsPoolSize)
+	newSlots := make(chan *Slot, max(newSlotsPoolSize-1, 0))
+	reusedSlots := make(chan *Slot, max(reusedSlotsPoolSize, 0))
 
 	return &Pool{
-		config:      config,
-		done:        make(chan struct{}),
-		newSlots:    newSlots,
-		reusedSlots: reusedSlots,
-		slotStorage: slotStorage,
+		config:       config,
+		done:         make(chan struct{}),
+		newSlotsSize: max(newSlotsPoolSize, 0),
+		newSlots:     newSlots,
+		reusedSlots:  reusedSlots,
+		slotStorage:  slotStorage,
 	}
 }
 
@@ -240,6 +248,12 @@ func (p *Pool) createNetworkSlot(ctx context.Context) (*Slot, error) {
 func (p *Pool) Populate(ctx context.Context) {
 	defer close(p.newSlots)
 
+	if p.newSlotsSize == 0 {
+		logger.L().Info(ctx, "[network slot pool]: pre-warming disabled (NETWORK_POOL_NEW_SLOTS_SIZE=0)")
+
+		return
+	}
+
 	for {
 		select {
 		case <-p.done:
@@ -257,6 +271,12 @@ func (p *Pool) Populate(ctx context.Context) {
 			select {
 			case p.newSlots <- slot:
 				newSlotsAvailableCounter.Add(ctx, 1)
+				logger.L().Info(ctx, "[Pool Status] newSlots/reusedSlots",
+					zap.Int("newSlots_len", len(p.newSlots)),
+					zap.Int("newSlots_cap", cap(p.newSlots)),
+					zap.Int("reusedSlots_len", len(p.reusedSlots)),
+					zap.Int("reusedSlots_cap", cap(p.reusedSlots)),
+				)
 
 				continue
 			case <-p.done:

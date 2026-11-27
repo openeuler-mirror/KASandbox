@@ -143,8 +143,8 @@ func NewV2Pool(storage network.Storage, config network.Config, hostFw *HostFirew
 		hostFw:             hostFw,
 		observer:           observer,
 		registry:           NewSlotV2Registry(),
-		newSlots:           make(chan *network.Slot, network.NewSlotsPoolSize-1),
-		reusedSlots:        make(chan *network.Slot, network.ReusedSlotsPoolSize),
+		newSlots:           make(chan *network.Slot, max(config.NewSlotsPoolSize-1, 0)),
+		reusedSlots:        make(chan *network.Slot, max(config.ReusedSlotsPoolSize, 0)),
 		done:               make(chan struct{}),
 		populateRetryDelay: defaultPopulateRetryDelay,
 	}

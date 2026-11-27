@@ -835,7 +835,7 @@ func run(config cfg.Config, opts Options) (success bool) {
 				logger.L().Fatal(ctx, "refusing to start v1: stale v2 host firewall table could hijack v1 sandbox egress", zap.Error(err))
 			}
 		}
-		v1Pool := network.NewPool(network.NewSlotsPoolSize, network.ReusedSlotsPoolSize, slotStorage, config.NetworkConfig)
+		v1Pool := network.NewPool(config.NetworkConfig.NewSlotsPoolSize, config.NetworkConfig.ReusedSlotsPoolSize, slotStorage, config.NetworkConfig)
 		startService("network pool", func() error {
 			v1Pool.Populate(ctx)
 

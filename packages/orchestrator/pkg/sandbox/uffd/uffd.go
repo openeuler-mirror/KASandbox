@@ -32,7 +32,7 @@ import (
 var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/uffd")
 
 const (
-	uffdMsgListenerTimeout = 10 * time.Second
+	uffdMsgListenerTimeout = 120 * time.Second
 	fdSize                 = 4
 	regionMappingsSize     = 1024
 )

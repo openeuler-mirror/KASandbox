@@ -953,9 +953,12 @@ func (u *Userfaultfd) faultPage(
 	var writeErr error
 
 	mode := u.defaultCopyMode
-	if accessType == block.Read {
-		mode = UFFDIO_COPY_MODE_WP
-	}
+	// Disable UFFDIO_COPY_MODE_WP on MISSING (read) faults for openEuler 6.6.
+	// WP on copy remains feature-gated via use-memfd=false / sync-WP paths;
+	// applying MODE_WP here still breaks missing-fault installs on 6.6.
+	// if accessType == block.Read {
+	// 	mode = UFFDIO_COPY_MODE_WP
+	// }
 
 	// nil source = zero-fill.
 	switch {

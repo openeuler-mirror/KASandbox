@@ -5,12 +5,27 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 )
 
-const waitInterval = 10 * time.Millisecond
+const (
+	waitInterval              = 10 * time.Millisecond
+	defaultWaitTimeoutSeconds = 300
+)
 
 // Wait waits for the given file to exist.
 func Wait(ctx context.Context, socketPath string) error {
+	timeoutSeconds, err := env.GetEnvAsInt("SOCKET_WAIT_TIMEOUT_SECONDS", defaultWaitTimeoutSeconds)
+	if err != nil {
+		return err
+	}
+
+	// KASandbox: bound wait via SOCKET_WAIT_TIMEOUT_SECONDS (default 300s),
+	// independent of short caller deadlines.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
+	defer cancel()
+
 	ticker := time.NewTicker(waitInterval)
 	defer ticker.Stop()
 

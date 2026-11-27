@@ -23,6 +23,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template/peerclient"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/service"
+	"github.com/e2b-dev/infra/packages/shared/pkg/env"
 	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator"
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
@@ -126,6 +127,11 @@ func New(ctx context.Context, cfg ServiceConfig) (*Server, error) {
 	go uploadedBuilds.Start()
 
 	startingLimit := cfg.FeatureFlags.IntFlag(ctx, featureflags.MaxStartingInstancesPerNode)
+	if envLimit, envErr := env.GetEnvAsInt("MAX_STARTING_INSTANCES_PER_NODE", startingLimit); envErr != nil {
+		logger.L().Error(ctx, "Error getting MAX_STARTING_INSTANCES_PER_NODE", zap.Error(envErr))
+	} else {
+		startingLimit = envLimit
+	}
 	startingSandboxes, err := utils.NewAdjustableSemaphore(int64(startingLimit))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create starting sandboxes semaphore: %w", err)
