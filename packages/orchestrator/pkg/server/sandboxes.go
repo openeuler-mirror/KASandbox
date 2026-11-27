@@ -418,7 +418,10 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	)
 
 	return &orchestrator.SandboxCreateResponse{
-		ClientId:              s.info.ClientId,
+		ClientId: s.info.ClientId,
+		// The sandbox's slot IP: the node routes it, so node-local callers
+		// (CRI shim / sandbox agent) can reach the sandbox directly.
+		HostIp:                sbx.Slot.HostIPString(),
 		SchedulingMetadata:    schedulingMetadata,
 		FilesystemBootApplied: filesystemBooted,
 		// The resolved Firecracker version the sandbox actually runs, frozen

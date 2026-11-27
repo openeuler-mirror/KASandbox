@@ -164,6 +164,12 @@ message SandboxCreateResponse {
   // evaluation contexts differ. Empty from orchestrators that predate the
   // field.
   string resolved_firecracker_version = 4;
+
+  // The sandbox's host-side network IP (the slot IP, e.g. 10.11.0.x). The
+  // node installs a route to this IP, so node-local callers (CRI shims,
+  // agents) can reach the sandbox's envd (port 49983) directly. Absent from
+  // orchestrators that predate the field.
+  string host_ip = 5;
 }
 
 message SandboxUpdateRequest {

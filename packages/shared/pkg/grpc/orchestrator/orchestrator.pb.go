@@ -942,8 +942,13 @@ type SandboxCreateResponse struct {
 	// evaluation contexts differ. Empty from orchestrators that predate the
 	// field.
 	ResolvedFirecrackerVersion string `protobuf:"bytes,4,opt,name=resolved_firecracker_version,json=resolvedFirecrackerVersion,proto3" json:"resolved_firecracker_version,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// The sandbox's host-side network IP (the slot IP, e.g. 10.11.0.x). The
+	// node installs a route to this IP, so node-local callers (CRI shims,
+	// agents) can reach the sandbox's envd (port 49983) directly. Absent from
+	// orchestrators that predate the field.
+	HostIp        string `protobuf:"bytes,5,opt,name=host_ip,json=hostIp,proto3" json:"host_ip,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SandboxCreateResponse) Reset() {
@@ -1000,6 +1005,13 @@ func (x *SandboxCreateResponse) GetFilesystemBootApplied() bool {
 func (x *SandboxCreateResponse) GetResolvedFirecrackerVersion() string {
 	if x != nil {
 		return x.ResolvedFirecrackerVersion
+	}
+	return ""
+}
+
+func (x *SandboxCreateResponse) GetHostIp() string {
+	if x != nil {
+		return x.HostIp
 	}
 	return ""
 }
@@ -1733,12 +1745,13 @@ const file_orchestrator_proto_rawDesc = "" +
 	"start_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tstartTime\x125\n" +
 	"\bend_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\aendTime\x12,\n" +
 	"\x0ffilesystem_boot\x18\x04 \x01(\bH\x00R\x0efilesystemBoot\x88\x01\x01B\x12\n" +
-	"\x10_filesystem_boot\"\xf4\x01\n" +
+	"\x10_filesystem_boot\"\x8d\x02\n" +
 	"\x15SandboxCreateResponse\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\tR\bclientId\x12D\n" +
 	"\x13scheduling_metadata\x18\x02 \x01(\v2\x13.SchedulingMetadataR\x12schedulingMetadata\x126\n" +
 	"\x17filesystem_boot_applied\x18\x03 \x01(\bR\x15filesystemBootApplied\x12@\n" +
-	"\x1cresolved_firecracker_version\x18\x04 \x01(\tR\x1aresolvedFirecrackerVersion\"\xc3\x01\n" +
+	"\x1cresolved_firecracker_version\x18\x04 \x01(\tR\x1aresolvedFirecrackerVersion\x12\x17\n" +
+	"\ahost_ip\x18\x05 \x01(\tR\x06hostIp\"\xc3\x01\n" +
 	"\x14SandboxUpdateRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12:\n" +
