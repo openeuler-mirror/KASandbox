@@ -268,3 +268,34 @@ func (m *Map) NetworkReleased(ctx context.Context, ip string) {
 		s.OnNetworkRelease(ctx, sbx)
 	})
 }
+
+// CloseAll stops and cleans up every sandbox currently in the map.
+func (m *Map) CloseAll(ctx context.Context) error {
+	items := m.Items()
+	if len(items) == 0 {
+		return nil
+	}
+
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs error
+	)
+	for sandboxID, sbx := range items {
+		wg.Add(1)
+		go func(sandboxID string, sbx *Sandbox) {
+			defer wg.Done()
+			if err := sbx.Close(ctx); err != nil {
+				mu.Lock()
+				errs = errors.Join(errs, fmt.Errorf("close sandbox %s: %w", sandboxID, err))
+				mu.Unlock()
+			}
+			m.live.Remove(sandboxID)
+			m.lifecycles.Remove(sandboxID)
+			m.network.Remove(sandboxID)
+		}(sandboxID, sbx)
+	}
+	wg.Wait()
+
+	return errs
+}

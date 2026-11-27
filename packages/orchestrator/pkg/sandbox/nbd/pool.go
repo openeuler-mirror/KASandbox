@@ -381,7 +381,16 @@ func (d *DevicePool) Close(ctx context.Context) error {
 
 	var errs error
 	for _, slot := range slotsToRelease {
+		if free, err := IsDeviceFree(slot); err == nil && !free {
+			if ferr := ForceDisconnect(ctx, slot); ferr != nil {
+				logger.L().Warn(ctx, "force disconnect before release failed",
+					zap.Uint32("device_index", slot),
+					zap.Error(ferr),
+				)
+			}
+		}
 		err := d.ReleaseDevice(ctx, slot,
+			WithForceDisconnect(),
 			WithInfiniteRetry(),
 			WithTimeout(devicePoolCloseReleaseTimeout),
 		)
@@ -391,6 +400,25 @@ func (d *DevicePool) Close(ctx context.Context) error {
 	}
 
 	return errs
+}
+
+// ReclaimOrphanedDevices force-disconnects NBD slots left connected by a
+// previous crash/SIGKILL. Safe to call at orchestrator startup.
+func (d *DevicePool) ReclaimOrphanedDevices(ctx context.Context) {
+	for slot := uint(0); slot < d.usedSlots.Len(); slot++ {
+		idx := DeviceSlot(slot)
+		free, err := IsDeviceFree(idx)
+		if err != nil || free {
+			continue
+		}
+		logger.L().Warn(ctx, "reclaiming orphaned nbd device", zap.Uint32("device_index", idx))
+		if err := ForceDisconnect(ctx, idx); err != nil {
+			logger.L().Error(ctx, "failed to reclaim orphaned nbd device",
+				zap.Uint32("device_index", idx),
+				zap.Error(err),
+			)
+		}
+	}
 }
 
 type releaseOptions struct {
