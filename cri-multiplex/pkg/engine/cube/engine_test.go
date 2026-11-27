@@ -131,7 +131,7 @@ func TestRunPodSandboxRequiresTemplate(t *testing.T) {
 	}
 }
 
-func TestColdCreateNotBlockedByStateFlush(t *testing.T) {
+func TestColdCreateWaitsForStateFlush(t *testing.T) {
 	store, err := engine.NewJSONStateStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -177,22 +177,27 @@ func TestColdCreateNotBlockedByStateFlush(t *testing.T) {
 		done <- err
 	}()
 	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("state flush was not scheduled")
+	}
+	select {
+	case <-done:
+		t.Fatal("RunPodSandbox returned before state flush finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+	release <- nil
+	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("RunPodSandbox blocked on state flush")
+		t.Fatal("RunPodSandbox did not finish after flush")
 	}
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("state flush was not scheduled")
-	}
-	release <- nil
 }
 
-func TestColdCreatePersistDoesNotFailCreate(t *testing.T) {
+func TestColdCreatePersistFailureDestroysSandbox(t *testing.T) {
 	store, err := engine.NewJSONStateStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -200,26 +205,26 @@ func TestColdCreatePersistDoesNotFailCreate(t *testing.T) {
 	store.SetWriteSnapshotForTest(func([]byte) error {
 		return context.DeadlineExceeded
 	})
+	fake := &fakeClient{}
 	eng := newEngine(Config{
 		Enabled:     true,
 		CubeletAddr: "127.0.0.1:9999",
 		NodeName:    "node-a",
 		Timeout:     time.Second,
 		StateStore:  store,
-	}, &fakeClient{})
+	}, fake)
 	attachStubEnvd(t, eng)
 	t.Cleanup(func() { _ = eng.Close() })
 
-	resp, err := eng.RunPodSandbox(context.Background(), podRequest())
-	if err != nil {
-		t.Fatalf("create should ignore persist failure: %v", err)
+	_, err = eng.RunPodSandbox(context.Background(), podRequest())
+	if err == nil {
+		t.Fatal("expected create to fail when persist fails")
 	}
-	if resp.GetPodSandboxId() != "uid-1" {
-		t.Fatalf("cri id = %s", resp.GetPodSandboxId())
+	if len(fake.destroys) == 0 || fake.destroys[0].id != "sbx-1" {
+		t.Fatalf("expected cubelet destroy after persist fail, got %+v", fake.destroys)
 	}
-	st, err := eng.PodSandboxStatus(context.Background(), &runtime.PodSandboxStatusRequest{PodSandboxId: "uid-1"})
-	if err != nil || st.GetStatus().GetNetwork().GetIp() != "10.1.0.2" {
-		t.Fatalf("in-memory status after persist fail: err=%v status=%+v", err, st.GetStatus())
+	if _, ok := eng.get("uid-1"); ok {
+		t.Fatal("local record should be cleared after persist fail")
 	}
 }
 
@@ -499,6 +504,56 @@ func TestRestoreReconcilesPausedFromList(t *testing.T) {
 	}
 	if st.Status.State != runtime.PodSandboxState_SANDBOX_NOTREADY || st.Status.Network.GetIp() != "10.1.0.2" {
 		t.Fatalf("restored status = %+v", st.Status)
+	}
+}
+
+func TestRestoreDestroysUnknownCubeletSandbox(t *testing.T) {
+	store, err := engine.NewJSONStateStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeClient{list: []listedSandbox{{ID: "orphan-sbx"}}}
+	eng := newEngine(Config{
+		Enabled:     true,
+		CubeletAddr: "127.0.0.1:9999",
+		NodeName:    "node-a",
+		Timeout:     time.Second,
+		StateStore:  store,
+	}, fake)
+	t.Cleanup(func() { _ = eng.Close() })
+	if err := eng.RestoreState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.destroys) != 1 || fake.destroys[0].id != "orphan-sbx" {
+		t.Fatalf("destroys = %+v", fake.destroys)
+	}
+}
+
+func TestReconcileDestroysOrphanAfterGrace(t *testing.T) {
+	fake := &fakeClient{list: []listedSandbox{{ID: "orphan-sbx"}}}
+	eng := newEngine(Config{
+		Enabled:     true,
+		CubeletAddr: "127.0.0.1:9999",
+		NodeName:    "node-a",
+		Timeout:     time.Second,
+		StateStore:  nil,
+	}, fake)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	if err := eng.Reconcile(context.Background(), engine.ReconcileOptions{GracePeriod: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.destroys) != 0 {
+		t.Fatalf("should honor grace, destroys=%+v", fake.destroys)
+	}
+	eng.orphanMu.Lock()
+	eng.orphanSeen["orphan-sbx"] = time.Now().Add(-2 * time.Hour)
+	eng.orphanMu.Unlock()
+	if err := eng.Reconcile(context.Background(), engine.ReconcileOptions{GracePeriod: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.destroys) != 1 || fake.destroys[0].id != "orphan-sbx" {
+		t.Fatalf("destroys = %+v", fake.destroys)
 	}
 }
 
