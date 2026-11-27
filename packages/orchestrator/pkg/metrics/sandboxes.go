@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.uber.org/zap"
@@ -65,35 +66,45 @@ type SandboxObserver struct {
 }
 
 func NewSandboxObserver(ctx context.Context, nodeID, serviceName, serviceCommit, serviceVersion, serviceInstanceID string, sandboxes *sandbox.Map) (*SandboxObserver, error) {
-	deltaTemporality := otlpmetricgrpc.WithTemporalitySelector(func(kind sdkmetric.InstrumentKind) metricdata.Temporality {
-		// Use delta temporality for gauges and cumulative for all other instrument kinds.
-		// This is used to prevent reporting sandbox metrics indefinitely.
-		if kind == sdkmetric.InstrumentKindGauge {
-			return metricdata.DeltaTemporality
+	// Without a collector endpoint the exporter dials an empty target and every
+	// periodic export fails with "failed to upload metrics"; use a noop provider
+	// then, as telemetry.New does (as in KASandbox).
+	var meterProvider metric.MeterProvider = noop.NewMeterProvider()
+	var externalMeterExporter sdkmetric.Exporter
+
+	if telemetry.OTELCollectorGRPCEndpoint() != "" {
+		deltaTemporality := otlpmetricgrpc.WithTemporalitySelector(func(kind sdkmetric.InstrumentKind) metricdata.Temporality {
+			// Use delta temporality for gauges and cumulative for all other instrument kinds.
+			// This is used to prevent reporting sandbox metrics indefinitely.
+			if kind == sdkmetric.InstrumentKindGauge {
+				return metricdata.DeltaTemporality
+			}
+
+			return metricdata.CumulativeTemporality
+		})
+
+		var err error
+
+		externalMeterExporter, err = telemetry.NewMeterExporter(ctx, deltaTemporality)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create external meter exporter: %w", err)
 		}
 
-		return metricdata.CumulativeTemporality
-	})
+		res, err := telemetry.GetResource(ctx, nodeID, serviceName, serviceCommit, serviceVersion, serviceInstanceID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create resource: %w", err)
+		}
 
-	externalMeterExporter, err := telemetry.NewMeterExporter(ctx, deltaTemporality)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create external meter exporter: %w", err)
-	}
-
-	res, err := telemetry.GetResource(ctx, nodeID, serviceName, serviceCommit, serviceVersion, serviceInstanceID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create resource: %w", err)
-	}
-
-	meterProvider, err := telemetry.NewMeterProvider(
-		externalMeterExporter,
-		sandboxMetricExportPeriod,
-		res,
-		// No limit on the number of metrics to be exported, as we want to export all sandbox metrics
-		sdkmetric.WithCardinalityLimit(0),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create external metric provider: %w", err)
+		meterProvider, err = telemetry.NewMeterProvider(
+			externalMeterExporter,
+			sandboxMetricExportPeriod,
+			res,
+			// No limit on the number of metrics to be exported, as we want to export all sandbox metrics
+			sdkmetric.WithCardinalityLimit(0),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create external metric provider: %w", err)
+		}
 	}
 
 	meter := meterProvider.Meter("github.com/e2b-dev/infra/packages/orchestrator/pkg/metrics")
@@ -293,7 +304,10 @@ func (so *SandboxObserver) startObserving() (metric.Registration, error) {
 	return unregister, nil
 }
 
-const meterExporterShutdownTimeout = 10 * time.Second
+// Short on purpose: with an unreachable collector the exporter shutdown blocks
+// in gRPC reconnect backoff and does not honour the context (19 s+ seen in
+// KASandbox); with a working collector the flush takes milliseconds.
+const meterExporterShutdownTimeout = 2 * time.Second
 
 func (so *SandboxObserver) Close(ctx context.Context) error {
 	if so.meterExporter == nil {

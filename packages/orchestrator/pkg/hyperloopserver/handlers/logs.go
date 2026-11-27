@@ -124,6 +124,15 @@ func (h *APIStore) Logs(c *gin.Context) {
 	// logs without a redeploy.
 	route := h.logWriteConfig.Resolve(ctx)
 
+	// No collector configured: accept and drop, so envd neither retries nor
+	// floods the orchestrator log with one error per forwarded batch.
+	if route.PrimaryURL == "" {
+		recordLogForwardWrite(ctx, "primary", "dropped", "not_configured")
+		c.Status(http.StatusOK)
+
+		return
+	}
+
 	// Fire-and-forget shadow writes: never affect the response. Concurrency is
 	// bounded by the resolved route limit; excess writes are dropped silently to avoid
 	// unbounded goroutine growth (and a shadow log storm) under high volume.

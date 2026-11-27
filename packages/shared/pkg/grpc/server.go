@@ -66,6 +66,10 @@ func NewGRPCServer(tel *telemetry.Client, opts ...ServerOption) *grpc.Server {
 		"/TemplateService/TemplateBuildStatus",
 		"/TemplateService/HealthStatus",
 		"/InfoService/ServiceInfo",
+		// The api polls the sandbox list about every half second; four access log
+		// events per call are noise. OTel traces and metrics still cover them.
+		"/SandboxService/List",
+		"/SandboxService/ListCachedBuilds",
 	)
 
 	otelOpts := []otelgrpc.Option{

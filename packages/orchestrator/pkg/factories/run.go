@@ -559,13 +559,16 @@ func run(config cfg.Config, opts Options) (success bool) {
 	// External sandbox logger routes through LaunchDarkly (LogsWriteConfigFlag),
 	// falling back to the fixed collector address. Created here so it can use the
 	// feature flags client.
+	// Only a valid http(s) collector URL enables it: an empty or schemeless
+	// LOGS_COLLECTOR_ADDRESS would fail and print an error for every log line.
+	sbxCollectorAddress, _ := env.ValidLogsCollectorAddress()
 	sbxLoggerExternal := sbxlogger.NewLogger(
 		ctx,
 		tel.LogsProvider,
 		sbxlogger.SandboxLoggerConfig{
 			ServiceName:      serviceName,
 			IsInternal:       false,
-			CollectorAddress: env.LogsCollectorAddress(),
+			CollectorAddress: sbxCollectorAddress,
 			FeatureFlags:     featureFlags,
 		},
 	)
@@ -905,7 +908,7 @@ func run(config cfg.Config, opts Options) (success bool) {
 		sbxlogger.SandboxLoggerConfig{
 			ServiceName:      constants.ServiceNameTemplate,
 			IsInternal:       false,
-			CollectorAddress: env.LogsCollectorAddress(),
+			CollectorAddress: sbxCollectorAddress,
 			FeatureFlags:     featureFlags,
 		},
 	)

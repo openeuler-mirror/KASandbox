@@ -221,6 +221,64 @@ func TestAPIStoreLogsSamplesStaleTimestampWarning(t *testing.T) { //nolint:paral
 	assert.Equal(t, int64(1), collectorRequests.Load())
 }
 
+// Without a collector address (and no LaunchDarkly route), batches are
+// accepted and dropped quietly instead of failing with a 500 and an ERROR line.
+func TestAPIStoreLogsDropsWithoutCollector(t *testing.T) { //nolint:paralleltest // swaps package-global metric instrument
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { require.NoError(t, meterProvider.Shutdown(t.Context())) })
+	testCounter, err := meterProvider.Meter(
+		"github.com/e2b-dev/infra/packages/orchestrator/pkg/hyperloopserver/handlers",
+	).Int64Counter(logForwardWriteCountName)
+	require.NoError(t, err)
+	previousCounter := logForwardWriteCount
+	logForwardWriteCount = testCounter
+	t.Cleanup(func() { logForwardWriteCount = previousCounter })
+
+	core, observedLogs := observer.New(zap.DebugLevel)
+	hostIP := net.IPv4(127, 0, 0, 3)
+	sbx := &sandbox.Sandbox{
+		LifecycleStartedAt: time.Now().UTC(),
+		Metadata: &sandbox.Metadata{
+			Runtime: sandbox.RuntimeMetadata{SandboxID: "sandbox-2", TemplateID: "template-2", TeamID: "team-2"},
+		},
+		Resources: &sandbox.Resources{Slot: &network.Slot{HostIP: hostIP}},
+	}
+	sandboxes := sandbox.NewSandboxesMap()
+	sandboxes.AssignNetwork(t.Context(), sbx)
+
+	store := NewHyperloopStore(logger.NewTracedLoggerFromCore(core), sandboxes, "", nil)
+	router := gin.New()
+	router.POST("/logs", store.Logs)
+
+	for range 3 {
+		request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/logs", strings.NewReader(fmt.Sprintf(
+			`{"instanceID":"sandbox-2","timestamp":%q,"message":"hello"}`,
+			time.Now().UTC().Add(time.Second).Format(envdTimestampLayout),
+		)))
+		request.Header.Set("Content-Type", "application/json")
+		request.RemoteAddr = net.JoinHostPort(hostIP.String(), "4321")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		assert.Equal(t, http.StatusOK, response.Code)
+	}
+	assert.Zero(t, observedLogs.FilterLevelExact(zap.ErrorLevel).Len())
+
+	var metrics metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &metrics))
+	require.Len(t, metrics.ScopeMetrics, 1)
+	require.Len(t, metrics.ScopeMetrics[0].Metrics, 1)
+	sum, ok := metrics.ScopeMetrics[0].Metrics[0].Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, sum.DataPoints, 1)
+	assert.Equal(t, int64(3), sum.DataPoints[0].Value)
+	assert.Equal(t, attribute.NewSet(
+		attribute.String("route", "primary"),
+		attribute.String("result", "dropped"),
+		attribute.String("reason", "not_configured"),
+	), sum.DataPoints[0].Attributes)
+}
+
 func TestAPIStoreForwardLogsStatus(t *testing.T) {
 	t.Parallel()
 
