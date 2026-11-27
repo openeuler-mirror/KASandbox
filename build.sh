@@ -228,16 +228,13 @@ setup_go_dependencies() {
         "packages/db"
     )
     
-    local mooncake_src="packages/shared/pkg/storage/storage_mooncake.go"
-    
-    # 非 mooncake 模式下，临时移除 mooncake 源文件避免 tidy 将其依赖加入
-    if ! $ENABLE_MOONCAKE && [ -f "$mooncake_src" ]; then
-        log_warn "移除临时 mooncake 源文件..."
-        mv "$mooncake_src" "${mooncake_src}.bak"
-        # 注册清理函数
-        trap "restore_mooncake_src '$mooncake_src'" EXIT
-    fi
-    
+    # 注意：不要像 KASandbox android 分支那样在非 mooncake 模式下临时移走
+    # storage_mooncake.go——该文件无构建标签、定义了 mooncakeKV/mooncakeObject
+    # 等类型，被 write/cache 等同样无标签的文件引用。移走它会让随后并行的
+    # `go mod vendor` 把缺少定义的包拷进 vendor/，导致非 mooncake 构建
+    # "undefined: mooncakeKV"。mooncake 外部模块依赖只由带 //go:build mooncake
+    # 标签的 client.go 引入，非 mooncake 构建不会编译它。
+
     # 执行 go mod tidy 和 vendor（并行执行）
     local dir
     local pids=()
@@ -262,19 +259,6 @@ setup_go_dependencies() {
     for pid in "${pids[@]}"; do
         wait "$pid" || log_error "进程 $pid 执行失败"
     done
-    
-    # 恢复 mooncake 源文件
-    restore_mooncake_src "$mooncake_src"
-    trap - EXIT
-}
-
-restore_mooncake_src() {
-    local src=$1
-    local backup="${src}.bak"
-    if [ -f "$backup" ]; then
-        mv "$backup" "$src"
-        log_warn "已恢复 mooncake 源文件"
-    fi
 }
 
 # ============================================================================
