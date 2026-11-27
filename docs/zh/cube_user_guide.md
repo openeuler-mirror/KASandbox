@@ -146,11 +146,13 @@ rpm -ivh KASandbox-*.rpm
 cd /opt/e2b-infra
 # 若只有旧布局：cd /opt/e2b-infra/standard
 
-# 2. 部署 cri-multiplex 并切换 kubelet endpoint、创建 RuntimeClass cube
+# 2. 部署 cri-multiplex、创建 RuntimeClass cube（默认不改 kubelet endpoint）
 export CRI_MULTIPLEX_CUBE_ENABLED=true
 export CRI_MULTIPLEX_CUBELET=127.0.0.1:9999
 # export CRI_MULTIPLEX_BIN=/opt/e2b-infra/bin/cri-multiplex
 sudo -E ./k8s-deploy.sh cri-multiplex
+# 需要 kubelet 走 multiplex 时再显式切换：
+sudo ./k8s-deploy.sh kubelet-endpoint
 
 # 3. Pod：runtimeClassName: cube，并带齐附录 C 冷启动注解（见 §8.3；webhook 不能代替完整注解）
 kubectl get runtimeclass cube
@@ -722,14 +724,16 @@ export CRI_MULTIPLEX_CUBELET=127.0.0.1:9999
 # export CRI_MULTIPLEX_BIN=/path/to/cri-multiplex-with-cube
 
 sudo -E ./k8s-deploy.sh cri-multiplex
+# 默认不切换 kubelet endpoint；Cube / RuntimeClass 走 kubelet 时再执行：
+sudo ./k8s-deploy.sh kubelet-endpoint
 ```
 
 脚本会：
 
 1. 写入 `/etc/systemd/system/cri-multiplex.service`（含 `-cube-enabled` / `-cubelet-address`，以及 `-hide-sandbox-label flux-sandbox.io/direct=true`）
 2. `systemctl enable --now cri-multiplex`，等待 `/run/cri-multiplex.sock`
-3. 将 kubelet runtime endpoint 切到该 socket 并重启 kubelet
-4. 创建 RuntimeClass：`android` / `e2b` / **`cube`**
+3. 创建 RuntimeClass：`android` / `e2b` / **`cube`**
+4. **不**自动改 kubelet；需要时用 `./k8s-deploy.sh kubelet-endpoint` 把 endpoint 切到 `/run/cri-multiplex.sock`
 
 部署后自检：
 
@@ -969,6 +973,7 @@ ROUNDS=5 CUBE_PROXY_NODE_IP=<节点IP> \
 export CRI_MULTIPLEX_CUBE_ENABLED=true
 export CRI_MULTIPLEX_CUBELET=127.0.0.1:9999
 sudo -E /opt/e2b-infra/k8s-deploy.sh cri-multiplex
+sudo /opt/e2b-infra/k8s-deploy.sh kubelet-endpoint
 kubectl get runtimeclass cube
 sudo /opt/e2b-infra/k8s-deploy.sh cri-multiplex-uninstall
 
