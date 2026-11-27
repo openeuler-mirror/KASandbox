@@ -734,7 +734,7 @@ metadata:
     cube.dev/vcpu: "2"
     cube.dev/ram-mb: "2048"
     # 冷启动通常还需 image / command / args / rootfs 等相关注解
-    # （完整集合见附录 C；可由 webhook 从 CubeAPI resolve 补齐）
+    # （完整集合见附录 C。webhook 只补 id / vcpu / ram / disk 和 team-id，不展开整份 createRequest）
 spec:
   runtimeClassName: cube
   containers:
@@ -742,15 +742,16 @@ spec:
       image: registry.k8s.io/pause:3.9
 ```
 
-> **重要**：冷启动依赖注解中的完整模板规格；Cubelet **不会**只凭 `tpl-` ID 自动展开全部 `createRequest`。缺少字段时请用 webhook resolve，或从 `GET /templates/<id>` 的 `createRequest` 手工填入。
+> **重要**：冷启动依赖注解中的完整模板规格；Cubelet **不会**只凭 `tpl-` ID 自动展开全部 `createRequest`。webhook 只补 `template-id` / `vcpu` / `ram-mb` / `disk-mb` 和 `e2b.dev/team-id`。image、command、rootfs 等仍须从 `GET /templates/<id>` 的 `createRequest` 手工填入。
 
 ### 8.4 e2b-webhook（可选）
 
 e2b-webhook 随 KASandbox 提供。CubeProvider 行为：
 
-- Pod 指定 `runtimeClassName: cube`（或策略选中 cube）时只注入 `cube.dev/*`（与 engine 一致，不双写 `sandbox.cri/*`）
-- 若缺少 `template-id` / `vcpu` / `ram-mb`，且配置了 `CUBE_API_URL`，则请求 CubeAPI `POST /templates/resolve` 补全
-- 若缺少 `disk-mb`，再 `GET /templates/{id}` 从 `writable_layer_size`（或 volume size_limit）补齐；须与模板可写层一致，否则冷启动会对快照 rootfs resize 失败
+- Pod 指定 `runtimeClassName: cube`（或策略选中 cube）时注入 `cube.dev/*`，并写入 `e2b.dev/team-id`（暂停接口要求 UUID）。不双写 `sandbox.cri/*`。
+- 若缺少 `template-id` / `vcpu` / `ram-mb`，且配置了 `CUBE_API_URL`，则请求 CubeAPI `POST /templates/resolve` 补全。resolve 不返回磁盘。
+- 若缺少 `disk-mb`，再 `GET /templates/{id}`，从 `createRequest.annotations` 的 `cube.master.rootfs.writable_layer_size` 取值；没有则用 volume 的 `size_limit`。须与模板可写层一致，否则冷启动会对快照 rootfs resize 失败。
+- `e2b.dev/team-id`：请求里已有合法 UUID 优先，其次环境变量 `CUBE_TEAM_ID`（也须是 UUID），否则写零 UUID `00000000-0000-0000-0000-000000000000`。`team-1` 这类非 UUID 不会原样发出。
 
 按集群需要用 Helm / 部署脚本拉起 webhook，并保证其能访问 CubeAPI。
 
@@ -871,6 +872,7 @@ sudo systemctl restart cube-sandbox-cube-api
 | cri-multiplex 无 cube | `systemctl cat cri-multiplex` 须有 `-cube-enabled=true`；二进制 `--help` 须支持该 flag；并能连 `CUBELET_ADDR` |
 | `k8s-deploy.sh: No such file` / `rc=127` | 脚本在 `/opt/e2b-infra/standard/`，不要只 `cd /opt/e2b-infra` |
 | Create 缺字段失败 / Pod 一直 ContainerCreating | 补齐 `cube.dev/*` 与 rootfs 相关注解（附录 C），或配置 webhook + `CUBE_API_URL`；节点 Ready ≠ 注解已齐 |
+| pause 422，`team_id` 不是 UUID | 不要填 `team-1`。webhook 写 `e2b.dev/team-id`：已有 UUID 优先，否则 `CUBE_TEAM_ID`，否则零 UUID |
 | cube Pod 删不掉 / `all engines failed`（e2b dial :5008） | Cube-only 下 e2b 不可达时的 List 聚合问题；升级含修复的 cri-multiplex，或保证过滤 List 时至少有一个引擎成功返回（可为空） |
 | Resume 失败 | CRI Resume 仅本机 origin；跨节点恢复不在当前 CRI 范围 |
 | Harbor 推了镜像但建模板失败 | 不用 E2B 的 `create_template.py`；用 `tpl create-from-image`；HTTP 仓加 `http://` 前缀 |
@@ -946,6 +948,7 @@ sudo /usr/local/services/cubetoolbox/scripts/uninstall-internal-meta.sh --purge-
 | `CRI_MULTIPLEX_CUBELET` | `127.0.0.1:9999` | 部署脚本传入的 Cubelet 地址 |
 | `CRI_MULTIPLEX_BIN` | `/opt/e2b-infra/bin/cri-multiplex` | 二进制路径覆盖 |
 | `CUBE_API_URL` | `http://127.0.0.1:3000` | 模板查询 / webhook resolve；openfuyao `backend=cube` 时 internal 基址也指这里 |
+| `CUBE_TEAM_ID` | 未设置则用零 UUID | webhook 写入 `e2b.dev/team-id` 的备选；须为 UUID |
 | `CUBE_ADMIN_TOKEN` | 安装脚本生成 | `/internal` 的 `X-Admin-Token`，写在 `/etc/cube/cube-api.env` |
 | `CUBE_INTERNAL_META_DB` | `.../CubeAPI/data/cubeapi-internal-meta.json` | `/internal` catalog 文件 |
 | `CUBE_E2E_TEMPLATE` | `sandbox-code` | cube-verify / e2e 默认模板 alias |
@@ -984,7 +987,7 @@ sudo /usr/local/services/cubetoolbox/scripts/uninstall-internal-meta.sh --purge-
 | `cube.dev/template-id` | 模板 ID（`tpl-…`） |
 | `cube.dev/vcpu` | vCPU |
 | `cube.dev/ram-mb` | 内存 MB |
-| `cube.dev/disk-mb` | 可写层大小（或与 rootfs 注解一致） |
+| `cube.dev/disk-mb` | 可写层大小。webhook 缺省时从模板 `writable_layer_size` 或 volume `size_limit` 补齐，须与模板一致 |
 | `cube.dev/image` | 镜像引用 |
 | `cube.dev/image-storage-media` | 存储介质字段 |
 | `cube.dev/container-name` | 容器名 |
@@ -993,6 +996,6 @@ sudo /usr/local/services/cubetoolbox/scripts/uninstall-internal-meta.sh --purge-
 | `cube.master.rootfs.*` | rootfs / writable layer 等 |
 | `cube.master.template.spec_fingerprint` | 规格指纹 |
 | `cube.master.appsnapshot.version` | 常用 `v2` |
-| `sandbox.cri/backend` | webhook 注入，标识后端为 cube |
+| `sandbox.cri/backend` | CubeProvider 不注入此注解 |
 
-SandboxSched 场景额外占位：`e2b.dev/template-id`、`e2b.dev/build-id`、`e2b.dev/team-id`（仅满足 agent 校验，真正路由靠 `RuntimeHandler=cube` + `cube.dev/*`）。
+`e2b.dev/template-id`、`e2b.dev/build-id` 仍是 agent 占位。`e2b.dev/team-id` 由 webhook 写成 UUID，供 pause 使用，不是随意占位。路由仍靠 `RuntimeHandler=cube` 与 `cube.dev/*`。
