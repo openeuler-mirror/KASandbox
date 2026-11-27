@@ -1,0 +1,7 @@
+mkfcenv.tar.gz
+.env
+/.clickhouse
+/.db
+/.shared
+/private.pem
+/public.pem

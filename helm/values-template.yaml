@@ -1,8 +1,6 @@
 # --- Basic variables ---
 environment: "${ENVIRONMENT}"
-# orchestrator 启动方式：systemd（节点 e2b-orchestrator.service 承载，不渲染 DaemonSet，
-# 由部署脚本渲染静态 Endpoints 提供 template-manager 后端）| k8s（K8S DaemonSet 承载）| nomad
-orchestratorType: "${ORCHESTRATOR_TYPE}"
+orchestratorType: "k8s"
 # --- Database / Redis / Harbor ---
 registry: "${REGISTRY_URL}"
 image:
@@ -14,10 +12,8 @@ image:
 # e2b-webhook 开关：true 部署，false 不部署（默认）
 webhook:
   enabled: ${ENABLE_WEBHOOK}
-  agentenvApiURL: "${AGENTENV_API_URL}"
 pullPolicy: IfNotPresent
-# postgres 访问地址：默认内置 Service；ENABLE_POSTGRES=false 时由 POSTGRES_URL 环境变量指向外部实例
-postgresUrl: ${POSTGRES_URL}
+postgresUrl: postgres.e2b.svc.cluster.local
 sandboxStorageBackend: ${SANDBOX_STORAGE_BACKEND}
 redisUrl: redis.e2b.svc.cluster.local
 redisClusterUrl: 
@@ -53,7 +49,6 @@ apiResourcesCpuCount: ${API_RESOURCES_CPU_COUNT}
 apiResourcesMemoryMb: ${API_RESOURCES_MEMORY_MB}
 apiLimitsCpuCount: ${API_LIMITS_CPU_COUNT}
 apiLimitsMemoryMb: ${API_LIMITS_MEMORY_MB}
-useHugePages: "${E2B_USE_HUGE_PAGES}"
 
 # --- Loki / Logs collector ---
 logsCollectorPublicIp: ${LOGS_COLLECTOR_PUBLIC_IP}
@@ -93,10 +88,6 @@ sandboxFirewallAllowedCIDRs: ${SANDBOX_FIREWALL_ALLOWED_CIDRS}
 sharedChunkCachePath: ${SHARED_CHUNK_CACHE_PATH}
 storageProvider: ${STORAGE_PROVIDER}
 artifactsRegistryProvider: ${ARTIFACTS_REGISTRY_PROVIDER}
-# Template storage compression (read only by e2b-infra 2026.30 binaries)
-compressEnabled: "${COMPRESS_ENABLED}"
-compressType: "${COMPRESS_TYPE}"
-compressLevel: "${COMPRESS_LEVEL}"
 
 # --- otel-collector ---
 otelCollectorResourcesCpuCount: ${OTEL_COLLECTOR_RESOURCES_CPU_COUNT}
@@ -107,14 +98,6 @@ grafanaOtelCollectorToken: "${GRAFANA_OTEL_COLLECTOR_TOKEN}"
 grafanaOtlpUrl: "${GRAFANA_OTLP_URL}"
 
 # --- postgres ---
-# postgres 组件开关：true 部署内置 postgres（默认），false 使用外部实例
-postgresEnabled: ${ENABLE_POSTGRES}
-# redis 组件开关：true 部署内置 redis（默认），false 不渲染 redis 资源且不向组件注入 REDIS_URL
-redisEnabled: ${ENABLE_REDIS}
-# api 组件开关：true 部署内置 api（默认），false 不渲染 api 资源（API 由外部承载）
-apiEnabled: ${ENABLE_API}
-# edge（client-proxy）组件开关：true 部署（默认），false 不渲染 edge 资源（沙箱域名路由不可用）
-edgeEnabled: ${ENABLE_EDGE}
 postgresImage: ${POSTGRES_DOCKER_IMAGE}
 postgresPort: ${POSTGRES_PORT}
 postgresResourcesCpuCount: ${POSTGRES_RESOURCES_CPU_COUNT}
@@ -154,8 +137,6 @@ mcWorkersPerCtx: "${MC_WORKERS_PER_CTX}"
 mcMaxWr: "${MC_MAX_WR}"
 mcUrmaBondingMultipathEnable: "${MC_URMA_BONDING_MULTIPATH_ENABLE}"
 mcUbNumaAffinityEnable: "${MC_UB_NUMA_AFFINITY_ENABLE}"
-mooncakeUploadSigningSecret: "${MOONCAKE_UPLOAD_SIGNING_SECRET}"
-mooncakeUploadMaxBytes: "${MOONCAKE_UPLOAD_MAX_BYTES}"
 
 # --- Ports ---
 apiPort: ${API_PORT}
@@ -176,10 +157,6 @@ otelCollectorGrpcPort: ${OTEL_COLLECTOR_GRPC_PORT}
 clickhouseServerPort: ${CLICKHOUSE_SERVER_PORT}
 clickhouseMetricPort: ${CLICKHOUSE_METRICS_PORT}
 dnsPort: ${DNS_PORT}
-
-# API 静态发现清单（ORCHESTRATOR_TYPE=systemd 时生效）："node1=ip1,node2=ip2"，
-# 由 .env ORCHESTRATOR_STATIC_NODES 手动注入；为空时不注入 ORCHESTRATOR_STATIC_NODES
-orchestratorStaticNodes: "${ORCHESTRATOR_STATIC_NODES}"
 
 api:
   pool: ${API_NODE_POOL}

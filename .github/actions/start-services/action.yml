@@ -1,0 +1,150 @@
+name: "Start Services"
+description: "Sets up and starts the required services, including PostgreSQL."
+
+inputs:
+  compress_enabled:
+    description: "Enable compression (true/false)"
+    required: false
+    default: "false"
+  compress_type:
+    description: "Compression type (zstd, lz4)"
+    required: false
+    default: ""
+  compress_level:
+    description: "Compression level (zstd: 1=fastest, 2=default; lz4: 0)"
+    required: false
+    default: ""
+  compress_workers:
+    description: "Number of frame encode workers"
+    required: false
+    default: ""
+  dedup_mode:
+    description: "Memfile dedup mode"
+    required: false
+    default: "default"
+  disable_memfd:
+    description: "Disable memfd-backed guest memory (on by default)"
+    required: false
+    default: "false"
+  orchestrator-make-path:
+    description: |
+      Directory whose Makefile starts the orchestrator (run-debug target).
+      Lets callers substitute a compatible orchestrator build from a
+      different directory.
+    required: false
+    default: "packages/orchestrator"
+
+runs:
+  using: "composite"
+  steps:
+    # The postgres/clickhouse/redis containers were already kicked off in the
+    # background by the start-databases action (early in the job, so their
+    # pulls and boots overlapped with the package builds). Here we wait for
+    # database health and migrate. ClickHouse migrations run goose directly
+    # on the host (migrate-host): building the migrator image took ~2 min per
+    # job even with layer caching, for a container whose only purpose is to
+    # run goose against migrations that get volume-mounted anyway.
+    - name: Wait for Databases and Migrate
+      env:
+        TESTS_E2B_API_KEY: "e2b_5ec17bd3933af21f80dc10bba686691c4fcd7057"
+        TESTS_SANDBOX_TEAM_ID: "834777bd-9956-45ca-b088-9bac9290e2ac"
+        TESTS_SANDBOX_USER_ID: "2a5a9fc5-db8d-4af7-ac9e-d0f9272463bc"
+        CLICKHOUSE_USERNAME: "e2b"
+        CLICKHOUSE_PASSWORD: "clickity-clicky-click"
+        CLICKHOUSE_PORT: "9000"
+        CLICKHOUSE_DATABASE: "default"
+      run: |
+        wait_healthy() {
+          local name="$1" timeout="${2:-120}" i
+          for ((i = 0; i < timeout; i += 2)); do
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' "$name" 2>/dev/null)" = "healthy" ]; then
+              echo "$name is healthy!"
+              return 0
+            fi
+            echo "Waiting for $name to be healthy..."
+            sleep 2
+          done
+          echo "::error::$name did not become healthy within ${timeout}s"
+          docker logs "$name" 2>&1 | tail -50 || true
+          return 1
+        }
+
+        wait_healthy postgres 120
+        wait_healthy clickhouse 120
+        wait_healthy redis 60
+
+        # Install extensions
+        docker exec postgres psql -U postgres -d mydatabase -c "CREATE SCHEMA extensions; CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA extensions;"
+        echo "extensions installed"
+
+        echo "TESTS_E2B_API_KEY=${TESTS_E2B_API_KEY}" >> .env.test
+        echo "TESTS_SANDBOX_TEAM_ID=${TESTS_SANDBOX_TEAM_ID}" >> .env.test
+        echo "TESTS_SANDBOX_USER_ID=${TESTS_SANDBOX_USER_ID}" >> .env.test
+        echo "REDIS_URL=localhost:6379" >> .env.test
+        echo "CLICKHOUSE_USERNAME=${CLICKHOUSE_USERNAME}" >> .env.test
+        echo "CLICKHOUSE_PORT=${CLICKHOUSE_PORT}" >> .env.test
+        echo "CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}" >> .env.test
+        echo "CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE}" >> .env.test
+        echo "CLICKHOUSE_CONNECTION_STRING=clickhouse://${CLICKHOUSE_USERNAME}:${CLICKHOUSE_PASSWORD}@$localhost:${CLICKHOUSE_PORT}/${CLICKHOUSE_DATABASE}" >> .env.test
+
+        set -x
+        make migrate
+        make -C tests/integration seed
+
+        make -C packages/clickhouse migrate-host
+      shell: bash
+
+    - name: Start Services
+      env:
+        ENVD_TIMEOUT: "60s"
+        ORCHESTRATOR_SERVICES: "orchestrator,template-manager"
+        SANDBOX_ACCESS_TOKEN_HASH_SEED: "abcdefghijklmnopqrstuvwxyz"
+        ARTIFACTS_REGISTRY_PROVIDER: "Local"
+        STORAGE_PROVIDER: "Local"
+        ENVIRONMENT: "local"
+        OTEL_COLLECTOR_GRPC_ENDPOINT: "localhost:4317"
+        MAX_PARALLEL_MEMFILE_SNAPSHOTTING: "2"
+        SHARED_CHUNK_CACHE_PATH: "./.e2b-chunk-cache"
+        REDIS_URL: "localhost:6379"
+        # Client-proxy config
+        API_INTERNAL_GRPC_ADDRESS: "localhost:5009"
+        DEFAULT_PERSISTENT_VOLUME_TYPE: "test-volume-type"
+        COMPRESS_ENABLED: ${{ inputs.compress_enabled }}
+        COMPRESS_TYPE: ${{ inputs.compress_type }}
+        COMPRESS_LEVEL: ${{ inputs.compress_level }}
+        COMPRESS_FRAME_ENCODE_WORKERS: ${{ inputs.compress_workers }}
+        TESTS_MEMFILE_DIFF_DEDUP_MODE: ${{ inputs.dedup_mode }}
+        TESTS_DISABLE_MEMFD: ${{ inputs.disable_memfd }}
+        ORCHESTRATOR_MAKE_PATH: ${{ inputs.orchestrator-make-path }}
+        E2B_DEBUG: "true"
+      run: |
+        mkdir -p $SHARED_CHUNK_CACHE_PATH
+        mkdir -p ~/logs
+
+        echo "creating persistent volume mounts"
+        test_volume_dir="$(realpath ${RUNNER_TEMP}/.e2b-test-volumes)"
+        mkdir -p $test_volume_dir
+        PERSISTENT_VOLUME_MOUNTS="test-volume-type:${test_volume_dir}"
+        export PERSISTENT_VOLUME_MOUNTS
+
+        # The backgrounded warm-up pull in start-databases discards its exit
+        # status; this synchronous call is the actual guarantee (near-instant
+        # when the warm-up succeeded) so a rate-limited pull retries instead
+        # of failing the collector's 30s health window. The tag comes from
+        # the Makefile that runs the image.
+        OTEL_IMAGE=$(grep -oE 'otel/opentelemetry-collector-contrib:[0-9.]+' packages/otel-collector/Makefile | head -1)
+        ./scripts/pull-retry.sh "$OTEL_IMAGE"
+
+        echo "Start otel-collector"
+        ./scripts/start-service.sh "OtelCollector" packages/otel-collector run ~/logs/otel-collector.log http://localhost:13133/healthz
+
+
+        echo "Start orchestrator"
+        ./scripts/start-service.sh "Orchestrator" "${ORCHESTRATOR_MAKE_PATH}" run-debug ~/logs/orchestrator.log http://localhost:5008/health
+
+        echo "Start API"
+        STARTUP_TIMEOUT=60 ./scripts/start-service.sh "API" packages/api run ~/logs/api.log http://localhost:3000/health
+
+        # Start client-proxy (needed for auto-resume tests)
+        ./scripts/start-service.sh "ClientProxy" packages/client-proxy run ~/logs/client-proxy.log http://localhost:3003
+      shell: bash

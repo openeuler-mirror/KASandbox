@@ -12,8 +12,6 @@ spec:
     spec:
       hostPID: true
       hostNetwork: true
-      # 退出时要清理网络池、等暂停快照上传完，默认 30 秒会被强杀，留下 netns 残留
-      terminationGracePeriodSeconds: 600
       dnsPolicy: ClusterFirstWithHostNet
       affinity:
         nodeAffinity:
@@ -41,10 +39,10 @@ spec:
           mountPath: /fc-kernels
         - name: fc-versions
           mountPath: /fc-versions
-        - name: fc-busybox
-          mountPath: /fc-busybox
         - name: fc-vm
           mountPath: /fc-vm
+        - name: fc-busybox
+          mountPath: /fc-busybox
         - name: tmp-templates
           mountPath: /tmp/templates
         securityContext:
@@ -81,20 +79,12 @@ spec:
           value: "{{ .Values.sandboxFirewallAllowedCIDRs }}"
         - name: SHARED_CHUNK_CACHE_PATH
           value: "{{ .Values.sharedChunkCachePath }}"
-        - name: COMPRESS_ENABLED
-          value: "{{ .Values.compressEnabled }}"
-        - name: COMPRESS_TYPE
-          value: "{{ .Values.compressType }}"
-        - name: COMPRESS_LEVEL
-          value: "{{ .Values.compressLevel }}"
         - name: CLICKHOUSE_CONNECTION_STRING
           value: "clickhouse://{{ .Values.clickhouseUsername }}:{{ .Values.clickhousePassword }}@127.0.0.1:{{ .Values.clickhouseServerPort | int }}/{{ .Values.clickhouseDatabase }}"
-        {{- if .Values.redisEnabled }}
         - name: REDIS_URL
           value: "{{ .Values.redisUrl }}:{{ .Values.redisPort | int }}"
         - name: REDIS_CLUSTER_URL
           value: "{{ .Values.redisClusterUrl }}"
-        {{- end }}
         - name: STORAGE_PROVIDER
           value: "{{ .Values.storageProvider }}"
         - name: ARTIFACTS_REGISTRY_PROVIDER
@@ -103,9 +93,22 @@ spec:
           value: "{{ .Values.minioEndpoint }}"
         - name: MINIO_ACCESS_KEY
           value: "{{ .Values.minioAccessKey }}"
-        # 2026.30 没有内置默认密钥（KASandbox 二进制默认 minioadmin），用 MinIO 时必须传
         - name: MINIO_SECRET_KEY
           value: "{{ .Values.minioSecretKey }}"
+        - name: AWS_ACCESS_KEY_ID
+          value: "{{ .Values.minioAccessKey }}"
+        - name: AWS_SECRET_ACCESS_KEY
+          value: "{{ .Values.minioSecretKey }}"
+        - name: S3_USE_PATH_STYLE
+          value: "true"
+        - name: DEFAULT_FIRECRACKER_VERSION
+          value: "v1.14.4"
+        - name: HOST_BUSYBOX_DIR
+          value: "/fc-busybox"
+        - name: BUSYBOX_VERSION
+          value: "1.35"
+        - name: E2B_FC_NETNS_EXEC_HELPER
+          value: "/opt/e2b-infra/bin/fc-netns-exec"
         - name: GRPC_PORT
           value: "{{ .Values.orchestratorPort }}"
         - name: PROXY_PORT
@@ -157,13 +160,13 @@ spec:
         hostPath:
           path: /fc-versions
           type: DirectoryOrCreate
-      - name: fc-busybox
-        hostPath:
-          path: /fc-busybox
-          type: DirectoryOrCreate
       - name: fc-vm
         hostPath:
           path: /fc-vm
+          type: DirectoryOrCreate
+      - name: fc-busybox
+        hostPath:
+          path: /fc-busybox
           type: DirectoryOrCreate
       - name: tmp-templates
         hostPath:

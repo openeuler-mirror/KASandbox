@@ -1,0 +1,911 @@
+//go:build linux
+
+package fc
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapio"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/cfg"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/cgroup"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/network"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/rootfs"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/socket"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/template"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/vmm"
+	"github.com/e2b-dev/infra/packages/shared/pkg/fc/client/operations"
+	"github.com/e2b-dev/infra/packages/shared/pkg/keys"
+	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
+	sbxlogger "github.com/e2b-dev/infra/packages/shared/pkg/logger/sandbox"
+	"github.com/e2b-dev/infra/packages/shared/pkg/storage"
+	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
+	"github.com/e2b-dev/infra/packages/shared/pkg/utils"
+)
+
+var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/fc")
+
+// fcLogFilter wraps an io.Writer and suppresses Firecracker FlushMetrics
+// request/response log line pairs that fire every few seconds and create
+// excessive noise. The stateful flag is safe because Firecracker's API server
+// is single-threaded: request and response logs are always adjacent with no
+// interleaving from other actions.
+type fcLogFilter struct {
+	w            io.Writer
+	skipResponse atomic.Bool
+}
+
+func (f *fcLogFilter) Write(p []byte) (n int, err error) {
+	var filtered []byte
+
+	for _, line := range bytes.SplitAfter(p, []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+
+		if bytes.Contains(line, []byte("FlushMetrics")) {
+			f.skipResponse.Store(true)
+
+			continue
+		}
+
+		if f.skipResponse.Load() && bytes.Contains(line, []byte("The request was executed successfully")) {
+			f.skipResponse.Store(false)
+
+			continue
+		}
+
+		filtered = append(filtered, line...)
+	}
+
+	if len(filtered) > 0 {
+		_, err = f.w.Write(filtered)
+	}
+
+	return len(p), err
+}
+
+// ext4RootFlags are the ext4 mount flags passed on the kernel cmdline.
+// discard: ext4 issues TRIM on freed blocks so they are elided from the
+// snapshot diff. It must never include "noload": a filesystem-only snapshot
+// resume cold-boots from the snapshot rootfs and relies on ext4 replaying the
+// journal on mount.
+const ext4RootFlags = "discard"
+
+type ProcessOptions = vmm.ProcessOptions
+
+
+type TokenBucketConfig = vmm.TokenBucketConfig
+
+
+type RateLimiterConfig = vmm.RateLimiterConfig
+
+
+type Process struct {
+	ordinarySnapshotEpoch atomic.Uint64
+	Versions              Config
+
+	cmd *exec.Cmd
+
+	// closeNetnsFD closes the parent's copy of the netns fd passed to the start
+	// chain through ExtraFiles, after the command started; a no-op without one
+	closeNetnsFD func()
+
+	config                cfg.BuilderConfig
+	firecrackerSocketPath string
+	metricsPath           string
+
+	slot           *network.Slot
+	rootfsProvider rootfs.Provider
+	rootfsPath     string
+	kernelPath     string
+	files          *storage.SandboxFiles
+
+	exit *utils.ErrorOnce
+
+	client *apiClient
+
+	// balloonAccum is the cumulative virtio-balloon snapshot summed by the
+	// metrics-reader goroutine (FC's SharedIncMetric resets per flush).
+	balloonAccum atomic.Pointer[BalloonMetricsSnapshot]
+}
+
+func NewProcess(
+	ctx context.Context,
+	execCtx context.Context,
+	config cfg.BuilderConfig,
+	slot *network.Slot,
+	files *storage.SandboxFiles,
+	versions Config,
+	rootfsProvider rootfs.Provider,
+	rootfsPaths RootfsPaths,
+) (*Process, error) {
+	ctx, childSpan := tracer.Start(ctx, "initialize-fc", trace.WithAttributes(
+		attribute.Int("sandbox.slot.index", slot.Idx),
+	))
+	defer childSpan.End()
+
+	// Build the firecracker start script and get computed paths
+	tScript := time.Now()
+	startBuilder := NewStartScriptBuilder(config)
+	startScript, err := startBuilder.Build(versions, files, rootfsPaths, slot.NamespaceID())
+	if err != nil {
+		return nil, err
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] fc.NewProcess build start-script cost: %.3f ms, kernel=%s, rootfs=%s",
+		time.Since(tScript).Seconds()*1000, startScript.KernelPath, startScript.RootfsPath)
+
+	telemetry.SetAttributes(ctx,
+		attribute.String("sandbox.cmd", startScript.Value),
+	)
+
+	tStatFc := time.Now()
+	_, err = os.Stat(versions.FirecrackerPath(config))
+	if err != nil {
+		return nil, fmt.Errorf("error stating firecracker binary: %w", err)
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] fc.NewProcess stat firecracker binary cost: %.3f ms, path=%s",
+		time.Since(tStatFc).Seconds()*1000, versions.FirecrackerPath(config))
+
+	tStatKernel := time.Now()
+	_, err = os.Stat(versions.HostKernelPath(config))
+	if err != nil {
+		return nil, fmt.Errorf("error stating kernel file: %w", err)
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] fc.NewProcess stat kernel file cost: %.3f ms, path=%s",
+		time.Since(tStatKernel).Seconds()*1000, versions.HostKernelPath(config))
+
+	tCmd := time.Now()
+	restoredSandbox := rootfsPaths.TemplateID != "" && rootfsPaths.BuildID != ""
+
+	// A restored V2 sandbox may use the fc-netns-exec --prepare-vm chain
+	// (buildStartCommand checks the helper probe and E2B_FC_PREPARE_VM);
+	// otherwise nil keeps the bash script
+	var prepArgv []string
+	if restoredSandbox && rootfsPaths.TemplateVersion >= 2 {
+		prepArgv = startBuilder.PrepareVMArgv(versions, files, rootfsPaths, slot.NamespaceID())
+	}
+
+	cmd, closeNetnsFD := buildStartCommand(ctx, execCtx, config, startScript.Value, slot, restoredSandbox, prepArgv)
+
+	p := &Process{
+		Versions:              versions,
+		exit:                  utils.NewErrorOnce(),
+		cmd:                   cmd,
+		closeNetnsFD:          closeNetnsFD,
+		firecrackerSocketPath: files.SandboxFirecrackerSocketPath(),
+		metricsPath:           files.SandboxMetricsFifoPath(),
+		config:                config,
+		client:                newApiClient(files.SandboxFirecrackerSocketPath()),
+		rootfsProvider:        rootfsProvider,
+		files:                 files,
+		slot:                  slot,
+
+		kernelPath: startScript.KernelPath,
+		rootfsPath: startScript.RootfsPath,
+	}
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true, // Create a new session
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] fc.NewProcess build exec.Cmd cost: %.3f ms",
+		time.Since(tCmd).Seconds()*1000)
+
+	return p, nil
+}
+
+func (p *Process) configure(
+	ctx context.Context,
+	sbxMetadata sbxlogger.LoggerMetadata,
+	stdoutExternal io.Writer,
+	stderrExternal io.Writer,
+	cgroupFD int,
+) error {
+	ctx, childSpan := tracer.Start(ctx, "configure-fc")
+	defer childSpan.End()
+
+	tIoWriter := time.Now()
+	stdoutWriter := &zapio.Writer{Log: sbxlogger.I(sbxMetadata).Logger.Detach(ctx), Level: zap.InfoLevel}
+	stdoutWriters := []io.Writer{stdoutWriter}
+	if stdoutExternal != nil {
+		stdoutWriters = append(stdoutWriters, stdoutExternal)
+	}
+	p.cmd.Stdout = &fcLogFilter{w: io.MultiWriter(stdoutWriters...)}
+
+	stderrWriter := &zapio.Writer{Log: sbxlogger.I(sbxMetadata).Logger.Detach(ctx), Level: zap.ErrorLevel}
+	stderrWriters := []io.Writer{stderrWriter}
+	if stderrExternal != nil {
+		stderrWriters = append(stderrWriters, stderrExternal)
+	}
+	p.cmd.Stderr = io.MultiWriter(stderrWriters...)
+	zap.L().Sugar().Infof("[ResumeSandbox] fc.configure setup io-writers cost: %.3f ms",
+		time.Since(tIoWriter).Seconds()*1000)
+
+	// Set up cgroup FD for atomic placement via CLONE_INTO_CGROUP.
+	// The cgroup is created and owned by the caller (Sandbox); Process only
+	// uses the FD during clone.
+	if cgroupFD != cgroup.NoCgroupFD {
+		// UseCgroupFD (CLONE_INTO_CGROUP) is disabled on openEuler 6.6 hosts.
+	}
+
+	// Create the metrics FIFO before Firecracker starts.
+	// Firecracker will open the write end once PUT /metrics is called.
+	if err := syscall.Mkfifo(p.metricsPath, 0o600); err != nil {
+		return fmt.Errorf("error creating fc metrics FIFO: %w", err)
+	}
+
+	tStart := time.Now()
+	err := p.cmd.Start()
+	// ExtraFiles were duplicated into the child at fork; the parent's copy can
+	// be closed once the start returned
+	p.closeNetnsFD()
+	if err != nil {
+		// cmd.Process is nil when Start fails, so Stop() won't reach the FIFO cleanup.
+		// Remove the FIFO here to avoid leaving it behind.
+		_ = os.Remove(p.metricsPath)
+
+		return fmt.Errorf("error starting fc process: %w", err)
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] fc.configure cmd.Start cost: %.3f ms, pid=%d",
+		time.Since(tStart).Seconds()*1000, p.cmd.Process.Pid)
+
+	startCtx, cancelStart := context.WithCancelCause(ctx)
+	defer cancelStart(errors.New("fc finished starting"))
+
+	go func() {
+		defer stderrWriter.Close()
+		defer stdoutWriter.Close()
+
+		waitErr := p.cmd.Wait()
+		if waitErr != nil {
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
+				// Check if the process was killed by a signal
+				if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() && (status.Signal() == syscall.SIGKILL || status.Signal() == syscall.SIGTERM) {
+					p.exit.SetError(nil)
+
+					return
+				}
+			}
+
+			logger.L().Error(ctx, "error waiting for fc process", zap.Error(waitErr))
+
+			errMsg := fmt.Errorf("error waiting for fc process: %w", waitErr)
+			p.exit.SetError(errMsg)
+
+			cancelStart(errMsg)
+
+			return
+		}
+
+		p.exit.SetError(nil)
+	}()
+
+	// Wait for the FC process to start so we can use FC API
+	tSocket := time.Now()
+	err = socket.Wait(startCtx, p.firecrackerSocketPath)
+	if err != nil {
+		errMsg := fmt.Errorf("error waiting for fc socket: %w", err)
+
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(errMsg, fcStopErr)
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] fc.configure wait fc-socket cost: %.3f ms, socket=%s",
+		time.Since(tSocket).Seconds()*1000, p.firecrackerSocketPath)
+
+	return nil
+}
+
+func (p *Process) Create(
+	ctx context.Context,
+	sbxMetadata sbxlogger.LoggerMetadata,
+	vCPUCount int64,
+	memoryMB int64,
+	hugePages bool,
+	freePageReporting bool,
+	freePageHinting bool,
+	options ProcessOptions,
+	txRateLimit RateLimiterConfig,
+	driveRateLimit RateLimiterConfig,
+	cgroupFD int,
+) error {
+	ctx, childSpan := tracer.Start(ctx, "create-fc")
+	defer childSpan.End()
+
+	// Symlink /dev/null to the rootfs link path, so we can start the FC process without the rootfs and then symlink the real rootfs.
+	err := utils.SymlinkForce("/dev/null", p.files.SandboxCacheRootfsLinkPath(p.config.StorageConfig))
+	if err != nil {
+		return fmt.Errorf("error symlinking rootfs: %w", err)
+	}
+
+	err = p.configure(
+		ctx,
+		sbxMetadata,
+		options.Stdout,
+		options.Stderr,
+		cgroupFD,
+	)
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error starting fc process: %w", err), fcStopErr)
+	}
+
+	// Start the metrics reader goroutine before calling setMetrics.
+	// The goroutine blocks on open(O_RDONLY) until Firecracker opens the write end,
+	// which happens when it processes PUT /metrics below.
+	p.startMetricsReader(ctx)
+
+	err = p.client.setMetrics(ctx, p.metricsPath)
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error setting fc metrics: %w", err), fcStopErr)
+	}
+	telemetry.ReportEvent(ctx, "set fc metrics")
+
+	// IPv4 configuration - format: [local_ip]::[gateway_ip]:[netmask]:hostname:iface:dhcp_option:[dns]
+	ipv4 := fmt.Sprintf("%s::%s:%s:instance:%s:off:%s", p.slot.NamespaceIP(), p.slot.TapIPString(), p.slot.TapMaskString(), p.slot.VpeerName(), p.slot.TapName())
+	kernelArgs := buildKernelArgs(ipv4, options).String()
+	err = p.client.setBootSource(ctx, kernelArgs, p.kernelPath)
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error setting fc boot source %q): %w", p.kernelPath, err), fcStopErr)
+	}
+	telemetry.ReportEvent(ctx, "set fc boot source config")
+
+	// Rootfs
+	rootfsPath, err := p.rootfsProvider.Path()
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error getting rootfs path: %w", err), fcStopErr)
+	}
+	telemetry.ReportEvent(ctx, "got rootfs path")
+
+	err = utils.SymlinkForce(rootfsPath, p.files.SandboxCacheRootfsLinkPath(p.config.StorageConfig))
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error symlinking rootfs: %w", err), fcStopErr)
+	}
+	telemetry.ReportEvent(ctx, "symlinked rootfs")
+
+	err = p.client.setRootfsDrive(ctx, p.rootfsPath, options.IoEngine, buildRateLimiter(driveRateLimit))
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error setting fc drivers config: %w", err), fcStopErr)
+	}
+	telemetry.ReportEvent(ctx, "set fc drivers config")
+
+	err = p.client.setNetworkInterface(ctx, p.slot.VpeerName(), p.slot.TapName(), p.slot.TapMAC(), buildRateLimiter(txRateLimit))
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error setting fc network config: %w", err), fcStopErr)
+	}
+	telemetry.ReportEvent(ctx, "set fc network config")
+
+	err = p.client.setMachineConfig(ctx, vCPUCount, memoryMB, hugePages)
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error setting fc machine config: %w", err), fcStopErr)
+	}
+	telemetry.ReportEvent(ctx, "set fc machine config")
+
+	err = p.client.setEntropyDevice(ctx)
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error setting fc entropy config: %w", err), fcStopErr)
+	}
+	telemetry.ReportEvent(ctx, "set fc entropy config")
+
+	if freePageReporting || freePageHinting {
+		if err := p.client.installBalloon(ctx, freePageReporting, freePageHinting); err != nil {
+			fcStopErr := p.Stop(ctx)
+
+			return errors.Join(fmt.Errorf("error installing balloon device: %w", err), fcStopErr)
+		}
+		telemetry.ReportEvent(ctx, "installed balloon device",
+			attribute.Bool("balloon.free_page_reporting", freePageReporting),
+			attribute.Bool("balloon.free_page_hinting", freePageHinting),
+		)
+	}
+
+	// Write MMDS metadata before boot when an access token is provided (the
+	// cold-boot/reboot user path) so the guest envd can authenticate /init the
+	// same way it does after a memory resume. The MMDS transport is already
+	// configured by setNetworkInterface above. Template-build cold boots leave
+	// AccessToken nil and skip this, preserving their existing behavior.
+	if options.AccessToken != nil {
+		md := sbxMetadata.LoggerMetadata()
+		meta := &MmdsMetadata{
+			SandboxID:            md.SandboxID,
+			TemplateID:           md.TemplateID,
+			LogsCollectorAddress: fmt.Sprintf("http://%s/logs", p.config.NetworkConfig.OrchestratorInSandboxIPAddress),
+			AccessTokenHash:      keys.HashAccessToken(*options.AccessToken),
+		}
+		if err := p.client.setMmds(ctx, meta); err != nil {
+			fcStopErr := p.Stop(ctx)
+
+			return errors.Join(fmt.Errorf("error setting mmds: %w", err), fcStopErr)
+		}
+		telemetry.ReportEvent(ctx, "set fc mmds metadata")
+	}
+
+	err = p.client.startVM(ctx)
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error starting fc: %w", err), fcStopErr)
+	}
+
+	telemetry.ReportEvent(ctx, "started fc")
+
+	return nil
+}
+
+// ResumeInPlace resumes the already-running Firecracker process after an
+// in-place snapshot (Pause + CreateSnapshot). Unlike Resume it does not
+// reconfigure FC, wait for a UFFD socket or load a snapshot — the process,
+// memory and rootfs overlay are all still live; it only un-pauses the VM.
+func (p *Process) ResumeInPlace(
+	ctx context.Context,
+) error {
+	ctx, span := tracer.Start(ctx, "resume-fc-in-place")
+	defer span.End()
+
+	if err := p.client.resumeVM(ctx); err != nil {
+		return fmt.Errorf("could not resume sandbox: %w", err)
+	}
+
+	return nil
+}
+
+func (p *Process) Resume(
+	ctx context.Context,
+	sbxMetadata sbxlogger.SandboxMetadata,
+	uffdSocketPath string,
+	snapfile template.File,
+	uffdReady chan struct{},
+	accessToken *string,
+	cgroupFD int,
+	useMemfd bool,
+	useSyncWP bool,
+	txRateLimit RateLimiterConfig,
+	driveRateLimit RateLimiterConfig,
+) error {
+	ctx, span := tracer.Start(ctx, "resume-fc")
+	defer span.End()
+	traceID := span.SpanContext().TraceID().String()
+
+	// Symlink /dev/null to the rootfs link path, so we can start the FC process without the rootfs and then symlink the real rootfs.
+	tSymlink := time.Now()
+	rootfsLinkPath := p.files.SandboxCacheRootfsLinkPath(p.config.StorageConfig)
+	err := utils.SymlinkForce("/dev/null", rootfsLinkPath)
+	if err != nil {
+		return fmt.Errorf("error symlinking rootfs: %w", err)
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] fc.Resume symlink /dev/null cost: %.3f ms, link=%s, traceID=%s",
+		time.Since(tSymlink).Seconds()*1000, rootfsLinkPath, traceID)
+
+	// create errgroup with context that handled socket wait + rootfs symlink
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	eg.Go(func() error {
+		err := p.configure(
+			egCtx,
+			sbxMetadata,
+			nil,
+			nil,
+			cgroupFD,
+		)
+		if err != nil {
+			return fmt.Errorf("error starting fc process: %w", err)
+		}
+
+		telemetry.ReportEvent(egCtx, "configured fc")
+
+		return nil
+	})
+
+	eg.Go(func() error {
+		phaseStart := time.Now()
+		ctx, uffdSpan := tracer.Start(egCtx, "wait-uffd-socket")
+		err := socket.Wait(ctx, uffdSocketPath)
+		uffdSpan.End()
+
+		if err != nil {
+			return fmt.Errorf("error waiting for uffd socket: %w", err)
+		}
+
+		telemetry.ReportEvent(egCtx, "uffd socket ready")
+		zap.L().Sugar().Infof("[ResumeSandbox] wait uffd-socket-ready cost: %.3f ms, uffd=%s, traceID=%s",
+			time.Since(phaseStart).Seconds()*1000, uffdSocketPath, traceID)
+
+		return nil
+	})
+
+	eg.Go(func() error {
+		phaseStart := time.Now()
+		_, rootfsSpan := tracer.Start(egCtx, "wait-rootfs-path")
+		rootfsPath, err := p.rootfsProvider.Path()
+		rootfsSpan.End()
+
+		if err != nil {
+			return fmt.Errorf("error getting rootfs path: %w", err)
+		}
+		zap.L().Sugar().Infof("[ResumeSandbox] get rootfs-provider path cost: %.3f ms, path=%s, traceID=%s",
+			time.Since(phaseStart).Seconds()*1000, rootfsPath, traceID)
+
+		tSymlink2 := time.Now()
+		err = utils.SymlinkForce(rootfsPath, rootfsLinkPath)
+		if err != nil {
+			return fmt.Errorf("error symlinking rootfs: %w", err)
+		}
+
+		telemetry.ReportEvent(egCtx, "symlinked rootfs")
+		zap.L().Sugar().Infof("[ResumeSandbox] symlink real-rootfs cost: %.3f ms, src=%s, dst=%s, traceID=%s",
+			time.Since(tSymlink2).Seconds()*1000, rootfsPath, rootfsLinkPath, traceID)
+
+		return nil
+	})
+
+	tEgWait := time.Now()
+	err = eg.Wait()
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error waiting for uffd socket or symlinking rootfs: %w", err), fcStopErr)
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] eg.Wait (configure+uffd-socket+rootfs-symlink) total cost: %.3f ms, traceID=%s",
+		time.Since(tEgWait).Seconds()*1000, traceID)
+
+	// Start the metrics reader goroutine before calling setMetrics (same ordering as Create).
+	p.startMetricsReader(ctx)
+
+	err = p.client.setMetrics(ctx, p.metricsPath)
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error setting fc metrics: %w", err), fcStopErr)
+	}
+	telemetry.ReportEvent(ctx, "set fc metrics")
+
+	phase5Start := time.Now()
+	err = p.client.loadSnapshot(
+		ctx,
+		uffdSocketPath,
+		uffdReady,
+		snapfile,
+		useMemfd,
+		useSyncWP,
+	)
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error loading snapshot: %w", err), fcStopErr)
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] load snapshot cost: %.3f ms, snapfile=%s, traceID=%s",
+		time.Since(phase5Start).Seconds()*1000, snapfile.Path(), traceID)
+
+	// Always apply/reset rate limits before resuming so any limits
+	// persisted in the snapshot are overwritten by the current config.
+	if setErr := p.client.setTxRateLimit(ctx, p.slot.VpeerName(), txRateLimit); setErr != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error setting TX rate limit: %w", setErr), fcStopErr)
+	}
+	telemetry.ReportEvent(ctx, "configured tx rate limit")
+
+	if setErr := p.client.setDriveRateLimit(ctx, rootfsDriveID, driveRateLimit); setErr != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error setting drive rate limit: %w", setErr), fcStopErr)
+	}
+	telemetry.ReportEvent(ctx, "configured drive rate limit")
+
+	phase6Start := time.Now()
+	err = p.client.resumeVM(ctx)
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error resuming vm: %w", err), fcStopErr)
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] resumeVM (FC API) cost: %.3f ms, traceID=%s",
+		time.Since(phase6Start).Seconds()*1000, traceID)
+
+	phase7Start := time.Now()
+	meta := &MmdsMetadata{
+		SandboxID:            sbxMetadata.SandboxID,
+		TemplateID:           sbxMetadata.TemplateID,
+		LogsCollectorAddress: fmt.Sprintf("http://%s/logs", p.config.NetworkConfig.OrchestratorInSandboxIPAddress),
+	}
+
+	tHash := time.Now()
+	if accessToken != nil && *accessToken != "" {
+		meta.AccessTokenHash = keys.HashAccessToken(*accessToken)
+	} else {
+		meta.AccessTokenHash = keys.HashAccessToken("")
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] hash access token cost: %.3f ms, traceID=%s",
+		time.Since(tHash).Seconds()*1000, traceID)
+
+	err = p.client.setMmds(ctx, meta)
+	if err != nil {
+		fcStopErr := p.Stop(ctx)
+
+		return errors.Join(fmt.Errorf("error setting mmds: %w", err), fcStopErr)
+	}
+	zap.L().Sugar().Infof("[ResumeSandbox] setMmds (FC API) cost: %.3f ms, traceID=%s",
+		time.Since(phase7Start).Seconds()*1000, traceID)
+
+	telemetry.SetAttributes(
+		ctx,
+		attribute.String("sandbox.cmd.dir", p.cmd.Dir),
+		attribute.String("sandbox.cmd.path", p.cmd.Path),
+	)
+
+	return nil
+}
+
+// Exit exposes the process exit signal for the VMM backend contract.
+func (p *Process) Exit() *utils.ErrorOnce {
+	return p.exit
+}
+
+func (p *Process) Pid() (int, error) {
+	if p.cmd.Process == nil {
+		return 0, errors.New("fc process not started")
+	}
+
+	return p.cmd.Process.Pid, nil
+}
+
+func (p *Process) Stop(ctx context.Context) error {
+	if p.cmd.Process == nil {
+		return errors.New("fc process not started")
+	}
+
+	// Always remove the metrics FIFO, even if the process already exited,
+	// to avoid leaving orphaned files behind.
+	if removeErr := os.Remove(p.metricsPath); removeErr != nil && !os.IsNotExist(removeErr) {
+		logger.L().Warn(ctx, "failed to remove fc metrics FIFO", zap.Error(removeErr), logger.WithSandboxID(p.files.SandboxID))
+	}
+
+	pid := p.cmd.Process.Pid
+
+	// Check if the Firecracker leader has already exited. Descendant cleanup is
+	// handled by the sandbox cgroup so Stop never signals a numeric process group.
+	select {
+	case <-p.Exit().Done():
+		logger.L().Info(ctx, "fc process already exited", logger.WithSandboxID(p.files.SandboxID))
+
+		return nil
+	default:
+	}
+
+	// this function should never fail b/c a previous context was canceled.
+	ctx = context.WithoutCancel(ctx)
+
+	// On Linux >= 5.4, Go backs os.Process with pidfd, so Signal is safe against PID reuse.
+	err := p.cmd.Process.Signal(syscall.SIGTERM)
+	if err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			logger.L().Info(ctx, "fc process already exited", logger.WithSandboxID(p.files.SandboxID))
+
+			return nil
+		}
+
+		logger.L().Warn(ctx, "failed to send SIGTERM to fc process", zap.Error(err), logger.WithSandboxID(p.files.SandboxID))
+	}
+
+	termDeadline := time.NewTimer(10 * time.Second)
+	defer termDeadline.Stop()
+
+	select {
+	case <-p.Exit().Done():
+		return nil
+	case <-termDeadline.C:
+		killErr := p.cmd.Process.Kill()
+		if killErr == nil {
+			logger.L().Info(ctx, "sent SIGKILL to fc process because it was not responding to SIGTERM for 10 seconds",
+				logger.WithSandboxID(p.files.SandboxID),
+			)
+		}
+		if errors.Is(killErr, os.ErrProcessDone) {
+			logger.L().Info(ctx, "fc process already exited", logger.WithSandboxID(p.files.SandboxID))
+
+			return nil
+		}
+		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			logger.L().Warn(ctx, "failed to send SIGKILL to fc process", zap.Error(killErr), logger.WithSandboxID(p.files.SandboxID))
+		}
+
+		killDeadline := time.NewTimer(time.Second)
+		defer killDeadline.Stop()
+
+		select {
+		case <-p.Exit().Done():
+			return nil
+		case <-killDeadline.C:
+			return fmt.Errorf("fc process %d still exists after SIGKILL", pid)
+		}
+	}
+}
+
+func (p *Process) Pause(ctx context.Context) error {
+	ctx, childSpan := tracer.Start(ctx, "pause-fc")
+	defer childSpan.End()
+
+	return p.client.pauseVM(ctx)
+}
+
+// freePageHintDone is FC's FREE_PAGE_HINT_DONE: the host_cmd value FC writes
+// back after the guest's FREE_PAGE_HINT_STOP when start used acknowledge_on_stop.
+const freePageHintDone int64 = 1
+
+// BalloonFreePageReporting reports whether this VM's balloon device runs
+// continuous free-page reporting. Boot-time device truth straight from FC:
+// a resumed sandbox's Config does not carry it (the device travels with the
+// snapshot). False when no balloon is installed.
+func (p *Process) BalloonFreePageReporting(ctx context.Context) (bool, error) {
+	return p.client.balloonFreePageReporting(ctx)
+}
+
+// PauseFreePageReporting defers all balloon free-page-reporting discards
+// until ResumeFreePageReporting; see the client method for semantics.
+// Requires an FC build with the /balloon/reporting endpoints.
+func (p *Process) PauseFreePageReporting(ctx context.Context) error {
+	return p.client.pauseFreePageReporting(ctx)
+}
+
+// FreePageReportingPaused reports whether the balloon's free-page reporting
+// is currently paused (positive confirmation for the CoW window's
+// no-discard precondition).
+func (p *Process) FreePageReportingPaused(ctx context.Context) (bool, error) {
+	return p.client.freePageReportingPaused(ctx)
+}
+
+// ResumeFreePageReporting re-enables free-page-reporting discards and
+// processes anything deferred while paused. Idempotent.
+func (p *Process) ResumeFreePageReporting(ctx context.Context) error {
+	return p.client.resumeFreePageReporting(ctx)
+}
+
+// DrainBalloon triggers a free-page-hinting run and blocks until the cycle
+// completes or ctx fires. No-op on FC < v1.14 and when no balloon is configured.
+func (p *Process) DrainBalloon(ctx context.Context) error {
+	ctx, span := tracer.Start(ctx, "drain-balloon")
+	outcome := "ok"
+	defer func() {
+		span.SetAttributes(attribute.String("drain-balloon.outcome", outcome))
+		span.End()
+	}()
+
+	if !FCSupportsFreePageHinting(p.Versions.FirecrackerVersion) {
+		outcome = "fc-unsupported"
+
+		return nil
+	}
+
+	if err := p.client.startBalloonHinting(ctx, true); err != nil {
+		var notConfigured *operations.StartBalloonHintingBadRequest
+		if errors.As(err, &notConfigured) {
+			outcome = "not-configured"
+
+			return nil
+		}
+
+		outcome = "start-failed"
+
+		return fmt.Errorf("start balloon hinting: %w", err)
+	}
+
+	if err := pollFphDone(ctx, p.client.describeBalloonHinting); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			outcome = "timeout"
+		} else {
+			outcome = "describe-failed"
+		}
+
+		return err
+	}
+
+	return nil
+}
+
+func pollFphDone(ctx context.Context, describe func(ctx context.Context) (int64, error)) error {
+	backoff := 5 * time.Millisecond
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+
+		host, err := describe(ctx)
+		if err != nil {
+			return fmt.Errorf("balloon hinting status: %w", err)
+		}
+		if host == freePageHintDone {
+			return nil
+		}
+		backoff = min(backoff*2, 50*time.Millisecond)
+	}
+}
+
+// ResumeVM resumes a VM paused for a local checkpoint.
+func (p *Process) ResumeVM(ctx context.Context) error { return p.client.resumeVM(ctx) }
+
+// CreateSnapshot VM needs to be paused before creating a snapshot.
+// Memory is not written by Firecracker here — it is read out of the process
+// separately (see ExportMemory), which is the e2b direct-mem behaviour.
+func (p *Process) CreateSnapshot(ctx context.Context, snapfilePath string) error {
+	ctx, childSpan := tracer.Start(ctx, "create-snapshot-fc")
+	defer childSpan.End()
+
+	err := p.client.createSnapshot(ctx, snapfilePath, "", "", false)
+	if err == nil {
+		p.ordinarySnapshotEpoch.Add(1)
+	}
+	return err
+}
+
+// CreateSnapshotWithMemFile VM needs to be paused before creating a snapshot.
+//
+// Unlike CreateSnapshot, this lets Firecracker write the guest memory itself
+// into memFilePath. With diff set, only pages dirtied since the previous
+// snapshot are written, at their original offsets, leaving the rest of the
+// file as holes — dirty page tracking must have been armed at boot/load time.
+func (p *Process) CreateSnapshotWithMemFile(ctx context.Context, snapfilePath string, memFilePath string, dirtyBitmapPath string, diff bool) error {
+	ctx, childSpan := tracer.Start(ctx, "create-snapshot-with-mem-file-fc")
+	defer childSpan.End()
+
+	return p.client.createSnapshot(ctx, snapfilePath, memFilePath, dirtyBitmapPath, diff)
+}
+
+// RollbackSnapshot rewinds the paused VM to a snapshot in place, keeping this
+// process. Only the forked Firecracker knows the endpoint; an unmodified one
+// yields RollbackUnsupportedError and the restore fails — there is no
+// rebuild route.
+func (p *Process) RollbackSnapshot(ctx context.Context, snapfilePath string, memFilePath string, revertBitmapPath string) (*RollbackResult, error) {
+	ctx, childSpan := tracer.Start(ctx, "rollback-snapshot-fc")
+	defer childSpan.End()
+
+	return p.client.rollbackSnapshot(ctx, p.firecrackerSocketPath, snapfilePath, memFilePath, revertBitmapPath)
+}
+
+// SaveDirtyBitmap has the forked Firecracker write the live dirty bitmap —
+// the pages dirtied since the last snapshot or rollback — to path in the
+// FCDB sidecar format. The VM must be paused. The export does not disturb
+// dirty tracking: the set stays visible to the next snapshot or rollback.
+func (p *Process) SaveDirtyBitmap(ctx context.Context, path string) error {
+	ctx, childSpan := tracer.Start(ctx, "save-dirty-bitmap-fc")
+	defer childSpan.End()
+
+	return p.client.saveDirtyBitmap(ctx, p.firecrackerSocketPath, path)
+}
+
+// OrdinarySnapshotEpoch changes when an upstream snapshot resets FC's dirty
+// bitmap. The local incremental chain must be rebased before it is used again.
+func (p *Process) OrdinarySnapshotEpoch() uint64 { return p.ordinarySnapshotEpoch.Load() }
