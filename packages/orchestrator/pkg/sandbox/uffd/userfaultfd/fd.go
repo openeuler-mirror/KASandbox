@@ -22,6 +22,36 @@ struct uffd_pagefault {
 #ifndef UFFD_FEATURE_WP_ASYNC
 #define UFFD_FEATURE_WP_ASYNC (1 << 15)
 #endif
+// Linux < 5.7 uapi headers (e.g. openEuler 20.03 / 22.03, kernel 4.19) do
+// not define the UFFD write-protect API (UFFDIO_WRITEPROTECT and friends,
+// added in 5.7). Provide the upstream values when the headers lack them;
+// newer headers skip these blocks and a kernel without the feature never
+// advertises it, so this only affects compilation, not runtime behavior.
+#ifndef UFFDIO_COPY_MODE_WP
+#define UFFDIO_COPY_MODE_WP ((__u64)1<<1)
+struct uffdio_writeprotect {
+	struct uffdio_range range;
+	__u64 mode;
+};
+#endif
+#ifndef UFFDIO_WRITEPROTECT_MODE_WP
+#define UFFDIO_WRITEPROTECT_MODE_WP ((__u64)1<<0)
+#endif
+#ifndef UFFDIO_WRITEPROTECT_MODE_DONTWAKE
+#define UFFDIO_WRITEPROTECT_MODE_DONTWAKE ((__u64)1<<1)
+#endif
+#ifndef UFFDIO_WRITEPROTECT
+#define UFFDIO_WRITEPROTECT _IOWR(UFFDIO, 5, struct uffdio_writeprotect)
+#endif
+#ifndef UFFD_PAGEFAULT_FLAG_MINOR
+#define UFFD_PAGEFAULT_FLAG_MINOR (1<<1)
+#endif
+#ifndef UFFD_PAGEFAULT_FLAG_WP
+#define UFFD_PAGEFAULT_FLAG_WP (1<<2)
+#endif
+#ifndef UFFD_FEATURE_EVENT_REMOVE
+#define UFFD_FEATURE_EVENT_REMOVE (1<<9)
+#endif
 
 struct uffd_remove {
 	__u64 start;
