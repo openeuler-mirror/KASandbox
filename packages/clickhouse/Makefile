@@ -4,12 +4,15 @@ PREFIX := $(strip $(subst ",,$(PREFIX)))
 
 CLICKHOUSE_HOST ?= clickhouse
 
-ifeq ($(PROVIDER),aws)
-	CLICKHOUSE_MIGRATOR_IMAGE ?= $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/$(PREFIX)core/clickhouse-migrator
-else ifeq ($(PROVIDER),azure)
-	CLICKHOUSE_MIGRATOR_IMAGE ?= $(AZURE_REGISTRY_NAME).azurecr.io/$(PREFIX)core/clickhouse-migrator
+CLICKHOUSE_MIGRATOR_IMAGE ?= e2b-orchestration/clickhouse-migrator
+
+UNAME_M   := $(shell uname -m)
+ifeq ($(UNAME_M),x86_64)
+  PLATFORM := linux/amd64
+else ifeq ($(UNAME_M),aarch64)
+  PLATFORM := linux/arm64
 else
-	CLICKHOUSE_MIGRATOR_IMAGE ?= $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT_ID)/$(PREFIX)core/clickhouse-migrator
+  $(error Unsupported architecture: $(UNAME_M))
 endif
 
 # E2B-hosted registry that holds released, prebuilt clickhouse-migrator images.
@@ -65,7 +68,7 @@ migrate-host:
 .PHONY: build
 build:
 	$(eval COMMIT_SHA := $(shell git rev-parse --short HEAD))
-	@docker build --platform linux/amd64 --tag "$(CLICKHOUSE_MIGRATOR_IMAGE)" --tag "$(CLICKHOUSE_MIGRATOR_IMAGE):$(COMMIT_SHA)" .
+	@docker build --platform $(PLATFORM) --tag "$(CLICKHOUSE_MIGRATOR_IMAGE)" --tag "$(CLICKHOUSE_MIGRATOR_IMAGE):$(COMMIT_SHA)" .
 
 .PHONY: build-and-upload
 ifeq ($(strip $(CLICKHOUSE_MIGRATOR_VERSION)),)

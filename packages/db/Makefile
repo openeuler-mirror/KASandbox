@@ -2,9 +2,19 @@ ENV := $(shell cat ../../.last_used_env || echo "not-set")
 -include ../../.env.${ENV}
 PREFIX := $(strip $(subst ",,$(PREFIX)))
 
+UNAME_M   := $(shell uname -m)
+ifeq ($(UNAME_M),x86_64)
+  PLATFORM := linux/amd64
+else ifeq ($(UNAME_M),aarch64)
+  PLATFORM := linux/arm64
+else
+  $(error Unsupported architecture: $(UNAME_M))
+endif
+
 goose := GOOSE_DRIVER=postgres GOOSE_DBSTRING=$(POSTGRES_CONNECTION_STRING) go tool goose -table "_migrations" -dir "migrations"
 goose-local := GOOSE_DBSTRING=postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable go tool goose -table "_migrations" -dir "migrations" postgres
 
+IMAGE := e2b-orchestration/db-migrator
 
 .PHONY: migrate
 migrate:
@@ -31,6 +41,10 @@ migrate/down:
 build-debug:
 	go mod download
 	go vet ./...
+
+.PHONY: build
+build:
+	go build -o ./bin/migrator ./scripts/migrator.go
 
 .PHONY: create-migration
 create-migration:
@@ -61,3 +75,7 @@ test: build-tools
 seed-db:
 	@echo "Seeding database..."
 	@POSTGRES_CONNECTION_STRING=$(POSTGRES_CONNECTION_STRING) go run ./scripts/seed/postgres/seed-db.go
+
+.PHONY: build-and-upload
+build-and-upload:
+	@docker build --platform $(PLATFORM) --tag "$(REPOSITORY)/$(IMAGE)" --push .

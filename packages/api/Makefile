@@ -45,7 +45,7 @@ generate:
 .PHONY: build
 build:
 	# Allow for passing commit sha directly for docker builds
-	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD))
+	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo rpmbuild))
 	$(eval EXPECTED_MIGRATION_TIMESTAMP ?= $(expectedMigration))
 	CGO_ENABLED=0 go build -o bin/api -ldflags "-X=main.commitSHA=$(COMMIT_SHA) -X=main.expectedMigrationTimestamp=$(EXPECTED_MIGRATION_TIMESTAMP)" .
 
@@ -57,7 +57,7 @@ DEBUG_GCFLAGS ?= -gcflags=all="-N -l"
 
 .PHONY: build-debug
 build-debug:
-	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD))
+	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo rpmbuild))
 	$(eval EXPECTED_MIGRATION_TIMESTAMP ?= $(expectedMigration))
 	CGO_ENABLED=1 go build -race $(DEBUG_GCFLAGS) -o bin/api -ldflags "-X=main.commitSHA=$(COMMIT_SHA) -X=main.expectedMigrationTimestamp=$(EXPECTED_MIGRATION_TIMESTAMP)" .
 
@@ -106,7 +106,7 @@ build-and-upload:
 ifeq ($(strip $(API_VERSION)),)
 	# Existing flow: bake both images from source and push to the client's
 	# own core repo.
-	$(eval COMMIT_SHA := $(shell git rev-parse --short HEAD))
+	$(eval COMMIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo rpmbuild))
 	$(eval EXPECTED_MIGRATION_TIMESTAMP := $(expectedMigration))
 	cd .. && REGISTRY_PREFIX=$(REGISTRY_PREFIX) \
 		COMMIT_SHA=$(COMMIT_SHA) \

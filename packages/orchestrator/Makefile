@@ -33,13 +33,13 @@ $(if $(HOSTNAME),,$(error Failed to determine hostname: both 'hostname' and 'hos
 
 # Architecture for builds. Defaults to amd64; override for ARM64 builds.
 # (e.g., BUILD_ARCH=arm64 make build-local)
-BUILD_ARCH ?= amd64
+BUILD_ARCH ?= $(shell go env GOARCH 2>/dev/null || echo amd64)
 # Docker platform string. Override for cross-platform builds:
 #   BUILD_PLATFORM=linux/arm64 make build
 BUILD_PLATFORM ?= linux/$(BUILD_ARCH)
 
 # Busybox version — single source of truth for both Docker and local builds.
-BUSYBOX_VERSION ?= 1.36.1
+BUSYBOX_VERSION ?= 1.35
 BUSYBOX_LOCAL := .busybox/$(BUSYBOX_VERSION)/$(BUILD_ARCH)/busybox
 
 .PHONY: init
@@ -52,8 +52,10 @@ generate:
 
 .PHONY: build
 build:
-	$(eval COMMIT_SHA := $(shell git rev-parse --short HEAD))
-	@docker build --platform $(BUILD_PLATFORM) --output=bin --build-arg COMMIT_SHA="$(COMMIT_SHA)" -f ./Dockerfile ..
+	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo rpmbuild))
+	CGO_ENABLED=1 GOOS=linux GOARCH=$(BUILD_ARCH) go build -o bin/orchestrator -ldflags "-X=main.commitSHA=$(COMMIT_SHA)" .
+	CGO_ENABLED=1 GOOS=linux GOARCH=$(BUILD_ARCH) go build -o bin/clean-nfs-cache -ldflags "-X=main.commitSHA=$(COMMIT_SHA)" ./cmd/clean-nfs-cache
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(BUILD_ARCH) go build -o bin/fc-netns-exec ./cmd/fc-netns-exec
 
 # Download busybox from GCS public builds bucket.
 # Skips if binary exists and version/arch match the stamp file.
@@ -64,7 +66,7 @@ fetch-busybox:
 .PHONY: build-local
 build-local:
 	# Allow for passing commit sha directly for docker builds
-	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD))
+	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo rpmbuild))
 	CGO_ENABLED=1 GOOS=linux GOARCH=$(BUILD_ARCH) go build -o bin/orchestrator -ldflags "-X=main.commitSHA=$(COMMIT_SHA)" .
 	CGO_ENABLED=1 GOOS=linux GOARCH=$(BUILD_ARCH) go build -o bin/clean-nfs-cache -ldflags "-X=main.commitSHA=$(COMMIT_SHA)" ./cmd/clean-nfs-cache
 
@@ -84,7 +86,7 @@ build-debug:
 # (firecracker, NBD, NFS, cgroups) is not needed.
 .PHONY: build-dummy
 build-dummy:
-	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD))
+	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo rpmbuild))
 	CGO_ENABLED=0 go build -o bin/dummy-orchestrator -ldflags "-X=main.commitSHA=$(COMMIT_SHA)" ./cmd/dummy-orchestrator
 
 .PHONY: run-dummy

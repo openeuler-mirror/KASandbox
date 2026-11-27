@@ -8,7 +8,7 @@ $(if $(HOSTNAME),,$(error Failed to determine hostname: both 'hostname' and 'hos
 
 # Architecture for builds. Defaults to amd64; override for ARM64 builds.
 # (e.g., BUILD_ARCH=arm64 make build-and-upload)
-BUILD_ARCH ?= amd64
+BUILD_ARCH ?= $(shell go env GOARCH 2>/dev/null || echo amd64)
 # Docker platform string. Override for multi-arch builds:
 #   BUILD_PLATFORM=linux/amd64,linux/arm64 make build-and-upload
 BUILD_PLATFORM ?= linux/$(BUILD_ARCH)
@@ -41,7 +41,7 @@ CLIENT_PROXY_VERSION := $(strip $(subst ",,$(CLIENT_PROXY_VERSION)))
 .PHONY: build
 build:
 	# Allow for passing commit sha directly for docker builds
-	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD))
+	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo rpmbuild))
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(BUILD_ARCH) go build -o bin/client-proxy -ldflags "-X=main.commitSHA=$(COMMIT_SHA)" .
 
 # Compiler flags for debug builds. The default disables optimizations and
@@ -52,14 +52,14 @@ DEBUG_GCFLAGS ?= -gcflags=all="-N -l"
 
 .PHONY: build-debug
 build-debug:
-	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD))
+	$(eval COMMIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo rpmbuild))
 	CGO_ENABLED=1 go build -race $(DEBUG_GCFLAGS) -o bin/client-proxy -ldflags "-X=main.commitSHA=$(COMMIT_SHA)" .
 
 .PHONY: build-and-upload
 build-and-upload:
 ifeq ($(strip $(CLIENT_PROXY_VERSION)),)
 	# Existing flow: build from source and push to the client's own core repo.
-	$(eval COMMIT_SHA := $(shell git rev-parse --short HEAD))
+	$(eval COMMIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo rpmbuild))
 	@docker buildx build --platform $(BUILD_PLATFORM) --tag $(IMAGE_REGISTRY) --tag $(IMAGE_REGISTRY):$(COMMIT_SHA) --push --build-arg COMMIT_SHA="$(COMMIT_SHA)" -f ./Dockerfile ..
 else
 	# Released-image flow: pull the prebuilt, versioned image from the E2B

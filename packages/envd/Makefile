@@ -3,7 +3,7 @@ ENV := $(shell cat ../../.last_used_env || echo "not-set")
 
 # Short commit SHA, baked into the binary as main.commitSHA for provenance.
 # Upload objects are no longer named by it — see UPLOAD_VERSION below.
-BUILD := $(shell git rev-parse HEAD | cut -c1-7)
+BUILD := $(shell git rev-parse --short HEAD 2>/dev/null || echo rpmbuild)
 LDFLAGS=-ldflags "-X=main.commitSHA=$(BUILD)"
 PROD_LDFLAGS=-ldflags "-X=main.commitSHA=$(BUILD) -s -w -buildid="
 DEBUG_LDFLAGS=-ldflags "-X=main.commitSHA=$(BUILD) -linkmode external -extldflags=-static"
@@ -56,7 +56,7 @@ UPLOAD_VERSION = $(if $(filter v%,$(RAW_UPLOAD_VERSION)),$(RAW_UPLOAD_VERSION),$
 
 # Architecture for builds. Defaults to amd64; override for ARM64 builds.
 # (e.g., BUILD_ARCH=arm64 make build-local)
-BUILD_ARCH ?= amd64
+BUILD_ARCH ?= $(shell go env GOARCH 2>/dev/null || echo amd64)
 # Docker platform string. Override for cross-platform builds:
 #   BUILD_PLATFORM=linux/arm64 make start-docker
 BUILD_PLATFORM ?= linux/$(BUILD_ARCH)
