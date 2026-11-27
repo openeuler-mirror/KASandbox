@@ -361,6 +361,13 @@ func (s *Slot) CreateNetwork(ctx context.Context) (retErr error) {
 }
 
 func (s *Slot) RemoveNetwork() error {
+	return s.removeNetwork(true)
+}
+
+// removeNetwork with deleteHostRules false leaves the slot's host iptables
+// rules alone: Pool.Close has already removed them for the whole pool with
+// DeleteSlotsHostRules.
+func (s *Slot) removeNetwork(deleteHostRules bool) error {
 	var errs []error
 
 	err := s.CloseFirewall()
@@ -368,10 +375,16 @@ func (s *Slot) RemoveNetwork() error {
 		errs = append(errs, fmt.Errorf("error closing firewall: %w", err))
 	}
 
-	tables, err := iptables.New()
-	if err != nil {
-		errs = append(errs, fmt.Errorf("error initializing iptables: %w", err))
-	} else {
+	var tables *iptables.IPTables
+	if deleteHostRules {
+		tables, err = iptables.New()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("error initializing iptables: %w", err))
+			tables = nil
+		}
+	}
+
+	if tables != nil {
 		// Delete host forwarding rules
 		err = tables.Delete("filter", "FORWARD", "-i", s.VethName(), "-o", defaultGateway, "-j", "ACCEPT")
 		appendUnlessExpectedAbsentf(&errs, err, isIPTablesNotExist, "error deleting host forwarding rule to default gateway: %w")

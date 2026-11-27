@@ -261,6 +261,28 @@ func (p *Pool) Populate(ctx context.Context) {
 		return
 	}
 
+	// A slot takes about a second to create (namespace, a dozen netlink calls,
+	// iptables subprocesses), so warming hundreds of them one at a time takes
+	// minutes. Slots are independent: Storage.Acquire is locked, CreateNetwork
+	// pins its own OS thread for the namespace switches, netlink package calls
+	// open a socket per request and iptables queues on the xtables lock.
+	var wg sync.WaitGroup
+	for range populateWorkers {
+		wg.Go(func() {
+			p.populateLoop(ctx)
+		})
+	}
+	wg.Wait()
+}
+
+// populateWorkers is how many slots Populate creates at once.
+var populateWorkers = 8
+
+// populateFailureBackoff keeps the workers from spinning on a persistent
+// failure such as exhausted kernel resources.
+const populateFailureBackoff = 500 * time.Millisecond
+
+func (p *Pool) populateLoop(ctx context.Context) {
 	for {
 		select {
 		case <-p.done:
@@ -271,6 +293,14 @@ func (p *Pool) Populate(ctx context.Context) {
 			slot, err := p.createNetworkSlot(ctx)
 			if err != nil {
 				logger.L().Error(ctx, "[network slot pool]: failed to create network", zap.Error(err))
+
+				select {
+				case <-p.done:
+					return
+				case <-ctx.Done():
+					return
+				case <-time.After(populateFailureBackoff):
+				}
 
 				continue
 			}
@@ -477,9 +507,15 @@ func (p *Pool) cleanupWith(ctx context.Context, slot *Slot, cause error) error {
 }
 
 func (p *Pool) cleanup(ctx context.Context, slot *Slot) error {
+	return p.cleanupSlot(ctx, slot, true)
+}
+
+// cleanupSlot is cleanup; deleteHostRules false skips the host iptables rules
+// that the caller already removed with DeleteSlotsHostRules.
+func (p *Pool) cleanupSlot(ctx context.Context, slot *Slot, deleteHostRules bool) error {
 	var errs []error
 
-	err := slot.RemoveNetwork()
+	err := slot.removeNetwork(deleteHostRules)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("cannot remove network when releasing slot '%d': %w", slot.Idx, err))
 	}
@@ -509,15 +545,11 @@ func (p *Pool) Close(ctx context.Context) error {
 	// up itself or has already pushed it into reusedSlots, drained below.
 	p.returnsWG.Wait()
 
-	var errs []error
+	var slots []*Slot
 
 	for slot := range p.newSlots {
 		newSlotsAvailableCounter.Add(ctx, -1)
-
-		err := p.cleanup(ctx, slot)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("failed to cleanup slot '%d': %w", slot.Idx, err))
-		}
+		slots = append(slots, slot)
 	}
 
 drain:
@@ -525,15 +557,50 @@ drain:
 		select {
 		case slot := <-p.reusedSlots:
 			reusableSlotsAvailableCounter.Add(ctx, -1)
-
-			err := p.cleanup(ctx, slot)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("failed to cleanup slot '%d': %w", slot.Idx, err))
-			}
+			slots = append(slots, slot)
 		default:
 			break drain
 		}
 	}
 
+	var errs []error
+
+	// Every host iptables delete rewrites the whole table under the xtables
+	// lock, so removing each slot's rules one by one made a full pool take
+	// minutes to close (805 slots, 315 s on 193.11.7.2). Remove all of them
+	// with one restore per table, then tear the rest down in parallel. If the
+	// batch fails, each slot deletes its own rules as before.
+	deleteHostRules := false
+	if err := DeleteSlotsHostRules(slots); err != nil {
+		deleteHostRules = true
+		logger.L().Warn(ctx, "[network slot pool]: batch delete of host iptables rules failed, deleting them per slot", zap.Error(err))
+	}
+
+	var errsMu sync.Mutex
+	queue := make(chan *Slot)
+
+	var wg sync.WaitGroup
+	for range closeCleanupWorkers {
+		wg.Go(func() {
+			for slot := range queue {
+				err := p.cleanupSlot(ctx, slot, deleteHostRules)
+				if err != nil {
+					errsMu.Lock()
+					errs = append(errs, fmt.Errorf("failed to cleanup slot '%d': %w", slot.Idx, err))
+					errsMu.Unlock()
+				}
+			}
+		})
+	}
+
+	for _, slot := range slots {
+		queue <- slot
+	}
+	close(queue)
+	wg.Wait()
+
 	return errors.Join(errs...)
 }
+
+// closeCleanupWorkers is how many slots Close tears down at once.
+var closeCleanupWorkers = 16

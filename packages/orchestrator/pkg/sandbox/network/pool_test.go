@@ -97,6 +97,28 @@ func TestClose_Idempotent(t *testing.T) {
 	require.NoError(t, pool.Close(t.Context()))
 }
 
+// TestClose_CleansUpEverySlot: the parallel Close tears down every pooled
+// slot, new and reused, exactly once.
+func TestClose_CleansUpEverySlot(t *testing.T) {
+	t.Parallel()
+
+	newSlots, reusedSlots := 5, 3*closeCleanupWorkers
+	storage := &fakeStorage{}
+	pool := NewPool(newSlots+1, reusedSlots, storage, Config{})
+	for i := range newSlots {
+		pool.newSlots <- newTestSlot(100 + i)
+	}
+	close(pool.newSlots)
+	for i := range reusedSlots {
+		pool.reusedSlots <- newTestSlot(200 + i)
+	}
+
+	_ = pool.Close(t.Context())
+
+	assert.Equal(t, int64(newSlots+reusedSlots), storage.released.Load())
+	assert.Empty(t, pool.reusedSlots)
+}
+
 func TestReturn_AfterCloseCleansUpLocally(t *testing.T) {
 	t.Parallel()
 
