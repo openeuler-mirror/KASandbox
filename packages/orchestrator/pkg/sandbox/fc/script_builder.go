@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"strings"
 	txtTemplate "text/template"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/cfg"
@@ -25,9 +26,10 @@ type startScriptArgs struct {
 	DeprecatedSandboxRootfsDir string
 	SandboxRootfsFile          string
 
-	NamespaceID       string
-	FirecrackerPath   string
-	FirecrackerSocket string
+	NamespaceID        string
+	FirecrackerPath    string
+	FirecrackerSocket  string
+	FirecrackerCommand string
 }
 
 // StartScriptResult contains the generated script and computed paths
@@ -50,7 +52,7 @@ ln -s {{ .HostRootfsPath }} {{ .DeprecatedSandboxRootfsDir }}/{{ .SandboxRootfsF
 mount -t tmpfs tmpfs {{ .SandboxDir }}/{{ .SandboxKernelDir }} -o X-mount.mkdir &&
 ln -s {{ .HostKernelPath }} {{ .SandboxDir }}/{{ .SandboxKernelDir }}/{{ .SandboxKernelFile }} &&
 
-ip netns exec {{ .NamespaceID }} {{ .FirecrackerPath }} --api-sock {{ .FirecrackerSocket }}`
+{{ .FirecrackerCommand }}`
 
 const startScriptV2 = `mount --make-rprivate / &&
 mount -t tmpfs tmpfs {{ .SandboxDir }} -o X-mount.mkdir &&
@@ -60,7 +62,7 @@ ln -s {{ .HostRootfsPath }} {{ .SandboxDir }}/{{ .SandboxRootfsFile }} &&
 mkdir -p {{ .SandboxDir }}/{{ .SandboxKernelDir }} &&
 ln -s {{ .HostKernelPath }} {{ .SandboxDir }}/{{ .SandboxKernelDir }}/{{ .SandboxKernelFile }} &&
 
-ip netns exec {{ .NamespaceID }} {{ .FirecrackerPath }} --api-sock {{ .FirecrackerSocket }}`
+{{ .FirecrackerCommand }}`
 
 // StartScriptBuilder handles the creation and execution of firecracker start scripts
 type StartScriptBuilder struct {
@@ -88,7 +90,7 @@ func (sb *StartScriptBuilder) buildArgs(
 	rootfsPaths RootfsPaths,
 	namespaceID string,
 ) startScriptArgs {
-	return startScriptArgs{
+	args := startScriptArgs{
 		// General
 		SandboxDir: sb.builderConfig.SandboxDir,
 
@@ -107,6 +109,27 @@ func (sb *StartScriptBuilder) buildArgs(
 		FirecrackerPath:   versions.FirecrackerPath(sb.builderConfig),
 		FirecrackerSocket: files.SandboxFirecrackerSocketPath(),
 	}
+	args.FirecrackerCommand = sb.firecrackerCommand(args, rootfsPaths)
+
+	return args
+}
+
+func (sb *StartScriptBuilder) firecrackerCommand(args startScriptArgs, rootfsPaths RootfsPaths) string {
+	firecrackerArgs := fmt.Sprintf("%s --api-sock %s",
+		args.FirecrackerPath,
+		args.FirecrackerSocket,
+	)
+
+	helper := strings.TrimSpace(sb.builderConfig.FirecrackerNetnsExecHelper)
+	if helper == "" || helper == "disabled" || helper == "ip-netns-exec" {
+		return fmt.Sprintf("ip netns exec %s %s", args.NamespaceID, firecrackerArgs)
+	}
+
+	if rootfsPaths.TemplateID == "" || rootfsPaths.BuildID == "" {
+		return fmt.Sprintf("ip netns exec %s %s", args.NamespaceID, firecrackerArgs)
+	}
+
+	return fmt.Sprintf("%s %s %s", helper, args.NamespaceID, firecrackerArgs)
 }
 
 // GenerateScript builds and executes the start script template with the provided arguments

@@ -49,7 +49,7 @@ func TestStartScriptBuilder_Build(t *testing.T) {
 				"ln -s /orchestrator/sandbox/rootfs-test-sandbox-static-id.link /fc-vm/rootfs.ext4",
 				"mkdir -p /fc-vm/6.1.0",
 				"ln -s /fc-kernels/6.1.0/vmlinux.bin /fc-vm/6.1.0/vmlinux.bin",
-				"ip netns exec ns-789 /fc-versions/1.4.0/firecracker --api-sock",
+				"/opt/e2b-infra/bin/fc-netns-exec ns-789 /fc-versions/1.4.0/firecracker --api-sock",
 				"fc-test-sandbox-static-id.sock",
 			},
 		},
@@ -74,7 +74,7 @@ func TestStartScriptBuilder_Build(t *testing.T) {
 				"ln -s /orchestrator/sandbox/rootfs-legacy-sandbox-legacy-id.link /mnt/disks/fc-envs/v1/legacy-template/builds/legacy-build/rootfs.ext4",
 				"mount -t tmpfs tmpfs /fc-vm/5.10.0 -o X-mount.mkdir",
 				"ln -s /fc-kernels/5.10.0/vmlinux.bin /fc-vm/5.10.0/vmlinux.bin",
-				"ip netns exec legacy-ns /fc-versions/1.3.0/firecracker --api-sock",
+				"/opt/e2b-infra/bin/fc-netns-exec legacy-ns /fc-versions/1.3.0/firecracker --api-sock",
 				"fc-legacy-sandbox-legacy-id.sock",
 			},
 		},
@@ -96,7 +96,7 @@ func TestStartScriptBuilder_Build(t *testing.T) {
 			expectedScriptContent: []string{
 				"mkdir -p /fc-vm/6.2.1",
 				"ln -s /fc-kernels/6.2.1/vmlinux.bin /fc-vm/6.2.1/vmlinux.bin",
-				"ip netns exec custom-ns-id /fc-versions/1.5.0-beta/firecracker --api-sock",
+				"/opt/e2b-infra/bin/fc-netns-exec custom-ns-id /fc-versions/1.5.0-beta/firecracker --api-sock",
 				"fc-custom-sandbox-custom-id.sock",
 			},
 		},
@@ -130,7 +130,7 @@ func TestStartScriptBuilder_Build(t *testing.T) {
 			if !strings.Contains(result.Value, "mount --make-rprivate /") {
 				t.Error("Script should start with mount command")
 			}
-			if !strings.Contains(result.Value, "ip netns exec") {
+			if !strings.Contains(result.Value, "firecracker --api-sock") {
 				t.Error("Script should end with firecracker execution")
 			}
 
