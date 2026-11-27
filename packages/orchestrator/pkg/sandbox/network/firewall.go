@@ -43,9 +43,10 @@ type Firewall struct {
 	tapInterface string
 
 	allowedRanges []string
+	deniedRanges  []string
 }
 
-func NewFirewall(tapIf string, orchestratorInternalIP string, extraAllowedCIDRs []string) (_ *Firewall, err error) {
+func NewFirewall(tapIf string, orchestratorInternalIP string, extraAllowedCIDRs, extraDeniedCIDRs []string) (_ *Firewall, err error) {
 	conn, err := nftables.New(nftables.AsLasting())
 	if err != nil {
 		return nil, fmt.Errorf("new nftables conn: %w", err)
@@ -107,7 +108,8 @@ func NewFirewall(tapIf string, orchestratorInternalIP string, extraAllowedCIDRs 
 			[]string{controlIP},
 			extraAllowedCIDRs...,
 		),
-		filterChain: filterChain,
+		deniedRanges: extraDeniedCIDRs,
+		filterChain:  filterChain,
 	}
 
 	// Install default rules and initial set data in a single flush.
@@ -331,7 +333,13 @@ func (fw *Firewall) installRules(byop bool) {
 // Buffer-only; the caller flushes.
 func (fw *Firewall) bufferUserRules(allowedCIDRs, deniedCIDRs []string) error {
 	// 1. Reset predefined deny set to default blocked ranges (buffered, no flush).
-	if err := fw.predefinedDenySet.ClearAndAddElements(fw.conn, sandbox_network.DeniedSandboxSetData); err != nil {
+	denyCIDRs := append([]string{}, sandbox_network.DeniedSandboxCIDRs...)
+	denyCIDRs = append(denyCIDRs, fw.deniedRanges...)
+	denySetData, err := set.AddressStringsToSetData(denyCIDRs)
+	if err != nil {
+		return fmt.Errorf("parse deny CIDRs: %w", err)
+	}
+	if err := fw.predefinedDenySet.ClearAndAddElements(fw.conn, denySetData); err != nil {
 		return fmt.Errorf("reset predefined deny set: %w", err)
 	}
 

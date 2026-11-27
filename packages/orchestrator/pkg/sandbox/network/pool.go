@@ -68,6 +68,13 @@ type Config struct {
 	// reach hosts in the 10.0.0.0/8, 172.16.0.0/12, etc. blocks.
 	AllowSandboxInternalCIDRs []string `env:"ALLOW_SANDBOX_INTERNAL_CIDRS" envDefault:"" envSeparator:","`
 
+	// DeniedPodCIDRs are extra CIDRs added to every sandbox firewall's
+	// predefinedDenySet. In CNI deployments set this to the cluster Pod CIDR.
+	DeniedPodCIDRs []string `env:"SANDBOX_DENIED_POD_CIDR" envSeparator:","`
+
+	// FirewallAllowedCIDRs are extra CIDRs added to the predefined allow set.
+	FirewallAllowedCIDRs []string `env:"SANDBOX_FIREWALL_ALLOWED_CIDRS" envSeparator:","`
+
 	// TCP firewall ports - separate ports for different traffic types to avoid
 	// protocol detection blocking on server-first protocols like SSH.
 	// - HTTP port: for traffic destined to port 80 (HTTP Host header inspection)
