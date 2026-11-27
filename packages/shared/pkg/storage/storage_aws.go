@@ -53,6 +53,16 @@ var (
 )
 
 func newAWSStorage(ctx context.Context, spec Spec, limiter *limit.Limiter) (*awsStorage, error) {
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
+		if k := os.Getenv("MINIO_ACCESS_KEY"); k != "" {
+			_ = os.Setenv("AWS_ACCESS_KEY_ID", k)
+		}
+	}
+	if os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
+		if k := os.Getenv("MINIO_SECRET_KEY"); k != "" {
+			_ = os.Setenv("AWS_SECRET_ACCESS_KEY", k)
+		}
+	}
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, err

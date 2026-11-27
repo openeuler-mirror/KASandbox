@@ -14,6 +14,7 @@ import (
 	"cmp"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/caarlos0/env/v11"
@@ -37,6 +38,10 @@ type storageEnv struct {
 	// Parsed strictly: a malformed value fails resolution loudly (even for
 	// URL-configured roles) instead of being silently treated as false.
 	S3PathStyle bool `env:"S3_USE_PATH_STYLE"`
+
+	MinioEndpoint  string `env:"MINIO_ENDPOINT"`
+	MinioAccessKey string `env:"MINIO_ACCESS_KEY"`
+	MinioSecretKey string `env:"MINIO_SECRET_KEY"`
 }
 
 // TemplateStorage resolves the template storage destination.
@@ -89,18 +94,30 @@ func legacyStorageURL(e storageEnv, bucket, basePath, name, bucketEnv, defaultBa
 		// The hierarchical file:// form cannot express a relative base
 		// path; use the opaque form.
 		return (&url.URL{Scheme: "file", Opaque: basePath}).String(), nil
-	case storage.GCPStorageProvider, storage.AWSStorageProvider, storage.AzureStorageProvider:
+	case storage.GCPStorageProvider, storage.AWSStorageProvider, storage.AzureStorageProvider, storage.MinioStorageProvider:
 		if bucket == "" {
 			return "", fmt.Errorf("%s storage bucket not configured: set %s", name, bucketEnv)
 		}
 
 		u := url.URL{Scheme: "gs", Host: bucket}
 		switch provider {
-		case storage.AWSStorageProvider:
+		case storage.AWSStorageProvider, storage.MinioStorageProvider:
 			u.Scheme = "s3"
-			if e.S3PathStyle {
-				u.RawQuery = url.Values{"s3ForcePathStyle": []string{"true"}}.Encode()
+			q := url.Values{}
+			if e.S3PathStyle || provider == storage.MinioStorageProvider {
+				q.Set("s3ForcePathStyle", "true")
 			}
+			endpoint := strings.TrimSpace(e.MinioEndpoint)
+			if endpoint == "" {
+				endpoint = strings.TrimSpace(os.Getenv("AWS_ENDPOINT_URL"))
+			}
+			if endpoint != "" {
+				if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+					endpoint = "http://" + endpoint
+				}
+				q.Set("endpoint", endpoint)
+			}
+			u.RawQuery = q.Encode()
 		case storage.AzureStorageProvider:
 			u.Scheme = "azblob"
 		}

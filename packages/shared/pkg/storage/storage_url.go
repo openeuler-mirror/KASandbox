@@ -20,6 +20,7 @@ const (
 	GCPStorageProvider   Provider = "GCPBucket"
 	AWSStorageProvider   Provider = "AWSBucket"
 	AzureStorageProvider Provider = "AzureBucket"
+	MinioStorageProvider Provider = "MinioBucket"
 	LocalStorageProvider Provider = "Local"
 
 	DefaultStorageProvider Provider = GCPStorageProvider
