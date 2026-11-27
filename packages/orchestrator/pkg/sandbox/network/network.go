@@ -242,6 +242,8 @@ func (s *Slot) CreateNetwork(ctx context.Context) (retErr error) {
 		return fmt.Errorf("error setting address of the tap device: %w", err)
 	}
 
+	s.tuneTapNeighbor(ctx)
+
 	// Set NS lo device up
 	lo, err := netlink.LinkByName(loopbackInterface)
 	if err != nil {

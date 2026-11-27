@@ -59,6 +59,18 @@ type Config struct {
 	// https://en.wikipedia.org/wiki/Reserved_IP_addresses
 	OrchestratorInSandboxIPAddress string `env:"SANDBOX_ORCHESTRATOR_IP" envDefault:"192.0.2.1"`
 
+	// ARP retransmission on the sandbox tap device (see tap_neigh.go). The
+	// first ARP request towards a just-resumed guest can be dropped while the
+	// kernel is still activating the tap's transmit queue; with the kernel
+	// default of 1000ms between retries that costs the sandbox start a full
+	// second. TapNeighProbes scales with the interval so the time until an
+	// unanswered neighbour is declared FAILED stays close to the kernel
+	// default of 3 x 1s (the kernel rounds the interval up to whole jiffies,
+	// so 190 x 10ms is about 2-3s).
+	// Set either to 0 to keep the kernel defaults.
+	TapNeighRetransTimeMs int `env:"SANDBOX_TAP_NEIGH_RETRANS_TIME_MS" envDefault:"10"`
+	TapNeighProbes        int `env:"SANDBOX_TAP_NEIGH_PROBES"          envDefault:"190"`
+
 	HyperloopProxyPort uint16 `env:"SANDBOX_HYPERLOOP_PROXY_PORT" envDefault:"5010"`
 	NFSProxyPort       uint16 `env:"SANDBOX_NFS_PROXY_PORT"       envDefault:"5011"`
 	PortmapperPort     uint16 `env:"SANDBOX_PORTMAPPER_PORT"      envDefault:"5012"`
