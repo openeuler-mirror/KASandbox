@@ -175,7 +175,7 @@ func (cs *CreateSandbox) Sandbox(
 	err = sbx.WaitForEnvd(
 		ctx,
 		sandbox.StartTypeCreate,
-		waitEnvdTimeout,
+		layerExecutor.BuilderConfig.EnvdTimeout,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("wait for envd: %w", err)

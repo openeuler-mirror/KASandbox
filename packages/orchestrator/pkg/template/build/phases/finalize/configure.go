@@ -30,6 +30,10 @@ var ConfigureScriptTemplate = tt.Must(tt.New("provisioning-finish-script").Parse
 var configureScriptFileAndroid string
 var ConfigureScriptTemplateAndroid = tt.Must(tt.New("provisioning-finish-script-android").Parse(configureScriptFileAndroid))
 
+//go:embed configure.ps1
+var configureScriptFileWindows string
+var ConfigureScriptTemplateWindows = tt.Must(tt.New("provisioning-finish-script-windows").Parse(configureScriptFileWindows))
+
 // packCertBundleCmd regenerates the system trust store and packs it into a
 // single contiguous tar. It is run as the build's last guest step — after all
 // build steps, start_cmd, and ready_cmd — so the tar equals the trust store the
@@ -136,8 +140,11 @@ func runConfiguration(
 	// Run configuration script
 	var scriptDef bytes.Buffer
 	template := ConfigureScriptTemplate
-	if osType.OrDefault() == vmm.OsAndroid {
+	switch osType.OrDefault() {
+	case vmm.OsAndroid:
 		template = ConfigureScriptTemplateAndroid
+	case vmm.OsWindows:
+		template = ConfigureScriptTemplateWindows
 	}
 	err := template.Execute(&scriptDef, ConfigurationParams{
 		EnvID:      bc.Config.TemplateID,

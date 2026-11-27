@@ -29,6 +29,7 @@ type BuilderConfig struct {
 	FirmwarePackagesRoot       string `env:"FIRMWARE_PACKAGES_ROOT"   envDefault:"/firmware"`
 	CvdHostPackagesRoot        string        `env:"CVD_HOST_PACKAGES_ROOT"   envDefault:"/cvd-host-packages"`
 	AndroidFinalSnapshotWait   time.Duration `env:"ANDROID_FINAL_SNAPSHOT_WAIT" envDefault:"60s"`
+	EnvdTimeout                time.Duration `env:"ENVD_TIMEOUT"               envDefault:"60s"`
 	ReadyCheckTimeout          time.Duration `env:"READY_CHECK_TIMEOUT"      envDefault:"30s"`
 	ADBVsockPort               uint32        `env:"ADB_VSOCK_PORT"           envDefault:"5555"`
 	BusyboxVersion             string `env:"BUSYBOX_VERSION"          envDefault:"1.35"`
