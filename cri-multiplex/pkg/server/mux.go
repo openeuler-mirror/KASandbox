@@ -328,13 +328,20 @@ func (s *MuxServer) RemovePodSandbox(ctx context.Context, req *runtime.RemovePod
 	if err != nil {
 		s.scheduleCleanup(ctx, eng.Type(), req.PodSandboxId, "sandbox", "remove-failed")
 	}
-	if err == nil {
+	// A paused cube sandbox stays in the engine so the same cri id can resume.
+	// Drop the route only once status says the sandbox is actually gone.
+	if err == nil && sandboxStatusGone(ctx, eng, req.PodSandboxId) {
 		if derr := s.routes.DeleteSandbox(req.PodSandboxId); derr != nil {
 			log.Printf("[MuxServer] WARNING: delete routes for sandbox %s: %v", req.PodSandboxId, derr)
 		}
 	}
 
 	return resp, err
+}
+
+func sandboxStatusGone(ctx context.Context, eng engine.RuntimeEngine, podSandboxID string) bool {
+	_, err := eng.PodSandboxStatus(ctx, &runtime.PodSandboxStatusRequest{PodSandboxId: podSandboxID})
+	return status.Code(err) == codes.NotFound
 }
 
 func (s *MuxServer) PodSandboxStatus(ctx context.Context, req *runtime.PodSandboxStatusRequest) (*runtime.PodSandboxStatusResponse, error) {

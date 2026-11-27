@@ -24,6 +24,8 @@ type CubePodState struct {
 	LastAdminAction      string `json:"last_admin_action,omitempty"`
 
 	State       string            `json:"state"`
+	ParkedAt    time.Time         `json:"parked_at,omitempty"`
+	StoppedAt   time.Time         `json:"stopped_at,omitempty"`
 	Name        string            `json:"name,omitempty"`
 	Namespace   string            `json:"namespace,omitempty"`
 	PodUID      string            `json:"pod_uid,omitempty"`
