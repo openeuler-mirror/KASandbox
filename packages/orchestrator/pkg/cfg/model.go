@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 	"reflect"
 	"strconv"
 	"strings"
@@ -26,6 +27,9 @@ type BuilderConfig struct {
 	FirecrackerVersionsDir     string `env:"FIRECRACKER_VERSIONS_DIR" envDefault:"/fc-versions"`
 	StratoVirtVersionsDir      string `env:"STRATOVIRT_VERSIONS_DIR"  envDefault:"/stratovirt-versions"`
 	FirmwarePackagesRoot       string `env:"FIRMWARE_PACKAGES_ROOT"   envDefault:"/firmware"`
+	CvdHostPackagesRoot        string        `env:"CVD_HOST_PACKAGES_ROOT"   envDefault:"/cvd-host-packages"`
+	ReadyCheckTimeout          time.Duration `env:"READY_CHECK_TIMEOUT"      envDefault:"30s"`
+	ADBVsockPort               uint32        `env:"ADB_VSOCK_PORT"           envDefault:"5555"`
 	BusyboxVersion             string `env:"BUSYBOX_VERSION"          envDefault:"1.35"`
 	HostBusyboxDir             string `env:"HOST_BUSYBOX_DIR"         envDefault:"/fc-busybox"`
 	HostEnvdPath               string `env:"HOST_ENVD_PATH"           envDefault:"/fc-envd/envd"`
@@ -49,6 +53,7 @@ func makePathsAbsolute(c *BuilderConfig) error {
 		&c.FirecrackerNetnsExecHelper,
 		&c.FirecrackerVersionsDir,
 		&c.StratoVirtVersionsDir,
+		&c.CvdHostPackagesRoot,
 		&c.FirmwarePackagesRoot,
 		&c.HostBusyboxDir,
 		&c.HostEnvdPath,
@@ -86,6 +91,14 @@ func makePathsAbsolute(c *BuilderConfig) error {
 // meaningful for Android guests.
 func (c BuilderConfig) FirmwareDirForVersion(version string) string {
 	return filepath.Join(c.FirmwarePackagesRoot, "android-"+version)
+}
+
+// CvdHostPackageDirForVersion resolves the Cuttlefish host package directory
+// for the given Android version: <CvdHostPackagesRoot>/android-<version>.
+// Only multi-version mode is supported; every version lives in its own
+// package directory.
+func (c BuilderConfig) CvdHostPackageDirForVersion(version string) string {
+	return filepath.Join(c.CvdHostPackagesRoot, "android-"+version)
 }
 
 type Config struct {

@@ -30,6 +30,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/cgroup"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/envdbin"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/fc"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/hostservice"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/stratovirt"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/nbd"
@@ -652,6 +653,8 @@ type Factory struct {
 	hostStatsDelivery hoststats.Delivery
 	cgroupManager     cgroup.Manager
 	egressProxy       network.EgressProxy
+	cidPool           *hostservice.CIDPool
+	vsockMux          *hostservice.VsockMux
 	networkAssignHook NetworkAssignHook
 	envdBinCache      *envdbin.Cache
 
@@ -702,6 +705,8 @@ func NewFactory(
 		hostStatsDelivery: hostStatsDelivery,
 		cgroupManager:     cgroupManager,
 		egressProxy:       egressProxy,
+		cidPool:           hostservice.NewCIDPool(2000),
+		vsockMux:          hostservice.NewVsockMux(),
 		networkAssignHook: networkAssignHook,
 		// Constructed from config rather than injected: its only inputs are the
 		// cache directory and the version probe, so every caller would pass the
@@ -1030,6 +1035,35 @@ func (f *Factory) CreateSandbox(
 		return nil, fmt.Errorf("failed to init VMM: %w", err)
 	}
 
+	// Android host services must start before the VMM boots so the guest sees
+	// the allocated vsock CID.
+	var androidServices *hostservice.AndroidServices
+	if config.VMM.OsType.OrDefault() == vmm.OsAndroid {
+		androidServices, err = hostservice.StartAndroidServices(ctx, hostservice.AndroidServicesParams{
+			Config:         f.config,
+			CIDPool:        f.cidPool,
+			Process:        fcHandle,
+			Cleanup:        cleanup,
+			Mux:            f.vsockMux,
+			LoggerMetadata: sbxlogger.SandboxMetadata{
+				SandboxID:  runtime.SandboxID,
+				TemplateID: runtime.TemplateID,
+				TeamID:     runtime.TeamID,
+			},
+			SandboxID:      runtime.SandboxID,
+			SandboxDir:     sandboxFiles.SandboxHostDir(),
+			NetNSName:      ips.NamespaceID(),
+			MobileTap:      ips.ExtraTapName(),
+			AndroidVersion: string(config.VMM.AndroidVersion),
+
+			EnvdHostIP:      ips.HostIPString(),
+			EnvdAccessToken: config.Envd.AccessToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	throttleConfig := featureflags.GetTCPFirewallEgressThrottleConfig(ctx, f.featureFlags)
 	driveThrottleConfig := featureflags.GetBlockDriveThrottleConfig(ctx, f.featureFlags)
 
@@ -1133,6 +1167,19 @@ func (f *Factory) CreateSandbox(
 		return nil, fmt.Errorf("failed to create FC: %w", err)
 	}
 	telemetry.ReportEvent(ctx, "created fc process")
+
+	if androidServices != nil {
+		rilCtx, cancelRIL := context.WithTimeout(ctx, f.config.ReadyCheckTimeout)
+		defer cancelRIL()
+		if err := androidServices.WaitForModemConnection(rilCtx); err != nil {
+			return nil, fmt.Errorf("guest RIL did not reconnect to modem simulator (sandbox_id=%s): %w", runtime.SandboxID, err)
+		}
+
+		if err := hostservice.WaitForGuestMobileIP(ctx, sbx.Slot.HostIPString(), config.Envd.AccessToken, f.config.ReadyCheckTimeout); err != nil {
+			return nil, fmt.Errorf("guest mobile IP check failed (sandbox_id=%s): %w", runtime.SandboxID, err)
+		}
+		logger.L().Info(ctx, "guest mobile IP check succeeded", logger.WithSandboxID(runtime.SandboxID))
+	}
 
 	sbx.Checks = NewChecks(sbx)
 
@@ -1609,6 +1656,33 @@ func (f *Factory) ResumeSandbox(
 		sv.SetResumeResources(config.Vcpu, config.RamMB, config.HugePages)
 	}
 
+	var androidServices *hostservice.AndroidServices
+	if config.VMM.OsType.OrDefault() == vmm.OsAndroid {
+		androidServices, err = hostservice.StartAndroidServices(ctx, hostservice.AndroidServicesParams{
+			Config:         f.config,
+			CIDPool:        f.cidPool,
+			Process:        fcHandle,
+			Cleanup:        cleanup,
+			Mux:            f.vsockMux,
+			LoggerMetadata: sbxlogger.SandboxMetadata{
+				SandboxID:  runtime.SandboxID,
+				TemplateID: runtime.TemplateID,
+				TeamID:     runtime.TeamID,
+			},
+			SandboxID:      runtime.SandboxID,
+			SandboxDir:     sandboxFiles.SandboxHostDir(),
+			NetNSName:      ips.NamespaceID(),
+			MobileTap:      ips.ExtraTapName(),
+			AndroidVersion: string(config.VMM.AndroidVersion),
+
+			EnvdHostIP:      ips.HostIPString(),
+			EnvdAccessToken: config.Envd.AccessToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	resumeThrottleConfig := featureflags.GetTCPFirewallEgressThrottleConfig(ctx, f.featureFlags)
 	resumeDriveThrottleConfig := featureflags.GetBlockDriveThrottleConfig(ctx, f.featureFlags)
 
@@ -1810,6 +1884,12 @@ func (f *Factory) ResumeSandbox(
 
 	zap.L().Sugar().Infof("[ResumeSandbox] wait envd ready cost: %.3f ms, traceID=%s", time.Since(tEnvd).Seconds()*1000, traceID)
 	telemetry.ReportEvent(execCtx, "envd initialized")
+
+	if androidServices != nil {
+		if err := hostservice.RestartGuestRild(execCtx, sbx.Slot.HostIPString(), config.Envd.AccessToken, runtime.SandboxID, f.config.ReadyCheckTimeout); err != nil {
+			return nil, fmt.Errorf("failed to restart guest RIL: %w", err)
+		}
+	}
 
 	if !ropts.skipLiveRegistration && !ropts.deferMarkRunning {
 		go sbx.Checks.Start(execCtx)

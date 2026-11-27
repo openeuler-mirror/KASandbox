@@ -2,6 +2,11 @@ package utils
 
 import "fmt"
 
+// ToPtr returns a pointer to the given value.
+func ToPtr[T any](v T) *T {
+	return &v
+}
+
 func FromPtr[T any](s *T) T {
 	if s == nil {
 		var zero T
