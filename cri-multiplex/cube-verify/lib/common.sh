@@ -47,18 +47,80 @@ cube_multiplex_ready() {
   [[ -S "${SOCKET}" ]]
 }
 
+# True only when argv0 is our cri-multiplex and cmdline mentions SOCKET.
+is_our_multiplex_pid() {
+  local pid="$1"
+  [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] || return 1
+  [[ -r "/proc/${pid}/cmdline" ]] || return 1
+  local argv0 cmd base
+  # First NUL-separated field is argv0 — do not match multiplex path only as an arg.
+  argv0="$(tr '\0' '\n' <"/proc/${pid}/cmdline" 2>/dev/null | head -n1 || true)"
+  [[ -n "${argv0}" ]] || return 1
+  base="$(basename -- "${MULTIPLEX_BIN}")"
+  # basename -- avoids argv0 values like "-bash" being parsed as options.
+  if [[ "${argv0}" != "${MULTIPLEX_BIN}" && "${argv0}" != "${base}" && "$(basename -- "${argv0}")" != "${base}" ]]; then
+    return 1
+  fi
+  cmd="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
+  [[ "${cmd}" == *"${SOCKET}"* ]] || return 1
+  return 0
+}
+
+_kill_multiplex_pid() {
+  local pid="$1"
+  is_our_multiplex_pid "${pid}" || return 1
+  kill "${pid}" 2>/dev/null || true
+  local i=0
+  while kill -0 "${pid}" 2>/dev/null && [[ $i -lt 50 ]]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if kill -0 "${pid}" 2>/dev/null; then
+    kill -9 "${pid}" 2>/dev/null || true
+  fi
+  return 0
+}
+
+_unix_socket_in_use() {
+  local sock="$1"
+  [[ -e "${sock}" ]] || return 1
+  # Prefer ss; fall back to fuser. Any hit means leave the path alone.
+  if command -v ss >/dev/null 2>&1; then
+    ss -xlH 2>/dev/null | grep -Fq -- "${sock}" && return 0
+  fi
+  if command -v fuser >/dev/null 2>&1; then
+    fuser "${sock}" >/dev/null 2>&1 && return 0
+  fi
+  return 1
+}
+
 stop_cube_multiplex() {
+  local pid=""
   if [[ -f "${PID_FILE}" ]]; then
-    local pid
     pid="$(cat "${PID_FILE}" 2>/dev/null || true)"
-    if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
-      kill "${pid}" 2>/dev/null || true
-      wait "${pid}" 2>/dev/null || true
+    if [[ -n "${pid}" ]]; then
+      if ! _kill_multiplex_pid "${pid}"; then
+        log_info "skip kill pid=${pid}: not our cri-multiplex for ${SOCKET}"
+      fi
     fi
     rm -f "${PID_FILE}"
   fi
-  pkill -f "${MULTIPLEX_BIN} .*${SOCKET}" 2>/dev/null || true
-  rm -f "${SOCKET}" "${ADMIN_SOCKET}"
+  # No pkill -f: scan /proc and require binary+socket match (KASandbox #70).
+  local proc
+  for proc in /proc/[0-9]*; do
+    pid="${proc#/proc/}"
+    _kill_multiplex_pid "${pid}" || true
+  done
+  if _unix_socket_in_use "${SOCKET}"; then
+    log_info "leave in-use socket ${SOCKET}"
+  else
+    rm -f "${SOCKET}"
+  fi
+  if _unix_socket_in_use "${ADMIN_SOCKET}"; then
+    log_info "leave in-use socket ${ADMIN_SOCKET}"
+  else
+    rm -f "${ADMIN_SOCKET}"
+  fi
 }
 
 build_multiplex() {
