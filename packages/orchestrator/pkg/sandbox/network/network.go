@@ -242,6 +242,14 @@ func (s *Slot) CreateNetwork(ctx context.Context) (retErr error) {
 		return fmt.Errorf("error setting address of the tap device: %w", err)
 	}
 
+	// The second TAP (cvd-mtap) serves the standalone config_server of Android
+	// guests. It lives in the same namespace and uses its own /30. A missing
+	// cvd-mtap must not fail sandbox creation for guests that never run
+	// config_server, so log and continue on setup errors.
+	if err := s.createExtraTap(); err != nil {
+		logger.L().Warn(ctx, "cvd-mtap setup failed; continuing without the Android config_server tap", zap.Error(err))
+	}
+
 	s.tuneTapNeighbor(ctx)
 
 	// Set NS lo device up
@@ -545,6 +553,10 @@ func (s *Slot) CreateExternalNetNSNetwork(ctx context.Context) error {
 		return fmt.Errorf("error setting external netns tap device up: %w", err)
 	}
 
+	if err = s.createExtraTapExternal(); err != nil {
+		logger.L().Warn(ctx, "external netns cvd-mtap setup failed; continuing without the Android config_server tap", zap.Error(err))
+	}
+
 	if err = os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644); err != nil {
 		return fmt.Errorf("error enabling ip_forward in external netns: %w", err)
 	}
@@ -686,4 +698,58 @@ func (s *Slot) RemoveExternalNetNSNetwork() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// createExtraTap creates the cvd-mtap device in the slot's network namespace.
+func (s *Slot) createExtraTap() error {
+	attrs := netlink.NewLinkAttrs()
+	attrs.Name = s.ExtraTapName()
+	tap := &netlink.Tuntap{
+		Mode:      netlink.TUNTAP_MODE_TAP,
+		LinkAttrs: attrs,
+	}
+	if err := netlink.LinkAdd(tap); err != nil {
+		return fmt.Errorf("error creating cvd-mtap device: %w", err)
+	}
+	link, err := netlink.LinkByName(s.ExtraTapName())
+	if err != nil {
+		return fmt.Errorf("error finding cvd-mtap device: %w", err)
+	}
+	if err := netlink.AddrAdd(link, &netlink.Addr{
+		IPNet: &net.IPNet{IP: s.ExtraTapIP(), Mask: s.ExtraTapCIDR()},
+	}); err != nil {
+		return fmt.Errorf("error setting address of cvd-mtap device: %w", err)
+	}
+	if err := netlink.LinkSetUp(link); err != nil {
+		return fmt.Errorf("error setting cvd-mtap device up: %w", err)
+	}
+
+	return nil
+}
+
+// createExtraTapExternal creates the cvd-mtap device in the external (CNI) netns.
+func (s *Slot) createExtraTapExternal() error {
+	attrs := netlink.NewLinkAttrs()
+	attrs.Name = s.ExtraTapName()
+	tap := &netlink.Tuntap{
+		Mode:      netlink.TUNTAP_MODE_TAP,
+		LinkAttrs: attrs,
+	}
+	if err := netlink.LinkAdd(tap); err != nil {
+		return fmt.Errorf("error creating external netns cvd-mtap device: %w", err)
+	}
+	link, err := netlink.LinkByName(s.ExtraTapName())
+	if err != nil {
+		return fmt.Errorf("error finding external netns cvd-mtap device: %w", err)
+	}
+	if err := netlink.AddrAdd(link, &netlink.Addr{
+		IPNet: &net.IPNet{IP: s.ExtraTapIP(), Mask: s.ExtraTapCIDR()},
+	}); err != nil {
+		return fmt.Errorf("error setting address of external netns cvd-mtap device: %w", err)
+	}
+	if err := netlink.LinkSetUp(link); err != nil {
+		return fmt.Errorf("error setting external netns cvd-mtap device up: %w", err)
+	}
+
+	return nil
 }

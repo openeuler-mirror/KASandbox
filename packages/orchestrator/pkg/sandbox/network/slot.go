@@ -37,6 +37,7 @@ const (
 	tapMask          = 30
 	tapInterfaceName = "tap0"
 	tapIp            = "169.254.0.22"
+	extraTapIp        = "192.168.97.1" // cvd-mtap ns-side host IP
 	tapMAC           = "02:FC:00:00:00:05"
 	tapHostMAC       = "02:FC:00:00:00:06"
 )
@@ -90,8 +91,10 @@ type Slot struct {
 	vEthIp  net.IP
 	vrtMask net.IPMask
 
-	tapIp   net.IP
-	tapMask net.IPMask
+	tapIp        net.IP
+	tapMask      net.IPMask
+	extraTapIp   net.IP
+	extraTapMask net.IPMask
 
 	// HostIP is IP address for the sandbox from the host machine.
 	// You can use it to make requests to the sandbox.
@@ -143,6 +146,12 @@ func NewSlot(key string, idx int, config Config, egressProxy EgressProxy) (*Slot
 		return nil, fmt.Errorf("failed to parse tap CIDR: %w", err)
 	}
 
+	extraTapCIDR := fmt.Sprintf("%s/%d", extraTapIp, tapMask)
+	extraTapIp, extraTapNet, err := net.ParseCIDR(extraTapCIDR)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse extra tap CIDR: %w", err)
+	}
+
 	slot := &Slot{
 		Key: key,
 		Idx: idx,
@@ -151,8 +160,10 @@ func NewSlot(key string, idx int, config Config, egressProxy EgressProxy) (*Slot
 		vEthIp:  vEthIp,
 		vrtMask: vrtNet.Mask,
 
-		tapIp:   tapIp,
-		tapMask: tapNet.Mask,
+		tapIp:        tapIp,
+		tapMask:      tapNet.Mask,
+		extraTapIp:   extraTapIp,
+		extraTapMask: extraTapNet.Mask,
 
 		HostIP:   hostIp,
 		hostNet:  hostNet,
@@ -293,6 +304,16 @@ func (s *Slot) TapName() string {
 // so the StratoVirt command builder can reference it.
 func (s *Slot) ExtraTapName() string {
 	return "cvd-mtap"
+}
+
+// ExtraTapIP is the ns-side host address of the cvd-mtap pair.
+func (s *Slot) ExtraTapIP() net.IP {
+	return s.extraTapIp
+}
+
+// ExtraTapCIDR is the mask of the cvd-mtap pair.
+func (s *Slot) ExtraTapCIDR() net.IPMask {
+	return s.extraTapMask
 }
 
 func (s *Slot) TapIP() net.IP {
