@@ -300,6 +300,7 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger, osT
 			ppb.BuildContext,
 			ppb.proxy,
 			sbx.Runtime.SandboxID,
+			osType,
 		)
 		if err != nil {
 			return metadata.Template{}, phases.NewPhaseBuildError(ppb.Metadata(), fmt.Errorf("configuration script failed: %w", err))

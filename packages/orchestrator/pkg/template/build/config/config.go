@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/vmm"
 	"os"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/core/oci/auth"
 	"github.com/e2b-dev/infra/packages/shared/pkg/consts"
@@ -60,6 +61,10 @@ type TemplateConfig struct {
 	// FromImage is the base image to use for building the template.
 	FromImage string
 
+	// VMMType selects the VMM backend for the build sandbox (empty = firecracker).
+	VMMType string
+	OsType  string
+
 	// FromTemplate is the base template to use for building the template.
 	FromTemplate *templatemanager.FromTemplateConfig
 
@@ -114,4 +119,9 @@ func MemfilePageSize(hugePages bool) int64 {
 
 func (e TemplateConfig) RootfsBlockSize() int64 {
 	return header.RootfsBlockSize
+}
+
+// IsAndroid reports whether the build targets an Android guest.
+func (c TemplateConfig) IsAndroid() bool {
+	return vmm.OsType(c.OsType).OrDefault() == vmm.OsAndroid
 }

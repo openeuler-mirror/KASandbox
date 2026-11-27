@@ -61,6 +61,7 @@ type Context struct {
 	User    string            `json:"user,omitempty"`
 	WorkDir *string           `json:"workdir,omitempty"`
 	EnvVars map[string]string `json:"env_vars,omitempty"`
+	OsType  string            `json:"os_type,omitempty"`
 }
 
 // EnvdDefaultUser reports the DefaultUser this template's build sent to envd's /init, and

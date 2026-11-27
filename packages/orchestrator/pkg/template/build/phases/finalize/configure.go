@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/proxy"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/buildcontext"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/sandboxtools"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/metadata"
@@ -127,13 +128,18 @@ func runConfiguration(
 	bc buildcontext.BuildContext,
 	proxy *proxy.SandboxProxy,
 	sandboxID string,
+	osType vmm.OsType,
 ) error {
 	ctx, span := tracer.Start(ctx, "run configuration")
 	defer span.End()
 
 	// Run configuration script
 	var scriptDef bytes.Buffer
-	err := ConfigureScriptTemplate.Execute(&scriptDef, ConfigurationParams{
+	template := ConfigureScriptTemplate
+	if osType.OrDefault() == vmm.OsAndroid {
+		template = ConfigureScriptTemplateAndroid
+	}
+	err := template.Execute(&scriptDef, ConfigurationParams{
 		EnvID:      bc.Config.TemplateID,
 		TemplateID: bc.Config.TemplateID,
 		BuildID:    bc.Template.BuildID,
