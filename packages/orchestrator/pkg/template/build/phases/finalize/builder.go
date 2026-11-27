@@ -25,6 +25,7 @@ import (
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/phases"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/sandboxtools"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/build/storage/cache"
+	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/vmm"
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/template/metadata"
 	"github.com/e2b-dev/infra/packages/shared/pkg/consts"
 	"github.com/e2b-dev/infra/packages/shared/pkg/featureflags"
@@ -205,14 +206,20 @@ func (ppb *PostProcessingBuilder) Build(
 	}
 
 	// Always restart the sandbox for the final layer to properly wire the rootfs path for the final template
+	// Android guests need extra settle time before the final snapshot so the
+	// guest network and services quiesce.
+	sandboxTimeout := finalizeTimeout
+	if sbxConfig.VMM.OsType.OrDefault() == vmm.OsAndroid {
+		sandboxTimeout += ppb.BuilderConfig.AndroidFinalSnapshotWait
+	}
 	sandboxCreator := layer.NewCreateSandbox(
 		sbxConfig,
 		ppb.sandboxFactory,
-		finalizeTimeout,
+		sandboxTimeout,
 		sandboxOptions...,
 	)
 
-	actionExecutor := layer.NewFunctionAction(ppb.postProcessingFn(userLogger))
+	actionExecutor := layer.NewFunctionAction(ppb.postProcessingFn(userLogger, sbxConfig.VMM.OsType))
 
 	templateProvider := layer.NewCacheSourceTemplateProvider(sourceLayer.Metadata.Template.BuildID)
 
@@ -240,7 +247,7 @@ func (ppb *PostProcessingBuilder) Build(
 	}, nil
 }
 
-func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger) layer.FunctionActionFn {
+func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger, osType vmm.OsType) layer.FunctionActionFn {
 	return func(ctx context.Context, sbx *sandbox.Sandbox, meta metadata.Template) (cm metadata.Template, e error) {
 		ctx, span := tracer.Start(ctx, "run postprocessing")
 		defer span.End()
@@ -260,6 +267,15 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger) lay
 				e = phases.NewPhaseBuildError(ppb.Metadata(), err)
 
 				return
+			}
+
+			if osType.OrDefault() == vmm.OsAndroid {
+				delay := ppb.BuilderConfig.AndroidFinalSnapshotWait
+				userLogger.Info(ctx, fmt.Sprintf("Waiting %s before Android final snapshot", delay))
+				if err := waitBeforeSnapshot(ctx, delay); err != nil {
+					e = fmt.Errorf("waiting before Android final snapshot: %w", err)
+					return
+				}
 			}
 
 			// Ensure all changes are synchronized to disk so the sandbox can be restarted
@@ -363,5 +379,16 @@ func (ppb *PostProcessingBuilder) postProcessingFn(userLogger logger.Logger) lay
 		}
 
 		return meta, nil
+	}
+}
+
+func waitBeforeSnapshot(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
 	}
 }

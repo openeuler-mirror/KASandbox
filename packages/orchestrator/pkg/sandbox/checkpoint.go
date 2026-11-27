@@ -64,6 +64,12 @@ func (s *Sandbox) CheckpointToFiles(ctx context.Context, snapfilePath string, me
 	// long the whole operation takes — so it is measured on its own.
 	pausedAt := time.Now()
 
+	if s.androidServices != nil {
+		if err := s.androidServices.Stop(ctx); err != nil {
+			return false, nil, fmt.Errorf("failed to stop Android host services before snapshot: %w", err)
+		}
+	}
+
 	if err := timings.Timed("pause", func() error { return process.Pause(ctx) }); err != nil {
 		return false, nil, fmt.Errorf("failed to pause VM: %w", err)
 	}

@@ -25,6 +25,10 @@ const configurationTimeout = 5 * time.Minute
 var configureScriptFile string
 var ConfigureScriptTemplate = tt.Must(tt.New("provisioning-finish-script").Parse(configureScriptFile))
 
+//go:embed configure.android.sh
+var configureScriptFileAndroid string
+var ConfigureScriptTemplateAndroid = tt.Must(tt.New("provisioning-finish-script-android").Parse(configureScriptFileAndroid))
+
 // packCertBundleCmd regenerates the system trust store and packs it into a
 // single contiguous tar. It is run as the build's last guest step — after all
 // build steps, start_cmd, and ready_cmd — so the tar equals the trust store the

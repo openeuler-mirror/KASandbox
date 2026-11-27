@@ -397,6 +397,10 @@ type Sandbox struct {
 	featureFlags *featureflags.Client
 
 	process      vmm.Process
+
+	// androidServices are the Android host services of this sandbox; set only
+	// for Android guests, stopped before the VM is stopped or paused.
+	androidServices *hostservice.AndroidServices
 	cgroupHandle *cgroup.CgroupHandle
 
 	// inPlaceCheckpointInFlight excludes concurrent in-place checkpoints of
@@ -1102,6 +1106,7 @@ func (f *Factory) CreateSandbox(
 		Template:  template,
 		config:    f.config,
 		files:     sandboxFiles,
+	androidServices: androidServices,
 		process:   fcHandle,
 		sandboxes: f.Sandboxes,
 
@@ -1169,6 +1174,10 @@ func (f *Factory) CreateSandbox(
 	telemetry.ReportEvent(ctx, "created fc process")
 
 	if androidServices != nil {
+		if err := androidServices.WaitForADBReady(ctx, f.config.ReadyCheckTimeout); err != nil {
+			return nil, fmt.Errorf("vsock proxy readiness check failed (sandbox_id=%s): %w", runtime.SandboxID, err)
+		}
+
 		rilCtx, cancelRIL := context.WithTimeout(ctx, f.config.ReadyCheckTimeout)
 		defer cancelRIL()
 		if err := androidServices.WaitForModemConnection(rilCtx); err != nil {
@@ -1681,6 +1690,10 @@ func (f *Factory) ResumeSandbox(
 		if err != nil {
 			return nil, err
 		}
+		logger.L().Info(ctx, "android host services started",
+			zap.String("sandbox_id", runtime.SandboxID),
+			zap.String("proxy_addr", androidServices.ADBAddress),
+		)
 	}
 
 	resumeThrottleConfig := featureflags.GetTCPFirewallEgressThrottleConfig(ctx, f.featureFlags)
@@ -1730,6 +1743,7 @@ func (f *Factory) ResumeSandbox(
 		Template:  t,
 		config:    f.config,
 		files:     sandboxFiles,
+		androidServices: androidServices,
 		process:   fcHandle,
 		sandboxes: f.Sandboxes,
 
@@ -1885,6 +1899,7 @@ func (f *Factory) ResumeSandbox(
 	zap.L().Sugar().Infof("[ResumeSandbox] wait envd ready cost: %.3f ms, traceID=%s", time.Since(tEnvd).Seconds()*1000, traceID)
 	telemetry.ReportEvent(execCtx, "envd initialized")
 
+	sbx.androidServices = androidServices
 	if androidServices != nil {
 		if err := hostservice.RestartGuestRild(execCtx, sbx.Slot.HostIPString(), config.Envd.AccessToken, runtime.SandboxID, f.config.ReadyCheckTimeout); err != nil {
 			return nil, fmt.Errorf("failed to restart guest RIL: %w", err)
@@ -1965,6 +1980,12 @@ func (s *Sandbox) doStop(ctx context.Context) error {
 	// Stop the health checks before stopping the sandbox
 	s.Checks.Stop()
 
+	if s.androidServices != nil {
+		if hostSvcErr := s.androidServices.Stop(ctx); hostSvcErr != nil {
+			errs = append(errs, fmt.Errorf("failed to stop Android host services: %w", hostSvcErr))
+		}
+	}
+
 	fcStopErr := s.process.Stop(ctx)
 	if fcStopErr != nil {
 		errs = append(errs, fmt.Errorf("failed to stop FC: %w", fcStopErr))
@@ -1999,6 +2020,12 @@ func (s *Sandbox) Shutdown(ctx context.Context) error {
 
 	// Stop the health check before pausing the VM
 	s.Checks.Stop()
+
+	if s.androidServices != nil {
+		if err := s.androidServices.Stop(ctx); err != nil {
+			return fmt.Errorf("failed to stop host services: %w", err)
+		}
+	}
 
 	if err := s.process.Pause(ctx); err != nil {
 		return fmt.Errorf("failed to pause VM: %w", err)
