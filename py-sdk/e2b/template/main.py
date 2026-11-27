@@ -18,6 +18,7 @@ from e2b.template.types import (
     TemplateType,
     RegistryConfig,
     InstructionType,
+    VmmType,
 )
 from e2b.template.utils import (
     calculate_files_hash,
@@ -58,6 +59,17 @@ def _validate_android_version(os_type: OsType, android_version: Optional[str]) -
         raise InvalidArgumentException(
             f"Unsupported android_version {android_version!r}. "
             f"Pass one of {', '.join(sorted(_VALID_ANDROID_VERSIONS))}."
+        )
+
+
+_VALID_VMM_TYPES = ("firecracker", "stratovirt")
+
+
+def _validate_vmm_type(vmm_type: Optional[VmmType]) -> None:
+    if vmm_type is not None and vmm_type not in _VALID_VMM_TYPES:
+        raise InvalidArgumentException(
+            f"Unsupported vmm_type {vmm_type!r}. "
+            f"Pass one of {', '.join(_VALID_VMM_TYPES)}."
         )
 
 
