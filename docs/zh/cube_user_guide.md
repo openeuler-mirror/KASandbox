@@ -627,9 +627,9 @@ cd /path/to/KASandbox/cri-multiplex/cube-verify
 
 | 动作 | 协议 |
 |------|------|
-| Create / Resume | CRI `RunPodSandbox`（同 uid 且本地 paused/parked → Resume，用引擎自己的 `snap-<24 hex>`，不用目录号 `csnap-`） |
+| Create / Resume | CRI `RunPodSandbox`（同 uid 且本地 paused → Resume） |
 | Pause / Checkpoint / GetRuntime | Admin v2 |
-| Remove | 运行中：Cubelet Destroy，列表里留 NOTREADY。刚暂停：只把快照留在本机，供同 uid Resume；过几秒再 Remove 才 Destroy |
+| Remove | CRI `RemovePodSandbox` → Cubelet Destroy |
 
 ### 7.3 压测脚本
 
@@ -694,12 +694,10 @@ sudo -E ./k8s-deploy.sh cri-multiplex
 
 脚本会：
 
-1. 写入 `/etc/systemd/system/cri-multiplex.service`（含 `-cube-enabled` / `-cubelet-address`，以及与 E2B 相同的 `-hide-sandbox-label flux-sandbox.io/direct=true`）
+1. 写入 `/etc/systemd/system/cri-multiplex.service`（含 `-cube-enabled` / `-cubelet-address`）
 2. `systemctl enable --now cri-multiplex`，等待 `/run/cri-multiplex.sock`
 3. 将 kubelet runtime endpoint 切到该 socket 并重启 kubelet
 4. 创建 RuntimeClass：`android` / `e2b` / **`cube`**
-
-> OpenFuyao agent 直连创建的 Cube 沙箱没有对应 K8s Pod。必须带上 `-hide-sandbox-label`，Cube 引擎才会把带 `flux-sandbox.io/direct=true` 的沙箱从 CRI List 里藏掉，否则 kubelet 会在约 1 秒内当孤儿清掉。
 
 ### 8.3 RuntimeClass 与 Pod 注解
 
@@ -729,7 +727,6 @@ e2b-webhook 随 KASandbox 提供。CubeProvider 行为：
 
 - Pod 指定 `runtimeClassName: cube`（或策略选中 cube）时只注入 `cube.dev/*`（与 engine 一致，不双写 `sandbox.cri/*`）
 - 若缺少 `template-id` / `vcpu` / `ram-mb`，且配置了 `CUBE_API_URL`，则请求 CubeAPI `POST /templates/resolve` 补全
-- 若缺少 `disk-mb`，再 `GET /templates/{id}` 从 `writable_layer_size`（或 volume size_limit）补齐；须与模板可写层一致，否则冷启动会对快照 rootfs resize 失败
 
 按集群需要用 Helm / 部署脚本拉起 webhook，并保证其能访问 CubeAPI。
 
