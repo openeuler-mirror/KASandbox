@@ -1250,6 +1250,9 @@ e2b-webhook 是 K8S 模式下的可选准入控制器，用于拦截沙箱 Pod�
 
 ```bash
 export ENABLE_WEBHOOK=true
+# 多节点且希望 webhook 只跑在 api 池：export WEBHOOK_REQUIRE_API_POOL=true
+# 单节点 / 无 api 池标签：保持 false（默认），否则 Pod 会 Pending
+# Cube 路径另见 cube_user_guide §8.4：CUBE_API_URL / CUBE_TEAM_ID
 ```
 
 启用后，部署脚本自动完成：
@@ -1260,6 +1263,8 @@ export ENABLE_WEBHOOK=true
 | 2 | Helm 安装：Deployment（2 副本）、Service（443→8443）、MutatingWebhookConfiguration（pod + batchsandbox） |
 | 3 | TLS 证书：自签证书（10 年有效），创建 Secret `e2b-webhook-tls` 并注入 caBundle |
 | 4 | API Key：从 `/root/.e2b/config.json` 读取 `teamApiKey`，创建 Secret `e2b-api-key` |
+
+Pod webhook 用 `matchConditions` 匹配：E2B spotbox 的 `pod-index` label，或 `runtimeClassName: cube`（以及配置了 AgentENV 时的 `agentenv`）。普通 Pod 不进 webhook。
 
 **验证**：
 
@@ -2298,6 +2303,8 @@ kubectl get svc ingress-nginx-controller -n ingress-nginx
 | `NODE_PASSWORD` | 节点 SSH 密码（必须提供） | - |
 | `KUBELET_FLAGS_FILE` | kubelet 配置文件路径（cri-multiplex 用） | `/var/lib/kubelet/kubeadm-flags.env` |
 | `ENABLE_WEBHOOK` | 是否启用 e2b-webhook | `false` |
+| `WEBHOOK_REQUIRE_API_POOL` | webhook Deployment 是否强制 `node-role.kubernetes.io/<API_NODE_POOL>` | `false` |
+| `CUBE_API_URL` / `CUBE_TEAM_ID` | CubeProvider（见 cube 指南 §8.4） | 空 |
 | `API_NODE_POOL` | API 节点池名（Template 启动需配置） | - |
 
 **E2B 客户端环境变量**（SDK / 脚本中设置，见 [8.3 环境变量说明](#83-环境变量说明)）

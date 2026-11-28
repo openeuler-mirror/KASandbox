@@ -10,6 +10,10 @@ x509_extensions = v3_req
 CN = harbor
 
 [v3_req]
+# 自签证书须可作为信任根：containerd/Go x509 只接受 CA:TRUE 的证书当 ca
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, digitalSignature, keyEncipherment, keyCertSign
+extendedKeyUsage = serverAuth, clientAuth
 subjectAltName = @alt_names
 
 [alt_names]

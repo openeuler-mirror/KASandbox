@@ -15,6 +15,11 @@ image:
 webhook:
   enabled: ${ENABLE_WEBHOOK}
   agentenvApiURL: "${AGENTENV_API_URL}"
+  # Cube resolve：节点可达的 CubeAPI（如 http://<NODE_IP>:3000）；空则不注入，CubeProvider 仅吃已有注解
+  cubeApiURL: "${CUBE_API_URL}"
+  cubeTeamID: "${CUBE_TEAM_ID}"
+  # true：强制调度到 node-role.kubernetes.io/<api.pool>（多节点 E2B）；false/空：不设 required affinity（单节点 / Cube-only）
+  requireApiPool: "${WEBHOOK_REQUIRE_API_POOL}"
 pullPolicy: IfNotPresent
 # postgres 访问地址：默认内置 Service；ENABLE_POSTGRES=false 时由 POSTGRES_URL 环境变量指向外部实例
 postgresUrl: ${POSTGRES_URL}
