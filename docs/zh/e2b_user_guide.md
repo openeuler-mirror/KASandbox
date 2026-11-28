@@ -794,7 +794,9 @@ curl -sk http://<SERVER_IP>:2900/api/v2.0/health | jq .
 
 ### 6.2 集群部署
 
-通过 `k8s-deploy.sh` 使用 KubeKey 部署 K8S 集群（支持 x86_64 / arm64）。
+> **说明**：本节仅给出一种参考方案（通过 `k8s-deploy.sh` + KubeKey）用于 K8S 集群安装，并非强制要求。建议根据实际环境自行安装开源版本的 Kubernetes 集群。集群已就绪时可直接从 [6.3 Master 节点部署](#63-master-节点部署) 开始。
+
+以下参考方案通过 `k8s-deploy.sh` 使用 KubeKey 部署 K8S 集群（支持 x86_64 / arm64）。
 
 **前置条件**：
 
@@ -1238,6 +1240,11 @@ systemctl restart kubelet
 ### 6.8 可选组件：e2b-webhook
 
 e2b-webhook 是 K8S 模式下的可选准入控制器，用于拦截沙箱 Pod（以及 BatchSandbox CR）的创建请求，自动注入沙箱配置注解。默认关闭，通过 `ENABLE_WEBHOOK` 控制。
+
+**前提条件**
+
+- 需在 e2b 部署完成后部署：已完成 [6.3 Master 节点部署](#63-master-节点部署) 至 [6.6 验证](#66-验证)，集群及 e2b 组件正常运行
+- 已获取 E2B API Token（`/root/.e2b/config.json`，用于创建 `e2b-api-key` Secret）
 
 在 `.env` 中设置：
 

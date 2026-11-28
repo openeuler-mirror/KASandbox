@@ -1392,6 +1392,7 @@ harbor_get_url() {
 harbor_wait_healthy() {
     local harbor_url
     harbor_url=$(harbor_get_url)
+    # 同机 Harbor 冷启动可超过 60s；超时可用 HARBOR_HEALTH_TIMEOUT 覆盖（默认 600s）
     local timeout_s="${HARBOR_HEALTH_TIMEOUT:-600}"
     local interval=10
     local elapsed=0
