@@ -7,7 +7,7 @@ from e2b.api.client.client import AuthenticatedClient
 from e2b.connection_config import ApiParams, ConnectionConfig
 from e2b.template.consts import RESOLVE_SYMLINKS
 from e2b.template.logger import LogEntry, LogEntryEnd, LogEntryStart
-from e2b.template.main import TemplateBase, TemplateClass
+from e2b.template.main import TemplateBase, TemplateClass, _validate_vmm_type
 from e2b.template.types import (
     BuildInfo,
     InstructionType,
@@ -64,6 +64,7 @@ class AsyncTemplate(TemplateBase):
             ``"stratovirt"`` supports Linux, Windows and Android. When omitted, Linux uses Firecracker
             and Windows and Android use StratoVirt.
         """
+        _validate_vmm_type(vmm_type)
         if skip_cache:
             template._template._force = True
 

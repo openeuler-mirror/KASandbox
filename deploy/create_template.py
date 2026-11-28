@@ -6,14 +6,17 @@
 
 用法示例：
     # 无参数运行（使用默认值：镜像 ubuntu:22.04-custom，创建 1个模板）
-    python3 create_templates.py
+    python3 create_template.py
 
     # 指定参数运行
-    python3 create_templates.py \
+    python3 create_template.py \
         --image 10.10.10.10:30443/e2b-orchestration/ubuntu:22.04-custom \
         --template-count 10 \
         --concurrency 5 \
         --image-count 3
+
+    # 用支持 vmm_type 的 SDK 构建 StratoVirt Linux 模板
+    python3 create_template.py --image ubuntu:22.04 --vmm stratovirt
 """
 
 import os
@@ -21,6 +24,7 @@ import re
 import json
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional
 
 from e2b import Template
 
@@ -34,6 +38,7 @@ MEMORY_MB = 2048
 
 DEFAULT_BASE_IMAGE = "ubuntu:22.04-custom"
 DEFAULT_TEMPLATE_COUNT = 1
+VMM_SUFFIX = {"stratovirt": "sv", "firecracker": "fc"}
 
 
 def setup_e2b_env(server_ip: str) -> None:
@@ -87,7 +92,7 @@ def make_logger(alias: str):
     return log
 
 
-def create_template(index: int, base_image: str, prefix: str, image_count: int) -> dict:
+def create_template(index: int, base_image: str, prefix: str, image_count: int, vmm: Optional[str] = None) -> dict:
     """创建第 index 个模板，返回创建结果信息。"""
     variant = (index - 1) % image_count + 1
     alias = f"{prefix}-{index}"
@@ -95,6 +100,8 @@ def create_template(index: int, base_image: str, prefix: str, image_count: int) 
     info = {"index": index, "alias": alias, "image_variant": variant, "error": None}
     try:
         print(f"[{alias}] 开始创建（基于镜像变体 {variant}）", flush=True)
+        # 旧版 SDK 没有 vmm_type 参数，默认构建时省略它。
+        build_kwargs = {"vmm_type": vmm} if vmm else {}
         Template.build(
             Template().from_dockerfile(dockerfile),
             alias=alias,
@@ -102,6 +109,7 @@ def create_template(index: int, base_image: str, prefix: str, image_count: int) 
             memory_mb=MEMORY_MB,
             on_build_logs=make_logger(alias),
             skip_cache=True,
+            **build_kwargs,
         )
         print(f"[{alias}] 创建成功", flush=True)
     except Exception as e:
@@ -125,6 +133,8 @@ def main():
                         help=f'E2B Server IP（默认：{DEFAULT_SERVER_IP}）')
     parser.add_argument("--harbor-ip", default=DEFAULT_HARBOR_IP,
                         help=f'Harbor IP（默认：{DEFAULT_HARBOR_IP}，镜像名不含仓库地址时用于补全）')
+    parser.add_argument("--vmm", choices=VMM_SUFFIX,
+                        help="选择模板的 VMM，显式选择时在别名中加入 sv 或 fc")
     args = parser.parse_args()
 
     if args.template_count < 1:
@@ -136,6 +146,8 @@ def main():
 
     base_image = normalize_image(args.image, args.harbor_ip)
     prefix = alias_prefix_from_image(base_image)
+    if args.vmm:
+        prefix = f"{prefix}-{VMM_SUFFIX[args.vmm]}"
 
     setup_e2b_env(args.server_ip)
 
@@ -150,7 +162,7 @@ def main():
     results = []
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         futures = [
-            pool.submit(create_template, i, base_image, prefix, args.image_count)
+            pool.submit(create_template, i, base_image, prefix, args.image_count, args.vmm)
             for i in range(1, args.template_count + 1)
         ]
         for future in as_completed(futures):
