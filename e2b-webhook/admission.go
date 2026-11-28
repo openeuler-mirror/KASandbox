@@ -197,6 +197,13 @@ func admitObject(ar *admissionv1.AdmissionReview, matcher *provider.Matcher, req
 	defer cancel()
 	result, err := selection.Provider.Resolve(ctx, req)
 	if err != nil {
+		// Cube：Resolve 只在「需要补规格」时出错；静默降级会导致看起来准入成功却无 cube.dev/*（#74）。
+		// E2B / 其它 Provider 仍保持旧行为（只补 runtimeClass），避免改动存量 BatchSandbox 路径。
+		if handler == "cube" {
+			klog.Errorf("provider cube failed to resolve %s %s/%s: %v (denying)",
+				req.Kind, req.Namespace, req.Name, err)
+			return errorResponse(ar.Request.UID, "cube resolve failed: "+err.Error())
+		}
 		klog.Warningf("provider %s failed to resolve %s %s/%s: %v (only runtimeClass will be set)",
 			handler, req.Kind, req.Namespace, req.Name, err)
 		result = nil

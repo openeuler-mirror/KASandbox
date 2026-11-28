@@ -495,6 +495,27 @@ func TestAdmitPod_ResolveErrorOnlySetsRuntimeClass(t *testing.T) {
 	}
 }
 
+func TestAdmitPod_CubeResolveErrorDenies(t *testing.T) {
+	matcher := newMatcherFromProviders(t, &fakeProvider{handler: "cube", err: errors.New("api down")})
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			RuntimeClassName: strPtr("cube"),
+			Containers: []corev1.Container{{
+				Name: "pause",
+				Env:  []corev1.EnvVar{{Name: "TEMPLATE_NAME", Value: "sandbox-code"}},
+			}},
+		},
+	}
+	resp := admitPod(newPodReview(admissionv1.Create, pod), matcher)
+	if resp.Allowed {
+		t.Fatalf("Allowed=true, want deny on cube resolve failure")
+	}
+	if resp.Result == nil || !strings.Contains(resp.Result.Message, "cube resolve failed") {
+		t.Fatalf("Result=%+v, want cube resolve failed message", resp.Result)
+	}
+}
+
 func TestAdmitPod_UserAnnotationsWin(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

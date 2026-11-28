@@ -734,7 +734,7 @@ main() {
             echo "  CONFIG_FILE              指定配置文件路径（create/all 使用）"
             echo "  HOST_IP                  本机 IP（默认自动探测，prep 生成配置时使用）"
             echo "  NODE_PASSWORD            节点 SSH 密码（必须通过环境变量提供）"
-            echo "  CRI_MULTIPLEX_BIN          cri-multiplex 二进制路径（默认：脚本同目录 bin/cri-multiplex，即 /opt/e2b-infra/standard/bin/cri-multiplex；没有则 /opt/e2b-infra/bin/cri-multiplex）"
+            echo "  CRI_MULTIPLEX_BIN          cri-multiplex 二进制路径（默认：脚本同目录 bin/cri-multiplex → /opt/e2b-infra/bin/cri-multiplex；旧包兼容 /opt/e2b-infra/standard/bin/cri-multiplex）"
             echo "  CRI_MULTIPLEX_ORCHESTRATOR orchestrator 地址（默认 localhost:5008）"
             echo "  KUBELET_FLAGS_FILE         kubelet 启动参数文件路径（默认 /var/lib/kubelet/kubeadm-flags.env）"
             echo "  E2B_CNI_SUBNET             e2b bridge 子网（默认 10.12.0.0/22；多节点各节点须不重叠）"

@@ -221,8 +221,10 @@ check_start() {
     fi
 
     info "----- 端口占用检查 -----"
-    check "Harbor 端口 2900/30443 空闲" \
-        "$(ss -tln 2>/dev/null | grep -qE ':2900|:30443'; [ $? -ne 0 ]; echo $?)" \
+    local _hhttp="${HARBOR_HTTP_PORT:-2900}"
+    local _https="${HARBOR_HTTPS_PORT:-30443}"
+    check "Harbor 端口 ${_hhttp}/${_https} 空闲" \
+        "$(ss -tln 2>/dev/null | grep -qE ":${_hhttp}|:${_https}"; [ $? -ne 0 ]; echo $?)" \
         "端口已被占用，请释放或修改 .env 中 HARBOR_HTTP_PORT/HARBOR_HTTPS_PORT"
     check "Nomad 端口 4646 空闲" \
         "$(ss -tln 2>/dev/null | grep -q ':4646'; [ $? -ne 0 ]; echo $?)" \

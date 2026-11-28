@@ -1,5 +1,8 @@
 {{- if .Values.webhook.enabled }}
 {{- $agentenvApiURL := .Values.webhook.agentenvApiURL | default "" | trim }}
+{{- $cubeApiURL := .Values.webhook.cubeApiURL | default "" | trim }}
+{{- $cubeTeamID := .Values.webhook.cubeTeamID | default "" | trim }}
+{{- $requireApiPool := eq (.Values.webhook.requireApiPool | default "" | toString | trim) "true" }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -25,12 +28,14 @@ spec:
     spec:
       serviceAccountName: e2b-webhook
       affinity:
+        {{- if $requireApiPool }}
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
               - matchExpressions:
                   - key: node-role.kubernetes.io/{{ .Values.api.pool }}
                     operator: Exists
+        {{- end }}
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 100
@@ -64,6 +69,14 @@ spec:
                   optional: true
             - name: E2B_API_TIMEOUT
               value: "4s"
+            {{- if $cubeApiURL }}
+            - name: CUBE_API_URL
+              value: {{ $cubeApiURL | quote }}
+            {{- end }}
+            {{- if $cubeTeamID }}
+            - name: CUBE_TEAM_ID
+              value: {{ $cubeTeamID | quote }}
+            {{- end }}
             {{- if $agentenvApiURL }}
             - name: AGENTENV_API_URL
               value: {{ $agentenvApiURL | quote }}
@@ -150,19 +163,16 @@ webhooks:
         - key: kubernetes.io/metadata.name
           operator: NotIn
           values: ["kube-system", "kube-public", "kube-node-lease", "e2b"]
-    {{- if $agentenvApiURL }}
+    # spotbox label（E2B）或显式 runtimeClass（cube / 可选 agentenv）；避免拦截普通 Pod
     matchConditions:
       - name: sandbox-pod
         expression: >-
           (has(object.metadata.labels) &&
            'batch-sandbox.sandbox.opensandbox.io/pod-index' in object.metadata.labels) ||
+          (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'cube')
+          {{- if $agentenvApiURL }} ||
           (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'agentenv')
-    {{- else }}
-    objectSelector:                # 只处理由 BatchSandbox 控制器创建的 spotbox pod
-      matchExpressions:
-        - key: batch-sandbox.sandbox.opensandbox.io/pod-index
-          operator: Exists
-    {{- end }}
+          {{- end }}
   - name: batchsandbox.e2b-webhook.e2b.dev
     admissionReviewVersions: ["v1"]
     sideEffects: None

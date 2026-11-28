@@ -349,29 +349,78 @@ install_harbor() {
     cd "$WORK_DIR/harbor" || error "进入 Harbor 目录失败"
 }
 
+# Harbor nginx 实际挂载的是 $HARBOR_DATA_DIR/secret/cert/server.{crt,key}（不是 /etc/harbor/certs）
+harbor_sync_runtime_certs() {
+    local secret_dir="${HARBOR_DATA_DIR%/}/secret/cert"
+    if [ -z "${HARBOR_DATA_DIR:-}" ]; then
+        warn "HARBOR_DATA_DIR 未设置，跳过同步 runtime 证书"
+        return 0
+    fi
+    if [ ! -f "$HARBOR_CERTS_DIR/harbor.crt" ] || [ ! -f "$HARBOR_CERTS_DIR/harbor.key" ]; then
+        warn "缺少 $HARBOR_CERTS_DIR/harbor.crt|key，跳过同步 runtime 证书"
+        return 0
+    fi
+    mkdir -p "$secret_dir" || error "创建 $secret_dir 失败"
+    cp -f "$HARBOR_CERTS_DIR/harbor.crt" "$secret_dir/server.crt" || error "同步 server.crt 失败"
+    cp -f "$HARBOR_CERTS_DIR/harbor.key" "$secret_dir/server.key" || error "同步 server.key 失败"
+    # Harbor 容器内证书属主多为 uid 10000
+    chown 10000:10000 "$secret_dir/server.crt" "$secret_dir/server.key" 2>/dev/null || true
+    chmod 644 "$secret_dir/server.crt" 2>/dev/null || true
+    chmod 600 "$secret_dir/server.key" 2>/dev/null || true
+    info "已同步 Harbor 运行时证书到 $secret_dir"
+    local runtime="${DOCKER_CMD:-docker}"
+    if command -v "$runtime" >/dev/null 2>&1 && \
+       $runtime ps --format '{{.Names}}' 2>/dev/null | grep -qx 'nginx'; then
+        info "重启 Harbor nginx 以加载新证书..."
+        $runtime restart nginx >/dev/null 2>&1 || warn "重启 nginx 失败，请手动 docker restart nginx"
+    fi
+}
+
+harbor_cert_is_ca_true() {
+    local crt="$1"
+    [ -f "$crt" ] || return 1
+    openssl x509 -in "$crt" -noout -ext basicConstraints 2>/dev/null | grep -q 'CA:TRUE'
+}
+
 install_harbor_certs() {
     info "生成 Harbor SSL 证书..."
     mkdir -p "$HARBOR_CERTS_DIR" || error "创建 Harbor 证书目录失败"
 
-    # 幂等：证书已存在则跳过重签（重签后新证书与各节点 containerd/docker 已信任的旧证书不一致，Harbor 拉取会 x509 失败）
+    local need_gen=true
+    # 幂等：已有且带 CA:TRUE 则跳过；旧版 CA:FALSE 自签叶子证会导致 containerd unknown authority，强制重签
     if [ -f "$HARBOR_CERTS_DIR/harbor.crt" ] && [ -f "$HARBOR_CERTS_DIR/harbor.key" ]; then
-        info "Harbor 证书已存在（$HARBOR_CERTS_DIR），跳过生成；如需重签请先删除 crt/key，并向各节点重新分发信任"
-    else
+        if harbor_cert_is_ca_true "$HARBOR_CERTS_DIR/harbor.crt"; then
+            info "Harbor 证书已存在且 CA:TRUE（$HARBOR_CERTS_DIR），跳过生成；如需重签请先删除 crt/key 并重新分发信任"
+            need_gen=false
+        else
+            warn "检测到旧证书 basicConstraints 非 CA:TRUE（containerd 无法作信任根），将重签"
+            mv -f "$HARBOR_CERTS_DIR/harbor.crt" "$HARBOR_CERTS_DIR/harbor.crt.bak.$(date +%s)" 2>/dev/null || true
+            mv -f "$HARBOR_CERTS_DIR/harbor.key" "$HARBOR_CERTS_DIR/harbor.key.bak.$(date +%s)" 2>/dev/null || true
+        fi
+    fi
+
+    if [ "$need_gen" = true ]; then
         if [ ! -f "$DEP_DIR/harbor.cnf" ]; then
             error "证书配置文件缺失，请检查 $DEP_DIR/harbor.cnf"
         fi
         cp -f "$DEP_DIR/harbor.cnf" "$HARBOR_CERTS_DIR/" || error "复制 harbor.cnf 失败"
-        sed -i "s/{ip}/$HOST_IP/" "$HARBOR_CERTS_DIR/harbor.cnf" || error "修改 harbor.cnf 中的 IP 地址失败"
+        # 只替换占位符 {ip}（勿用裸 s/ip/，会误伤 keyEncipherment）
+        sed -i "s/{ip}/$HOST_IP/g" "$HARBOR_CERTS_DIR/harbor.cnf" || error "修改 harbor.cnf 中的 IP 地址失败"
 
-        # 生成 SSL 证书
         openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
             -keyout "$HARBOR_CERTS_DIR/harbor.key" \
             -out "$HARBOR_CERTS_DIR/harbor.crt" \
             -config "$HARBOR_CERTS_DIR/harbor.cnf" \
             -extensions v3_req || error "生成 SSL 证书失败"
 
-        success "Harbor SSL 证书生成完成: $HARBOR_CERTS_DIR/"
+        if ! harbor_cert_is_ca_true "$HARBOR_CERTS_DIR/harbor.crt"; then
+            error "新证书仍无 CA:TRUE，请检查 $DEP_DIR/harbor.cnf 的 [v3_req]"
+        fi
+        success "Harbor SSL 证书生成完成（CA:TRUE）: $HARBOR_CERTS_DIR/"
     fi
+
+    # 同步到 Harbor 实际挂载路径，并刷新 docker/containerd 信任材料的调用方见 configure_harbor_cert_trust
+    harbor_sync_runtime_certs
 
     if [ "$DEPLOY_MODE" = "k8s" ]; then
         # configmap 创建依赖集群，前置可达性检查避免抛出 kubectl 原始连接错误
@@ -529,6 +578,69 @@ uninstall_minio() {
     success "MinIO 卸载完成"
 }
 
+# Harbor 数据目录安全校验：拒绝 /、/data 等宽路径，避免 rm -rf 误伤 cubesandbox
+harbor_assert_safe_data_dir() {
+    local d="${HARBOR_DATA_DIR:-}"
+    local op="${1:-use}"
+    if [ -z "$d" ]; then
+        error "HARBOR_DATA_DIR 未设置；请在 .env 设为独立目录（推荐 /data/harbor）"
+    fi
+    # 去掉末尾 /
+    d="${d%/}"
+    case "$d" in
+        /|/data|/var|/usr|/home|/root|/opt|/etc|/tmp|/boot|/srv)
+            error "HARBOR_DATA_DIR=$HARBOR_DATA_DIR 过于宽泛，拒绝${op}。请改为独立目录如 /data/harbor"
+            ;;
+    esac
+    if [ "$op" = "delete" ]; then
+        if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$d" 2>/dev/null; then
+            error "HARBOR_DATA_DIR=$d 是挂载点，拒绝 rm -rf"
+        fi
+        # 无 Harbor 特征时不删，防止误指到其它业务目录
+        if [ -d "$d" ] && \
+           [ ! -d "$d/registry" ] && [ ! -d "$d/database" ] && \
+           [ ! -d "$d/redis" ] && [ ! -f "$d/secret/keys" ]; then
+            warn "HARBOR_DATA_DIR=$d 不像 Harbor 数据目录（无 registry/database 等），跳过删除"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+harbor_port_in_use() {
+    local port="$1"
+    ss -lnt 2>/dev/null | grep -qE ":${port}[[:space:]]" && return 0
+    return 1
+}
+
+harbor_precheck_host_ports() {
+    local http_port="${HARBOR_HTTP_PORT:-2900}"
+    local https_port="${HARBOR_HTTPS_PORT:-30443}"
+    info "Harbor 端口预检: HTTP ${http_port} / HTTPS ${https_port}"
+    if harbor_port_in_use 80; then
+        warn "宿主 :80 已被占用（常见为 cube-proxy）。将使用 HARBOR_HTTP_PORT=${http_port}，不再映射 80"
+    fi
+    if harbor_port_in_use "$http_port"; then
+        error "HARBOR_HTTP_PORT=${http_port} 已被占用，请修改 .env 后重试"
+    fi
+    if harbor_port_in_use "$https_port"; then
+        error "HARBOR_HTTPS_PORT=${https_port} 已被占用，请修改 .env 后重试"
+    fi
+}
+
+# prepare/install 生成的 compose 常仍写死 80:8080；按 .env 改宿主映射
+harbor_patch_compose_ports() {
+    local compose="${1:-$WORK_DIR/harbor/docker-compose.yml}"
+    local http_port="${HARBOR_HTTP_PORT:-2900}"
+    local https_port="${HARBOR_HTTPS_PORT:-30443}"
+    [ -f "$compose" ] || return 0
+    # HTTP: 任意宿主口:8080 → HARBOR_HTTP_PORT:8080（含默认 80）
+    sed -i -E "s/([[:space:]-]+)\"?[0-9]+:8080\"?/\1${http_port}:8080/g" "$compose"
+    # HTTPS: 任意宿主口:8443 → HARBOR_HTTPS_PORT:8443
+    sed -i -E "s/([[:space:]-]+)\"?[0-9]+:8443\"?/\1${https_port}:8443/g" "$compose"
+    info "已将 compose 端口映射调整为 ${http_port}:8080 / ${https_port}:8443（$compose）"
+}
+
 uninstall_harbor() {
     info "开始卸载 Harbor..."
 
@@ -565,9 +677,11 @@ uninstall_harbor() {
     rm -rf /etc/containerd/certs.d/${HOST_IP}:*$HARBOR_HTTPS_PORT 2>/dev/null || true
     info "删除 Harbor 证书目录: $HARBOR_CERTS_DIR"
     rm -rf $HARBOR_CERTS_DIR 2>/dev/null || true
-    # 删除 Harbor 数据目录
-    info "删除 Harbor 数据目录: $HARBOR_DATA_DIR"
-    rm -rf "$HARBOR_DATA_DIR" 2>/dev/null || true
+    # 删除 Harbor 数据目录（带安全校验，拒绝 /data 等宽路径）
+    if harbor_assert_safe_data_dir delete; then
+        info "删除 Harbor 数据目录: $HARBOR_DATA_DIR"
+        rm -rf "$HARBOR_DATA_DIR" 2>/dev/null || true
+    fi
 
     success "Harbor 卸载完成"
 }
@@ -671,7 +785,10 @@ start_client() {
 }
 
 
+# 下载离线依赖。可选组件：all（默认）| harbor | docker | compose | nomad | consul | firecracker | openeuler
+# 与 --deploy 对称：./build.sh --download harbor 只拉 Harbor 离线包到 dep/
 download_packages() {
+    local filter="${1:-all}"
     local pkg_dir="$DEP_DIR"
     # 架构相关变量映射
     local docker_arch nomad_arch consul_arch fc_arch oe_arch harbor_pkg
@@ -697,10 +814,18 @@ download_packages() {
             ;;
     esac
 
-    echo "开始下载 $ARCH 架构软件包..."
+    case "$filter" in
+        all|harbor|docker|compose|nomad|consul|firecracker|openeuler) ;;
+        *)
+            error "未知 --download 组件: $filter（支持: all harbor docker compose nomad consul firecracker openeuler）"
+            ;;
+    esac
+
+    echo "开始下载 $ARCH 架构软件包（组件: $filter）..."
 
     # 国内网络不可达源使用镜像: docker 用华为云镜像, github 用 ghfast.top 代理（同 L1503 websocat 的做法）
     local gh_proxy="https://ghfast.top"
+    local docker_mirror harbor_url
     case "$ARCH" in
         x86_64)
             docker_mirror="https://mirrors.huaweicloud.com/docker-ce/linux/static/stable/x86_64"
@@ -708,39 +833,52 @@ download_packages() {
             ;;
         arm64)
             docker_mirror="https://mirrors.huaweicloud.com/docker-ce/linux/static/stable/aarch64"
+            # aarch64 官方包不完整，用第三方构建仓（与 e2b_user_guide §4.4.2 一致）
             harbor_url="${gh_proxy}/https://github.com/wise2c-devops/build-harbor-aarch64/releases/download/v2.13.0"
             ;;
     esac
 
-    # 定义下载列表: URL|目标文件名|描述
+    # 定义下载列表: URL|目标文件名|组件名
     local downloads=(
         "${docker_mirror}/docker-25.0.5.tgz|docker-25.0.5.tgz|docker"
-        "${gh_proxy}/https://github.com/docker/compose/releases/download/v2.40.2/docker-compose-linux-${docker_arch}|docker-compose-linux-${docker_arch}|docker-compose"
+        "${gh_proxy}/https://github.com/docker/compose/releases/download/v2.40.2/docker-compose-linux-${docker_arch}|docker-compose-linux-${docker_arch}|compose"
         "https://releases.hashicorp.com/nomad/1.10.4/nomad_1.10.4_linux_${nomad_arch}.zip|nomad_1.10.4_linux_${nomad_arch}.zip|nomad"
         "https://releases.hashicorp.com/consul/1.21.4/consul_1.21.4_linux_${consul_arch}.zip|consul_1.21.4_linux_${consul_arch}.zip|consul"
         "${gh_proxy}/https://github.com/firecracker-microvm/firecracker/releases/download/v1.13.1/firecracker-v1.13.1-${fc_arch}.tgz|firecracker-v1.13.1-${fc_arch}.tgz|firecracker"
-        "https://dl-cdn.openeuler.openatom.cn/openEuler-24.03-LTS-SP3/docker_img/${oe_arch}/openEuler-docker.${oe_arch}.tar.xz|openEuler-docker.${oe_arch}.tar.xz|docker"
+        "https://dl-cdn.openeuler.openatom.cn/openEuler-24.03-LTS-SP3/docker_img/${oe_arch}/openEuler-docker.${oe_arch}.tar.xz|openEuler-docker.${oe_arch}.tar.xz|openeuler"
         "${harbor_url}/${harbor_pkg}|${harbor_pkg}|harbor"
     )
 
-    local entry url filename desc
+    local entry url filename comp matched=0
     for entry in "${downloads[@]}"; do
         url="${entry%%|*}"
         local rest="${entry#*|}"
         filename="${rest%%|*}"
-        desc="${rest##*|}"
-        # 幂等：已存在且非空则跳过
-        if [ -s "$pkg_dir/$filename" ]; then
-            echo "已存在，跳过 $desc: $pkg_dir/$filename"
+        comp="${rest##*|}"
+        if [ "$filter" != "all" ] && [ "$comp" != "$filter" ]; then
             continue
         fi
-        echo "正在下载 $desc: $url"
+        matched=1
+        # 幂等：已存在且非空则跳过
+        if [ -s "$pkg_dir/$filename" ]; then
+            echo "已存在，跳过 $comp: $pkg_dir/$filename"
+            continue
+        fi
+        echo "正在下载 $comp: $url"
+        echo "目标文件: $pkg_dir/$filename"
         # --timeout/--tries 防止不可达源无限挂起; 失败时删除残缺文件，避免下次误判为完整
         wget -q --show-progress --no-check-certificate --timeout=60 --tries=3 "$url" -O "$pkg_dir/$filename" \
-            || { rm -f "$pkg_dir/$filename"; error "$desc 下载失败"; }
+            || { rm -f "$pkg_dir/$filename"; error "$comp 下载失败（可手工下载到 $pkg_dir/$filename 后重试）"; }
     done
 
-    echo "所有软件包下载完成，保存路径：$pkg_dir"
+    if [ "$matched" -eq 0 ]; then
+        error "未匹配到可下载组件: $filter"
+    fi
+
+    echo "软件包下载完成（组件: $filter），保存路径：$pkg_dir"
+    if [ "$filter" = "harbor" ] || [ "$filter" = "all" ]; then
+        echo "Harbor 离线包文件名: $harbor_pkg"
+    fi
     return 0
 }
 
@@ -1022,12 +1160,16 @@ start_postgres() {
 start_harbor() {
     cd "$WORK_DIR/harbor" || error "进入 Harbor 目录失败"
 
+    HARBOR_HTTP_PORT="${HARBOR_HTTP_PORT:-2900}"
+    HARBOR_HTTPS_PORT="${HARBOR_HTTPS_PORT:-30443}"
+    harbor_assert_safe_data_dir deploy
+
     # 检查 Harbor 是否已经启动，若已启动且健康则跳过重启
     if [ -n "$($DOCKER_COMPOSE_CMD ps -q 2>/dev/null)" ]; then
         local harbor_url
         harbor_url=$(harbor_get_url)
         local health_json
-        health_json=$(set +e; curl -sk "${harbor_url}/api/v2.0/health" 2>/dev/null)
+        health_json=$(set +e; curl -sk --connect-timeout 3 --max-time 10 "${harbor_url}/api/v2.0/health" 2>/dev/null)
         if echo "$health_json" | grep -q '"status":"healthy"'; then
             success "Harbor 已启动且状态健康，跳过重启"
             return 0
@@ -1046,6 +1188,8 @@ start_harbor() {
     sed -i "s/^hostname: .*/hostname: $HOST_IP/" "$harbor_config" || error "修改 hostname 失败"
     mkdir -p "$HARBOR_DATA_DIR" || error "创建 Harbor 数据目录失败"
     sed -i "s|^#*data_volume: .*|data_volume: $HARBOR_DATA_DIR|" "$harbor_config" || error "修改 data_volume 失败"
+    # 确保运行时挂载证书与 /etc/harbor/certs 一致（含 CA:TRUE 重签后）
+    harbor_sync_runtime_certs
     # 根据当前使用的容器运行时修改 harbor/install.sh 和 prepare
     # 若使用 nerdctl（通常为 k8s 节点），则需跳过 install.sh 自带的 docker 检查
     sed -i "s|^DOCKER_COMPOSE=.*$|DOCKER_COMPOSE='$DOCKER_COMPOSE_CMD'|" install.sh
@@ -1058,14 +1202,31 @@ start_harbor() {
         sed -i "/check_dockercompose/d" install.sh
     fi
 
-    # Harbor 固定 HTTPS-only：http 块整体注释（https 启用时 http 仅 301 跳转，直接关闭不再监听）
-    # 注意顺序：先注释 http 块（port 行变为行首 #），再做 https 替换，避免误改 http 端口
-    sed -i '/^http:/,/^$/ s/^/#/' "$harbor_config"
+    # HTTP：写入 HARBOR_HTTP_PORT（默认可避开 cube-proxy :80）；取消旧版「整段注释 http」做法
+    # 若上次运行把 http 块注释掉了，先恢复 http: 行
+    sed -i 's/^#http:/http:/' "$harbor_config"
+    info "配置 Harbor HTTP (宿主端口: $HARBOR_HTTP_PORT)"
+    # 仅改 http: 段内的 port（到下一空行或顶格键）
+    awk -v p="$HARBOR_HTTP_PORT" '
+      /^http:/ {inhttp=1; print; next}
+      inhttp && /^[[:space:]]*(#)?port:[[:space:]]*[0-9]+/ {
+        sub(/^([[:space:]]*#?)port:[[:space:]]*[0-9]+/, "  port: " p); print; next
+      }
+      inhttp && (/^[^#[:space:]]/ || /^$/) {inhttp=0}
+      {print}
+    ' "$harbor_config" > "${harbor_config}.tmp" && mv "${harbor_config}.tmp" "$harbor_config"
 
-    # --- 配置 HTTPS（端口/证书路径；模式兼容 # 前缀与任意旧端口号，重复执行幂等） ---
+    # HTTPS：启用并限定只改 https: 段内 port / 证书路径
     info "配置 Harbor HTTPS (端口: $HARBOR_HTTPS_PORT)"
     sed -i 's/^#\(https:\)/\1/' "$harbor_config"
-    sed -i "s/^  #*port: [0-9][0-9]*/  port: $HARBOR_HTTPS_PORT/" "$harbor_config"
+    awk -v p="$HARBOR_HTTPS_PORT" '
+      /^https:/ {inhttps=1; print; next}
+      inhttps && /^[[:space:]]*(#)?port:[[:space:]]*[0-9]+/ {
+        sub(/^([[:space:]]*#?)port:[[:space:]]*[0-9]+/, "  port: " p); print; next
+      }
+      inhttps && (/^[^#[:space:]]/ || /^$/) {inhttps=0}
+      {print}
+    ' "$harbor_config" > "${harbor_config}.tmp" && mv "${harbor_config}.tmp" "$harbor_config"
     sed -i "s|^  #*certificate: .*|  certificate: /etc/harbor/certs/harbor.crt|" "$harbor_config"
     sed -i "s|^  #*private_key: .*|  private_key: /etc/harbor/certs/harbor.key|" "$harbor_config"
 
@@ -1081,7 +1242,34 @@ start_harbor() {
         echo "[SKIP] harbor 已存在于 /etc/hosts"
     fi
 
-    bash install.sh || error "Harbor 安装脚本执行失败"
+    harbor_precheck_host_ports
+
+    # install.sh 在 compose up 时才会绑端口；用包装器在 up 前强制改写 80:8080
+    local compose_wrap="$WORK_DIR/harbor/.kasandbox-compose-wrap.sh"
+    cat > "$compose_wrap" <<EOF
+#!/bin/bash
+set -e
+REAL_COMPOSE="$DOCKER_COMPOSE_CMD"
+COMPOSE_FILE="$WORK_DIR/harbor/docker-compose.yml"
+if echo "\$*" | grep -qE '(^|[ ])up([ ]|\$)'; then
+  if [ -f "\$COMPOSE_FILE" ]; then
+    sed -i -E "s/([[:space:]-]+)\\"?[0-9]+:8080\\"?/\\1${HARBOR_HTTP_PORT}:8080/g" "\$COMPOSE_FILE"
+    sed -i -E "s/([[:space:]-]+)\\"?[0-9]+:8443\\"?/\\1${HARBOR_HTTPS_PORT}:8443/g" "\$COMPOSE_FILE"
+  fi
+fi
+exec \$REAL_COMPOSE "\$@"
+EOF
+    chmod +x "$compose_wrap"
+    sed -i "s|^DOCKER_COMPOSE=.*$|DOCKER_COMPOSE='$compose_wrap'|" install.sh
+
+    if ! bash install.sh; then
+        warn "Harbor install.sh 失败，尝试修正 compose 端口后重新 up..."
+        harbor_patch_compose_ports "$WORK_DIR/harbor/docker-compose.yml"
+        $DOCKER_COMPOSE_CMD up -d || error "Harbor 安装/启动失败（已尝试修正端口）"
+    else
+        # 成功路径再核对映射（防止某些版本 prepare 写死后 wrap 未命中）
+        harbor_patch_compose_ports "$WORK_DIR/harbor/docker-compose.yml"
+    fi
 }
 
 # 根据容器运行时配置 Harbor HTTPS 证书信任
@@ -1204,23 +1392,37 @@ harbor_get_url() {
 harbor_wait_healthy() {
     local harbor_url
     harbor_url=$(harbor_get_url)
-    info "等待 Harbor 就绪: $harbor_url ..."
-    while true; do
-        local health_json
-        health_json=$(set +e; curl -sk "${harbor_url}/api/v2.0/health" 2>/dev/null)
+    local timeout_s="${HARBOR_HEALTH_TIMEOUT:-600}"
+    local interval=10
+    local elapsed=0
+    if [ -z "$HOST_IP" ] || [ -z "$HARBOR_HTTPS_PORT" ]; then
+        error "Harbor URL 无效（HOST_IP/HARBOR_HTTPS_PORT 为空）: $harbor_url"
+    fi
+    info "等待 Harbor 就绪: $harbor_url （超时 ${timeout_s}s）..."
+    while [ "$elapsed" -lt "$timeout_s" ]; do
+        local health_json http_code
+        http_code=$(set +e; curl -sk --connect-timeout 3 --max-time 10 \
+            -o /tmp/harbor-health.json -w "%{http_code}" \
+            "${harbor_url}/api/v2.0/health" 2>/dev/null)
+        health_json=$(set +e; cat /tmp/harbor-health.json 2>/dev/null)
         if echo "$health_json" | grep -q '"status":"healthy"'; then
-            info "Harbor 已就绪"
+            info "Harbor 已就绪（${elapsed}s）"
             local comp
             for comp in core database jobservice portal redis registry registryctl; do
                 if ! echo "$health_json" | grep -q "\"name\":\"$comp\",\"status\":\"healthy\""; then
                     warn "Harbor 组件 $comp 未就绪（不影响整体状态）"
                 fi
             done
-            break
+            return 0
         fi
-        warn "Harbor 未就绪，等待 10 秒后重试..."
-        sleep 10
+        warn "Harbor 未就绪（${elapsed}s/${timeout_s}s）http=${http_code:-000} body=$(echo "$health_json" | tr '\n' ' ' | cut -c1-160)"
+        if [ -d "$WORK_DIR/harbor" ]; then
+            (cd "$WORK_DIR/harbor" && $DOCKER_COMPOSE_CMD ps 2>/dev/null | head -n 20) || true
+        fi
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
     done
+    error "Harbor 在 ${timeout_s}s 内未 healthy。url=$harbor_url；请检查 compose/ps、磁盘与 ${HARBOR_DATA_DIR}"
 }
 
 harbor_login() {
@@ -1838,7 +2040,7 @@ show_help() {
     echo -e "  $0 [选项]"
     echo ""
     echo -e "${YELLOW}核心选项:${NC}"
-    echo -e "  ${GREEN}--download${NC}      下载并准备离线依赖包 (Docker images, Binaries)"
+    echo -e "  ${GREEN}--download${NC} [组件] 下载离线依赖到 dep/（默认 all；可: harbor docker compose nomad consul firecracker openeuler）"
     echo -e "  ${GREEN}--install${NC}       安装 Consul, Nomad, DNS 引导及环境初始化"
     echo -e "  ${GREEN}--install-client${NC}  安装客户端组件"
     echo -e "  ${GREEN}--uninstall${NC}     卸载所有组件"
@@ -1867,10 +2069,11 @@ show_help() {
     echo -e "  ${GREEN}# 快速重启环境:${NC}"
     echo -e "  $0 --stop --start"
     echo ""
-    echo -e "  ${GREEN}# 单独部署组件:${NC}"
+    echo -e "  ${GREEN}# 单独下载 / 部署组件:${NC}"
+    echo -e "  $0 --download harbor      # 只下载 Harbor 离线包到 dep/"
+    echo -e "  $0 --deploy harbor        # 仅部署 Harbor（需 dep/ 已有离线包；建议先 --download harbor）"
     echo -e "  $0 --deploy docker        # 安装 Docker & Docker Compose (需先 --download)"
     echo -e "  $0 --deploy postgres      # 重新部署 PostgreSQL"
-    echo -e "  $0 --deploy harbor        # 重新部署 Harbor (含 Docker/Nginx)"
     echo -e "  $0 --deploy nomad         # 重新部署 Nomad"
     echo -e "  $0 --deploy consul        # 重新部署 Consul"
     echo -e "  $0 --deploy services      # 构建镜像并部署 E2B 服务 (Nomad/K8S 任务 + 生成 Token)"
@@ -1924,6 +2127,7 @@ eval set -- "$PARSED_ARGUMENTS"
 # ===================== 参数解析阶段 =====================
 # 初始化动作标志
 ACTION_DOWNLOAD=false
+DOWNLOAD_COMPONENT="all"
 ACTION_INSTALL=false
 ACTION_INSTALL_CLIENT=false
 ACTION_UNINSTALL=false
@@ -1947,6 +2151,15 @@ while true; do
             ;;
         --download)
             ACTION_DOWNLOAD=true
+            # 可选组件名：--download harbor（getopt 未声明参数，残留在 -- 之后或紧跟下一词）
+            if [ -n "${2:-}" ] && [[ "$2" != --* ]]; then
+                case "$2" in
+                    all|harbor|docker|compose|nomad|consul|firecracker|openeuler)
+                        DOWNLOAD_COMPONENT="$2"
+                        shift
+                        ;;
+                esac
+            fi
             ;;
         --install)
             ACTION_INSTALL=true
@@ -2035,6 +2248,16 @@ while true; do
     shift
 done
 
+# --download 的组件名也可能落在 getopt 的剩余参数里：./build.sh --download harbor
+if [ "$ACTION_DOWNLOAD" = true ] && [ -n "${1:-}" ]; then
+    case "$1" in
+        all|harbor|docker|compose|nomad|consul|firecracker|openeuler)
+            DOWNLOAD_COMPONENT="$1"
+            shift
+            ;;
+    esac
+fi
+
 # ===================== 执行逻辑阶段 =====================
 echo "------------------------------$DEPLOY_MODE---------------------------------"
 
@@ -2064,7 +2287,7 @@ fi
 # 执行下载
 if [ "$ACTION_DOWNLOAD" = true ]; then
     echo "[Action] 下载依赖包..."
-    download_packages
+    download_packages "$DOWNLOAD_COMPONENT"
 fi
 
 # 执行安装
