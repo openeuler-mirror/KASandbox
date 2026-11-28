@@ -1204,7 +1204,10 @@ harbor_get_url() {
 harbor_wait_healthy() {
     local harbor_url
     harbor_url=$(harbor_get_url)
-    info "等待 Harbor 就绪: $harbor_url ..."
+    local timeout=60
+    local start_ts
+    start_ts=$(date +%s)
+    info "等待 Harbor 就绪: $harbor_url（最多 ${timeout}s）..."
     while true; do
         local health_json
         health_json=$(set +e; curl -sk "${harbor_url}/api/v2.0/health" 2>/dev/null)
@@ -1217,6 +1220,9 @@ harbor_wait_healthy() {
                 fi
             done
             break
+        fi
+        if [ $(( $(date +%s) - start_ts )) -ge "$timeout" ]; then
+            error "等待 Harbor 就绪超时（${timeout}s），退出部署"
         fi
         warn "Harbor 未就绪，等待 10 秒后重试..."
         sleep 10
