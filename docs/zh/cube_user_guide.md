@@ -29,7 +29,7 @@
   - [6.2 自构建 OCI 镜像](#62-自构建-oci-镜像)
   - [6.3 推送到 Harbor](#63-推送到-harbor)
     - [6.3.1 角色与端口](#631-角色与端口)
-    - [6.3.2 同机冲突怎么解](#632-同机冲突怎么解改-harbor不动-cube)
+    - [6.3.2 与 Cube 同机时的注意点](#632-与-cube-同机时的注意点)
     - [6.3.3 下载并部署](#633-下载并部署仅-harbor)
     - [6.3.4 推送镜像](#634-推送镜像)
     - [6.3.5 自签证书](#635-自签证书cubemastertemplatecenter-信任)
@@ -492,7 +492,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 \
 
 ### 6.3 推送到 Harbor
 
-可选私有仓；无仓用 [6.5](#65-可选官方预置镜像捷径)。同机冲突：**改 Harbor，不动 `/data/cubelet`**。
+可选私有仓；无仓用 [6.5](#65-可选官方预置镜像捷径)。与 CubeSandbox 装在同一台机器时，按下面约定配端口和数据目录即可。
 
 #### 6.3.1 角色与端口
 
@@ -502,16 +502,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 \
 | Harbor HTTP（可选） | **2900**（默认；旧 compose 常误绑 80） | 避开 cube-proxy `:80` |
 | cube-proxy | **80** | 勿让 Harbor 再占 |
 
-`HARBOR_DATA_DIR` 默认 `/data/harbor`（禁止裸 `/data`）。本仓 `build.sh --deploy harbor` 会写 `HARBOR_HTTP_PORT`/`HTTPS` 到 compose；官方 installer 须手改。
+本仓 `build.sh --deploy harbor` 会把 `HARBOR_HTTP_PORT` / `HTTPS` 写入 compose；官方 installer 须手改。
 
-#### 6.3.2 同机冲突
+#### 6.3.2 与 Cube 同机时的注意点
 
-| 冲突 | 解法 |
+| 注意点 | 做法 |
 |------|------|
-| 数据目录 | `HARBOR_DATA_DIR=/data/harbor`；卸载会 `rm -rf` 该目录 |
-| `:80` | `build.sh --deploy harbor` 或 compose `80:8080`→`2900:8080`；HTTPS 保持 `30443` |
-| `lookup core … no such host` | Harbor 目录 `docker compose down && up -d` |
-| 同机再跑 KubeKey | `systemctl restart docker`（§8.1）；更稳先 K8S 再 Harbor |
+| Harbor 数据目录 | 设 `HARBOR_DATA_DIR=/data/harbor`（**不要**写成裸 `/data`）。卸载 Harbor 会 `rm -rf` 该目录；若指向 `/data`，会连同 Cube 的 `/data/cubelet` 一并删掉 |
+| `:80` | `build.sh --deploy harbor`，或把 compose 里 `80:8080` 改成 `2900:8080`；HTTPS 保持 `30443` |
+| `lookup core … no such host` | 到 Harbor 安装目录执行 `docker compose down && up -d` |
+| 同机再跑 KubeKey | `systemctl restart docker`（§8.1）；更稳的顺序是先装 K8S 再装 Harbor |
 
 #### 6.3.3 下载并部署
 
@@ -774,13 +774,12 @@ Cube-only 可只装 webhook（不必起 E2B api/orchestrator）。E2B 全栈见 
    - Pod → CubeAPI（CNI `isDefaultGateway` 须为 `true`，否则 Pod 只有网段路由、`dial … network is unreachable`）。
 4. 若 webhook / 业务镜像来自自签 Harbor `:30443`：
    - Harbor 自签证须带 **`CA:TRUE`**（`dep/harbor.cnf` 已含；旧证 `CA:FALSE` 时 `build.sh` 会重签）。containerd 只把 CA 证当信任根，否则即使用 `hosts.toml` 的 `ca=` 仍会 `unknown authority`。
-   - 节点：`certs.d/<实际推拉用的主机名或 IP>:30443/` + `hosts.toml`（`SERVER_IP` 与节点 InternalIP 不一致时两处都要有）。
-   - **不要**再叠 `registry.configs.*.tls`（与 `config_path` 互斥会弄挂 CRI）。
-   - `config_path = "/etc/containerd/certs.d"` 与旧版 `[registry.mirrors]` **互斥**；配 `config_path` 后须删 `registry.mirrors` 再 `systemctl restart containerd`。
-   - `build.sh` 在 k8s 模式会写 certs.d、清 mirrors，并把证同步到 nginx 实际挂载的 cert 目录。
+   - 节点只走 **certs.d**：在 `/etc/containerd/certs.d/<推拉用的主机名或 IP>:30443/` 下放 `hosts.toml`（并在 containerd 配置里设 `config_path = "/etc/containerd/certs.d"`）。`SERVER_IP` 与节点 InternalIP 不一致时，两个名字各建一份目录。
+   - **不要**再在 containerd 的 `config.toml` 里额外写自签仓的 TLS 段或旧的 `[registry.mirrors]`。这两套和 `config_path`/certs.d **不能并用**，叠在一起常导致拉镜像失败，严重时 containerd/CRI 起不来。改完后 `systemctl restart containerd`。
+   - `build.sh` 在 k8s 模式会写 certs.d、清掉旧 mirrors，并把证同步到 nginx 实际挂载的 cert 目录。
    - 换架构重打镜像后：`crictl rmi` 旧 digest 或临时 `imagePullPolicy=Always`，避免 `IfNotPresent` 继续用坏层。
 5. arm64 节点上的 webhook 镜像须为 **linux/arm64**，且基础镜像与动态链接二进制匹配（openEuler 二进制勿塞进 debian-slim，否则 `exec … no such file`）。
-6. **不要**为躲探针去给 webhook 开 `hostNetwork` 且仍用 `:8443`：同机 Harbor/openresty 常占 `*:8443` / `192.168.0.1:8443`，会 `bind: address already in use`。
+6. webhook 默认跑在集群网络、监听 `:8443`。若就绪探针失败，先查 CNI/`cni0`（上条），**不要**因此改成 `hostNetwork: true` 仍占用 `:8443`：同机 Harbor/openresty 常已占用宿主 `8443`，会报 `bind: address already in use`。
 7. CubeMaster 拉业务镜像的信任仍走 [6.3.5](#635-自签证书cubemastertemplatecenter-信任)，与 containerd 是两条线。
 
 #### 8.4.3 安装（Cube-only）
@@ -796,7 +795,7 @@ kubectl -n e2b rollout status deploy/e2b-webhook --timeout=180s
 kubectl -n e2b get deploy e2b-webhook -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CUBE_API_URL")].value}{"\n"}'
 ```
 
-MWC 匹配 `runtimeClassName: cube`（及 E2B `pod-index`）。Cube 需 resolve 却失败时 **deny**；E2B Provider 仍可只补 runtimeClass。
+Webhook 只会拦住：`runtimeClassName: cube` 的 Pod，以及带 E2B `pod-index` 标签的沙箱 Pod（普通 Pod 不进）。对 Cube：若需要向 CubeAPI 补 `cube.dev/*` 却失败，**会直接拒绝创建**（不会静默放行成缺注解、一直 ContainerCreating 的 Pod）。E2B 路径失败时仍会放行，并尽量只写入 `runtimeClassName`（与 Cube 不同）。
 
 #### 8.4.4 验收（注入，不验 Running）
 
@@ -917,7 +916,7 @@ sudo ./down.sh && sudo ./install.sh
 | Harbor HTTPS x509 / 拉镜像失败 | docker push 成功不够；给 CubeMaster/TemplateCenter 配 `SSL_CERT_FILE`（§6.3.5）。**勿指望** `http://` 镜像前缀绕过 |
 | Harbor `:80` bind / HTTP 口不对 | 与 cube-proxy 抢口。确认 `.env` 的 `HARBOR_HTTP_PORT` 并用本仓 `build.sh --deploy harbor`；或手工改 compose（§6.3.1–6.3.3）。login/push 仍用 `:30443` |
 | Harbor `lookup core no such host` | Harbor 目录 `docker compose down && up -d`；确认 `core` 在同一 `harbor_*` 网（§6.3.2） |
-| 卸载 Harbor 误删 Cube 数据 | `HARBOR_DATA_DIR` 须为 `/data/harbor`，勿裸 `/data`（§6.3.2） |
+| 卸载 Harbor 误删 Cube 数据 | `HARBOR_DATA_DIR` 必须是独立目录（推荐 `/data/harbor`），不要写成裸 `/data`（§6.3.2） |
 | 同机 KubeKey 后 docker/Harbor 挂 | `systemctl restart docker`（§8.1） |
 | cri-multiplex 无 cube | unit 须有 `-cube-enabled`；二进制 `--help` 有该 flag；能连 Cubelet |
 | `k8s-deploy.sh` 找不到 | 确认已装 KASandbox，路径为 `/opt/e2b-infra/k8s-deploy.sh` |

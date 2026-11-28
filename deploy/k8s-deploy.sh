@@ -371,28 +371,21 @@ switch_kubelet_endpoint() {
     fi
 }
 
-# 未设置 CRI_MULTIPLEX_BIN 时解析二进制路径（新包平铺 /opt/e2b-infra）：
+# 未设置 CRI_MULTIPLEX_BIN 时解析二进制路径（平铺 /opt/e2b-infra）：
 # 1) 与本脚本同树的 bin/cri-multiplex（/opt/e2b-infra/k8s-deploy.sh → …/bin/cri-multiplex）
-# 2) 固定新布局 /opt/e2b-infra/bin/cri-multiplex
-# 3) 旧 subpackage 布局 /opt/e2b-infra/standard/bin/cri-multiplex（兼容）
+# 2) 固定布局 /opt/e2b-infra/bin/cri-multiplex
 default_cri_multiplex_bin() {
     if [ -n "${CRI_MULTIPLEX_BIN:-}" ]; then
         printf '%s\n' "${CRI_MULTIPLEX_BIN}"
         return
     fi
-    local script_dir beside flat legacy
+    local script_dir beside flat
     script_dir="$(cd "$(dirname "$0")" && pwd)"
     beside="${script_dir}/bin/cri-multiplex"
     flat="/opt/e2b-infra/bin/cri-multiplex"
-    legacy="/opt/e2b-infra/standard/bin/cri-multiplex"
     if [ -x "${beside}" ]; then
         printf '%s\n' "${beside}"
-    elif [ -x "${flat}" ]; then
-        printf '%s\n' "${flat}"
-    elif [ -x "${legacy}" ]; then
-        printf '%s\n' "${legacy}"
     else
-        # 默认报新布局路径，便于错误信息与现行 RPM 一致
         printf '%s\n' "${flat}"
     fi
 }
@@ -734,7 +727,7 @@ main() {
             echo "  CONFIG_FILE              指定配置文件路径（create/all 使用）"
             echo "  HOST_IP                  本机 IP（默认自动探测，prep 生成配置时使用）"
             echo "  NODE_PASSWORD            节点 SSH 密码（必须通过环境变量提供）"
-            echo "  CRI_MULTIPLEX_BIN          cri-multiplex 二进制路径（默认：脚本同目录 bin/cri-multiplex → /opt/e2b-infra/bin/cri-multiplex；旧包兼容 /opt/e2b-infra/standard/bin/cri-multiplex）"
+            echo "  CRI_MULTIPLEX_BIN          cri-multiplex 二进制路径（默认：脚本同目录 bin/cri-multiplex → /opt/e2b-infra/bin/cri-multiplex）"
             echo "  CRI_MULTIPLEX_ORCHESTRATOR orchestrator 地址（默认 localhost:5008）"
             echo "  KUBELET_FLAGS_FILE         kubelet 启动参数文件路径（默认 /var/lib/kubelet/kubeadm-flags.env）"
             echo "  E2B_CNI_SUBNET             e2b bridge 子网（默认 10.12.0.0/22；多节点各节点须不重叠）"
