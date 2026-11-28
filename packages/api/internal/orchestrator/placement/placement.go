@@ -221,13 +221,13 @@ func placeSandbox(
 // logSandboxCreateRequest 分层打印 SandboxCreateRequest 的所有字段
 func logSandboxCreateRequest(ctx context.Context, req *orchestrator.SandboxCreateRequest) {
 	if req == nil {
-		logger.L().Info(ctx, "Sandbox create request is nil")
+		logger.L().Debug(ctx, "Sandbox create request is nil")
 		return
 	}
 
 	sbx := req.GetSandbox()
 	if sbx == nil {
-		logger.L().Info(ctx, "Sandbox create request has nil sandbox")
+		logger.L().Debug(ctx, "Sandbox create request has nil sandbox")
 		return
 	}
 
@@ -327,5 +327,5 @@ func logSandboxCreateRequest(ctx context.Context, req *orchestrator.SandboxCreat
 		fields = append(fields, zap.String("auto_resume", "<nil>"))
 	}
 
-	logger.L().Info(ctx, "Sandbox create request details", fields...)
+	logger.L().Debug(ctx, "Sandbox create request details", fields...)
 }
