@@ -15,8 +15,14 @@ function rm_service() {
 # 替换为你的 Bootstrap Token
 NOMAD_TOKEN=$NOMAD_ACL_TOKEN
 
-# 获取所有 Job 并删除
+# 获取所有 Job；dry-run 下只打印将执行的 purge，不改动集群状态
 JOBS=$(nomad job status -token "$NOMAD_TOKEN" -json | jq -r '.[].Allocations[].JobID')
+if [[ "$DRY_RUN" == "true" ]]; then
+    for job in $JOBS; do
+        log_info "[Dry-run] Would purge job: $job"
+    done
+    return
+fi
 for job in $JOBS; do
     echo "===== 处理 Job：$job ====="
     nomad job stop -purge -token "$NOMAD_TOKEN" "$job"
@@ -24,6 +30,15 @@ done
 sleep 10
 echo "✅ 所有 Job 处理完成"
 nomad job status -token "$NOMAD_TOKEN"
+}
+
+function rm_alloc_mounts() {
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log_info "[Dry-run] Would unmount alloc secrets/private mounts and remove $NOMAD_DATA_DIR/alloc"
+    return
+  fi
+  find /data/nomad/alloc -type d \( -name "secrets" -o -name "private" \) -exec umount {} \; 2>/dev/null
+  rm -rf /data/nomad/alloc
 }
 
 function safe_rm {
@@ -46,7 +61,7 @@ function main {
     sudo systemctl stop    nomad || true
     sudo systemctl disable nomad || true
   fi
-  find /data/nomad/alloc -type d \( -name "secrets" -o -name "private" \) -exec umount {} \; 2>/dev/null; rm -rf /data/nomad/alloc
+  rm_alloc_mounts
   # 2. Remove systemd unit
   SYSTEMD_PATH="/etc/systemd/system/nomad.service"
   safe_rm "$SYSTEMD_PATH"
