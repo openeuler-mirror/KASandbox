@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,16 @@ import (
 	"github.com/cri-multiplex/pkg/orchestrator"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
+
+// engineDebug gates verbose request/response dumps that can carry envd access
+// tokens or user payloads. Enable explicitly with E2B_ENGINE_DEBUG=true.
+var engineDebug = os.Getenv("E2B_ENGINE_DEBUG") == "true"
+
+func debugf(format string, args ...any) {
+	if engineDebug {
+		log.Printf("[GrpcE2BEngine|debug] "+format, args...)
+	}
+}
 
 const (
 	annBuildID            = "e2b.dev/build-id"
@@ -1182,12 +1193,12 @@ func (e *Engine) doExecSyncRequest(
 			request.Header.Set("X-Access-Token", accessToken)
 		}
 
-		log.Printf("[GrpcE2BEngine] >>> HTTP Request: POST %s", request.URL.String())
-		log.Printf("[GrpcE2BEngine] >>> Host: %s", request.Host)
+		debugf(">>> HTTP Request: POST %s", request.URL.String())
+		debugf(">>> Host: %s", request.Host)
 		for k, v := range request.Header {
-			log.Printf("[GrpcE2BEngine] >>> Header %s: %v", k, v)
+			debugf(">>> Header %s: %v", k, v)
 		}
-		log.Printf("[GrpcE2BEngine] >>> Body hex (%d bytes): %x", len(body), body)
+		debugf(">>> Body hex (%d bytes): %x", len(body), body)
 
 		response, err := e.getEnvdHTTPClient().Do(request)
 		if err == nil {
@@ -1280,7 +1291,7 @@ func (e *Engine) ExecSync(ctx context.Context, req *runtime.ExecSyncRequest) (*r
 			break
 		}
 
-		log.Printf("[GrpcE2BEngine] read gRPC frame: compressed=%v, payload_len=%d, payload_hex=%x",
+		debugf("read gRPC frame: compressed=%v, payload_len=%d, payload_hex=%x",
 			compressed, len(framePayload), framePayload[:min(50, len(framePayload))])
 
 		if len(framePayload) == 0 {
@@ -1435,7 +1446,7 @@ func (e *Engine) Exec(ctx context.Context, req *runtime.ExecRequest) (*runtime.E
 	}()
 
 	url := fmt.Sprintf("http://%s/exec/%s", e.streamingAddr(), token)
-	log.Printf("[GrpcE2BEngine] Exec streaming URL: %s", url)
+	debugf("Exec streaming URL: %s", url)
 	return &runtime.ExecResponse{Url: url}, nil
 }
 
