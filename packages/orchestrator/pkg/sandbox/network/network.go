@@ -599,10 +599,12 @@ func (s *Slot) externalNetNSRulesScript() string {
 // applyExternalNetNSRules installs the 4 per-slot iptables rules of the
 // external netns mode with one `iptables-restore --noflush` call instead of 4
 // separate `iptables` execs. The rules are private to the sandbox netns, so
-// skipping the xtables.lock serialization is safe. Falls back to sequential
+// the per-slot rules are private to the sandbox netns, but iptables-restore
+// still takes the global xtables lock, so wait on contention instead of
+// failing with status 4 under concurrent creations. Falls back to sequential
 // appends when iptables-restore is not available.
 func (s *Slot) applyExternalNetNSRules(tables *iptables.IPTables) error {
-	cmd := exec.Command("iptables-restore", "--noflush")
+	cmd := exec.Command("iptables-restore", "--noflush", "-w")
 	cmd.Stdin = strings.NewReader(s.externalNetNSRulesScript())
 	out, err := cmd.CombinedOutput()
 	if err == nil {
